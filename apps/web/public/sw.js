@@ -15,6 +15,8 @@ const VERSION = 'v1';
 const SHELL_CACHE = `og-shell-${VERSION}`;
 const ASSET_CACHE = `og-assets-${VERSION}`;
 
+// The public landing page and the offline fallback. `/today` is deliberately
+// absent: it is per-user and must never be served from a shared cache.
 const SHELL = ['/', '/offline'];
 
 self.addEventListener('install', (event) => {

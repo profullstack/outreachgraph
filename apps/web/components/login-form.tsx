@@ -38,7 +38,7 @@ export function LoginForm() {
         return;
       }
 
-      router.replace('/');
+      router.replace('/today');
       router.refresh();
     } catch {
       setError('could not reach the server');
