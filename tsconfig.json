@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@outreachgraph/domain": ["./packages/domain/src/index.ts"],
+      "@outreachgraph/db": ["./packages/db/src/index.ts"],
+      "@outreachgraph/identity": ["./packages/identity/src/index.ts"],
+      "@outreachgraph/signals": ["./packages/signals/src/index.ts"],
+      "@outreachgraph/scoring": ["./packages/scoring/src/index.ts"],
+      "@outreachgraph/policy": ["./packages/policy/src/index.ts"],
+      "@outreachgraph/providers": ["./packages/providers/src/index.ts"],
+      "@outreachgraph/contracts": ["./packages/contracts/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts"],
+  "exclude": ["node_modules", "dist", ".next", "build", "apps/web"]
+}
