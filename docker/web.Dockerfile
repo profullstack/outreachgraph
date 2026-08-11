@@ -14,13 +14,14 @@ COPY apps ./apps
 
 RUN bun install --frozen-lockfile
 
-FROM oven/bun:1.3.14-slim AS builder
+# Extends `deps` rather than re-copying node_modules into a fresh stage.
+# Copying only the root node_modules loses the per-package node_modules/.bin
+# that Bun's workspace linking creates, and `next` is one of those binaries —
+# the build failed with `next: command not found`.
+FROM deps AS builder
 WORKDIR /app
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY package.json bun.lock tsconfig.base.json ./
-COPY packages ./packages
-COPY apps/web ./apps/web
+COPY tsconfig.base.json ./
 
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN cd apps/web && bun run build
