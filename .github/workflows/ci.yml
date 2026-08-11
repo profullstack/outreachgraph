@@ -109,6 +109,19 @@ jobs:
           done
           echo "web never answered through the proxy:"; docker logs og; exit 1
 
+      - name: The PWA can reach the API through the supervisor
+        run: |
+          # /offline is static and proves nothing about the API wiring. This
+          # route renders through the API, so it catches the case where the web
+          # child calls the wrong address — which shipped once, as a 500 from
+          # the child fetching itself instead of the API.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)
+          echo "GET / -> $code"
+          case "$code" in
+            200|302|303|307|308) ;;
+            *) echo "expected a page or a redirect to /login"; docker logs og; exit 1 ;;
+          esac
+
       - name: Auth is enforced
         run: |
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/recommendations)
