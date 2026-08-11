@@ -22,11 +22,11 @@ bun test                    # 202 tests
 bun run check               # format, typecheck, test
 ```
 
-Run the API:
+Run the API and the PWA:
 
 ```bash
-bun run --filter '@outreachgraph/api' dev
-curl localhost:8080/health/live
+bun run --filter '@outreachgraph/api' dev     # :8080
+bun run --filter '@outreachgraph/web' dev     # :3000
 ```
 
 No API keys are needed. The pipeline runs end to end on a deterministic
@@ -37,6 +37,7 @@ fixture provider, so a fresh checkout works with an empty `.env`.
 ```text
 apps/
   api/        Hono service on /api/v1
+  web/        Next.js 16 mobile-first PWA
   worker/     background jobs: signal expiry, rescoring, privacy work
 packages/
   domain/     canonical types — depends on nothing

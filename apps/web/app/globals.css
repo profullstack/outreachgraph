@@ -1,0 +1,51 @@
+@import 'tailwindcss';
+
+/**
+ * Design tokens.
+ *
+ * Defined on bare `:root` so light is the fallback, then overridden for dark.
+ * Every colour has a light definition — none is defined only inside the media
+ * query.
+ */
+@theme {
+  --color-surface: #ffffff;
+  --color-surface-raised: #f6f7f9;
+  --color-border: #e3e6ea;
+  --color-ink: #0b0f17;
+  --color-ink-muted: #5b6472;
+  --color-accent: #2f6df6;
+  --color-hot: #d9480f;
+  --color-good: #0f7b52;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-surface: #0b0f17;
+    --color-surface-raised: #141a24;
+    --color-border: #232b38;
+    --color-ink: #e9edf3;
+    --color-ink-muted: #97a1b0;
+    --color-accent: #6ea0ff;
+    --color-hot: #ff8a4c;
+    --color-good: #3ecf8e;
+  }
+}
+
+/* Touch targets stay at least 44px; iOS zooms any input under 16px. */
+@layer base {
+  button,
+  a[role='button'] {
+    min-height: 44px;
+  }
+
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  /* Momentum scrolling without the rubber-band on the whole document. */
+  html {
+    overscroll-behavior-y: none;
+  }
+}

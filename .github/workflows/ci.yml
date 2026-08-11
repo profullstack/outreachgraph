@@ -33,6 +33,11 @@ jobs:
       - name: Test
         run: bun test
 
+      # The web app has its own tsconfig (JSX, Next types) and is excluded from
+      # the root typecheck, so it needs its own build to be covered at all.
+      - name: Build the PWA
+        run: bun run --filter '@outreachgraph/web' build
+
       # Proves the committed migrations apply to an empty database, which is
       # what every deploy does before the new image serves traffic.
       - name: Migrations apply cleanly
@@ -51,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, worker]
+        service: [api, web, worker]
 
     steps:
       - uses: actions/checkout@v4

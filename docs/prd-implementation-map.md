@@ -40,17 +40,18 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 
 ## Partially implemented
 
-| PRD section              | State                                                                                                                  |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| §7 Wizard                | Domain types and contracts exist (`packages/domain/src/campaign.ts`, `packages/contracts`). No wizard UI or ICP agent. |
-| §12.5 Relationship score | Scoring function exists; nothing populates its inputs yet.                                                             |
-| §22 Person model         | Schema complete. No ORM layer beyond `packages/db` helpers.                                                            |
-| §27 Conversations        | Interaction states and rows exist; no inbound ingestion.                                                               |
-| §30 Billing              | `usage_events` and `billing_accounts` tables; no metering enforcement or payment provider.                             |
+| PRD section              | State                                                                                                                                                                                                                                                                                                                   |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §7 Wizard                | Domain types and contracts exist (`packages/domain/src/campaign.ts`, `packages/contracts`). No wizard UI or ICP agent.                                                                                                                                                                                                  |
+| §12.5 Relationship score | Scoring function exists; nothing populates its inputs yet.                                                                                                                                                                                                                                                              |
+| §22 Person model         | Schema complete. No ORM layer beyond `packages/db` helpers.                                                                                                                                                                                                                                                             |
+| §27 Conversations        | Interaction states and rows exist; no inbound ingestion.                                                                                                                                                                                                                                                                |
+| §30 Billing              | `usage_events` and `billing_accounts` tables; no metering enforcement or payment provider.                                                                                                                                                                                                                              |
+| §1.1 PWA                 | `apps/web` — installable manifest, service worker, offline fallback, update prompt, safe-area layout, bottom nav, approval card, signal feed. Prospects and campaign screens are placeholders. No push notifications; icons are SVG only, so raster icons are still needed for older Android. No Lighthouse gate in CI. |
+| §25.1–25.3 UI            | Today, Signals and Approvals render live API data. The §25.2 prospect page is not built.                                                                                                                                                                                                                                |
 
 ## Not started
 
-- §1.1 PWA (`apps/web`) — no Next.js application yet.
 - §7 Campaign wizard UI.
 - §14 Outreach composer and the §20 agent suite (ICP, discovery, research, intent, strategy, composer). Only the deterministic engines they feed are built.
 - §10 Real provider adapters — Apollo, PDL, GitHub, Bluesky, X. Only the interface and a deterministic fixture provider exist.
