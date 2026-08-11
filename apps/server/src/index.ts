@@ -80,7 +80,16 @@ let web: Bun.Subprocess | undefined;
 
 if (hasBuiltWeb) {
   web = Bun.spawn(['bun', webEntry], {
-    env: { ...process.env, PORT: String(WEB_PORT), HOSTNAME: '127.0.0.1' },
+    env: {
+      ...process.env,
+      // The child's own listener.
+      PORT: String(WEB_PORT),
+      HOSTNAME: '127.0.0.1',
+      // Where the child should call the API. Must be set explicitly: the
+      // child's PORT is its own, so deriving the API address from PORT makes
+      // the PWA call itself and get Next's 404 instead of the API.
+      INTERNAL_API_URL: `http://127.0.0.1:${PORT}`,
+    },
     stdout: 'inherit',
     stderr: 'inherit',
     onExit(_proc, code) {
