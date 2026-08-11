@@ -33,3 +33,24 @@ export {
   FIXTURE_CANDIDATES,
   type FixtureProviderOptions,
 } from './fixture-provider';
+
+export {
+  GitHubClient,
+  GitHubNotFoundError,
+  GitHubRateLimitError,
+  GITHUB_API,
+  type GitHubClientOptions,
+  type GitHubEvent,
+  type GitHubRepo,
+  type GitHubUser,
+} from './github/client';
+
+export {
+  cleanCompany,
+  domainOf,
+  GitHubProvider,
+  toCandidate,
+  type GitHubProviderOptions,
+} from './github/provider';
+
+export { extractSignals, type ExtractedSignal, type ExtractionContext } from './github/signals';

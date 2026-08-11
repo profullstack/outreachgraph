@@ -52,6 +52,7 @@
         "@outreachgraph/identity": "workspace:*",
         "@outreachgraph/policy": "workspace:*",
         "@outreachgraph/providers": "workspace:*",
+        "@outreachgraph/recommend": "workspace:*",
         "@outreachgraph/scoring": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
       },
@@ -100,6 +101,15 @@
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/identity": "workspace:*",
+      },
+    },
+    "packages/recommend": {
+      "name": "@outreachgraph/recommend",
+      "version": "0.1.0",
+      "dependencies": {
+        "@outreachgraph/domain": "workspace:*",
+        "@outreachgraph/policy": "workspace:*",
+        "@outreachgraph/signals": "workspace:*",
       },
     },
     "packages/scoring": {
@@ -248,6 +258,8 @@
     "@outreachgraph/policy": ["@outreachgraph/policy@workspace:packages/policy"],
 
     "@outreachgraph/providers": ["@outreachgraph/providers@workspace:packages/providers"],
+
+    "@outreachgraph/recommend": ["@outreachgraph/recommend@workspace:packages/recommend"],
 
     "@outreachgraph/scoring": ["@outreachgraph/scoring@workspace:packages/scoring"],
 
