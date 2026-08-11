@@ -105,12 +105,29 @@ someone who opted out.
 
 ## Deployment
 
-Railway, one service per Dockerfile, deploying from this repository. Each
-service has its own `railway.json` with a health check. Migrations run as an
-explicit release step, never from every replica.
+Railway, one service per Dockerfile, deploying from this repository.
 
-Set up separate Turso databases, provider keys, and secrets per environment.
-Production customer data is never copied into staging.
+The root `railway.json` configures the **default service** as the API. For each
+additional service, open its settings and set the config file path — Railway
+only reads a subdirectory config if you point it there:
+
+| Service | Config file path            |
+| ------- | --------------------------- |
+| api     | `/railway.json`             |
+| web     | `/apps/web/railway.json`    |
+| worker  | `/apps/worker/railway.json` |
+
+**Leave Root Directory unset.** These Dockerfiles expect the repository root as
+their build context; scoping a service to `apps/web` breaks every `COPY` and
+the workspace install.
+
+Without a config file Railway falls back to railpack auto-detection, which
+cannot find a start command in a Bun workspace and fails the build — that
+symptom means the service is not pointed at its config.
+
+Migrations run as an explicit release step, never from every replica. Set up
+separate Turso databases, provider keys, and secrets per environment;
+production customer data is never copied into staging.
 
 ## Conventions
 
