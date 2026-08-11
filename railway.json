@@ -1,0 +1,23 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "//": "Railway reads this file from the repository root, so it configures the DEFAULT service. Without it Railway falls back to railpack auto-detection, which cannot find a start command in a Bun workspace and fails the build. For a multi-service deploy, point each additional service at its own config from the service settings page — /apps/web/railway.json and /apps/worker/railway.json — and leave Root Directory unset, because these Dockerfiles expect the repository root as their build context.",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "docker/api.Dockerfile",
+    "watchPatterns": [
+      "apps/api/**",
+      "packages/**",
+      "migrations/**",
+      "docker/api.Dockerfile",
+      "package.json",
+      "bun.lock"
+    ]
+  },
+  "deploy": {
+    "healthcheckPath": "/health/ready",
+    "healthcheckTimeout": 30,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5,
+    "numReplicas": 1
+  }
+}

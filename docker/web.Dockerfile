@@ -9,17 +9,8 @@ FROM oven/bun:1.3.14-slim AS deps
 WORKDIR /app
 
 COPY package.json bun.lock ./
-COPY apps/api/package.json ./apps/api/
-COPY apps/web/package.json ./apps/web/
-COPY apps/worker/package.json ./apps/worker/
-COPY packages/contracts/package.json ./packages/contracts/
-COPY packages/db/package.json ./packages/db/
-COPY packages/domain/package.json ./packages/domain/
-COPY packages/identity/package.json ./packages/identity/
-COPY packages/policy/package.json ./packages/policy/
-COPY packages/providers/package.json ./packages/providers/
-COPY packages/scoring/package.json ./packages/scoring/
-COPY packages/signals/package.json ./packages/signals/
+COPY packages ./packages
+COPY apps ./apps
 
 RUN bun install --frozen-lockfile
 
@@ -41,7 +32,8 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 
-# The standalone bundle carries its own minimal node_modules.
+# `outputFileTracingRoot` is the monorepo root, so the standalone bundle keeps
+# the apps/web/ path structure and carries its own minimal node_modules.
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=builder /app/apps/web/public ./apps/web/public

@@ -2,25 +2,18 @@
 #
 # API service (PRD §1.1 "Docker Requirements").
 #
-# Multi-stage: dependencies resolve in a layer that only changes when a
-# manifest or the lockfile changes, so an ordinary source edit rebuilds only
-# the final layer.
+# The dependency stage copies the whole workspace rather than enumerating each
+# package.json. An earlier version listed them one by one and broke the moment
+# a package was added — `bun install --frozen-lockfile` failed on the missing
+# workspace member. Copying wholesale costs some layer caching and buys a
+# Dockerfile that cannot drift out of sync with the repository.
 
 FROM oven/bun:1.3.14-slim AS deps
 WORKDIR /app
 
-# Manifests first — this layer is the expensive one to rebuild.
 COPY package.json bun.lock ./
-COPY apps/api/package.json ./apps/api/
-COPY apps/worker/package.json ./apps/worker/
-COPY packages/contracts/package.json ./packages/contracts/
-COPY packages/db/package.json ./packages/db/
-COPY packages/domain/package.json ./packages/domain/
-COPY packages/identity/package.json ./packages/identity/
-COPY packages/policy/package.json ./packages/policy/
-COPY packages/providers/package.json ./packages/providers/
-COPY packages/scoring/package.json ./packages/scoring/
-COPY packages/signals/package.json ./packages/signals/
+COPY packages ./packages
+COPY apps ./apps
 
 RUN bun install --frozen-lockfile
 
@@ -41,8 +34,8 @@ USER bun
 
 EXPOSE 8080
 
-# Railway health check targets /health/live, which does not touch the
-# database — a database blip must not get a healthy process killed.
+# Targets /health/live, which does not touch the database — a database blip
+# must not get a healthy process killed.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD bun -e "const r = await fetch('http://127.0.0.1:8080/health/live'); process.exit(r.ok ? 0 : 1)"
 

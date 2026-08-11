@@ -1,0 +1,31 @@
+# Keep the build context small and reproducible. Anything generated on a
+# developer machine must not leak into an image.
+node_modules
+**/node_modules
+
+.next
+**/.next
+dist
+**/dist
+build
+**/build
+
+*.db
+*.db-wal
+*.db-shm
+local.db*
+
+.git
+.github
+.claude
+coverage
+*.log
+
+.env
+.env.*
+!.env.example
+
+README.md
+CLAUDE.md
+AGENTS.md
+docs

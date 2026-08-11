@@ -10,16 +10,8 @@ FROM oven/bun:1.3.14-slim AS deps
 WORKDIR /app
 
 COPY package.json bun.lock ./
-COPY apps/api/package.json ./apps/api/
-COPY apps/worker/package.json ./apps/worker/
-COPY packages/contracts/package.json ./packages/contracts/
-COPY packages/db/package.json ./packages/db/
-COPY packages/domain/package.json ./packages/domain/
-COPY packages/identity/package.json ./packages/identity/
-COPY packages/policy/package.json ./packages/policy/
-COPY packages/providers/package.json ./packages/providers/
-COPY packages/scoring/package.json ./packages/scoring/
-COPY packages/signals/package.json ./packages/signals/
+COPY packages ./packages
+COPY apps ./apps
 
 RUN bun install --frozen-lockfile
 
@@ -32,6 +24,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
 COPY migrations ./migrations
 COPY packages ./packages
+# The worker's pipeline test imports the API's seed helper, so the API source
+# has to be present for the workspace to resolve.
+COPY apps/api ./apps/api
 COPY apps/worker ./apps/worker
 
 RUN chown -R bun:bun /app
