@@ -1,0 +1,24 @@
+{
+  "name": "@outreachgraph/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --target=bun --outdir=dist",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@outreachgraph/contracts": "workspace:*",
+    "@outreachgraph/db": "workspace:*",
+    "@outreachgraph/domain": "workspace:*",
+    "@outreachgraph/policy": "workspace:*",
+    "@outreachgraph/providers": "workspace:*",
+    "@outreachgraph/scoring": "workspace:*",
+    "@outreachgraph/signals": "workspace:*",
+    "hono": "^4.6.14",
+    "zod": "^3.24.1"
+  }
+}

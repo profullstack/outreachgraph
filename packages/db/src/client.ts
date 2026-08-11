@@ -84,8 +84,13 @@ export async function withTransaction<T>(
   }
 }
 
-/** Returns the first row, or undefined. Saves a `.rows[0]` at every call site. */
-export async function queryOne<T extends Row = Row>(
+/**
+ * Returns the first row, or undefined. Saves a `.rows[0]` at every call site.
+ *
+ * `T` is unconstrained so callers can pass a plain row interface without
+ * having to add an index signature to it.
+ */
+export async function queryOne<T = Row>(
   client: Client,
   sql: string,
   args: InValue[] = [],
@@ -94,7 +99,7 @@ export async function queryOne<T extends Row = Row>(
   return result.rows[0] as T | undefined;
 }
 
-export async function queryAll<T extends Row = Row>(
+export async function queryAll<T = Row>(
   client: Client,
   sql: string,
   args: InValue[] = [],

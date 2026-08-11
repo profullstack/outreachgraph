@@ -10,6 +10,31 @@
         "typescript": "^5.7.3",
       },
     },
+    "apps/api": {
+      "name": "@outreachgraph/api",
+      "version": "0.1.0",
+      "dependencies": {
+        "@outreachgraph/contracts": "workspace:*",
+        "@outreachgraph/db": "workspace:*",
+        "@outreachgraph/domain": "workspace:*",
+        "@outreachgraph/policy": "workspace:*",
+        "@outreachgraph/providers": "workspace:*",
+        "@outreachgraph/scoring": "workspace:*",
+        "@outreachgraph/signals": "workspace:*",
+        "hono": "^4.6.14",
+        "zod": "^3.24.1",
+      },
+    },
+    "packages/contracts": {
+      "name": "@outreachgraph/contracts",
+      "version": "0.1.0",
+      "dependencies": {
+        "zod": "^3.24.1",
+      },
+      "devDependencies": {
+        "@outreachgraph/domain": "workspace:*",
+      },
+    },
     "packages/db": {
       "name": "@outreachgraph/db",
       "version": "0.1.0",
@@ -93,6 +118,10 @@
 
     "@neon-rs/load": ["@neon-rs/load@0.0.4", "", {}, "sha512-kTPhdZyTQxB+2wpiRcFWrDcejc4JI6tkPuS7UZCG4l6Zvc5kU/gGQ/ozvHTh1XR5tS+UlfAfGuPajjzQjCiHCw=="],
 
+    "@outreachgraph/api": ["@outreachgraph/api@workspace:apps/api"],
+
+    "@outreachgraph/contracts": ["@outreachgraph/contracts@workspace:packages/contracts"],
+
     "@outreachgraph/db": ["@outreachgraph/db@workspace:packages/db"],
 
     "@outreachgraph/domain": ["@outreachgraph/domain@workspace:packages/domain"],
@@ -123,6 +152,8 @@
 
     "formdata-polyfill": ["formdata-polyfill@4.0.10", "", { "dependencies": { "fetch-blob": "^3.1.2" } }, "sha512-buewHzMvYL29jdeQTVILecSaZKnt/RJWjoZCF5OW60Z67/GmSLBkOFM7qh1PI3zFNtJbaZL5eQu1vLfazOwj4g=="],
 
+    "hono": ["hono@4.13.1", "", {}, "sha512-kdJoFVv2xmayw6cY09H7AbMJMt8Jn5jdlEdXsP7AGBdF2DIptVlKlOLKXP41yPip4/a3yQPv9gVcJYI8YY04dw=="],
+
     "js-base64": ["js-base64@3.9.2", "", {}, "sha512-6zayE8QlUdiweYI6cETD/XBSqFcoCUlufn/29PJR99r82x1yDnIprRca0YvAYpAW+ez0GuQkVBC6xG5QkD7OjA=="],
 
     "libsql": ["libsql@0.5.29", "", { "dependencies": { "@neon-rs/load": "^0.0.4", "detect-libc": "2.0.2" }, "optionalDependencies": { "@libsql/darwin-arm64": "0.5.29", "@libsql/darwin-x64": "0.5.29", "@libsql/linux-arm-gnueabihf": "0.5.29", "@libsql/linux-arm-musleabihf": "0.5.29", "@libsql/linux-arm64-gnu": "0.5.29", "@libsql/linux-arm64-musl": "0.5.29", "@libsql/linux-x64-gnu": "0.5.29", "@libsql/linux-x64-musl": "0.5.29", "@libsql/win32-x64-msvc": "0.5.29" }, "os": [ "linux", "win32", "darwin", ], "cpu": [ "arm", "x64", "arm64", ] }, "sha512-8lMP8iMgiBzzoNbAPQ59qdVcj6UaE/Vnm+fiwX4doX4Narook0a4GPKWBEv+CR8a1OwbfkgL18uBfBjWdF0Fzg=="],
@@ -142,5 +173,7 @@
     "web-streams-polyfill": ["web-streams-polyfill@3.3.3", "", {}, "sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw=="],
 
     "ws": ["ws@8.21.3", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw=="],
+
+    "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
   }
 }
