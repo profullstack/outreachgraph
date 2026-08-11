@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Hono } from 'hono';
+import { StubModel } from '@outreachgraph/ai';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
@@ -482,5 +483,105 @@ describe('errors', () => {
     });
 
     expect(response.status).toBe(400);
+  });
+});
+
+describe('drafting on demand (PRD §14)', () => {
+  /** The seed's evidence is a cross-border payouts complaint. */
+  const GROUNDED = 'Settlement taking days on cross-border payouts was our problem too.';
+
+  async function withModel(
+    label: string,
+    responses: string | readonly string[],
+  ): Promise<Hono<AppEnv>> {
+    const seeded = await seedDatabase(label);
+    active = seeded;
+
+    return createApp({
+      db: seeded.db,
+      authenticate: async () => ACTOR,
+      model: new StubModel(responses),
+    });
+  }
+
+  test('returns 503 when no model is configured', async () => {
+    const { app } = await harness('draft-nomodel');
+    const response = await post(app, `/recommendations/${SEED.recommendationId}/draft`);
+
+    expect(response.status).toBe(503);
+    expect((await response.json()).error.code).toBe('composer_unavailable');
+  });
+
+  test('composes a grounded message and returns it', async () => {
+    const app = await withModel('draft-ok', GROUNDED);
+    const response = await post(app, `/recommendations/${SEED.recommendationId}/draft`);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.drafted).toBe(true);
+    expect(body.body).toBe(GROUNDED);
+  });
+
+  test('replaces the previous draft rather than stacking a second one', async () => {
+    const app = await withModel('draft-replace', GROUNDED);
+    await post(app, `/recommendations/${SEED.recommendationId}/draft`);
+    await post(app, `/recommendations/${SEED.recommendationId}/draft`);
+
+    const rows = await active!.db.execute({
+      sql: 'SELECT count(*) AS n FROM drafts WHERE recommendation_id = ?',
+      args: [SEED.recommendationId],
+    });
+    expect(Number(rows.rows[0]?.n)).toBe(1);
+  });
+
+  test('reports a withheld draft instead of surfacing an invented one', async () => {
+    const app = await withModel('draft-withheld', [
+      'On cross-border payouts, Fluxwire solved this for us.',
+      'Your payouts note — we moved to Fluxwire.',
+    ]);
+
+    const response = await post(app, `/recommendations/${SEED.recommendationId}/draft`);
+
+    // Not an error: refusing to write is a normal, expected answer.
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.drafted).toBe(false);
+    expect(body.reason).toBe('failed_checks');
+    expect(body.unsupported).toContain('Fluxwire');
+    expect(body.body).toBeUndefined();
+  });
+
+  test('a withheld draft is audited', async () => {
+    const app = await withModel('draft-audit', [
+      'On cross-border payouts, Fluxwire solved this for us.',
+      'Your payouts note — we moved to Fluxwire.',
+    ]);
+    await post(app, `/recommendations/${SEED.recommendationId}/draft`);
+
+    const rows = await active!.db.execute(
+      "SELECT count(*) AS n FROM audit_events WHERE event_type = 'draft.withheld'",
+    );
+    expect(Number(rows.rows[0]?.n)).toBe(1);
+  });
+
+  test('an unknown recommendation is a 404', async () => {
+    const app = await withModel('draft-404', GROUNDED);
+    expect((await post(app, '/recommendations/rec_missing/draft')).status).toBe(404);
+  });
+
+  test('a draft the user edited is never discarded by a recompose', async () => {
+    const app = await withModel('draft-edited', GROUNDED);
+    await active!.db.execute({
+      sql: 'UPDATE drafts SET edited_by_user = 1 WHERE id = ?',
+      args: [SEED.draftId],
+    });
+
+    await post(app, `/recommendations/${SEED.recommendationId}/draft`);
+
+    const rows = await active!.db.execute({
+      sql: 'SELECT edited_by_user FROM drafts WHERE id = ?',
+      args: [SEED.draftId],
+    });
+    expect(rows.rows).toHaveLength(1);
   });
 });

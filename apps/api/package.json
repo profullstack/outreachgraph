@@ -19,6 +19,7 @@
     "@outreachgraph/scoring": "workspace:*",
     "@outreachgraph/signals": "workspace:*",
     "hono": "^4.6.14",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "@outreachgraph/ai": "workspace:*"
   }
 }

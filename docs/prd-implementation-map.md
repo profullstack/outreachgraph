@@ -22,7 +22,8 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 | §12.1–12.6 Scoring                 | `packages/scoring/src/scores.ts`, `weights.ts`                           | 31 tests                          |
 | §13.1 Action kinds                 | `packages/domain/src/networks.ts`                                        | —                                 |
 | §13.2 Recommendation schema        | `packages/domain/src/outreach.ts`                                        | —                                 |
-| §14.2 Quality checks (types)       | `packages/domain/src/outreach.ts`                                        | —                                 |
+| §14.1 Outreach composer            | `packages/ai/src/composer.ts`, `model.ts`, `draft.ts`                    | 29 tests                          |
+| §14.2 Quality checks               | `packages/ai/src/checks.ts`, `packages/domain/src/outreach.ts`           | 40 tests                          |
 | §15 Approval queue                 | `apps/api` `GET /recommendations`                                        | `apps/api/src/app.test.ts`        |
 | §16 Platform policy                | `packages/policy/src/capability-matrix.ts`                               | 46 tests                          |
 | §16.2 Policy modes                 | `packages/policy/src/capability-matrix.ts`                               | included above                    |
@@ -57,13 +58,11 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 ## Not started
 
 - §7 Campaign wizard UI.
-- §14 Outreach composer. Recommendations reach the queue with a grounded reason and a `groundedSignalIds` allow-list, but nothing writes the message body yet — this is where the first LLM enters the product.
-- §20 agent suite beyond the Strategy Agent (ICP, discovery, research, intent, composer).
+- §20 agent suite beyond the Strategy Agent and the composer (ICP, discovery, research, intent).
 - §10 Remaining provider adapters — Apollo, PDL, Bluesky, X.
 - §26 Natural-language search.
 - §28 CRM and Slack integrations.
 - §36 Admin surface.
-- Authentication beyond the injected `authenticate` hook.
 
 ## Deliberate deviations
 
