@@ -1,21 +1,14 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
-  "//": "Railway reads this file from the repository root, so it configures the DEFAULT service. Without it Railway falls back to railpack auto-detection, which cannot find a start command in a Bun workspace and fails the build. For a multi-service deploy, point each additional service at its own config from the service settings page — /apps/web/railway.json and /apps/worker/railway.json — and leave Root Directory unset, because these Dockerfiles expect the repository root as their build context.",
+  "//": "One service, one image. The PWA, the API and the background worker all run in this container as a single Bun process. Do not scale numReplicas above 1: the worker loop is single-instance and two copies would both claim the same pending deletion job.",
   "build": {
     "builder": "DOCKERFILE",
-    "dockerfilePath": "docker/api.Dockerfile",
-    "watchPatterns": [
-      "apps/api/**",
-      "packages/**",
-      "migrations/**",
-      "docker/api.Dockerfile",
-      "package.json",
-      "bun.lock"
-    ]
+    "dockerfilePath": "docker/Dockerfile",
+    "watchPatterns": ["**"]
   },
   "deploy": {
-    "healthcheckPath": "/health/ready",
-    "healthcheckTimeout": 30,
+    "healthcheckPath": "/health/live",
+    "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5,
     "numReplicas": 1

@@ -1,4 +1,11 @@
-import { relativeTime, type ApprovalCard as Card } from '../lib/api';
+'use client';
+
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+// Imported from the server-safe modules, not lib/api: that pulls in
+// next/headers and cannot be bundled for the browser.
+import { relativeTime } from '../lib/format';
+import type { ApprovalCard as Card } from '../lib/types';
 
 /**
  * The approval card (PRD §15).
@@ -6,8 +13,44 @@ import { relativeTime, type ApprovalCard as Card } from '../lib/api';
  * Order is deliberate: who, then why now, then what we propose, then the
  * words — so the reviewer forms a judgement about the evidence before reading
  * a draft that might read persuasively regardless.
+ *
+ * A denied approval is not a failure to hide: the API answers 409 naming the
+ * policy gate that stopped it, and that reason is shown verbatim. Silently
+ * dropping it would leave the user thinking they had sent something.
  */
 export function ApprovalCard({ card }: { card: Card }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState<string | undefined>();
+  const [error, setError] = useState<string | undefined>();
+  const [body, setBody] = useState(card.draft_body ?? '');
+  const [editing, setEditing] = useState(false);
+
+  async function act(action: 'approve' | 'skip', payload?: Record<string, unknown>) {
+    setBusy(action);
+    setError(undefined);
+
+    try {
+      const response = await fetch(`/api/v1/recommendations/${card.id}/${action}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload ?? {}),
+      });
+
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        setError(failure?.error?.message ?? `that failed (${response.status})`);
+        return;
+      }
+
+      router.refresh();
+    } catch {
+      setError('could not reach the server');
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   return (
     <article className="border-border bg-surface-raised rounded-2xl border p-4">
       <header className="flex items-start justify-between gap-3">
@@ -70,25 +113,88 @@ export function ApprovalCard({ card }: { card: Card }) {
           <h3 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">
             Draft
           </h3>
-          <p className="border-border mt-1 rounded-xl border p-3 text-sm whitespace-pre-wrap">
-            {card.draft_body}
-          </p>
+          {editing ? (
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={5}
+              className="border-border mt-1 w-full rounded-xl border p-3 text-sm"
+            />
+          ) : (
+            <p className="border-border mt-1 rounded-xl border p-3 text-sm whitespace-pre-wrap">
+              {body}
+            </p>
+          )}
         </section>
       ) : null}
 
+      {error ? (
+        <p role="alert" className="text-hot mt-3 text-sm">
+          {error}
+        </p>
+      ) : null}
+
       <div className="mt-4 grid grid-cols-2 gap-2">
-        <button type="button" className="bg-accent rounded-xl text-sm font-medium text-white">
-          Approve
-        </button>
-        <button type="button" className="border-border rounded-xl border text-sm font-medium">
-          Edit
-        </button>
-        <button type="button" className="border-border rounded-xl border text-sm font-medium">
-          Skip
-        </button>
         <button
           type="button"
-          className="border-border text-hot rounded-xl border text-sm font-medium"
+          disabled={Boolean(busy)}
+          onClick={() =>
+            act('approve', editing && body !== card.draft_body ? { editedBody: body } : {})
+          }
+          className="bg-accent rounded-xl py-2 text-sm font-medium text-white disabled:opacity-60"
+        >
+          {busy === 'approve' ? 'Approving…' : 'Approve'}
+        </button>
+
+        <button
+          type="button"
+          disabled={Boolean(busy) || !card.draft_body}
+          onClick={() => setEditing((v) => !v)}
+          className="border-border rounded-xl border py-2 text-sm font-medium disabled:opacity-40"
+        >
+          {editing ? 'Done editing' : 'Edit'}
+        </button>
+
+        <button
+          type="button"
+          disabled={Boolean(busy)}
+          onClick={() => act('skip')}
+          className="border-border rounded-xl border py-2 text-sm font-medium disabled:opacity-60"
+        >
+          {busy === 'skip' ? 'Skipping…' : 'Skip'}
+        </button>
+
+        <button
+          type="button"
+          disabled={Boolean(busy)}
+          onClick={async () => {
+            // Suppression is not an undo — say so before writing a tombstone
+            // that deliberately outlives the prospect record.
+            if (!confirm(`Never contact ${card.display_name} again? This cannot be undone.`))
+              return;
+            setBusy('suppress');
+            setError(undefined);
+            try {
+              const response = await fetch('/api/v1/suppressions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                  matchKeys: [`person:${card.person_id}`],
+                  reason: 'do_not_contact',
+                  scope: 'workspace',
+                }),
+              });
+              if (!response.ok) {
+                setError('could not suppress this person');
+                return;
+              }
+              await act('skip');
+            } finally {
+              setBusy(undefined);
+            }
+          }}
+          className="border-border text-hot rounded-xl border py-2 text-sm font-medium disabled:opacity-60"
         >
           Do not contact
         </button>

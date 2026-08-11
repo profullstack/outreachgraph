@@ -75,6 +75,22 @@ export const createCampaignSchema = z.object({
 
 export type CreateCampaignInput = z.infer<typeof createCampaignSchema>;
 
+export const registerSchema = z.object({
+  email: z.string().email().max(320),
+  // Length beats composition rules; the API enforces the same floor.
+  password: z.string().min(12).max(512),
+  name: z.string().max(200).optional(),
+  organizationName: z.string().max(200).optional(),
+});
+
+export const loginSchema = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(1).max(512),
+});
+
+export type RegisterInput = z.infer<typeof registerSchema>;
+export type LoginInput = z.infer<typeof loginSchema>;
+
 export const createOfferingSchema = z.object({
   name: z.string().min(1).max(200),
   category: z.string().min(1).max(200),
