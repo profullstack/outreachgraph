@@ -17,16 +17,24 @@ COPY apps ./apps
 
 RUN bun install --frozen-lockfile
 
-FROM oven/bun:1.3.14-slim AS runtime
+# Extends `deps` rather than re-copying source into a fresh stage.
+#
+# Bun does not hoist every workspace dependency to the root node_modules — some
+# land in the package's own node_modules. Copying only /app/node_modules and
+# then re-copying `packages/` from the build context wiped those, and the image
+# built fine but crashed on boot with:
+#
+#   error: Cannot find module '@libsql/client' from '/app/packages/db/src/client.ts'
+#
+# Inheriting the deps stage keeps the exact tree `bun install` produced. The
+# cost is dev dependencies in the final image; correctness is worth more.
+FROM deps AS runtime
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
+COPY tsconfig.base.json tsconfig.json ./
 COPY migrations ./migrations
-COPY packages ./packages
-COPY apps/api ./apps/api
 
 # The bun image ships a non-root `bun` user; run as it rather than root.
 RUN chown -R bun:bun /app

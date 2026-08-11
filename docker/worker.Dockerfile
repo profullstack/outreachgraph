@@ -15,19 +15,17 @@ COPY apps ./apps
 
 RUN bun install --frozen-lockfile
 
-FROM oven/bun:1.3.14-slim AS runtime
+# Extends `deps` for the same reason as the API image: Bun leaves some
+# workspace dependencies in per-package node_modules, and re-copying `packages/`
+# from the build context deletes them, producing an image that builds and then
+# crashes on boot. See docker/api.Dockerfile for the full note.
+FROM deps AS runtime
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
+COPY tsconfig.base.json tsconfig.json ./
 COPY migrations ./migrations
-COPY packages ./packages
-# The worker's pipeline test imports the API's seed helper, so the API source
-# has to be present for the workspace to resolve.
-COPY apps/api ./apps/api
-COPY apps/worker ./apps/worker
 
 RUN chown -R bun:bun /app
 USER bun

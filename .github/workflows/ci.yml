@@ -71,5 +71,69 @@ jobs:
           context: .
           file: docker/${{ matrix.service }}.Dockerfile
           push: false
+          load: true
+          tags: outreachgraph-${{ matrix.service }}:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # A building image is not a working image. The api and worker images once
+  # built cleanly and then crashed on boot with a missing workspace dependency,
+  # because the runtime stage had deleted a per-package node_modules. This job
+  # starts the container and waits for its health endpoint.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            port: 8080
+          - service: worker
+            port: 8081
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.service }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.service }}.Dockerfile
+          push: false
+          load: true
+          tags: outreachgraph-${{ matrix.service }}:smoke
+          cache-from: type=gha
+
+      - name: Boot ${{ matrix.service }} and wait for health
+        run: |
+          docker run -d --name smoke-${{ matrix.service }} \
+            -e PORT=${{ matrix.port }} \
+            -e API_TOKEN=ci-smoke-token \
+            -e TURSO_DATABASE_URL=file:./smoke.db \
+            -p ${{ matrix.port }}:${{ matrix.port }} \
+            outreachgraph-${{ matrix.service }}:smoke
+
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${{ matrix.port }}/health/live" >/dev/null 2>&1; then
+              echo "healthy after ${i}s"
+              curl -sS "http://127.0.0.1:${{ matrix.port }}/health/live"
+              exit 0
+            fi
+            # Surface a crashloop immediately instead of waiting out the loop.
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke-${{ matrix.service }})" != "true" ]; then
+              echo "container exited early:"
+              docker logs smoke-${{ matrix.service }}
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "never became healthy:"
+          docker logs smoke-${{ matrix.service }}
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs smoke-${{ matrix.service }} 2>&1 | tail -50
