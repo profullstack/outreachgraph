@@ -18,7 +18,7 @@ for exactly what exists.
 ```bash
 bun install
 bun run db:migrate          # applies migrations to ./local.db
-bun test                    # 202 tests
+bun test                    # 265 tests
 bun run check               # format, typecheck, test
 ```
 
@@ -43,6 +43,7 @@ packages/
   domain/     canonical types — depends on nothing
   db/         Turso/libSQL client and migration runner
   policy/     the deterministic policy engine
+  recommend/  next-best-action engine
   identity/   cross-network identity resolution
   signals/    signal decay
   scoring/    ICP fit, intent, reachability, relationship, opportunity
@@ -51,6 +52,22 @@ packages/
 migrations/   forward-only .sql, applied in filename order
 docker/       one Dockerfile per deployable service
 ```
+
+## The pipeline
+
+One GitHub handle goes all the way to a card in the approval queue:
+
+```text
+enrich → resolve identities → collect signals → score → recommend
+```
+
+`apps/worker/src/pipeline.ts` runs it. GitHub first because it is free, its
+profiles carry links the person published themselves — `twitter_username`,
+`blog`, `company` — and developer tooling is the launch wedge. A real profile
+typically yields three linked identities before any paid provider is touched.
+
+Each stage persists before the next runs, so a crash resumes rather than
+restarting, and a half-enriched prospect is still inspectable.
 
 ## The three ideas worth knowing
 
