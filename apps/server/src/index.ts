@@ -19,7 +19,7 @@
  * the loop split back out behind a lock.
  */
 
-import { closeDatabase, getDatabase, queryAll } from '@outreachgraph/db';
+import { closeDatabase, getDatabase, migrate, queryAll } from '@outreachgraph/db';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
 import { expireSignals, processDeletion } from '../../worker/src/jobs';
@@ -30,6 +30,35 @@ const TICK_MS = Number(process.env.WORKER_TICK_MS ?? 60_000);
 const ENVIRONMENT = process.env.NODE_ENV ?? 'development';
 
 const db = getDatabase();
+
+// --------------------------------------------------------------- migrations
+/**
+ * Migrations run at boot, before anything serves.
+ *
+ * This is safe here specifically because the deployment is one container
+ * pinned to one replica — the concern with boot-time migrations is several
+ * replicas racing, which cannot happen while `numReplicas` is 1. It also
+ * removes a manual release step that is easy to forget, and forgetting it
+ * means the app answers requests against a schema that is not there.
+ *
+ * Set RUN_MIGRATIONS=false to take over that responsibility elsewhere.
+ */
+if (process.env.RUN_MIGRATIONS !== 'false') {
+  const migrationsDir = `${import.meta.dir}/../../../migrations`;
+  try {
+    const result = await migrate(db, migrationsDir);
+    if (result.applied.length > 0) {
+      console.log(`applied ${result.applied.length} migration(s): ${result.applied.join(', ')}`);
+    } else {
+      console.log(`schema up to date (${result.skipped.length} migrations)`);
+    }
+  } catch (error) {
+    // Serving against an unmigrated schema produces confusing 500s on every
+    // route; failing to start is the honest outcome.
+    console.error('migrations failed; refusing to start', error);
+    process.exit(1);
+  }
+}
 
 // ---------------------------------------------------------------------- api
 const api = createApp({
