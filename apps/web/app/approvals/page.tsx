@@ -1,5 +1,6 @@
+import { redirect } from 'next/navigation';
 import { ApprovalCard } from '../../components/approval-card';
-import { ApiAuthError, ApiUnavailableError, fetchApprovals } from '../../lib/api';
+import { ApiUnavailableError, NotAuthenticatedError, fetchApprovals } from '../../lib/api';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,10 +12,10 @@ export default async function ApprovalsPage() {
   try {
     cards = await fetchApprovals();
   } catch (error) {
+    if (error instanceof NotAuthenticatedError) redirect('/login');
     // A missing API in local development should show what to do, not a stack
     // trace — the PWA is often run before the API is up.
     if (error instanceof ApiUnavailableError) return <ApiDown />;
-    if (error instanceof ApiAuthError) return <NotAuthorized />;
     throw error;
   }
 
@@ -51,27 +52,10 @@ function EmptyState() {
   );
 }
 
-function NotAuthorized() {
-  return (
-    <div className="border-border text-ink-muted mt-4 rounded-2xl border border-dashed p-8 text-center text-sm">
-      <p className="text-ink font-medium">The API rejected these credentials.</p>
-      <p className="mt-2">
-        Check <code className="text-ink">API_TOKEN</code>,{' '}
-        <code className="text-ink">WORKSPACE_ID</code> and{' '}
-        <code className="text-ink">ORGANIZATION_ID</code> on the web service.
-      </p>
-    </div>
-  );
-}
-
 function ApiDown() {
   return (
     <div className="border-border text-ink-muted mt-4 rounded-2xl border border-dashed p-8 text-center text-sm">
       <p className="text-ink font-medium">The API is not reachable.</p>
-      <p className="mt-2">
-        Start it with{' '}
-        <code className="text-ink">bun run --filter &apos;@outreachgraph/api&apos; dev</code>
-      </p>
     </div>
   );
 }

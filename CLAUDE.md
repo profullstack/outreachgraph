@@ -35,6 +35,7 @@ These come from the PRD and are not style preferences:
 
 - Forward-only. Never edit an applied migration — the runner rejects it by checksum. Write the next one.
 - `bun run db:migrate`, `bun run db:status`, `bun run db:reset` (local file databases only).
+- The container applies pending migrations at boot and refuses to start if they fail. That is safe only because the deployment is one container pinned to one replica; if `numReplicas` ever rises, set `RUN_MIGRATIONS=false` and run them as an explicit release step instead.
 
 ## Process
 

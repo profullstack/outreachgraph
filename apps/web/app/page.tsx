@@ -1,7 +1,8 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import {
-  ApiAuthError,
   ApiUnavailableError,
+  NotAuthenticatedError,
   fetchApprovals,
   fetchSignals,
   relativeTime,
@@ -18,30 +19,13 @@ export default async function TodayPage() {
   let approvals: Awaited<ReturnType<typeof fetchApprovals>> = [];
   let signals: Awaited<ReturnType<typeof fetchSignals>> = [];
   let offline = false;
-  let unauthorized = false;
 
   try {
     [approvals, signals] = await Promise.all([fetchApprovals(), fetchSignals()]);
   } catch (error) {
-    // A misconfigured deployment should explain itself, not return a 500.
+    if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
-    else if (error instanceof ApiAuthError) unauthorized = true;
     else throw error;
-  }
-
-  if (unauthorized) {
-    return (
-      <div className="pt-8">
-        <h1 className="text-xl font-semibold">Not authorized</h1>
-        <p className="text-ink-muted mt-2 text-sm">
-          The API rejected this deployment&apos;s credentials. Check that{' '}
-          <code className="text-ink">API_TOKEN</code>,{' '}
-          <code className="text-ink">WORKSPACE_ID</code> and{' '}
-          <code className="text-ink">ORGANIZATION_ID</code> are set on the web service and match the
-          API.
-        </p>
-      </div>
-    );
   }
 
   const top = approvals[0];
@@ -92,6 +76,12 @@ export default async function TodayPage() {
             ) : null}
           </Link>
         </section>
+      ) : null}
+
+      {!offline && approvals.length === 0 ? (
+        <p className="border-border text-ink-muted rounded-2xl border border-dashed p-8 text-center text-sm">
+          Nothing waiting. Recommendations appear as fresh signals arrive.
+        </p>
       ) : null}
     </div>
   );

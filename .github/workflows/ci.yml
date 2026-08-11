@@ -50,90 +50,89 @@ jobs:
         env:
           TURSO_DATABASE_URL: file:./ci.db
 
-  docker:
+  # One image now: the PWA, the API and the worker in a single container.
+  #
+  # Building is not enough — an image once built cleanly and then crashed on
+  # boot with a missing workspace dependency. This job boots the container and
+  # waits for both the API health endpoint and a page served by the Next child,
+  # so a broken supervisor or a dead proxy fails here rather than in production.
+  image:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [api, web, worker]
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/setup-buildx-action@v3
 
-      # Build only — publishing is Railway's job. This catches a Dockerfile
-      # that references a file the repository no longer has.
-      - name: Build ${{ matrix.service }} image
+      - name: Build the image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/${{ matrix.service }}.Dockerfile
+          file: docker/Dockerfile
           push: false
           load: true
-          tags: outreachgraph-${{ matrix.service }}:ci
+          tags: outreachgraph:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # A building image is not a working image. The api and worker images once
-  # built cleanly and then crashed on boot with a missing workspace dependency,
-  # because the runtime stage had deleted a per-package node_modules. This job
-  # starts the container and waits for its health endpoint.
-  smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - service: api
-            port: 8080
-          - service: worker
-            port: 8081
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build ${{ matrix.service }} image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/${{ matrix.service }}.Dockerfile
-          push: false
-          load: true
-          tags: outreachgraph-${{ matrix.service }}:smoke
-          cache-from: type=gha
-
-      - name: Boot ${{ matrix.service }} and wait for health
+      - name: Boot the container
         run: |
-          docker run -d --name smoke-${{ matrix.service }} \
-            -e PORT=${{ matrix.port }} \
+          docker run -d --name og \
+            -e PORT=8080 \
             -e API_TOKEN=ci-smoke-token \
             -e TURSO_DATABASE_URL=file:./smoke.db \
-            -p ${{ matrix.port }}:${{ matrix.port }} \
-            outreachgraph-${{ matrix.service }}:smoke
+            -e WORKER_TICK_MS=3600000 \
+            -p 8080:8080 \
+            outreachgraph:ci
 
-          for i in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:${{ matrix.port }}/health/live" >/dev/null 2>&1; then
-              echo "healthy after ${i}s"
-              curl -sS "http://127.0.0.1:${{ matrix.port }}/health/live"
-              exit 0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/health/live >/dev/null 2>&1; then
+              echo "api healthy after ${i}s"
+              break
             fi
-            # Surface a crashloop immediately instead of waiting out the loop.
-            if [ "$(docker inspect -f '{{.State.Running}}' smoke-${{ matrix.service }})" != "true" ]; then
-              echo "container exited early:"
-              docker logs smoke-${{ matrix.service }}
-              exit 1
+            if [ "$(docker inspect -f '{{.State.Running}}' og)" != "true" ]; then
+              echo "container exited early:"; docker logs og; exit 1
             fi
             sleep 1
           done
 
-          echo "never became healthy:"
-          docker logs smoke-${{ matrix.service }}
-          exit 1
+          curl -fsS http://127.0.0.1:8080/health/live || { docker logs og; exit 1; }
+
+      - name: The Next child is proxied
+        run: |
+          # /offline is prerendered and needs neither API nor database, so a
+          # 200 here proves the supervisor reached the web child.
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/offline || echo 000)
+            if [ "$code" = "200" ]; then echo "web proxied after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "web never answered through the proxy:"; docker logs og; exit 1
+
+      - name: Auth is enforced
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/recommendations)
+          echo "unauthenticated api -> $code"
+          [ "$code" = "401" ] || { docker logs og; exit 1; }
+
+      - name: Registration and login work end to end
+        run: |
+          set -e
+          reg=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' \
+            -d '{"email":"ci@example.com","password":"correct horse battery staple"}' \
+            http://127.0.0.1:8080/api/v1/auth/register)
+          echo "register -> $reg"
+          [ "$reg" = "201" ] || { docker logs og; exit 1; }
+
+          curl -s -c /tmp/jar -X POST -H 'content-type: application/json' \
+            -d '{"email":"ci@example.com","password":"correct horse battery staple"}' \
+            http://127.0.0.1:8080/api/v1/auth/login > /dev/null
+
+          me=$(curl -s -b /tmp/jar -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/auth/me)
+          echo "authenticated /auth/me -> $me"
+          [ "$me" = "200" ] || { docker logs og; exit 1; }
 
       - name: Container logs
         if: always()
-        run: docker logs smoke-${{ matrix.service }} 2>&1 | tail -50
+        run: docker logs og 2>&1 | tail -60

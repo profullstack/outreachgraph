@@ -1,4 +1,10 @@
-import { ApiAuthError, ApiUnavailableError, fetchSignals, relativeTime } from '../../lib/api';
+import { redirect } from 'next/navigation';
+import {
+  ApiUnavailableError,
+  NotAuthenticatedError,
+  fetchSignals,
+  relativeTime,
+} from '../../lib/api';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,15 +17,9 @@ export default async function SignalsPage() {
   try {
     signals = await fetchSignals();
   } catch (error) {
+    if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) {
       return <p className="text-ink-muted pt-8 text-center text-sm">The API is not reachable.</p>;
-    }
-    if (error instanceof ApiAuthError) {
-      return (
-        <p className="text-ink-muted pt-8 text-center text-sm">
-          The API rejected this deployment&apos;s credentials.
-        </p>
-      );
     }
     throw error;
   }

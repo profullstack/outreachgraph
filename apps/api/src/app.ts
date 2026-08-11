@@ -14,11 +14,24 @@ import {
   approveRecommendationSchema,
   createSuppressionSchema,
   executeActionSchema,
+  loginSchema,
   privacyRequestSchema,
+  registerSchema,
   snoozeRecommendationSchema,
 } from '@outreachgraph/contracts';
 import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
-import { now, type Client } from '@outreachgraph/db';
+import { now, queryOne, type Client } from '@outreachgraph/db';
+import {
+  actorFromSession,
+  clearedCookie,
+  login,
+  logout,
+  readCookie,
+  registerUser,
+  SESSION_COOKIE,
+  sessionCookie,
+  workspacesForUser,
+} from './auth';
 import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
@@ -26,10 +39,17 @@ import * as repo from './repository';
 export interface AppOptions {
   readonly db: Client;
   /**
-   * Resolves the caller. Injected so the test suite and a future auth provider
-   * plug in without the routes knowing how authentication works.
+   * Overrides authentication entirely. Tests use this; production leaves it
+   * unset and gets session cookies plus the optional service token below.
    */
-  readonly authenticate: (request: Request) => Promise<RequestActor | undefined>;
+  readonly authenticate?: (request: Request) => Promise<RequestActor | undefined>;
+  /**
+   * Machine credential for internal callers (the worker, scripts). Humans
+   * authenticate with a session; this is not a login.
+   */
+  readonly serviceToken?: string;
+  /** Set false for plain-HTTP local development so the cookie still sets. */
+  readonly secureCookies?: boolean;
   readonly version?: string;
   readonly commitHash?: string;
 }
@@ -89,11 +109,103 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     }
   });
 
+  const secure = options.secureCookies ?? true;
+
+  /**
+   * Resolves the caller: a session cookie for humans, or the service token for
+   * internal machine callers. Injected `authenticate` wins, which is how tests
+   * drive the app without minting sessions.
+   */
+  const resolveActor = async (request: Request): Promise<RequestActor | undefined> => {
+    if (options.authenticate) return options.authenticate(request);
+
+    const cookie = readCookie(request.headers.get('cookie'), SESSION_COOKIE);
+    if (cookie) {
+      const actor = await actorFromSession(options.db, cookie);
+      if (actor) return actor;
+    }
+
+    // Machine path. Requires explicit scope headers because a service token
+    // has no session and therefore no implied workspace.
+    const header = request.headers.get('authorization');
+    if (options.serviceToken && header?.startsWith('Bearer ')) {
+      const presented = header.slice('Bearer '.length);
+      // Length-independent comparison; both sides are fixed-length hex.
+      if (timingSafeEqual(presented, options.serviceToken)) {
+        const workspaceId = request.headers.get('x-workspace-id');
+        const organizationId = request.headers.get('x-organization-id');
+        if (workspaceId && organizationId) {
+          return {
+            userId: request.headers.get('x-user-id') ?? 'usr_service',
+            workspaceId,
+            organizationId,
+            role: 'owner',
+          };
+        }
+      }
+    }
+
+    return undefined;
+  };
+
   const api = new Hono<AppEnv>();
 
-  // Everything under /api/v1 is authenticated and workspace-scoped.
+  // ------------------------------------------------------------------- auth
+  // These sit before the auth guard, since they are how you get a session.
+  const auth = new Hono<AppEnv>();
+
+  auth.post('/register', async (c) => {
+    const body = await parseBody(c.req.raw, registerSchema);
+    const result = await registerUser(options.db, body);
+
+    // Registering logs you straight in; a signup that then demands a login is
+    // just a worse signup.
+    const session = await login(options.db, body.email, body.password, c.req.header('user-agent'));
+
+    c.header('set-cookie', sessionCookie(session.token, session.expiresAt, secure));
+    return c.json({ userId: result.userId, workspaceId: result.workspaceId }, 201);
+  });
+
+  auth.post('/login', async (c) => {
+    const body = await parseBody(c.req.raw, loginSchema);
+    const session = await login(options.db, body.email, body.password, c.req.header('user-agent'));
+
+    c.header('set-cookie', sessionCookie(session.token, session.expiresAt, secure));
+    return c.json({ userId: session.actor.userId, workspaceId: session.actor.workspaceId });
+  });
+
+  auth.post('/logout', async (c) => {
+    const cookie = readCookie(c.req.header('cookie') ?? null, SESSION_COOKIE);
+    if (cookie) await logout(options.db, cookie);
+
+    c.header('set-cookie', clearedCookie(secure));
+    return c.json({ ok: true });
+  });
+
+  auth.get('/me', async (c) => {
+    const actor = await resolveActor(c.req.raw);
+    if (!actor) throw ApiError.unauthorized();
+
+    const user = await queryOne<{ id: string; email: string; name: string | null }>(
+      options.db,
+      'SELECT id, email, name FROM users WHERE id = ?',
+      [actor.userId],
+    );
+
+    return c.json({
+      user: user ?? { id: actor.userId, email: null, name: null },
+      workspaceId: actor.workspaceId,
+      organizationId: actor.organizationId,
+      role: actor.role,
+      workspaces: await workspacesForUser(options.db, actor.userId),
+    });
+  });
+
+  api.route('/auth', auth);
+
+  // Everything else under /api/v1 is authenticated and workspace-scoped.
   api.use('*', async (c, next) => {
-    const actor = await options.authenticate(c.req.raw);
+    const actor = await resolveActor(c.req.raw);
     if (!actor) throw ApiError.unauthorized();
 
     c.set('db', options.db);
@@ -665,6 +777,20 @@ function safeJson(text: string): Record<string, unknown> {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Constant-time string comparison, so a service token cannot be recovered by
+ * timing how long a rejection takes.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  const left = new TextEncoder().encode(a);
+  const right = new TextEncoder().encode(b);
+  if (left.length !== right.length) return false;
+
+  let diff = 0;
+  for (let i = 0; i < left.length; i += 1) diff |= left[i]! ^ right[i]!;
+  return diff === 0;
 }
 
 export { POLICY_VERSION };

@@ -9,6 +9,7 @@ export const ID_PREFIXES = {
   organization: 'org',
   workspace: 'wsp',
   user: 'usr',
+  session: 'ses',
   offering: 'off',
   voiceProfile: 'voi',
   campaign: 'cmp',
