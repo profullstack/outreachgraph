@@ -115,12 +115,22 @@ jobs:
           # route renders through the API, so it catches the case where the web
           # child calls the wrong address — which shipped once, as a 500 from
           # the child fetching itself instead of the API.
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)
-          echo "GET / -> $code"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/today)
+          echo "GET /today -> $code"
           case "$code" in
             200|302|303|307|308) ;;
-            *) echo "expected a page or a redirect to /login"; docker logs og; exit 1 ;;
+            *) echo "expected the inbox or a redirect to /login"; docker logs og; exit 1 ;;
           esac
+
+      - name: The landing page is public
+        run: |
+          # / must render for a signed-out visitor, not redirect to /login.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)
+          echo "GET / -> $code"
+          [ "$code" = "200" ] || { echo "the landing page must be public"; docker logs og; exit 1; }
+
+          curl -s http://127.0.0.1:8080/ | grep -q "warm conversations" \
+            || { echo "landing page did not render its content"; exit 1; }
 
       - name: Auth is enforced
         run: |

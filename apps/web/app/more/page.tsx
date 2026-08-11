@@ -1,21 +1,39 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { SignOutButton } from '../../components/sign-out-button';
+import { ApiUnavailableError, NotAuthenticatedError, fetchMe } from '../../lib/api';
+
+export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'More · OutreachGraph' };
 
 const SECTIONS = [
   { label: 'Campaigns', hint: 'Wizard not built yet' },
   { label: 'Conversations', hint: 'Interaction tracking only' },
-  { label: 'Integrations', hint: 'Provider adapters pending' },
+  { label: 'Integrations', hint: 'GitHub only so far' },
   { label: 'Usage', hint: 'Metering recorded, not enforced' },
-  { label: 'Settings', hint: 'Thresholds live on the workspace' },
 ] as const;
 
 /** Desktop expands the bottom nav into the full §25 navigation. */
-export default function MorePage() {
+export default async function MorePage() {
+  let me;
+
+  try {
+    me = await fetchMe();
+  } catch (error) {
+    if (error instanceof NotAuthenticatedError) redirect('/login');
+    if (!(error instanceof ApiUnavailableError)) throw error;
+  }
+
   return (
     <div className="pt-4">
       <header className="mb-4">
         <h1 className="text-xl font-semibold">More</h1>
+        {me ? (
+          <p className="text-ink-muted text-sm">
+            Signed in as {me.user.email} · {me.role}
+          </p>
+        ) : null}
       </header>
 
       <ul className="border-border divide-border divide-y overflow-hidden rounded-2xl border">
@@ -27,8 +45,12 @@ export default function MorePage() {
         ))}
       </ul>
 
+      <div className="mt-6">
+        <SignOutButton />
+      </div>
+
       <p className="text-ink-muted mt-6 text-center text-xs">
-        <Link href="/" className="underline">
+        <Link href="/today" className="underline">
           Back to Today
         </Link>
       </p>

@@ -10,15 +10,20 @@ import { usePathname } from 'next/navigation';
  * desktop layout expands this into the full §25 navigation.
  */
 const TABS = [
-  { href: '/', label: 'Today', icon: SunIcon },
+  { href: '/today', label: 'Today', icon: SunIcon },
   { href: '/signals', label: 'Signals', icon: BoltIcon },
   { href: '/prospects', label: 'Prospects', icon: PeopleIcon },
   { href: '/approvals', label: 'Approvals', icon: CheckIcon },
   { href: '/more', label: 'More', icon: DotsIcon },
 ] as const;
 
+/** Public routes: the app chrome would be meaningless before signing in. */
+const PUBLIC_ROUTES = ['/', '/login', '/offline'];
+
 export function BottomNav() {
   const pathname = usePathname();
+
+  if (PUBLIC_ROUTES.includes(pathname)) return null;
 
   return (
     <nav
@@ -27,7 +32,8 @@ export function BottomNav() {
     >
       <ul className="mx-auto flex w-full max-w-2xl">
         {TABS.map((tab) => {
-          const active = tab.href === '/' ? pathname === '/' : pathname.startsWith(tab.href);
+          // Exact match, or a nested route beneath this tab.
+          const active = pathname === tab.href || pathname.startsWith(`${tab.href}/`);
           const Icon = tab.icon;
 
           return (
