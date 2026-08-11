@@ -50,6 +50,28 @@ async function post(app: Hono<AppEnv>, path: string, body: unknown = {}): Promis
   });
 }
 
+describe('root', () => {
+  test('the front door says what is running rather than 404ing', async () => {
+    const { app } = await harness('root-index');
+    const response = await app.request('/');
+
+    // The bug this replaces: pasting the hostname into a browser returned
+    // {"error":{"code":"not_found"}}, which reads as a broken deployment.
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      service: 'api',
+      endpoints: { health: '/health/live', api: '/api/v1' },
+    });
+  });
+
+  test('an unknown path is still a 404', async () => {
+    const { app } = await harness('root-unknown');
+    const response = await app.request('/nope');
+
+    expect(response.status).toBe(404);
+  });
+});
+
 describe('health', () => {
   test('liveness does not depend on the database', async () => {
     const { app } = await harness('health-live');

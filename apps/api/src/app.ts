@@ -41,6 +41,25 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
   app.use('*', cors());
 
+  // ------------------------------------------------------------------ root
+  // An API with no route at `/` answers the front door with a 404, which reads
+  // as "the deployment is broken" to anybody who pastes the hostname into a
+  // browser — including us. This says what is running and where to go instead.
+  app.get('/', (c) =>
+    c.json({
+      service: 'api',
+      name: 'outreachgraph',
+      version: options.version ?? '0.1.0',
+      ...(options.commitHash ? { commitHash: options.commitHash } : {}),
+      docs: 'https://github.com/profullstack/outreachgraph',
+      endpoints: {
+        health: '/health/live',
+        ready: '/health/ready',
+        api: '/api/v1',
+      },
+    }),
+  );
+
   // ---------------------------------------------------------------- health
   // Two endpoints: liveness never touches the database so a database blip
   // cannot cause Railway to kill a healthy process; readiness does.
