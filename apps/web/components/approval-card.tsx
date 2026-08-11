@@ -18,12 +18,83 @@ import type { ApprovalCard as Card } from '../lib/types';
  * policy gate that stopped it, and that reason is shown verbatim. Silently
  * dropping it would leave the user thinking they had sent something.
  */
+/**
+ * Why no draft was written, in the reviewer's language.
+ *
+ * The reason is shown rather than hidden behind "try again", because every
+ * one of these is a fact about the evidence: retrying will not change it, and
+ * the honest next step is for the reviewer to write the message themselves.
+ */
+function explainWithholding(reason: string, unsupported?: string[]): string {
+  switch (reason) {
+    case 'no_evidence':
+      return 'No draft: nothing quotable was captured for this signal, and a personalised message with nothing behind it is worse than none.';
+    case 'no_trigger_signal':
+      return 'No draft: this recommendation has no signal to reference.';
+    case 'failed_checks':
+      return unsupported?.length
+        ? `No draft: the wording kept asserting things nothing supports — ${unsupported.join(', ')}.`
+        : 'No draft: the wording did not pass the quality checks.';
+    case 'model_refused':
+    case 'empty':
+      return 'No draft: the writer declined to produce one.';
+    default:
+      return `No draft (${reason}).`;
+  }
+}
+
 export function ApprovalCard({ card }: { card: Card }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [body, setBody] = useState(card.draft_body ?? '');
+  // What the composer produced, so an approval can tell an edit from the
+  // original rather than reporting every composed message as user-written.
+  const [original, setOriginal] = useState(card.draft_body ?? '');
+  const [withheld, setWithheld] = useState<string | undefined>();
   const [editing, setEditing] = useState(false);
+
+  /**
+   * Ask the composer for wording.
+   *
+   * A withheld draft comes back 200 with a reason — it is the designed
+   * outcome when nothing in the evidence supports a message, not an error.
+   * It is shown as a note so the reviewer knows to write it themselves.
+   */
+  async function compose() {
+    setBusy('draft');
+    setError(undefined);
+    setWithheld(undefined);
+
+    try {
+      const response = await fetch(`/api/v1/recommendations/${card.id}/draft`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: '{}',
+      });
+
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setError(payload?.error?.message ?? `that failed (${response.status})`);
+        return;
+      }
+
+      if (!payload.drafted) {
+        setWithheld(explainWithholding(payload.reason, payload.unsupported));
+        return;
+      }
+
+      setBody(payload.body);
+      setOriginal(payload.body);
+      router.refresh();
+    } catch {
+      setError('could not reach the server');
+    } finally {
+      setBusy(undefined);
+    }
+  }
 
   async function act(action: 'approve' | 'skip', payload?: Record<string, unknown>) {
     setBusy(action);
@@ -108,25 +179,44 @@ export function ApprovalCard({ card }: { card: Card }) {
         </p>
       </section>
 
-      {card.draft_body ? (
-        <section className="mt-4">
+      <section className="mt-4">
+        <div className="flex items-center justify-between gap-2">
           <h3 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">
             Draft
           </h3>
-          {editing ? (
-            <textarea
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={5}
-              className="border-border mt-1 w-full rounded-xl border p-3 text-sm"
-            />
-          ) : (
-            <p className="border-border mt-1 rounded-xl border p-3 text-sm whitespace-pre-wrap">
-              {body}
-            </p>
-          )}
-        </section>
-      ) : null}
+          <button
+            type="button"
+            disabled={Boolean(busy)}
+            onClick={compose}
+            className="text-accent text-xs font-medium underline disabled:opacity-40"
+          >
+            {busy === 'draft' ? 'Writing…' : body ? 'Rewrite' : 'Write draft'}
+          </button>
+        </div>
+
+        {editing ? (
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={5}
+            className="border-border mt-1 w-full rounded-xl border p-3 text-sm"
+          />
+        ) : body ? (
+          <p className="border-border mt-1 rounded-xl border p-3 text-sm whitespace-pre-wrap">
+            {body}
+          </p>
+        ) : (
+          <p className="text-ink-muted mt-1 text-sm">
+            No draft. Read the evidence above and write it yourself, or ask for one.
+          </p>
+        )}
+
+        {withheld ? (
+          <p className="border-border text-ink-muted mt-2 rounded-xl border border-dashed p-3 text-xs">
+            {withheld}
+          </p>
+        ) : null}
+      </section>
 
       {error ? (
         <p role="alert" className="text-hot mt-3 text-sm">
@@ -138,9 +228,7 @@ export function ApprovalCard({ card }: { card: Card }) {
         <button
           type="button"
           disabled={Boolean(busy)}
-          onClick={() =>
-            act('approve', editing && body !== card.draft_body ? { editedBody: body } : {})
-          }
+          onClick={() => act('approve', body && body !== original ? { editedBody: body } : {})}
           className="bg-accent rounded-xl py-2 text-sm font-medium text-white disabled:opacity-60"
         >
           {busy === 'approve' ? 'Approving…' : 'Approve'}
@@ -148,7 +236,7 @@ export function ApprovalCard({ card }: { card: Card }) {
 
         <button
           type="button"
-          disabled={Boolean(busy) || !card.draft_body}
+          disabled={Boolean(busy)}
           onClick={() => setEditing((v) => !v)}
           className="border-border rounded-xl border py-2 text-sm font-medium disabled:opacity-40"
         >

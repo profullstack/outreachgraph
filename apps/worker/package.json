@@ -18,6 +18,7 @@
     "@outreachgraph/providers": "workspace:*",
     "@outreachgraph/scoring": "workspace:*",
     "@outreachgraph/signals": "workspace:*",
-    "@outreachgraph/recommend": "workspace:*"
+    "@outreachgraph/recommend": "workspace:*",
+    "@outreachgraph/ai": "workspace:*"
   }
 }

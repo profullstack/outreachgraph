@@ -23,6 +23,7 @@ import {
   type PersonEnrichmentProvider,
 } from '@outreachgraph/providers';
 import { generateRecommendation, type CandidateSignal } from '@outreachgraph/recommend';
+import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { rescoreProspect } from './jobs';
 
 export interface PipelineOptions {
@@ -32,6 +33,11 @@ export interface PipelineOptions {
   readonly providers: readonly PersonEnrichmentProvider[];
   /** Supplies GitHub activity. Omit to skip signal collection. */
   readonly github?: GitHubProvider;
+  /**
+   * Writes the message. Omit to run the pipeline with no LLM at all — the
+   * recommendation still reaches the queue, just without a draft.
+   */
+  readonly model?: TextModel;
   readonly now?: Date;
 }
 
@@ -41,6 +47,7 @@ export interface PipelineResult {
   readonly identitiesLinked: number;
   readonly signalsStored: number;
   readonly recommendationId?: string;
+  readonly draftId?: string;
   readonly stoppedBecause?: string;
 }
 
@@ -124,6 +131,17 @@ export async function runPipeline(
     };
   }
 
+  // ---------------------------------------------------------------- draft
+  // A failed or absent draft is not a pipeline failure. The card still shows
+  // the prospect, the evidence and the recommended action; the reviewer
+  // writes the message. That beats showing a fabricated one.
+  let draftId: string | undefined;
+  if (options.model) {
+    const draft = await draftForRecommendation(db, options.model, recommendationId);
+    if (draft.ok) draftId = draft.draftId;
+    else console.log(`no draft for ${recommendationId}: ${draft.reason}`);
+  }
+
   await setStatus(db, campaignId, personId, 'awaiting_approval');
 
   return {
@@ -132,6 +150,7 @@ export async function runPipeline(
     identitiesLinked: linked,
     signalsStored: stored,
     recommendationId,
+    ...(draftId ? { draftId } : {}),
   };
 }
 

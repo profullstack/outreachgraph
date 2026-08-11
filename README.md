@@ -9,10 +9,10 @@ platform, the prospect, or your own rate limits say it should not.
 
 ## Status
 
-Foundation. The deterministic core, the API, the PWA and one live provider are
-built and tested; a prospect can go from a GitHub handle to a card in the
-approval queue today. The LLM layer — the outreach composer and the rest of the
-§20 agent suite — is not built. See
+Foundation. The deterministic core, the API, the PWA, one live provider and the
+outreach composer are built and tested; a prospect can go from a GitHub handle
+to a drafted, checked card in the approval queue today. The rest of the §20
+agent suite is not built. See
 [`docs/prd-implementation-map.md`](docs/prd-implementation-map.md) for exactly
 what exists.
 
@@ -43,6 +43,7 @@ apps/
   web/        Next.js 16 mobile-first PWA
   worker/     background jobs: signal expiry, rescoring, privacy work
 packages/
+  ai/         the only package that talks to a model: composer + quality gates
   domain/     canonical types — depends on nothing
   db/         Turso/libSQL client and migration runner
   policy/     the deterministic policy engine
@@ -87,6 +88,15 @@ recommendation stores the decision it was generated under, but
 state. Suppression, a flipped feature flag, a spent rate limit, or a dropped
 identity confidence all block an approval that would have been fine yesterday,
 and the response names the gate that stopped it.
+
+**A draft that fails its checks is withheld, not shown with a warning.** The
+composer only ever sees stored evidence, stored facts and your own offering —
+there is no path by which it learns something it may not cite. Its output then
+runs deterministic gates: every specific assertion must appear in that
+evidence, or the draft is rejected and rewritten once naming the exact invented
+fragments. Still failing, nothing is shown. The card keeps the prospect, the
+evidence and the recommended action, and you write the message. A bad draft
+next to a caveat is still a bad draft someone might approve.
 
 **Evidence combines with noisy-OR, so weak signals never reach certainty.**
 Identity resolution and intent scoring both use `1 - Π(1 - eᵢ)`. Two 0.5

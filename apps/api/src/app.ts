@@ -33,6 +33,7 @@ import {
   workspacesForUser,
 } from './auth';
 import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
+import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
 
@@ -50,6 +51,11 @@ export interface AppOptions {
   readonly serviceToken?: string;
   /** Set false for plain-HTTP local development so the cookie still sets. */
   readonly secureCookies?: boolean;
+  /**
+   * Writes outreach drafts. Omit to run without a language model — every
+   * other route works unchanged and drafting returns 503.
+   */
+  readonly model?: TextModel;
   readonly version?: string;
   readonly commitHash?: string;
 }
@@ -449,6 +455,66 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       actionId,
       policy: { decision: decision.decision, policyVersion: decision.policyVersion },
     });
+  });
+
+  /**
+   * Compose (or recompose) the message for a recommendation.
+   *
+   * Separate from generation because a draft is optional: the pipeline places
+   * the card in the queue whether or not the composer produced anything, and
+   * the reviewer can ask for one here. A refusal to write is a normal answer,
+   * returned with the reason and the specific fragments that failed grounding
+   * — the alternative is showing an invented message, which is worse.
+   */
+  api.post('/recommendations/:id/draft', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!options.model) {
+      throw new ApiError(
+        503,
+        'composer_unavailable',
+        'no language model is configured; set ANTHROPIC_API_KEY to enable drafting',
+      );
+    }
+
+    const recommendation = await repo.getRecommendation(db, actor.workspaceId, c.req.param('id'));
+    if (!recommendation) throw ApiError.notFound('recommendation');
+
+    // Recomposing replaces the previous draft; the writer asked for a rewrite.
+    await db.execute({
+      sql: 'DELETE FROM drafts WHERE recommendation_id = ? AND edited_by_user = 0',
+      args: [recommendation.id],
+    });
+
+    const result = await draftForRecommendation(db, options.model, recommendation.id);
+
+    if (!result.ok) {
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'draft.withheld',
+        entityKind: 'recommendation',
+        entityId: recommendation.id,
+        detail: { reason: result.reason, unsupported: result.unsupported ?? [] },
+      });
+
+      return c.json(
+        {
+          drafted: false,
+          reason: result.reason,
+          ...(result.unsupported ? { unsupported: result.unsupported } : {}),
+        },
+        200,
+      );
+    }
+
+    const draft = await queryOne<{ body: string }>(db, 'SELECT body FROM drafts WHERE id = ?', [
+      result.draftId!,
+    ]);
+
+    return c.json({ drafted: true, draftId: result.draftId, body: draft?.body });
   });
 
   api.post('/recommendations/:id/skip', async (c) => {

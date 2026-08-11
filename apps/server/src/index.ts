@@ -20,6 +20,7 @@
  */
 
 import { closeDatabase, getDatabase, migrate, queryAll } from '@outreachgraph/db';
+import { ClaudeModel } from '@outreachgraph/ai';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
 import { expireSignals, processDeletion } from '../../worker/src/jobs';
@@ -60,9 +61,27 @@ if (process.env.RUN_MIGRATIONS !== 'false') {
   }
 }
 
+// -------------------------------------------------------------------- model
+/**
+ * The composer is optional infrastructure.
+ *
+ * Without a key the product still works: signals are ingested, prospects
+ * resolved, recommendations scored and queued — the reviewer writes the
+ * message. Refusing to boot over a missing key would take the whole system
+ * down for a feature that is, by design, allowed to produce nothing.
+ */
+const model = process.env.ANTHROPIC_API_KEY
+  ? new ClaudeModel({
+      ...(process.env.ANTHROPIC_MODEL ? { model: process.env.ANTHROPIC_MODEL } : {}),
+    })
+  : undefined;
+
+if (!model) console.log('no ANTHROPIC_API_KEY: drafting disabled, queue still runs');
+
 // ---------------------------------------------------------------------- api
 const api = createApp({
   db,
+  ...(model ? { model } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.

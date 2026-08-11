@@ -10,7 +10,9 @@
       "@outreachgraph/scoring": ["./packages/scoring/src/index.ts"],
       "@outreachgraph/policy": ["./packages/policy/src/index.ts"],
       "@outreachgraph/providers": ["./packages/providers/src/index.ts"],
-      "@outreachgraph/contracts": ["./packages/contracts/src/index.ts"]
+      "@outreachgraph/contracts": ["./packages/contracts/src/index.ts"],
+      "@outreachgraph/ai": ["./packages/ai/src/index.ts"],
+      "@outreachgraph/recommend": ["./packages/recommend/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts"],
