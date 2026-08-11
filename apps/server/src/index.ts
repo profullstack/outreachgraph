@@ -113,10 +113,19 @@ async function proxyToWeb(request: Request): Promise<Response> {
   const incoming = new URL(request.url);
   const target = new URL(incoming.pathname + incoming.search, `http://127.0.0.1:${WEB_PORT}`);
 
+  // Ask the child for identity encoding. `fetch` transparently decompresses
+  // what it receives, so a forwarded `content-encoding: gzip` would describe a
+  // body that is no longer compressed — the client then fails to decode it and
+  // renders nothing. Not requesting compression over loopback avoids the
+  // mismatch entirely and costs nothing.
+  const headers = new Headers(request.headers);
+  headers.set('accept-encoding', 'identity');
+
+  let response: Response;
   try {
-    return await fetch(target, {
+    response = await fetch(target, {
       method: request.method,
-      headers: request.headers,
+      headers,
       body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
       redirect: 'manual',
       // Streaming bodies require this; without it Bun buffers and rejects.
@@ -126,6 +135,21 @@ async function proxyToWeb(request: Request): Promise<Response> {
     console.error('web proxy failed', error);
     return new Response('the web application is not responding', { status: 502 });
   }
+
+  // Strip hop-by-hop and body-framing headers. Whatever the child said about
+  // length or encoding describes its own wire format, not the one this
+  // response will be sent with.
+  const outbound = new Headers(response.headers);
+  outbound.delete('content-encoding');
+  outbound.delete('content-length');
+  outbound.delete('transfer-encoding');
+  outbound.delete('connection');
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: outbound,
+  });
 }
 
 // ------------------------------------------------------------------- server

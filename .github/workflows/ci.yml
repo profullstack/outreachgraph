@@ -122,15 +122,26 @@ jobs:
             *) echo "expected the inbox or a redirect to /login"; docker logs og; exit 1 ;;
           esac
 
-      - name: The landing page is public
+      - name: The landing page is public and actually has a body
         run: |
-          # / must render for a signed-out visitor, not redirect to /login.
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)
-          echo "GET / -> $code"
-          [ "$code" = "200" ] || { echo "the landing page must be public"; docker logs og; exit 1; }
+          # --compressed matters: plain curl sends no Accept-Encoding, but every
+          # browser does. A proxy that forwards the child's content-encoding
+          # while fetch has already decompressed the body returns a 200 with
+          # zero bytes — which shipped once, and which a bare curl cannot see.
+          code=$(curl -s --compressed -o /tmp/landing.html -w '%{http_code}' http://127.0.0.1:8080/)
+          bytes=$(wc -c < /tmp/landing.html)
+          echo "GET / -> $code, $bytes bytes"
 
-          curl -s http://127.0.0.1:8080/ | grep -q "warm conversations" \
+          [ "$code" = "200" ] || { echo "the landing page must be public"; docker logs og; exit 1; }
+          [ "$bytes" -gt 1000 ] || { echo "landing page body is empty or truncated"; docker logs og; exit 1; }
+
+          grep -q "warm conversations" /tmp/landing.html \
             || { echo "landing page did not render its content"; exit 1; }
+
+          # The signed-in shell must survive compression too.
+          login_bytes=$(curl -s --compressed http://127.0.0.1:8080/login | wc -c)
+          echo "GET /login -> $login_bytes bytes"
+          [ "$login_bytes" -gt 500 ] || { echo "/login body is empty"; docker logs og; exit 1; }
 
       - name: Auth is enforced
         run: |
