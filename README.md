@@ -1,5 +1,98 @@
 # OutreachGraph
 
-Turn public intent signals into warm conversations.
+**Turn public intent signals into warm conversations.**
 
-See `docs/PRD.md` for the V1 product requirements.
+Apollo finds their contact info. OutreachGraph finds where they are actually
+active, what they care about right now, and tells you the least intrusive
+useful way to start the conversation — then refuses to send anything the
+platform, the prospect, or your own rate limits say it should not.
+
+## Status
+
+Foundation. The deterministic core of V1 is built and tested; the AI agents and
+the PWA are not. See [`docs/prd-implementation-map.md`](docs/prd-implementation-map.md)
+for exactly what exists.
+
+## Quick start
+
+```bash
+bun install
+bun run db:migrate          # applies migrations to ./local.db
+bun test                    # 202 tests
+bun run check               # format, typecheck, test
+```
+
+Run the API:
+
+```bash
+bun run --filter '@outreachgraph/api' dev
+curl localhost:8080/health/live
+```
+
+No API keys are needed. The pipeline runs end to end on a deterministic
+fixture provider, so a fresh checkout works with an empty `.env`.
+
+## Layout
+
+```text
+apps/
+  api/        Hono service on /api/v1
+  worker/     background jobs: signal expiry, rescoring, privacy work
+packages/
+  domain/     canonical types — depends on nothing
+  db/         Turso/libSQL client and migration runner
+  policy/     the deterministic policy engine
+  identity/   cross-network identity resolution
+  signals/    signal decay
+  scoring/    ICP fit, intent, reachability, relationship, opportunity
+  providers/  vendor boundary and enrichment waterfall
+  contracts/  request/response schemas shared by API and web
+migrations/   forward-only .sql, applied in filename order
+docker/       one Dockerfile per deployable service
+```
+
+## The three ideas worth knowing
+
+**The policy engine is arithmetic, not judgement.** Every outbound action
+passes through `packages/policy`. It is a pure function with no model in the
+loop, it fails closed on anything the capability matrix does not describe, and
+each gate may only tighten a decision — so gate ordering can never accidentally
+re-permit something. LinkedIn automation is not "discouraged", it is
+structurally unreachable.
+
+**Policy is re-checked when you approve, not when the card was made.** A
+recommendation stores the decision it was generated under, but
+`POST /recommendations/:id/approve` runs the engine again against current
+state. Suppression, a flipped feature flag, a spent rate limit, or a dropped
+identity confidence all block an approval that would have been fine yesterday,
+and the response names the gate that stopped it.
+
+**Evidence combines with noisy-OR, so weak signals never reach certainty.**
+Identity resolution and intent scoring both use `1 - Π(1 - eᵢ)`. Two 0.5
+observations give 0.75, not 1.0. "Same name, same city" — the classic
+false-merge trap — cannot merge two people no matter how many demographic
+fields agree, and a pile of vague chatter never outranks one fresh explicit
+question.
+
+## Deleting a person
+
+`DELETE /api/v1/people/:id` removes the profile, identities, signals, scores,
+recommendations, and field provenance — and leaves a suppression tombstone
+keyed on the platform account and hashed email. The tombstone is the point: it
+survives the deletion so a later provider lookup cannot silently re-ingest
+someone who opted out.
+
+## Deployment
+
+Railway, one service per Dockerfile, deploying from this repository. Each
+service has its own `railway.json` with a health check. Migrations run as an
+explicit release step, never from every replica.
+
+Set up separate Turso databases, provider keys, and secrets per environment.
+Production customer data is never copied into staging.
+
+## Conventions
+
+See [`CLAUDE.md`](CLAUDE.md). The short version: TypeScript strict, ESM,
+kebab-case, colocated tests, forward-only migrations, and a set of
+non-negotiables that come from the PRD rather than from taste.
