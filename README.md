@@ -9,9 +9,12 @@ platform, the prospect, or your own rate limits say it should not.
 
 ## Status
 
-Foundation. The deterministic core of V1 is built and tested; the AI agents and
-the PWA are not. See [`docs/prd-implementation-map.md`](docs/prd-implementation-map.md)
-for exactly what exists.
+Foundation. The deterministic core, the API, the PWA and one live provider are
+built and tested; a prospect can go from a GitHub handle to a card in the
+approval queue today. The LLM layer — the outreach composer and the rest of the
+§20 agent suite — is not built. See
+[`docs/prd-implementation-map.md`](docs/prd-implementation-map.md) for exactly
+what exists.
 
 ## Quick start
 
