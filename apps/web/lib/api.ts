@@ -5,6 +5,21 @@
  * same surface a CLI or CRM plugin would use (PRD §24).
  */
 
+/**
+ * Reads an environment variable at request time.
+ *
+ * Next.js statically replaces `process.env.SOME_NAME` during the build, so a
+ * variable that is absent at build time is baked in as `undefined` forever —
+ * the deployed app silently dropped its auth headers and every request came
+ * back 401. Indexing with a non-literal key defeats that substitution, so the
+ * value is genuinely read from the running container's environment.
+ */
+function runtimeEnv(name: string): string | undefined {
+  const key = String(name);
+  return process.env[key];
+}
+
+// NEXT_PUBLIC_* is intended to be inlined, so it stays a direct reference.
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
 export interface ApprovalCard {
@@ -46,26 +61,47 @@ export class ApiUnavailableError extends Error {
 }
 
 /**
+ * The API answered, but refused. Distinct from unreachable because the fix is
+ * different — misconfigured credentials, not a service that is down — and
+ * because a 401 must render an explanation rather than crash the page.
+ */
+export class ApiAuthError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`the API rejected these credentials (${status})`);
+    this.name = 'ApiAuthError';
+    this.status = status;
+  }
+}
+
+/**
  * Server-side fetch. `cache: 'no-store'` because approval state and policy
  * decisions must never be served stale — the same reason the service worker
  * refuses to cache `/api`.
  */
 async function request<T>(path: string): Promise<T> {
+  const token = runtimeEnv('API_TOKEN');
+  const workspaceId = runtimeEnv('WORKSPACE_ID');
+  const organizationId = runtimeEnv('ORGANIZATION_ID');
+
   let response: Response;
 
   try {
     response = await fetch(`${BASE_URL}/api/v1${path}`, {
       cache: 'no-store',
       headers: {
-        ...(process.env.API_TOKEN ? { authorization: `Bearer ${process.env.API_TOKEN}` } : {}),
-        ...(process.env.WORKSPACE_ID ? { 'x-workspace-id': process.env.WORKSPACE_ID } : {}),
-        ...(process.env.ORGANIZATION_ID
-          ? { 'x-organization-id': process.env.ORGANIZATION_ID }
-          : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(workspaceId ? { 'x-workspace-id': workspaceId } : {}),
+        ...(organizationId ? { 'x-organization-id': organizationId } : {}),
       },
     });
   } catch (error) {
     throw new ApiUnavailableError(error);
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    throw new ApiAuthError(response.status);
   }
 
   if (!response.ok) {

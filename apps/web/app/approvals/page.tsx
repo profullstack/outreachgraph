@@ -1,5 +1,5 @@
 import { ApprovalCard } from '../../components/approval-card';
-import { ApiUnavailableError, fetchApprovals } from '../../lib/api';
+import { ApiAuthError, ApiUnavailableError, fetchApprovals } from '../../lib/api';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,6 +14,7 @@ export default async function ApprovalsPage() {
     // A missing API in local development should show what to do, not a stack
     // trace — the PWA is often run before the API is up.
     if (error instanceof ApiUnavailableError) return <ApiDown />;
+    if (error instanceof ApiAuthError) return <NotAuthorized />;
     throw error;
   }
 
@@ -46,6 +47,19 @@ function EmptyState() {
     <div className="border-border text-ink-muted rounded-2xl border border-dashed p-8 text-center text-sm">
       <p>The queue is clear.</p>
       <p className="mt-1">New recommendations appear as fresh signals arrive.</p>
+    </div>
+  );
+}
+
+function NotAuthorized() {
+  return (
+    <div className="border-border text-ink-muted mt-4 rounded-2xl border border-dashed p-8 text-center text-sm">
+      <p className="text-ink font-medium">The API rejected these credentials.</p>
+      <p className="mt-2">
+        Check <code className="text-ink">API_TOKEN</code>,{' '}
+        <code className="text-ink">WORKSPACE_ID</code> and{' '}
+        <code className="text-ink">ORGANIZATION_ID</code> on the web service.
+      </p>
     </div>
   );
 }

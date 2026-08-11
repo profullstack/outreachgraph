@@ -1,5 +1,11 @@
 import Link from 'next/link';
-import { ApiUnavailableError, fetchApprovals, fetchSignals, relativeTime } from '../lib/api';
+import {
+  ApiAuthError,
+  ApiUnavailableError,
+  fetchApprovals,
+  fetchSignals,
+  relativeTime,
+} from '../lib/api';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,12 +18,30 @@ export default async function TodayPage() {
   let approvals: Awaited<ReturnType<typeof fetchApprovals>> = [];
   let signals: Awaited<ReturnType<typeof fetchSignals>> = [];
   let offline = false;
+  let unauthorized = false;
 
   try {
     [approvals, signals] = await Promise.all([fetchApprovals(), fetchSignals()]);
   } catch (error) {
+    // A misconfigured deployment should explain itself, not return a 500.
     if (error instanceof ApiUnavailableError) offline = true;
+    else if (error instanceof ApiAuthError) unauthorized = true;
     else throw error;
+  }
+
+  if (unauthorized) {
+    return (
+      <div className="pt-8">
+        <h1 className="text-xl font-semibold">Not authorized</h1>
+        <p className="text-ink-muted mt-2 text-sm">
+          The API rejected this deployment&apos;s credentials. Check that{' '}
+          <code className="text-ink">API_TOKEN</code>,{' '}
+          <code className="text-ink">WORKSPACE_ID</code> and{' '}
+          <code className="text-ink">ORGANIZATION_ID</code> are set on the web service and match the
+          API.
+        </p>
+      </div>
+    );
   }
 
   const top = approvals[0];
