@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { VerifyBanner } from '../../components/verify-banner';
+import { VerifyBanner } from '../../../components/verify-banner';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -8,7 +8,7 @@ import {
   fetchMe,
   fetchSignals,
   relativeTime,
-} from '../../lib/api';
+} from '../../../lib/api';
 
 export const dynamic = 'force-dynamic';
 

@@ -135,8 +135,14 @@ jobs:
           [ "$code" = "200" ] || { echo "the landing page must be public"; docker logs og; exit 1; }
           [ "$bytes" -gt 1000 ] || { echo "landing page body is empty or truncated"; docker logs og; exit 1; }
 
-          grep -q "warm conversations" /tmp/landing.html \
-            || { echo "landing page did not render its content"; exit 1; }
+          # Assert on the headline and on the sample card's evidence, so this
+          # catches a shell that renders but drops its content — the specific
+          # failure that once shipped a 200 with an empty body.
+          grep -q "reason to talk" /tmp/landing.html \
+            || { echo "landing page did not render its headline"; exit 1; }
+
+          grep -q "cross-border payouts" /tmp/landing.html \
+            || { echo "landing page did not render the sample approval card"; exit 1; }
 
           # The signed-in shell must survive compression too.
           login_bytes=$(curl -s --compressed http://127.0.0.1:8080/login | wc -c)

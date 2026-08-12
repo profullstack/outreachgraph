@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { AddProspect } from '../../components/add-prospect';
-import { ApiUnavailableError, NotAuthenticatedError, fetchProspects } from '../../lib/api';
-import type { ProspectRow } from '../../lib/types';
+import { AddProspect } from '../../../components/add-prospect';
+import { ApiUnavailableError, NotAuthenticatedError, fetchProspects } from '../../../lib/api';
+import type { ProspectRow } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
 
