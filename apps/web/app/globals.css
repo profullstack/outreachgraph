@@ -8,6 +8,12 @@
  * query.
  */
 @theme {
+  /* Supplied by next/font in the root layout. The fallbacks matter: they are
+     what renders if the font request fails, and a metric-similar stack keeps
+     that from reflowing the page. */
+  --font-sans: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, Menlo, monospace;
+
   --color-surface: #ffffff;
   --color-surface-raised: #f6f7f9;
   --color-border: #e3e6ea;

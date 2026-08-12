@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { SignOutButton } from '../../components/sign-out-button';
-import { ApiUnavailableError, NotAuthenticatedError, fetchMe } from '../../lib/api';
+import { SignOutButton } from '../../../components/sign-out-button';
+import { ApiUnavailableError, NotAuthenticatedError, fetchMe } from '../../../lib/api';
 
 export const dynamic = 'force-dynamic';
 

@@ -5,8 +5,8 @@ import {
   NotAuthenticatedError,
   fetchProspect,
   relativeTime,
-} from '../../../lib/api';
-import type { ProspectDetail } from '../../../lib/types';
+} from '../../../../lib/api';
+import type { ProspectDetail } from '../../../../lib/types';
 
 export const dynamic = 'force-dynamic';
 
