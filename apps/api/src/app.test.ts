@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Hono } from 'hono';
 import { StubModel } from '@outreachgraph/ai';
+import { GitHubProvider } from '@outreachgraph/providers';
+import type { Mailer, Message } from '@outreachgraph/email';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
@@ -583,5 +585,387 @@ describe('drafting on demand (PRD §14)', () => {
       args: [SEED.draftId],
     });
     expect(rows.rows).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------- prospects
+
+/** A GitHub profile carrying the self-declared cross-links the resolver uses. */
+const GH_PROFILE = {
+  login: 'alexchen',
+  id: 4242,
+  name: 'Alex Chen',
+  company: '@Loopwright',
+  blog: 'https://loopwright.io',
+  location: 'Berlin',
+  email: null,
+  bio: 'Agent reliability',
+  twitter_username: 'alexbuilds',
+  public_repos: 30,
+  followers: 500,
+  html_url: 'https://github.com/alexchen',
+  created_at: '2015-01-01T00:00:00Z',
+  updated_at: '2026-08-01T00:00:00Z',
+};
+
+const GH_EVENTS = [
+  {
+    id: '1',
+    type: 'IssuesEvent',
+    created_at: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+    repo: { id: 9, name: 'loopwright/agents', url: '' },
+    payload: {
+      action: 'opened',
+      issue: {
+        title: 'Anyone know a good alternative to Stripe for cross-border payouts?',
+        body: 'Fees are brutal.',
+        html_url: 'https://github.com/loopwright/agents/issues/12',
+      },
+    },
+  },
+];
+
+function stubGitHub(): GitHubProvider {
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    const body = url.includes('/events/public')
+      ? GH_EVENTS
+      : url.includes('/repos')
+        ? []
+        : url.includes('/users/alexchen')
+          ? GH_PROFILE
+          : null;
+
+    if (!body) return new Response('{"message":"Not Found"}', { status: 404 });
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as unknown as typeof fetch;
+
+  return new GitHubProvider({ fetchImpl });
+}
+
+async function withGitHub(label: string): Promise<Hono<AppEnv>> {
+  const seeded = await seedDatabase(label);
+  active = seeded;
+  return createApp({
+    db: seeded.db,
+    authenticate: async () => ACTOR,
+    github: stubGitHub(),
+  });
+}
+
+describe('adding a prospect (PRD §8)', () => {
+  test('a GitHub handle walks the chain and lands in the workspace', async () => {
+    const app = await withGitHub('prospect-add');
+    const response = await post(app, '/prospects', { handle: 'alexchen' });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.added).toBe(true);
+    expect(body.personId).toBeTruthy();
+    expect(body.stage).not.toBe('stopped');
+  });
+
+  test('a pasted profile URL means the same thing as the handle', async () => {
+    const app = await withGitHub('prospect-url');
+    const response = await post(app, '/prospects', { handle: 'https://github.com/alexchen' });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).added).toBe(true);
+  });
+
+  test('an @-prefixed handle is accepted rather than rejected as invalid', async () => {
+    const app = await withGitHub('prospect-at');
+    expect((await post(app, '/prospects', { handle: '@alexchen' })).status).toBe(200);
+  });
+
+  test('a handle GitHub could never issue is refused before spending a call', async () => {
+    const app = await withGitHub('prospect-bad');
+    expect((await post(app, '/prospects', { handle: 'not a username!' })).status).toBe(400);
+  });
+
+  test('an unknown profile reports why rather than failing the request', async () => {
+    const app = await withGitHub('prospect-missing');
+    const response = await post(app, '/prospects', { handle: 'ghostuser' });
+
+    // A typo is information, not a server fault: 200 with a reason keeps the
+    // client from showing "something went wrong".
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.added).toBe(false);
+    expect(body.reason).toContain('ghostuser');
+  });
+
+  test('adding a prospect is audited', async () => {
+    const app = await withGitHub('prospect-audit');
+    await post(app, '/prospects', { handle: 'alexchen' });
+
+    const rows = await active!.db.execute(
+      "SELECT count(*) AS n FROM audit_events WHERE event_type = 'prospect.added'",
+    );
+    expect(Number(rows.rows[0]?.n)).toBe(1);
+  });
+
+  test('a viewer cannot add prospects', async () => {
+    const seeded = await seedDatabase('prospect-viewer');
+    active = seeded;
+    const app = createApp({
+      db: seeded.db,
+      authenticate: async () => ({ ...ACTOR, role: 'viewer' }),
+      github: stubGitHub(),
+    });
+
+    expect((await post(app, '/prospects', { handle: 'alexchen' })).status).toBe(403);
+  });
+
+  test('a workspace with no campaign gets one rather than an error', async () => {
+    const app = await withGitHub('prospect-no-campaign');
+    // Accounts created before registration provisioned a campaign have none.
+    await active!.db.execute('DELETE FROM recommendations');
+    await active!.db.execute('DELETE FROM campaign_people');
+    await active!.db.execute('DELETE FROM campaigns');
+
+    const response = await post(app, '/prospects', { handle: 'alexchen' });
+    expect(response.status).toBe(200);
+
+    const rows = await active!.db.execute('SELECT count(*) AS n FROM campaigns');
+    expect(Number(rows.rows[0]?.n)).toBe(1);
+  });
+});
+
+// ------------------------------------------------------------ verification
+
+/** Collects sent messages instead of delivering them. */
+function recordingMailer(): { sent: Message[]; mailer: Mailer } {
+  const sent: Message[] = [];
+  return { sent, mailer: { send: async (message) => void sent.push(message) } };
+}
+
+describe('email verification', () => {
+  test('registering mails a verification link', async () => {
+    const seeded = await seedDatabase('verify-register');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const app = createApp({ db: seeded.db, mailer, appUrl: 'https://og.test' });
+
+    const response = await post(app, '/auth/register', {
+      email: 'new@example.com',
+      password: 'correct horse battery',
+    });
+
+    expect(response.status).toBe(201);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.to).toBe('new@example.com');
+    expect(sent[0]!.text).toContain('https://og.test/verify?token=');
+  });
+
+  test('a new account is unverified until the link is followed', async () => {
+    const seeded = await seedDatabase('verify-unverified');
+    active = seeded;
+    const { mailer } = recordingMailer();
+    const app = createApp({ db: seeded.db, mailer });
+
+    await post(app, '/auth/register', {
+      email: 'new@example.com',
+      password: 'correct horse battery',
+    });
+
+    const row = await seeded.db.execute({
+      sql: 'SELECT email_verified_at FROM users WHERE email = ?',
+      args: ['new@example.com'],
+    });
+    expect(row.rows[0]?.email_verified_at).toBeNull();
+  });
+
+  test('following the link confirms the address', async () => {
+    const seeded = await seedDatabase('verify-confirm');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const app = createApp({ db: seeded.db, mailer, appUrl: 'https://og.test' });
+
+    await post(app, '/auth/register', {
+      email: 'new@example.com',
+      password: 'correct horse battery',
+    });
+
+    const token = sent[0]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    const response = await post(app, '/auth/verify', { token });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).verified).toBe(true);
+  });
+
+  test('a token cannot be used twice', async () => {
+    const seeded = await seedDatabase('verify-replay');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const app = createApp({ db: seeded.db, mailer, appUrl: 'https://og.test' });
+
+    await post(app, '/auth/register', {
+      email: 'new@example.com',
+      password: 'correct horse battery',
+    });
+
+    const token = sent[0]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    await post(app, '/auth/verify', { token });
+
+    expect((await post(app, '/auth/verify', { token })).status).toBe(400);
+  });
+
+  test('an expired token is refused', async () => {
+    const seeded = await seedDatabase('verify-expired');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const app = createApp({ db: seeded.db, mailer, appUrl: 'https://og.test' });
+
+    await post(app, '/auth/register', {
+      email: 'new@example.com',
+      password: 'correct horse battery',
+    });
+
+    await seeded.db.execute({
+      sql: 'UPDATE email_verification_tokens SET expires_at = ?',
+      args: ['2000-01-01T00:00:00.000Z'],
+    });
+
+    const token = sent[0]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    expect((await post(app, '/auth/verify', { token })).status).toBe(400);
+  });
+
+  test('a made-up token is refused', async () => {
+    const seeded = await seedDatabase('verify-forged');
+    active = seeded;
+    const app = createApp({ db: seeded.db });
+
+    expect((await post(app, '/auth/verify', { token: 'deadbeef' })).status).toBe(400);
+  });
+
+  test('resending supersedes the previous link rather than stacking', async () => {
+    const seeded = await seedDatabase('verify-resend');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+
+    let userId = '';
+    const app = createApp({
+      db: seeded.db,
+      mailer,
+      appUrl: 'https://og.test',
+      authenticate: async () => (userId ? { ...ACTOR, userId } : undefined),
+    });
+
+    // Register through a second app instance so the guard above stays off
+    // until the account exists.
+    const open = createApp({ db: seeded.db, mailer, appUrl: 'https://og.test' });
+    const registered = await (
+      await post(open, '/auth/register', {
+        email: 'new@example.com',
+        password: 'correct horse battery',
+      })
+    ).json();
+    userId = registered.userId;
+
+    await post(app, '/auth/verify/resend');
+
+    const first = sent[0]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    const second = sent[1]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    expect(second).not.toBe(first);
+
+    // The old link must stop working, or "resend" becomes a way to hold
+    // several simultaneously valid tokens.
+    expect((await post(open, '/auth/verify', { token: first })).status).toBe(400);
+    expect((await post(open, '/auth/verify', { token: second })).status).toBe(200);
+  });
+
+  test('an unverified account cannot approve outreach', async () => {
+    const seeded = await seedDatabase('verify-gate');
+    active = seeded;
+    await seeded.db.execute({
+      sql: 'UPDATE users SET email_verified_at = NULL WHERE id = ?',
+      args: [SEED.userId],
+    });
+
+    const app = createApp({ db: seeded.db, authenticate: async () => ACTOR });
+    const response = await post(app, `/recommendations/${SEED.recommendationId}/approve`, {});
+
+    expect(response.status).toBe(403);
+    expect((await response.json()).error.code).toBe('email_unverified');
+  });
+
+  test('an unverified account can still add prospects and read evidence', async () => {
+    const seeded = await seedDatabase('verify-gate-read');
+    active = seeded;
+    await seeded.db.execute({
+      sql: 'UPDATE users SET email_verified_at = NULL WHERE id = ?',
+      args: [SEED.userId],
+    });
+
+    const app = createApp({
+      db: seeded.db,
+      authenticate: async () => ACTOR,
+      github: stubGitHub(),
+    });
+
+    // The gate is on sending, not on looking around.
+    expect((await get(app, '/people')).status).toBe(200);
+    expect((await post(app, '/prospects', { handle: 'alexchen' })).status).toBe(200);
+  });
+
+  test('a failed send does not fail the signup', async () => {
+    const seeded = await seedDatabase('verify-send-fails');
+    active = seeded;
+    const app = createApp({
+      db: seeded.db,
+      mailer: {
+        send: async () => {
+          throw new Error('resend is down');
+        },
+      },
+    });
+
+    const response = await post(app, '/auth/register', {
+      email: 'new@example.com',
+      password: 'correct horse battery',
+    });
+
+    // Losing the account over a transient provider outage is worse than an
+    // account whose owner has to press "resend".
+    expect(response.status).toBe(201);
+
+    const rows = await seeded.db.execute(
+      "SELECT count(*) AS n FROM audit_events WHERE event_type = 'email.send_failed'",
+    );
+    expect(Number(rows.rows[0]?.n)).toBe(1);
+  });
+
+  test('/auth/me reports verification so the UI can warn before a refusal', async () => {
+    const { app } = await harness('verify-me');
+    const body = await (await get(app, '/auth/me')).json();
+
+    expect(body.emailVerified).toBe(true);
+  });
+});
+
+describe('listing prospects', () => {
+  test('the seeded prospect is listed with its score', async () => {
+    const { app } = await harness('people-list');
+    const response = await get(app, '/people');
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.people.length).toBeGreaterThan(0);
+    expect(body.people[0].display_name).toBeTruthy();
+  });
+
+  test('a deleted person is not listed', async () => {
+    const { app } = await harness('people-list-deleted');
+    await active!.db.execute({
+      sql: "UPDATE people SET status = 'deleted' WHERE id = ?",
+      args: [SEED.personId],
+    });
+
+    const body = await (await get(app, '/people')).json();
+    expect(body.people).toHaveLength(0);
   });
 });

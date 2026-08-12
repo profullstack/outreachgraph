@@ -45,9 +45,11 @@ export async function seedDatabase(label: string): Promise<SeededDatabase> {
       args: [SEED.organizationId, stamp, stamp],
     },
     {
-      sql: `INSERT INTO users (id, email, name, created_at, updated_at)
-            VALUES (?, 'test@example.com', 'Test User', ?, ?)`,
-      args: [SEED.userId, stamp, stamp],
+      // Verified, because the fixture stands for an established account.
+      // Tests that care about the unverified path clear this explicitly.
+      sql: `INSERT INTO users (id, email, name, email_verified_at, created_at, updated_at)
+            VALUES (?, 'test@example.com', 'Test User', ?, ?, ?)`,
+      args: [SEED.userId, stamp, stamp, stamp],
     },
     {
       sql: `INSERT INTO workspaces (id, organization_id, name, slug, min_outreach_confidence,
@@ -84,6 +86,14 @@ export async function seedDatabase(label: string): Promise<SeededDatabase> {
             VALUES (?, 'Jane Smith', 'Jane', 'Smith', ?, 'VP Engineering',
             'San Francisco Bay Area', 0.97, 'active', 1, 0, ?, ?)`,
       args: [SEED.personId, SEED.companyId, stamp, stamp],
+    },
+    {
+      // The pipeline always writes this row, so a fixture without one is a
+      // workspace no real code path can produce.
+      sql: `INSERT INTO campaign_people (campaign_id, person_id, workspace_id, status,
+            interaction_state, discovered_at, updated_at)
+            VALUES (?, ?, ?, 'recommended', 'never_contacted', ?, ?)`,
+      args: [SEED.campaignId, SEED.personId, SEED.workspaceId, stamp, stamp],
     },
     {
       sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,

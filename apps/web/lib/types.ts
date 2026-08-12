@@ -36,8 +36,44 @@ export interface SignalRow {
   relevance: number;
 }
 
+export interface ProspectRow {
+  id: string;
+  display_name: string;
+  current_title: string | null;
+  current_company: string | null;
+  identity_confidence: number;
+  prospect_status: string;
+  interaction_state: string;
+  opportunity: number | null;
+  icp_fit: number | null;
+  intent: number | null;
+  reachability: number | null;
+  signal_count: number;
+}
+
+export interface IdentityRow {
+  id: string;
+  network: string;
+  handle: string;
+  confidence: number;
+  source_type: string | null;
+}
+
+export interface ProspectDetail {
+  person: {
+    id: string;
+    display_name: string;
+    current_title: string | null;
+    identity_confidence: number;
+    status: string;
+  };
+  identities: IdentityRow[];
+  signals: SignalRow[];
+}
+
 export interface CurrentUser {
   user: { id: string; email: string | null; name: string | null };
+  emailVerified: boolean;
   workspaceId: string;
   role: string;
 }

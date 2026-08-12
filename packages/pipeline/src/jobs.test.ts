@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { seedDatabase, SEED, type SeededDatabase } from '../../api/src/test-seed';
+import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { expireSignals, markSourceUnavailable, processDeletion, rescoreProspect } from './jobs';
 
 let active: SeededDatabase | undefined;

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { GitHubProvider } from '@outreachgraph/providers';
-import { seedDatabase, SEED, type SeededDatabase } from '../../api/src/test-seed';
+import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { runPipeline } from './pipeline';
 
 /** A GitHub profile with the self-declared cross-links the resolver needs. */

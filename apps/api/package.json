@@ -14,6 +14,8 @@
     "@outreachgraph/contracts": "workspace:*",
     "@outreachgraph/db": "workspace:*",
     "@outreachgraph/domain": "workspace:*",
+    "@outreachgraph/email": "workspace:*",
+    "@outreachgraph/pipeline": "workspace:*",
     "@outreachgraph/policy": "workspace:*",
     "@outreachgraph/providers": "workspace:*",
     "@outreachgraph/scoring": "workspace:*",
