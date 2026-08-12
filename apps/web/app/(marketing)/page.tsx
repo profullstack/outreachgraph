@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
+import { BrandLockup, BrandMark, BrandWordmark } from '../../components/brand';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,7 +54,9 @@ function SiteNav() {
   return (
     <Band>
       <nav className="flex items-center justify-between py-5">
-        <span className="text-[17px] font-bold tracking-tight">OutreachGraph</span>
+        <Link href="/" aria-label="OutreachGraph home">
+          <BrandLockup height="h-8" />
+        </Link>
         <Link
           href="/login"
           className="border-border rounded-xl border px-4 py-2.5 text-sm font-medium"
@@ -228,6 +231,9 @@ function RefusalSection() {
 function ClosingCta() {
   return (
     <Band className="bg-ink py-16 text-center text-white sm:py-20">
+      {/* This band is `bg-ink` in both themes, so the wordmark is safe here. */}
+      <BrandWordmark className="mx-auto mb-7 h-9 w-auto sm:h-11" />
+
       <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-balance sm:text-[34px]">
         Find the people already talking about your problem.
       </h2>
@@ -248,7 +254,9 @@ function SiteFooter() {
   return (
     <Band className="border-border border-t py-8">
       <div className="text-ink-muted flex flex-wrap items-center justify-between gap-3 text-[13px]">
-        <span>© {new Date().getFullYear()} OutreachGraph</span>
+        <span className="inline-flex items-center gap-2">
+          <BrandMark className="h-5 w-5" />© {new Date().getFullYear()} OutreachGraph
+        </span>
         <span>No LinkedIn automation. Suppression survives deletion.</span>
       </div>
     </Band>

@@ -100,4 +100,17 @@ describe('verificationEmail', () => {
     expect(message.html).not.toContain('<script>');
     expect(message.html).toContain('&lt;script&gt;');
   });
+
+  test('the brand mark is served from the same origin as the link', async () => {
+    const message = verificationEmail('a@b.com', 'https://og.com/verify?token=xyz');
+
+    expect(message.html).toContain('src="https://og.com/favicon.png"');
+  });
+
+  test('a link that is not an absolute url still produces a sendable message', async () => {
+    const message = verificationEmail('a@b.com', '/verify?token=xyz');
+
+    expect(message.html).not.toContain('<img');
+    expect(message.text).toContain('/verify?token=xyz');
+  });
 });

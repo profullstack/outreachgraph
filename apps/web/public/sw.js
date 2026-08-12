@@ -11,13 +11,15 @@
  *      error page.
  */
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL_CACHE = `og-shell-${VERSION}`;
 const ASSET_CACHE = `og-assets-${VERSION}`;
 
-// The public landing page and the offline fallback. `/today` is deliberately
-// absent: it is per-user and must never be served from a shared cache.
-const SHELL = ['/', '/offline'];
+// The public landing page and the offline fallback, plus the two brand assets
+// those pages render — an offline screen that renders a broken image is worse
+// than the browser error it replaces. `/today` is deliberately absent: it is
+// per-user and must never be served from a shared cache.
+const SHELL = ['/', '/offline', '/favicon.png', '/logo.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
