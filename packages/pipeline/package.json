@@ -1,24 +1,23 @@
 {
-  "name": "@outreachgraph/worker",
+  "name": "@outreachgraph/pipeline",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "start": "bun src/index.ts",
-    "build": "bun build src/index.ts --target=bun --outdir=dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
+    "@outreachgraph/ai": "workspace:*",
     "@outreachgraph/db": "workspace:*",
     "@outreachgraph/domain": "workspace:*",
     "@outreachgraph/identity": "workspace:*",
-    "@outreachgraph/policy": "workspace:*",
     "@outreachgraph/providers": "workspace:*",
-    "@outreachgraph/scoring": "workspace:*",
-    "@outreachgraph/signals": "workspace:*",
     "@outreachgraph/recommend": "workspace:*",
-    "@outreachgraph/ai": "workspace:*"
+    "@outreachgraph/scoring": "workspace:*",
+    "@outreachgraph/signals": "workspace:*"
   }
 }

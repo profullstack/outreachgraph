@@ -11,6 +11,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
 import {
+  addProspectSchema,
   approveRecommendationSchema,
   createSuppressionSchema,
   executeActionSchema,
@@ -24,16 +25,22 @@ import { now, queryOne, type Client } from '@outreachgraph/db';
 import {
   actorFromSession,
   clearedCookie,
+  isEmailVerified,
   login,
   logout,
+  mintVerificationToken,
   readCookie,
   registerUser,
   SESSION_COOKIE,
   sessionCookie,
+  verifyEmailToken,
   workspacesForUser,
 } from './auth';
 import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
 import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
+import { runPipeline } from '@outreachgraph/pipeline';
+import { GitHubProvider } from '@outreachgraph/providers';
+import { ConsoleMailer, verificationEmail, type Mailer } from '@outreachgraph/email';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
 
@@ -56,6 +63,18 @@ export interface AppOptions {
    * other route works unchanged and drafting returns 503.
    */
   readonly model?: TextModel;
+  /**
+   * Supplies GitHub enrichment and activity when adding a prospect. Tests
+   * inject a fake; production leaves it unset and gets the real client.
+   */
+  readonly github?: GitHubProvider;
+  /**
+   * Sends account email. Omit to log messages instead of sending them, which
+   * is what local development and the test suite do.
+   */
+  readonly mailer?: Mailer;
+  /** Public origin, used to build links that land in someone's inbox. */
+  readonly appUrl?: string;
   readonly version?: string;
   readonly commitHash?: string;
 }
@@ -154,6 +173,31 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return undefined;
   };
 
+  /**
+   * Mints a token and mails the link.
+   *
+   * A send failure never fails the request that triggered it: an account that
+   * exists and can sign in, with a resend button one tap away, beats a 500
+   * that loses the password the user just chose. The failure is audited so it
+   * is visible rather than silent.
+   */
+  const sendVerification = async (userId: string, email: string): Promise<void> => {
+    const minted = await mintVerificationToken(options.db, userId, email);
+    const link = `${options.appUrl ?? 'http://localhost:8080'}/verify?token=${minted.token}`;
+
+    try {
+      await (options.mailer ?? new ConsoleMailer()).send(verificationEmail(email, link));
+    } catch (error) {
+      await repo.audit(options.db, {
+        actorKind: 'system',
+        eventType: 'email.send_failed',
+        entityKind: 'user',
+        entityId: userId,
+        detail: { kind: 'verification', message: String(error) },
+      });
+    }
+  };
+
   const api = new Hono<AppEnv>();
 
   // ------------------------------------------------------------------- auth
@@ -165,11 +209,42 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const result = await registerUser(options.db, body);
 
     // Registering logs you straight in; a signup that then demands a login is
-    // just a worse signup.
+    // just a worse signup. Verification gates outbound actions, not access —
+    // someone should be able to look around while the mail is in flight.
     const session = await login(options.db, body.email, body.password, c.req.header('user-agent'));
+    await sendVerification(result.userId, body.email);
 
     c.header('set-cookie', sessionCookie(session.token, session.expiresAt, secure));
     return c.json({ userId: result.userId, workspaceId: result.workspaceId }, 201);
+  });
+
+  /**
+   * Confirms an address from the emailed link.
+   *
+   * Unauthenticated on purpose: the link is often opened in a different
+   * browser from the one that signed up, and requiring a session there would
+   * strand people on a login screen holding a valid token.
+   */
+  auth.post('/verify', async (c) => {
+    const body = safeJson(await c.req.raw.text());
+    const result = await verifyEmailToken(options.db, String(body.token ?? ''));
+    return c.json({ verified: true, email: result.email });
+  });
+
+  auth.post('/verify/resend', async (c) => {
+    const actor = await resolveActor(c.req.raw);
+    if (!actor) throw ApiError.unauthorized();
+
+    const user = await queryOne<{ email: string; email_verified_at: string | null }>(
+      options.db,
+      'SELECT email, email_verified_at FROM users WHERE id = ?',
+      [actor.userId],
+    );
+    if (!user) throw ApiError.unauthorized();
+    if (user.email_verified_at) return c.json({ sent: false, reason: 'already_verified' });
+
+    await sendVerification(actor.userId, user.email);
+    return c.json({ sent: true });
   });
 
   auth.post('/login', async (c) => {
@@ -192,14 +267,18 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const actor = await resolveActor(c.req.raw);
     if (!actor) throw ApiError.unauthorized();
 
-    const user = await queryOne<{ id: string; email: string; name: string | null }>(
-      options.db,
-      'SELECT id, email, name FROM users WHERE id = ?',
-      [actor.userId],
-    );
+    const user = await queryOne<{
+      id: string;
+      email: string;
+      name: string | null;
+      email_verified_at: string | null;
+    }>(options.db, 'SELECT id, email, name, email_verified_at FROM users WHERE id = ?', [
+      actor.userId,
+    ]);
 
     return c.json({
       user: user ?? { id: actor.userId, email: null, name: null },
+      emailVerified: Boolean(user?.email_verified_at),
       workspaceId: actor.workspaceId,
       organizationId: actor.organizationId,
       role: actor.role,
@@ -250,7 +329,101 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json({ recommendations: rows.rows });
   });
 
+  // ----------------------------------------------------------- prospects
+  /**
+   * Adds one prospect by GitHub handle and runs the full chain (PRD §8).
+   *
+   * Synchronous on purpose: a first-run user needs to see something appear,
+   * and a background job that silently produces nothing is exactly the empty
+   * app this replaces. The chain is a handful of GitHub calls, so it returns
+   * in seconds. When that stops being true, this becomes a queued job and the
+   * response becomes a job id — the route shape already allows it.
+   */
+  api.post('/prospects', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('adding prospects');
+
+    const raw = safeJson(await c.req.raw.text());
+    const parsed = addProspectSchema.safeParse({ handle: normalizeHandle(raw.handle) });
+    if (!parsed.success) {
+      throw ApiError.badRequest(
+        'enter a GitHub username or profile URL',
+        parsed.error.flatten().fieldErrors,
+      );
+    }
+
+    const handle = parsed.data.handle;
+    const campaignId = await ensureDefaultCampaign(db, actor.workspaceId);
+
+    const result = await runPipeline(
+      {
+        db,
+        workspaceId: actor.workspaceId,
+        campaignId,
+        providers: [],
+        github: options.github ?? new GitHubProvider(),
+        ...(options.model ? { model: options.model } : {}),
+      },
+      handle,
+    );
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'prospect.added',
+      entityKind: 'person',
+      entityId: result.personId ?? handle,
+      detail: { handle, stage: result.stage, stoppedBecause: result.stoppedBecause },
+    });
+
+    // A stopped chain is a real answer, not an error: "no GitHub profile for
+    // that handle" is information the user needs, and 200 with a reason keeps
+    // the client from treating a typo as a server fault.
+    return c.json({
+      added: result.stage !== 'stopped',
+      personId: result.personId,
+      stage: result.stage,
+      identitiesLinked: result.identitiesLinked,
+      signalsStored: result.signalsStored,
+      recommendationId: result.recommendationId,
+      ...(result.stoppedBecause ? { reason: result.stoppedBecause } : {}),
+    });
+  });
+
   // -------------------------------------------------------------- people
+  /**
+   * The prospect list, ranked the way the UI ranks everything else — by
+   * opportunity, so the top of the list is the top of the queue.
+   */
+  api.get('/people', async (c) => {
+    const actor = c.get('actor');
+    const limit = clampLimit(c.req.query('limit'));
+
+    const rows = await c.get('db').execute({
+      sql: `SELECT p.id, p.display_name, p.current_title, p.identity_confidence, p.status,
+                   co.name AS current_company,
+                   cp.status AS prospect_status, cp.interaction_state,
+                   s.opportunity, s.icp_fit, s.intent, s.reachability,
+                   (SELECT COUNT(*) FROM signals g
+                     WHERE g.person_id = p.id AND g.workspace_id = cp.workspace_id)
+                     AS signal_count
+              FROM campaign_people cp
+              JOIN people p ON p.id = cp.person_id
+              LEFT JOIN companies co ON co.id = p.current_company_id
+              LEFT JOIN scores s
+                     ON s.person_id = cp.person_id AND s.campaign_id = cp.campaign_id
+             WHERE cp.workspace_id = ? AND p.status != 'deleted'
+          ORDER BY COALESCE(s.opportunity, -1) DESC, p.display_name ASC
+             LIMIT ?`,
+      args: [actor.workspaceId, limit],
+    });
+
+    return c.json({ people: rows.rows });
+  });
+
   api.get('/people/:id', async (c) => {
     const actor = c.get('actor');
     const db = c.get('db');
@@ -362,6 +535,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const db = c.get('db');
 
     if (!canApprove(actor)) throw ApiError.forbidden('this role cannot approve outbound actions');
+    await requireVerifiedEmail(db, actor);
 
     const body = await parseBody(c.req.raw, approveRecommendationSchema);
     const recommendation = await repo.getRecommendation(db, actor.workspaceId, c.req.param('id'));
@@ -582,6 +756,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const actor = c.get('actor');
     const db = c.get('db');
     const body = await parseBody(c.req.raw, executeActionSchema);
+
+    await requireVerifiedEmail(db, actor);
 
     const action = await repo.getAction(db, actor.workspaceId, c.req.param('id'));
     if (!action) throw ApiError.notFound('action');
@@ -843,6 +1019,90 @@ function safeJson(text: string): Record<string, unknown> {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Refuses outbound work from an unconfirmed address.
+ *
+ * The gate is on sending, not on signing in: someone should be able to add
+ * prospects and read evidence while the mail is in flight. It sits here
+ * rather than in the policy engine deliberately — the engine decides what a
+ * network permits, and account state is not a policy question.
+ *
+ * A service token has no user, so this cannot apply to it; machine callers
+ * are authorised by holding the token.
+ */
+async function requireVerifiedEmail(db: Client, actor: RequestActor): Promise<void> {
+  if (actor.userId === 'usr_service') return;
+  if (await isEmailVerified(db, actor.userId)) return;
+
+  throw new ApiError(403, 'email_unverified', 'confirm your email address before sending anything');
+}
+
+/**
+ * Accepts what people actually paste.
+ *
+ * A profile URL, an `@handle` and a bare username all mean the same thing to
+ * the person typing, so all three are normalised to the handle rather than
+ * rejected as invalid input.
+ */
+function normalizeHandle(value: unknown): string {
+  if (typeof value !== 'string') return '';
+
+  const trimmed = value.trim();
+  const url = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/?#]+)/i);
+  return (url?.[1] ?? trimmed).replace(/^@/, '').replace(/\/+$/, '');
+}
+
+/**
+ * Returns the workspace's campaign, provisioning one if it has none.
+ *
+ * Registration now creates an offering and campaign up front, but accounts
+ * made before that have neither, and an existing user hitting "add prospect"
+ * must not get an error telling them to create something the UI does not yet
+ * expose. Backfilling here keeps the failure mode out of the product.
+ */
+async function ensureDefaultCampaign(db: Client, workspaceId: string): Promise<string> {
+  const existing = await queryOne<{ id: string }>(
+    db,
+    `SELECT id FROM campaigns WHERE workspace_id = ?
+      ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at ASC LIMIT 1`,
+    [workspaceId],
+  );
+  if (existing) return existing.id;
+
+  const stamp = now();
+  const offering = await queryOne<{ id: string }>(
+    db,
+    'SELECT id FROM offerings WHERE workspace_id = ? ORDER BY created_at ASC LIMIT 1',
+    [workspaceId],
+  );
+
+  let offeringId = offering?.id;
+  if (!offeringId) {
+    offeringId = newId('offering');
+    await db.execute({
+      sql: `INSERT INTO offerings (id, workspace_id, name, category, description, created_at, updated_at)
+            VALUES (?, ?, 'Your offering', 'unspecified', ?, ?, ?)`,
+      args: [
+        offeringId,
+        workspaceId,
+        'Describe what you sell here. Every draft is grounded in this text.',
+        stamp,
+        stamp,
+      ],
+    });
+  }
+
+  const campaignId = newId('campaign');
+  await db.execute({
+    sql: `INSERT INTO campaigns (id, workspace_id, name, offering_id, approval_mode, status,
+                                 created_at, updated_at, started_at)
+          VALUES (?, ?, 'First campaign', ?, 'draft_and_approve', 'active', ?, ?, ?)`,
+    args: [campaignId, workspaceId, offeringId, stamp, stamp, stamp],
+  });
+
+  return campaignId;
 }
 
 /**

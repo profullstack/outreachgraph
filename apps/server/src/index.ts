@@ -21,9 +21,10 @@
 
 import { closeDatabase, getDatabase, migrate, queryAll } from '@outreachgraph/db';
 import { ClaudeModel } from '@outreachgraph/ai';
+import { ResendMailer } from '@outreachgraph/email';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
-import { expireSignals, processDeletion } from '../../worker/src/jobs';
+import { expireSignals, processDeletion } from '@outreachgraph/pipeline';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const WEB_PORT = Number(process.env.WEB_PORT ?? 3001);
@@ -78,10 +79,29 @@ const model = process.env.ANTHROPIC_API_KEY
 
 if (!model) console.log('no ANTHROPIC_API_KEY: drafting disabled, queue still runs');
 
+/**
+ * Account email.
+ *
+ * Same shape as the model above: absent credentials degrade to logging rather
+ * than to a refusal to boot. A verification link printed in the container log
+ * is recoverable; a container that will not start is not.
+ */
+const mailer =
+  process.env.RESEND_API_KEY && process.env.EMAIL_FROM
+    ? new ResendMailer({
+        apiKey: process.env.RESEND_API_KEY,
+        from: process.env.EMAIL_FROM,
+      })
+    : undefined;
+
+if (!mailer) console.log('no RESEND_API_KEY/EMAIL_FROM: verification links are logged, not sent');
+
 // ---------------------------------------------------------------------- api
 const api = createApp({
   db,
   ...(model ? { model } : {}),
+  ...(mailer ? { mailer } : {}),
+  ...(process.env.APP_URL ? { appUrl: process.env.APP_URL } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.

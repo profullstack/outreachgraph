@@ -1,9 +1,11 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { VerifyBanner } from '../../components/verify-banner';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchApprovals,
+  fetchMe,
   fetchSignals,
   relativeTime,
 } from '../../lib/api';
@@ -21,10 +23,11 @@ export const metadata = { title: 'Today · OutreachGraph' };
 export default async function TodayPage() {
   let approvals: Awaited<ReturnType<typeof fetchApprovals>> = [];
   let signals: Awaited<ReturnType<typeof fetchSignals>> = [];
+  let me: Awaited<ReturnType<typeof fetchMe>> | undefined;
   let offline = false;
 
   try {
-    [approvals, signals] = await Promise.all([fetchApprovals(), fetchSignals()]);
+    [approvals, signals, me] = await Promise.all([fetchApprovals(), fetchSignals(), fetchMe()]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
@@ -35,6 +38,8 @@ export default async function TodayPage() {
 
   return (
     <div className="pt-4">
+      {me && !me.emailVerified ? <VerifyBanner email={me.user.email} /> : null}
+
       <header className="mb-5">
         <h1 className="text-xl font-semibold">Today</h1>
         <p className="text-ink-muted text-sm">
@@ -81,10 +86,28 @@ export default async function TodayPage() {
         </section>
       ) : null}
 
+      {/*
+        An empty queue has two very different causes, and telling them apart
+        is the difference between a working product and a broken-looking one.
+        With no prospects at all there is nothing for the pipeline to act on,
+        so the only useful thing to say is "add one" — the old copy promised
+        signals that could never arrive.
+      */}
       {!offline && approvals.length === 0 ? (
-        <p className="border-border text-ink-muted rounded-2xl border border-dashed p-8 text-center text-sm">
-          Nothing waiting. Recommendations appear as fresh signals arrive.
-        </p>
+        <div className="border-border rounded-2xl border border-dashed p-8 text-center">
+          <p className="text-sm font-medium">Nothing waiting.</p>
+          <p className="text-ink-muted mt-1 text-sm">
+            {signals.length === 0
+              ? 'Add a prospect and the pipeline will research them, collect public signals and score the opportunity.'
+              : 'Signals are arriving; recommendations appear when one is worth acting on.'}
+          </p>
+          <Link
+            href="/prospects"
+            className="bg-accent mt-4 inline-flex items-center justify-center rounded-xl px-5 py-3 text-sm font-medium text-white"
+          >
+            Add a prospect
+          </Link>
+        </div>
       ) : null}
     </div>
   );

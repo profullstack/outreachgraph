@@ -91,6 +91,26 @@ export const loginSchema = z.object({
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 
+/**
+ * Adding a prospect by GitHub handle.
+ *
+ * The pattern is GitHub's own rule — alphanumerics and single hyphens, never
+ * leading or trailing, 39 characters max — so a typo is rejected here rather
+ * than spending an API call to be told the profile does not exist. A pasted
+ * profile URL is a common enough input that the API strips it before
+ * validating; this schema sees only the handle.
+ */
+export const addProspectSchema = z.object({
+  handle: z
+    .string()
+    .trim()
+    .min(1)
+    .max(39)
+    .regex(/^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/, 'not a valid GitHub username'),
+});
+
+export type AddProspectInput = z.infer<typeof addProspectSchema>;
+
 export const createOfferingSchema = z.object({
   name: z.string().min(1).max(200),
   category: z.string().min(1).max(200),

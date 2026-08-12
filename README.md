@@ -21,7 +21,7 @@ what exists.
 ```bash
 bun install
 bun run db:migrate          # applies migrations to ./local.db
-bun test                    # 265 tests
+bun test                    # 395 tests
 bun run check               # format, typecheck, test
 ```
 
@@ -41,9 +41,11 @@ fixture provider, so a fresh checkout works with an empty `.env`.
 apps/
   api/        Hono service on /api/v1
   web/        Next.js 16 mobile-first PWA
-  worker/     background jobs: signal expiry, rescoring, privacy work
+  server/     the single entrypoint: API, PWA and the background loop
 packages/
   ai/         the only package that talks to a model: composer + quality gates
+  pipeline/   the discovery-to-queue chain and its background jobs
+  email/      account email only — verification links, never outreach
   domain/     canonical types — depends on nothing
   db/         Turso/libSQL client and migration runner
   policy/     the deterministic policy engine
@@ -57,6 +59,10 @@ migrations/   forward-only .sql, applied in filename order
 docker/       one Dockerfile per deployable service
 ```
 
+The pipeline lives in a package rather than an app because both the API
+(adding a prospect on demand) and the background loop run the same chain — an
+app importing another app's source would make the dependency direction a lie.
+
 ## The pipeline
 
 One GitHub handle goes all the way to a card in the approval queue:
@@ -65,7 +71,8 @@ One GitHub handle goes all the way to a card in the approval queue:
 enrich → resolve identities → collect signals → score → recommend
 ```
 
-`apps/worker/src/pipeline.ts` runs it. GitHub first because it is free, its
+`packages/pipeline/src/pipeline.ts` runs it, and `POST /api/v1/prospects` is
+how a person starts it from the UI. GitHub first because it is free, its
 profiles carry links the person published themselves — `twitter_username`,
 `blog`, `company` — and developer tooling is the launch wedge. A real profile
 typically yields three linked identities before any paid provider is touched.

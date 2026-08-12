@@ -88,13 +88,20 @@ export interface RegisterResult {
   readonly userId: string;
   readonly organizationId: string;
   readonly workspaceId: string;
+  readonly offeringId: string;
+  readonly campaignId: string;
 }
 
 /**
- * Creates a user with their own organization and first workspace.
+ * Creates a user with their own organization, workspace, offering and campaign.
  *
  * A user with no workspace cannot do anything in this product, so registration
- * provisions one rather than leaving a half-created account.
+ * provisions one rather than leaving a half-created account. The offering and
+ * campaign are provisioned for the same reason: a campaign requires an
+ * offering, and a prospect requires a campaign, so an account without both is
+ * one where "add a prospect" has nowhere to write. They are placeholders the
+ * user is expected to edit — the composer grounds every draft in the offering,
+ * so leaving it unedited produces weak drafts, not wrong ones.
  */
 export async function registerUser(db: Client, input: RegisterInput): Promise<RegisterResult> {
   const email = normalizeEmail(input.email);
@@ -111,6 +118,8 @@ export async function registerUser(db: Client, input: RegisterInput): Promise<Re
   const userId = newId('user');
   const organizationId = newId('organization');
   const workspaceId = newId('workspace');
+  const offeringId = newId('offering');
+  const campaignId = newId('campaign');
   const stamp = now();
   const passwordHash = await hashPassword(input.password);
 
@@ -138,9 +147,27 @@ export async function registerUser(db: Client, input: RegisterInput): Promise<Re
             VALUES (?, ?, ?, 'default', ?, ?)`,
       args: [workspaceId, organizationId, orgName, stamp, stamp],
     },
+    {
+      sql: `INSERT INTO offerings (id, workspace_id, name, category, description, created_at, updated_at)
+            VALUES (?, ?, ?, 'unspecified', ?, ?, ?)`,
+      args: [
+        offeringId,
+        workspaceId,
+        orgName,
+        'Describe what you sell here. Every draft is grounded in this text.',
+        stamp,
+        stamp,
+      ],
+    },
+    {
+      sql: `INSERT INTO campaigns (id, workspace_id, name, offering_id, approval_mode, status,
+                                   created_at, updated_at, started_at)
+            VALUES (?, ?, 'First campaign', ?, 'draft_and_approve', 'active', ?, ?, ?)`,
+      args: [campaignId, workspaceId, offeringId, stamp, stamp, stamp],
+    },
   ]);
 
-  return { userId, organizationId, workspaceId };
+  return { userId, organizationId, workspaceId, offeringId, campaignId };
 }
 
 export interface LoginResult {
@@ -357,6 +384,106 @@ function slugify(value: string): string {
       .replace(/^-|-$/g, '')
       .slice(0, 40) || 'workspace'
   );
+}
+
+// ------------------------------------------------------------ verification
+
+/** Long enough to survive a spam folder, short enough to bound a leaked link. */
+const VERIFICATION_TTL_HOURS = 24;
+
+export interface VerificationToken {
+  readonly token: string;
+  readonly email: string;
+  readonly expiresAt: string;
+}
+
+/**
+ * Mints a verification token, replacing any outstanding one.
+ *
+ * Superseding rather than accumulating means "resend" cannot be used to build
+ * a pile of simultaneously valid links, and the newest mail in the inbox is
+ * always the one that works — the behaviour people actually expect.
+ */
+export async function mintVerificationToken(
+  db: Client,
+  userId: string,
+  email: string,
+): Promise<VerificationToken> {
+  const token = mintSessionToken();
+  const stamp = now();
+  const expiresAt = new Date(
+    new Date(stamp).getTime() + VERIFICATION_TTL_HOURS * 3_600_000,
+  ).toISOString();
+
+  await db.batch([
+    { sql: 'DELETE FROM email_verification_tokens WHERE user_id = ?', args: [userId] },
+    {
+      sql: `INSERT INTO email_verification_tokens (id, user_id, token_hash, email, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [newId('session'), userId, await hashToken(token), email, stamp, expiresAt],
+    },
+  ]);
+
+  return { token, email, expiresAt };
+}
+
+export interface VerificationResult {
+  readonly userId: string;
+  readonly email: string;
+}
+
+/**
+ * Consumes a verification token and marks the address confirmed.
+ *
+ * Every failure — unknown, expired, already used — answers the same way. A
+ * verification endpoint that distinguishes them tells an attacker holding a
+ * guessed token whether it ever existed.
+ */
+export async function verifyEmailToken(db: Client, token: string): Promise<VerificationResult> {
+  const invalid = new ApiError(400, 'invalid_token', 'that link is invalid or has expired');
+  if (!token) throw invalid;
+
+  const row = await queryOne<{
+    id: string;
+    user_id: string;
+    email: string;
+    expires_at: string;
+    consumed_at: string | null;
+  }>(db, 'SELECT * FROM email_verification_tokens WHERE token_hash = ?', [await hashToken(token)]);
+
+  if (!row || row.consumed_at) throw invalid;
+
+  const stamp = now();
+  if (new Date(row.expires_at).getTime() <= new Date(stamp).getTime()) throw invalid;
+
+  // The address may have changed since the token was minted; verifying the
+  // old one would confirm something the user no longer uses.
+  const user = await queryOne<{ email: string }>(db, 'SELECT email FROM users WHERE id = ?', [
+    row.user_id,
+  ]);
+  if (!user || user.email !== row.email) throw invalid;
+
+  await db.batch([
+    {
+      sql: 'UPDATE email_verification_tokens SET consumed_at = ? WHERE id = ?',
+      args: [stamp, row.id],
+    },
+    {
+      sql: 'UPDATE users SET email_verified_at = ?, updated_at = ? WHERE id = ?',
+      args: [stamp, stamp, row.user_id],
+    },
+  ]);
+
+  return { userId: row.user_id, email: row.email };
+}
+
+export async function isEmailVerified(db: Client, userId: string): Promise<boolean> {
+  const row = await queryOne<{ email_verified_at: string | null }>(
+    db,
+    'SELECT email_verified_at FROM users WHERE id = ?',
+    [userId],
+  );
+  return Boolean(row?.email_verified_at);
 }
 
 /** Cookie attributes. `secure` is dropped only for plain-HTTP local dev. */

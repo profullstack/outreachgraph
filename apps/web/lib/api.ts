@@ -9,9 +9,16 @@
  */
 
 import { cookies } from 'next/headers';
-import type { ApprovalCard, CurrentUser, SignalRow } from './types';
+import type { ApprovalCard, CurrentUser, ProspectDetail, ProspectRow, SignalRow } from './types';
 
-export type { ApprovalCard, CurrentUser, SignalRow } from './types';
+export type {
+  ApprovalCard,
+  CurrentUser,
+  IdentityRow,
+  ProspectDetail,
+  ProspectRow,
+  SignalRow,
+} from './types';
 export { relativeTime } from './format';
 
 /**
@@ -93,4 +100,13 @@ export async function fetchApprovals(): Promise<ApprovalCard[]> {
 export async function fetchSignals(): Promise<SignalRow[]> {
   const body = await request<{ signals: SignalRow[] }>('/signals?limit=50');
   return body.signals;
+}
+
+export async function fetchProspects(): Promise<ProspectRow[]> {
+  const body = await request<{ people: ProspectRow[] }>('/people?limit=100');
+  return body.people;
+}
+
+export async function fetchProspect(id: string): Promise<ProspectDetail> {
+  return request<ProspectDetail>(`/people/${encodeURIComponent(id)}`);
 }
