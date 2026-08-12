@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { IBM_Plex_Mono, Schibsted_Grotesk } from 'next/font/google';
+import localFont from 'next/font/local';
 import { ServiceWorkerRegistrar } from '../components/service-worker-registrar';
 import './globals.css';
 
@@ -8,20 +8,32 @@ import './globals.css';
  * request to Google and no layout shift when the face arrives.
  */
 /*
+ * Fonts are committed files, not `next/font/google`.
+ *
+ * The Google loader fetches faces over the network during `next build`, and
+ * doing that inside the Docker builder segfaulted Bun — the image job died on
+ * SIGILL while the same build passed on the host. Local files make the build
+ * hermetic, which it should have been anyway: a release that can fail because
+ * fonts.gstatic.com is slow is a release with an avoidable dependency.
+ *
  * The variable names must differ from Tailwind's `--font-sans` / `--font-mono`.
  * next/font sets its variable on <html>, which is also `:root`, so reusing the
  * theme's own name makes `--font-sans: var(--font-sans), …` a self-reference on
  * one element — an invalid cycle that silently drops the font.
  */
-const sans = Schibsted_Grotesk({
-  subsets: ['latin'],
+const sans = localFont({
+  src: './fonts/schibsted-grotesk-latin.woff2',
+  weight: '400 700',
   display: 'swap',
   variable: '--font-schibsted',
 });
 
-const mono = IBM_Plex_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600'],
+const mono = localFont({
+  src: [
+    { path: './fonts/ibm-plex-mono-400.woff2', weight: '400', style: 'normal' },
+    { path: './fonts/ibm-plex-mono-500.woff2', weight: '500', style: 'normal' },
+    { path: './fonts/ibm-plex-mono-600.woff2', weight: '600', style: 'normal' },
+  ],
   display: 'swap',
   variable: '--font-plex-mono',
 });
