@@ -4,7 +4,7 @@ import {
   NotAuthenticatedError,
   fetchSignals,
   relativeTime,
-} from '../../lib/api';
+} from '../../../lib/api';
 
 export const dynamic = 'force-dynamic';
 

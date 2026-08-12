@@ -1,4 +1,4 @@
-import { VerifyForm } from '../../components/verify-form';
+import { VerifyForm } from '../../../components/verify-form';
 
 export const dynamic = 'force-dynamic';
 

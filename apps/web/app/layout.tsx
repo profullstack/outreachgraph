@@ -1,7 +1,30 @@
 import type { Metadata, Viewport } from 'next';
-import { BottomNav } from '../components/bottom-nav';
+import { IBM_Plex_Mono, Schibsted_Grotesk } from 'next/font/google';
 import { ServiceWorkerRegistrar } from '../components/service-worker-registrar';
 import './globals.css';
+
+/**
+ * Self-hosted by `next/font` at build time, so there is no render-blocking
+ * request to Google and no layout shift when the face arrives.
+ */
+/*
+ * The variable names must differ from Tailwind's `--font-sans` / `--font-mono`.
+ * next/font sets its variable on <html>, which is also `:root`, so reusing the
+ * theme's own name makes `--font-sans: var(--font-sans), …` a self-reference on
+ * one element — an invalid cycle that silently drops the font.
+ */
+const sans = Schibsted_Grotesk({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-schibsted',
+});
+
+const mono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
+  display: 'swap',
+  variable: '--font-plex-mono',
+});
 
 export const metadata: Metadata = {
   title: 'OutreachGraph',
@@ -30,16 +53,20 @@ export const viewport: Viewport = {
   ],
 };
 
+/**
+ * The root layout holds only what every route needs.
+ *
+ * The app shell — the narrow column and the bottom nav — lives in `(app)`,
+ * because wrapping the public landing page in a mobile app chrome capped at
+ * `max-w-2xl` made a marketing page render as a 672px strip under a nav bar
+ * for people who were not signed in.
+ */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <body className="bg-surface text-ink min-h-dvh antialiased">
         <ServiceWorkerRegistrar />
-        {/* pb-28 reserves room for the fixed bottom nav plus the home indicator. */}
-        <main className="mx-auto w-full max-w-2xl px-4 pt-[env(safe-area-inset-top)] pb-28">
-          {children}
-        </main>
-        <BottomNav />
+        {children}
       </body>
     </html>
   );

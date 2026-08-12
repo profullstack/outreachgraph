@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
-import { ApprovalCard } from '../../components/approval-card';
-import { ApiUnavailableError, NotAuthenticatedError, fetchApprovals } from '../../lib/api';
+import { ApprovalCard } from '../../../components/approval-card';
+import { ApiUnavailableError, NotAuthenticatedError, fetchApprovals } from '../../../lib/api';
 
 export const dynamic = 'force-dynamic';
 
