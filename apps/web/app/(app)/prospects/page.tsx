@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AddProspect } from '../../../components/add-prospect';
-import { AddByUrl } from '../../../components/add-by-url';
 import { ApiUnavailableError, NotAuthenticatedError, fetchProspects } from '../../../lib/api';
 import type { ProspectRow } from '../../../lib/types';
 
@@ -37,11 +36,20 @@ export default async function ProspectsPage() {
         </p>
       </header>
 
-      {/* URLs first: it is the flow that starts from a company you have heard
-          of, which is how most prospecting actually begins. The handle form
-          stays for the developer-tooling wedge. */}
+      {/* The bulk form used to sit here. It moved to its own tab, because a
+          list of prospects is where you go once you have some — not where
+          anyone thinks to look for how to get them. One implementation, one
+          place, and a link for whoever arrives here first. */}
       <div className="flex flex-col gap-3">
-        <AddByUrl />
+        <Link
+          href="/outreach"
+          className="border-accent/40 bg-accent/5 block rounded-2xl border p-4"
+        >
+          <span className="text-sm font-medium">Add from company websites</span>
+          <span className="text-ink-muted mt-1 block text-[13px] leading-relaxed">
+            Paste a list of URLs — or upload one — on the Outreach tab.
+          </span>
+        </Link>
         <AddProspect />
       </div>
 
@@ -53,8 +61,9 @@ export default async function ProspectsPage() {
         </ul>
       ) : !offline ? (
         <p className="border-border text-ink-muted mt-4 rounded-2xl border border-dashed p-8 text-center text-sm">
-          No prospects yet. Paste a company website above — or a GitHub handle — and the pipeline
-          will enrich, resolve, collect signals and score them.
+          No prospects yet. Paste company websites on the <Link href="/outreach">Outreach</Link> tab
+          — or a GitHub handle above — and the pipeline will enrich, resolve, collect signals and
+          score them.
         </p>
       ) : null}
     </div>

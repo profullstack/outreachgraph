@@ -124,10 +124,10 @@ export default async function TodayPage() {
               : 'Signals are arriving; recommendations appear when one is worth acting on.'}
           </p>
           <Link
-            href="/prospects"
+            href="/outreach"
             className="bg-accent mt-4 inline-flex items-center justify-center rounded-xl px-5 py-3 text-sm font-medium text-white"
           >
-            Add a prospect
+            Start outreach
           </Link>
         </div>
       ) : null}
