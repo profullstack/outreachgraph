@@ -111,6 +111,43 @@ export const addProspectSchema = z.object({
 
 export type AddProspectInput = z.infer<typeof addProspectSchema>;
 
+/**
+ * The workspace's own profile, as confirmed by a human.
+ *
+ * Lists are capped so a model that decides an ICP has forty job titles cannot
+ * write forty rows of noise into the targeting filters. Everything except the
+ * offering name and category is optional: a person who wants to fill in one
+ * line and get on with it should be able to.
+ */
+const shortList = z.array(z.string().trim().min(1).max(120)).max(20).default([]);
+
+export const workspaceProfileSchema = z.object({
+  url: z.string().trim().max(500).optional(),
+  offering: z.object({
+    name: z.string().trim().min(1).max(200),
+    category: z.string().trim().min(1).max(200),
+    description: z.string().trim().max(4000).optional(),
+    valuePropositions: shortList,
+    likelyPains: shortList,
+    competitors: shortList,
+  }),
+  icp: z.object({
+    titles: shortList,
+    seniorities: shortList,
+    industries: shortList,
+    technologies: shortList,
+    keywords: shortList,
+    exclusions: shortList,
+  }),
+  voice: z.object({
+    style: z.string().trim().min(1).max(500),
+    instructions: z.string().trim().max(2000).optional(),
+    maxWords: z.number().int().positive().max(400).optional(),
+  }),
+});
+
+export type WorkspaceProfile = z.infer<typeof workspaceProfileSchema>;
+
 export const createOfferingSchema = z.object({
   name: z.string().min(1).max(200),
   category: z.string().min(1).max(200),

@@ -6,6 +6,7 @@ import {
   NotAuthenticatedError,
   fetchApprovals,
   fetchMe,
+  fetchProfile,
   fetchSignals,
   relativeTime,
 } from '../../../lib/api';
@@ -24,10 +25,16 @@ export default async function TodayPage() {
   let approvals: Awaited<ReturnType<typeof fetchApprovals>> = [];
   let signals: Awaited<ReturnType<typeof fetchSignals>> = [];
   let me: Awaited<ReturnType<typeof fetchMe>> | undefined;
+  let profile: Awaited<ReturnType<typeof fetchProfile>> | undefined;
   let offline = false;
 
   try {
-    [approvals, signals, me] = await Promise.all([fetchApprovals(), fetchSignals(), fetchMe()]);
+    [approvals, signals, me, profile] = await Promise.all([
+      fetchApprovals(),
+      fetchSignals(),
+      fetchMe(),
+      fetchProfile(),
+    ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
@@ -39,6 +46,21 @@ export default async function TodayPage() {
   return (
     <div className="pt-4">
       {me && !me.emailVerified ? <VerifyBanner email={me.user.email} /> : null}
+
+      {/* Until this is done every draft is grounded in placeholder text, so it
+          is worth interrupting for once rather than hiding in a settings page. */}
+      {me?.emailVerified && profile && !profile.configured ? (
+        <Link
+          href="/setup"
+          className="border-accent/40 bg-accent/5 mb-4 block rounded-2xl border p-4"
+        >
+          <span className="text-sm font-medium">Tell us what you sell</span>
+          <span className="text-ink-muted mt-1 block text-[13px] leading-relaxed">
+            Paste your website and we will draft your profile — what you sell, who buys it, and
+            where to find them. Outreach is grounded in it.
+          </span>
+        </Link>
+      ) : null}
 
       <header className="mb-5">
         <h1 className="text-xl font-semibold">Today</h1>

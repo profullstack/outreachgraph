@@ -92,6 +92,17 @@ export async function fetchMe(): Promise<CurrentUser> {
   return request<CurrentUser>('/auth/me');
 }
 
+/** What the workspace believes about itself, for the setup page. */
+export interface WorkspaceProfileView {
+  readonly configured: boolean;
+  readonly url?: string;
+  readonly offering?: { readonly name: string; readonly category: string };
+}
+
+export async function fetchProfile(): Promise<WorkspaceProfileView> {
+  return request<WorkspaceProfileView>('/onboarding/profile');
+}
+
 export async function fetchApprovals(): Promise<ApprovalCard[]> {
   const body = await request<{ recommendations: ApprovalCard[] }>('/recommendations?limit=50');
   return body.recommendations;

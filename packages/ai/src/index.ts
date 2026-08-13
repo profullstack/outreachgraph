@@ -39,3 +39,5 @@ export {
 } from './composer';
 
 export { draftForRecommendation, type DraftResult } from './draft';
+
+export { draftProfile, type ProfileDraft, type ProfileDraftResult } from './profile';
