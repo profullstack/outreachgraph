@@ -210,6 +210,25 @@ describe('deterministic extraction', () => {
     expect(company.identities[0]!.handle).toBe('loopwright');
   });
 
+  test('a link to content is not mistaken for an account', () => {
+    // Found by crawling stripe.com: a footer link to a YouTube video yielded
+    // the "handle" `watch`, which the resolver would then weigh as a real
+    // claim. A junk identity is worse than a missing one.
+    const company = extractCompany(
+      `<a href="https://www.youtube.com/watch?v=abc123">video</a>
+       <a href="https://www.youtube.com/@stripe">channel</a>
+       <a href="https://twitter.com/search?q=stripe">search</a>
+       <a href="https://github.com/stripe">code</a>`,
+      'https://stripe.com/',
+    );
+
+    const handles = company.identities.map((i) => i.handle);
+    expect(handles).not.toContain('watch');
+    expect(handles).not.toContain('search');
+    expect(handles).toContain('@stripe');
+    expect(handles).toContain('stripe');
+  });
+
   test('a page with no structured data names nobody', () => {
     const result = extractSite('<html><body><p>We are a team.</p></body></html>', 'https://a.io/');
     expect(result.people).toHaveLength(0);

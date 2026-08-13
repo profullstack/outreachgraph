@@ -52,14 +52,39 @@ export function networkForUrl(url: string): Network | undefined {
 }
 
 /** `https://github.com/octocat/repo` → `octocat`. */
+/**
+ * Path roots that carry the handle in the *next* segment rather than this one.
+ */
+const NESTED_ROOTS = /^(company|school|showcase|in|pub|c|channel|user|r|profile)$/i;
+
+/**
+ * Path roots that are content, search or site furniture — never an account.
+ *
+ * Found by crawling stripe.com: a footer link to a YouTube video produced the
+ * "handle" `watch`, which would have been resolved as if it were somebody's
+ * account. A junk identity is worse than a missing one, because the resolver
+ * treats it as a claim worth weighing.
+ */
+const NOT_HANDLES =
+  /^(watch|playlist|embed|shorts|results|feed|hashtag|search|explore|about|legal|terms|privacy|help|login|signup|share|intent|home|posts|status|p|reel|stories|tv|jobs|pricing|blog|docs|features|events|groups|topics|orgs|sponsors|marketplace|pulse|learning|today|new|trending)$/i;
+
 function handleFromUrl(url: string): string | undefined {
   try {
-    const segments = new URL(url).pathname.split('/').filter(Boolean);
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split('/').filter(Boolean);
     const first = segments[0];
     if (!first) return undefined;
-    // Company pages and static sections are not handles.
-    if (/^(company|school|showcase|in|pub|c|channel|user|r)$/i.test(first)) return segments[1];
-    return first;
+
+    const candidate = NESTED_ROOTS.test(first) ? segments[1] : first;
+    if (!candidate) return undefined;
+    if (NOT_HANDLES.test(candidate)) return undefined;
+
+    // A handle is one path segment of plausible characters. Anything carrying
+    // a dot-extension or punctuation beyond the usual is a file or a page.
+    if (!/^[@\w][\w.-]{0,63}$/.test(candidate)) return undefined;
+    if (/\.(html?|php|aspx?|jsp)$/i.test(candidate)) return undefined;
+
+    return candidate;
   } catch {
     return undefined;
   }
