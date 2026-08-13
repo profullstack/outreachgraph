@@ -7,6 +7,7 @@
  * dependency direction a lie.
  */
 
+export { runCrawlJob, type CrawlJobDeps, type CrawlJobResult } from './crawl';
 export {
   runPipeline,
   runPipelineForCandidate,

@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AddProspect } from '../../../components/add-prospect';
+import { AddByUrl } from '../../../components/add-by-url';
 import { ApiUnavailableError, NotAuthenticatedError, fetchProspects } from '../../../lib/api';
 import type { ProspectRow } from '../../../lib/types';
 
@@ -36,7 +37,13 @@ export default async function ProspectsPage() {
         </p>
       </header>
 
-      <AddProspect />
+      {/* URLs first: it is the flow that starts from a company you have heard
+          of, which is how most prospecting actually begins. The handle form
+          stays for the developer-tooling wedge. */}
+      <div className="flex flex-col gap-3">
+        <AddByUrl />
+        <AddProspect />
+      </div>
 
       {people.length > 0 ? (
         <ul className="mt-4 flex flex-col gap-2">
@@ -46,8 +53,8 @@ export default async function ProspectsPage() {
         </ul>
       ) : !offline ? (
         <p className="border-border text-ink-muted mt-4 rounded-2xl border border-dashed p-8 text-center text-sm">
-          No prospects yet. Add a GitHub handle above and the pipeline will enrich, resolve, collect
-          signals and score them.
+          No prospects yet. Paste a company website above — or a GitHub handle — and the pipeline
+          will enrich, resolve, collect signals and score them.
         </p>
       ) : null}
     </div>
