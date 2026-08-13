@@ -38,10 +38,48 @@ const mono = localFont({
   variable: '--font-plex-mono',
 });
 
+/**
+ * Absolute base for the social card URLs below.
+ *
+ * Indexed with a non-literal key for the same reason `lib/api.ts` does it: Next
+ * inlines `process.env.SOME_NAME` at build time, so a variable that only exists
+ * on Railway would otherwise be frozen as `undefined` in the image.
+ */
+function siteUrl(): URL {
+  const key = 'PUBLIC_SITE_URL';
+  return new URL(process.env[key] ?? 'https://outreachgraph.com');
+}
+
 export const metadata: Metadata = {
+  metadataBase: siteUrl(),
   title: 'OutreachGraph',
   description: 'Turn public intent signals into warm conversations.',
   applicationName: 'OutreachGraph',
+  /*
+   * `favicon.png` is the graph mark on transparency — it is the only asset that
+   * reads on a light tab strip and a dark one, which is why it is the icon
+   * everywhere rather than `logo.png`. The wordmark is white on the left half
+   * and would show as "Graph" alone at 16px on white.
+   */
+  icons: {
+    icon: [{ url: '/favicon.png', type: 'image/png', sizes: '512x512' }],
+    shortcut: ['/favicon.png'],
+    apple: [{ url: '/favicon.png', sizes: '512x512' }],
+  },
+  openGraph: {
+    type: 'website',
+    siteName: 'OutreachGraph',
+    title: 'OutreachGraph',
+    description: 'Turn public intent signals into warm conversations.',
+    url: '/',
+    images: [{ url: '/favicon.png', width: 512, height: 512, alt: 'OutreachGraph' }],
+  },
+  twitter: {
+    card: 'summary',
+    title: 'OutreachGraph',
+    description: 'Turn public intent signals into warm conversations.',
+    images: [{ url: '/favicon.png', width: 512, height: 512, alt: 'OutreachGraph' }],
+  },
   appleWebApp: {
     capable: true,
     title: 'OutreachGraph',

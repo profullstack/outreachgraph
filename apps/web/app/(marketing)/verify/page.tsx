@@ -1,4 +1,5 @@
 import { VerifyForm } from '../../../components/verify-form';
+import { BrandLockup } from '../../../components/brand';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,7 @@ export default async function VerifyPage({
 
   return (
     <div className="mx-auto flex max-w-sm flex-col gap-4 pt-12">
+      <BrandLockup height="h-7" />
       <h1 className="text-xl font-semibold">Confirm your email</h1>
       <VerifyForm token={token ?? ''} />
     </div>
