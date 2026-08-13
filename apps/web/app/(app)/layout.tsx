@@ -18,7 +18,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
        */}
       <div className="mx-auto w-full max-w-2xl px-4 pt-[env(safe-area-inset-top)]">
         <Link href="/today" aria-label="OutreachGraph home" className="inline-flex py-3">
-          <BrandLockup height="h-6" text="text-[15px]" />
+          <BrandLockup size="sm" />
         </Link>
       </div>
 

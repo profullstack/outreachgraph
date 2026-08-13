@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
-import { BrandLockup, BrandMark, BrandWordmark } from '../../components/brand';
+import { BrandLockup, BrandWordmark } from '../../components/brand';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,7 +55,7 @@ function SiteNav() {
     <Band>
       <nav className="flex items-center justify-between py-5">
         <Link href="/" aria-label="OutreachGraph home">
-          <BrandLockup height="h-8" />
+          <BrandLockup size="md" />
         </Link>
         <Link
           href="/login"
@@ -232,7 +232,7 @@ function ClosingCta() {
   return (
     <Band className="bg-ink py-16 text-center text-white sm:py-20">
       {/* This band is `bg-ink` in both themes, so the wordmark is safe here. */}
-      <BrandWordmark className="mx-auto mb-7 h-9 w-auto sm:h-11" />
+      <BrandWordmark className="mx-auto mb-8 h-12 w-auto sm:h-16" />
 
       <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-balance sm:text-[34px]">
         Find the people already talking about your problem.
@@ -252,13 +252,20 @@ function ClosingCta() {
 
 function SiteFooter() {
   return (
-    <Band className="border-border border-t py-8">
-      <div className="text-ink-muted flex flex-wrap items-center justify-between gap-3 text-[13px]">
-        <span className="inline-flex items-center gap-2">
-          <BrandMark className="h-5 w-5" />© {new Date().getFullYear()} OutreachGraph
+    <Band className="border-border border-t py-10">
+      {/*
+       * The lockup, not the bare mark. At 20px inside a muted grey row the
+       * mark's thin cyan strokes had nothing to hold contrast against and read
+       * as a faded smudge; at 32px beside full-strength text it does not.
+       */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <BrandLockup size="sm" />
+        <span className="text-ink-muted text-[13px]">
+          No LinkedIn automation. Suppression survives deletion.
         </span>
-        <span>No LinkedIn automation. Suppression survives deletion.</span>
       </div>
+
+      <p className="text-ink-muted mt-5 text-[13px]">© {new Date().getFullYear()} OutreachGraph</p>
     </Band>
   );
 }
