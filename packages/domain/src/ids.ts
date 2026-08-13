@@ -31,6 +31,7 @@ export const ID_PREFIXES = {
   suppression: 'sup',
   privacyRequest: 'pri',
   deletionJob: 'del',
+  job: 'job',
   policyRule: 'pol',
   usageEvent: 'usg',
   auditEvent: 'aud',
