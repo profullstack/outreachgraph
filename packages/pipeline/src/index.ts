@@ -17,3 +17,19 @@ export {
   type JobKind,
   type JobResult,
 } from './jobs';
+export {
+  claimNext,
+  completeJob,
+  drainQueue,
+  enqueue,
+  failJob,
+  queueDepth,
+  reclaimStalled,
+  JOB_STATUSES,
+  type DrainSummary,
+  type EnqueueInput,
+  type EnqueueResult,
+  type JobHandler,
+  type JobStatus,
+  type QueuedJob,
+} from './queue';

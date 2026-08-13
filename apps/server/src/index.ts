@@ -24,7 +24,13 @@ import { ClaudeModel } from '@outreachgraph/ai';
 import { ResendMailer } from '@outreachgraph/email';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
-import { expireSignals, processDeletion } from '@outreachgraph/pipeline';
+import {
+  drainQueue,
+  expireSignals,
+  processDeletion,
+  rescoreProspect,
+  type QueuedJob,
+} from '@outreachgraph/pipeline';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const WEB_PORT = Number(process.env.WEB_PORT ?? 3001);
@@ -211,6 +217,34 @@ console.log(`outreachgraph listening on :${PORT} (${ENVIRONMENT})`);
 let running = true;
 let inFlight: Promise<void> = Promise.resolve();
 
+/**
+ * Runs one queued job.
+ *
+ * Dispatch is explicit rather than a lookup table so an unhandled kind is a
+ * loud failure with the kind in the message, not a job that quietly reports
+ * success. A throw here is how the queue is told to retry or, once attempts
+ * run out, to keep the row as `failed` with the reason attached.
+ */
+async function runJob(job: QueuedJob): Promise<void> {
+  switch (job.kind) {
+    case 'rescore_prospect': {
+      const { campaignId, personId } = job.payload as { campaignId?: string; personId?: string };
+      if (!campaignId || !personId)
+        throw new Error('rescore_prospect needs campaignId and personId');
+      await rescoreProspect(db, campaignId, personId);
+      return;
+    }
+    case 'process_deletion': {
+      const { deletionJobId } = job.payload as { deletionJobId?: string };
+      if (!deletionJobId) throw new Error('process_deletion needs deletionJobId');
+      await processDeletion(db, deletionJobId);
+      return;
+    }
+    default:
+      throw new Error(`no handler for job kind ${job.kind}`);
+  }
+}
+
 async function tick(): Promise<void> {
   const workspaces = await queryAll<{ id: string }>(
     db,
@@ -235,6 +269,17 @@ async function tick(): Promise<void> {
 
   const pruned = await pruneSessions(db);
   if (pruned > 0) console.log(`pruned ${pruned} expired sessions`);
+
+  // The queue drains last. The sweeps above are bounded and quick; this is the
+  // part that can take the whole tick, and `limit` is what stops it running
+  // away with the loop.
+  const drained = await drainQueue(db, runJob);
+  if (drained.processed > 0 || drained.reclaimed > 0) {
+    console.log(
+      `jobs: ${drained.succeeded} done, ${drained.retried} retrying, ` +
+        `${drained.dead} failed, ${drained.reclaimed} reclaimed`,
+    );
+  }
 }
 
 async function loop(): Promise<void> {
