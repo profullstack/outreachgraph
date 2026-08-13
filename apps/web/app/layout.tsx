@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
 import { ServiceWorkerRegistrar } from '../components/service-worker-registrar';
 import './globals.css';
-import Script from "next/script";
+import Script from 'next/script';
 
 /**
  * Self-hosted by `next/font` at build time, so there is no render-blocking
@@ -118,7 +118,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-surface text-ink min-h-dvh antialiased">
         <ServiceWorkerRegistrar />
         {children}
-              <Script data-site="1c2f4daf-5388-46af-a167-f8e9f9c74c27" src="https://crawlproof.com/stats.js" strategy="afterInteractive" />
+        <Script
+          data-site="1c2f4daf-5388-46af-a167-f8e9f9c74c27"
+          src="https://crawlproof.com/stats.js"
+          strategy="afterInteractive"
+        />
       </body>
     </html>
   );
