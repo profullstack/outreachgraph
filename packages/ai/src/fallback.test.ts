@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { FallbackModel, isBudgetExhausted } from './fallback';
 import { GeminiModel, GeminiApiError, DEFAULT_GEMINI_MODEL } from './gemini';
+import { OpenAIModel, OpenAIApiError, DEFAULT_OPENAI_MODEL } from './openai';
 import { StubModel, type GenerateInput, type GenerateResult, type TextModel } from './model';
 
 /** A model that always throws, for driving the chain's failure paths. */
@@ -157,17 +158,181 @@ describe('FallbackModel', () => {
     await expect(chain.generate(INPUT)).rejects.toThrow('quota exceeded');
   });
 
+  test('it walks past every exhausted provider, not just the first', async () => {
+    const skipped: string[] = [];
+
+    const chain = new FallbackModel(
+      [
+        { name: 'anthropic', model: failing(withStatus(400, 'reached your API usage limits')) },
+        { name: 'openai', model: failing(withStatus(429, 'insufficient_quota')) },
+        { name: 'gemini', model: new StubModel('from gemini') },
+      ],
+      { onFallback: (attempt) => skipped.push(attempt.provider) },
+    );
+
+    // The whole point of a third link: two dead keys is the case that produced
+    // this chain, and stopping at the second would have been no fallback at all.
+    expect((await chain.generate(INPUT)).text).toBe('from gemini');
+    expect(skipped).toEqual(['anthropic', 'openai']);
+  });
+
   test('it reports its order for the boot log', () => {
     const chain = new FallbackModel([
       { name: 'anthropic', model: new StubModel('a') },
-      { name: 'gemini', model: new StubModel('b') },
+      { name: 'openai', model: new StubModel('b') },
+      { name: 'gemini', model: new StubModel('c') },
     ]);
 
-    expect(chain.providers).toEqual(['anthropic', 'gemini']);
+    expect(chain.providers).toEqual(['anthropic', 'openai', 'gemini']);
   });
 
   test('an empty chain is a configuration error, not a silent no-op', () => {
     expect(() => new FallbackModel([])).toThrow('at least one model');
+  });
+});
+
+describe('OpenAIModel', () => {
+  function stubFetch(body: unknown, status = 200) {
+    return async (): Promise<Response> =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      });
+  }
+
+  /** Captures the request body so the wire format can be asserted on. */
+  function recordingFetch(body: unknown) {
+    const sent: { body?: Record<string, unknown>; headers?: Record<string, string> } = {};
+
+    const fetchImpl = async (_input: string | URL | Request, init?: RequestInit) => {
+      sent.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      sent.headers = init?.headers as Record<string, string>;
+      return new Response(JSON.stringify(body), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    return { sent, fetchImpl };
+  }
+
+  test('it reads the reply and reports the cache discount', async () => {
+    const model = new OpenAIModel({
+      apiKey: 'test',
+      fetchImpl: stubFetch({
+        model: 'gpt-5-2025-08-07',
+        choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 300,
+          completion_tokens: 152,
+          prompt_tokens_details: { cached_tokens: 256 },
+        },
+      }),
+    });
+
+    const result = await model.generate({ system: 's', user: 'u' });
+
+    expect(result.text).toBe('{"ok":true}');
+    // The snapshot the alias resolved to, not the alias we asked for — the
+    // draft record should say which model actually wrote it.
+    expect(result.model).toBe('gpt-5-2025-08-07');
+    expect(result.inputTokens).toBe(300);
+    expect(result.outputTokens).toBe(152);
+    expect(result.cachedTokens).toBe(256);
+  });
+
+  test('the token budget leaves room for reasoning, under the right field name', async () => {
+    const { sent, fetchImpl } = recordingFetch({ choices: [{ message: { content: 'x' } }] });
+
+    await new OpenAIModel({ apiKey: 'test', fetchImpl }).generate({
+      system: 's',
+      user: 'u',
+      maxTokens: 100,
+    });
+
+    // `max_tokens` is rejected outright by the reasoning models, and sizing the
+    // cap to maxTokens alone spends it all on reasoning and returns nothing.
+    expect(sent.body?.max_tokens).toBeUndefined();
+    expect(sent.body?.max_completion_tokens as number).toBeGreaterThan(100);
+  });
+
+  test('a refusal is a refusal, not an empty draft', async () => {
+    const model = new OpenAIModel({
+      apiKey: 'test',
+      fetchImpl: stubFetch({
+        choices: [{ message: { content: null, refusal: 'I cannot help with that' } }],
+      }),
+    });
+
+    const result = await model.generate({ system: 's', user: 'u' });
+
+    // HTTP 200 with null content: read without checking `refusal`, this is a
+    // successful draft that happens to be blank.
+    expect(result.refused).toBe(true);
+    expect(result.text).toBe('');
+  });
+
+  test('an http error carries its status so the chain can classify it', async () => {
+    const model = new OpenAIModel({
+      apiKey: 'test',
+      fetchImpl: stubFetch({ error: { code: 'insufficient_quota' } }, 429),
+    });
+
+    const error = await model.generate({ system: 's', user: 'u' }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(OpenAIApiError);
+    expect((error as OpenAIApiError).status).toBe(429);
+    // And the chain must read that as budget, or the second link never runs.
+    expect(isBudgetExhausted(error)).toBe(true);
+  });
+
+  test('the cached prefix is prepended rather than dropped', async () => {
+    const { sent, fetchImpl } = recordingFetch({ choices: [{ message: { content: 'x' } }] });
+
+    await new OpenAIModel({ apiKey: 'test', fetchImpl }).generate({
+      system: 'rules',
+      user: 'u',
+      cachedPrefix: 'the offering',
+    });
+
+    const messages = sent.body?.messages as { role: string; content: string }[];
+    // Caching is automatic on the prefix here, so it leads; dropping it would
+    // change the instructions the model is working from.
+    expect(messages[0]!.role).toBe('system');
+    expect(messages[0]!.content).toBe('the offering\n\nrules');
+  });
+
+  test('the real credit-exhausted body reads as budget, not as a bad request', async () => {
+    // Verbatim from the live API on 2026-08-13, which is how the shape below
+    // is known rather than assumed.
+    const model = new OpenAIModel({
+      apiKey: 'test',
+      fetchImpl: stubFetch(
+        {
+          error: {
+            message: 'You have no credits remaining. Add credits to continue using the API.',
+            type: 'insufficient_quota',
+            code: 'credit_balance_exhausted',
+          },
+        },
+        429,
+      ),
+    });
+
+    const error = await model.generate({ system: 's', user: 'u' }).catch((e: unknown) => e);
+    expect(isBudgetExhausted(error)).toBe(true);
+  });
+
+  test('the default model is not a dated snapshot', () => {
+    // A pinned snapshot retires on a schedule; that is an outage with a date.
+    expect(DEFAULT_OPENAI_MODEL).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+
+  test('the key travels as a bearer header, never in the URL', async () => {
+    const { sent, fetchImpl } = recordingFetch({ choices: [{ message: { content: 'x' } }] });
+
+    await new OpenAIModel({ apiKey: 'secret-key', fetchImpl }).generate({ system: 's', user: 'u' });
+
+    expect(sent.headers?.authorization).toBe('Bearer secret-key');
   });
 });
 

@@ -20,7 +20,13 @@
  */
 
 import { closeDatabase, getDatabase, migrate, queryAll } from '@outreachgraph/db';
-import { ClaudeModel, FallbackModel, GeminiModel, type FallbackEntry } from '@outreachgraph/ai';
+import {
+  ClaudeModel,
+  FallbackModel,
+  GeminiModel,
+  OpenAIModel,
+  type FallbackEntry,
+} from '@outreachgraph/ai';
 import { ResendMailer } from '@outreachgraph/email';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
@@ -93,6 +99,19 @@ if (process.env.ANTHROPIC_API_KEY) {
 // Second, not instead of. A capped Anthropic key regains access on its own, and
 // when it does the chain returns to Claude with no redeploy — which is what a
 // fallback should do rather than becoming a permanent quiet substitution.
+//
+// OpenAI comes before Gemini because it is the closer substitute: the prompts
+// and the deterministic gates were built around Claude, and a same-shaped model
+// is likelier to produce a draft that still passes them.
+if (process.env.OPENAI_API_KEY) {
+  chain.push({
+    name: 'openai',
+    model: new OpenAIModel({
+      ...(process.env.OPENAI_MODEL ? { model: process.env.OPENAI_MODEL } : {}),
+    }),
+  });
+}
+
 if (process.env.GEMINI_API_KEY) {
   chain.push({
     name: 'gemini',
