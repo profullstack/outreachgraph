@@ -7,7 +7,13 @@
  * dependency direction a lie.
  */
 
-export { runPipeline, type PipelineOptions, type PipelineResult } from './pipeline';
+export {
+  runPipeline,
+  runPipelineForCandidate,
+  type CandidateOrigin,
+  type PipelineOptions,
+  type PipelineResult,
+} from './pipeline';
 export {
   expireSignals,
   markSourceUnavailable,
@@ -18,6 +24,7 @@ export {
   type JobResult,
 } from './jobs';
 export {
+  batchStatus,
   claimNext,
   completeJob,
   drainQueue,
@@ -26,6 +33,8 @@ export {
   queueDepth,
   reclaimStalled,
   JOB_STATUSES,
+  type BatchItem,
+  type BatchStatus,
   type DrainSummary,
   type EnqueueInput,
   type EnqueueResult,

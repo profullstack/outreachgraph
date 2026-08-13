@@ -16,11 +16,13 @@ import { resolveIdentity, type EvidenceInput } from '@outreachgraph/identity';
 import {
   deriveEvidence,
   extractSignals,
+  findIdentities,
   GitHubProvider,
   GitHubRateLimitError,
   type ExtractedSignal,
   type PersonCandidate,
   type PersonEnrichmentProvider,
+  type ProviderCapabilities,
 } from '@outreachgraph/providers';
 import { generateRecommendation, type CandidateSignal } from '@outreachgraph/recommend';
 import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
@@ -54,17 +56,14 @@ export interface PipelineResult {
 /**
  * Runs the full chain for one GitHub handle.
  *
- * GitHub-first is deliberate: it is free, its profiles carry self-declared
- * cross-links, and the launch wedge is developer tooling (PRD §45).
+ * GitHub-first was the launch wedge: it is free and its profiles carry
+ * self-declared cross-links (PRD §45). It is now one way in among others —
+ * this resolves a handle to a candidate and hands over to the shared chain.
  */
 export async function runPipeline(
   options: PipelineOptions,
   handle: string,
 ): Promise<PipelineResult> {
-  const { db, workspaceId, campaignId } = options;
-  const stamp = now();
-
-  // ---------------------------------------------------------------- enrich
   const github = options.github ?? new GitHubProvider();
   const enrichment = await github.enrich({ handles: { github: handle } });
 
@@ -77,10 +76,44 @@ export async function runPipeline(
     };
   }
 
-  const candidate = enrichment.candidate;
+  return runPipelineForCandidate(options, enrichment.candidate, {
+    capabilities: github.capabilities(),
+    // The GitHub account this run started from is the anchor: it is the person,
+    // not an inference about them, so it links without a confidence test.
+    anchorNetwork: 'github',
+    githubHandle: handle,
+  });
+}
+
+export interface CandidateOrigin {
+  /** Whose data this is, for provenance and evidence weighting. */
+  readonly capabilities: ProviderCapabilities;
+  /** A network whose identity *is* the person, rather than a match for them. */
+  readonly anchorNetwork?: Network;
+  /** Enables the GitHub research stage when the candidate has a handle. */
+  readonly githubHandle?: string;
+}
+
+/**
+ * The chain, from a candidate onwards.
+ *
+ * This is the part that does not care where the person came from. A GitHub
+ * handle, a name lifted off a company homepage and an enrichment vendor's
+ * record all arrive here as the same normalised candidate, and everything after
+ * this point — suppression, resolution, research, scoring, recommendation,
+ * drafting — is identical for all three.
+ */
+export async function runPipelineForCandidate(
+  options: PipelineOptions,
+  candidate: PersonCandidate,
+  origin: CandidateOrigin,
+): Promise<PipelineResult> {
+  const { db, workspaceId, campaignId } = options;
+  const stamp = now();
+
   const personId = await upsertPerson(db, candidate, stamp);
 
-  await recordProvenance(db, personId, candidate, stamp);
+  await recordProvenance(db, personId, candidate, origin, stamp);
   await ensureCampaignMembership(db, campaignId, personId, workspaceId, stamp);
 
   // Suppression outranks everything: a suppressed person is never researched
@@ -97,21 +130,42 @@ export async function runPipeline(
   }
 
   // -------------------------------------------------------------- resolve
-  const linked = await linkIdentities(db, personId, candidate, github, stamp);
+  //
+  // Ask the other configured providers what else they can vouch for before
+  // resolving. Nothing is merged here — the fan-out gathers claims and the
+  // resolver below decides which of them are the same person.
+  const fanned =
+    options.providers.length > 0 ? await findIdentities(candidate, options.providers) : undefined;
+
+  const enriched = fanned?.candidate ?? candidate;
+
+  const linked = await linkIdentities(db, personId, enriched, origin, stamp);
   await setStatus(db, campaignId, personId, 'resolved');
 
   // ------------------------------------------------------------- research
+  //
+  // Only GitHub produces signals today, so a candidate with no GitHub identity
+  // reaches the queue with evidence but no activity. That is a real limitation
+  // rather than a bug: the card still carries the prospect and its source, and
+  // the composer refuses to invent a reason it cannot ground.
+  const researchHandle =
+    origin.githubHandle ??
+    candidate.identities.find((identity) => identity.network === 'github')?.handle;
+
   let stored = 0;
-  try {
-    const activity = await github.activity(handle);
-    const context = await extractionContext(db, campaignId);
-    const extracted = extractSignals(activity.events, activity.repos, context);
-    stored = await storeSignals(db, workspaceId, personId, extracted, stamp);
-    await setStatus(db, campaignId, personId, 'researching');
-  } catch (error) {
-    // A quota wall is not a prospect failure — keep what we have and let the
-    // next tick resume research.
-    if (!(error instanceof GitHubRateLimitError)) throw error;
+  if (researchHandle) {
+    const github = options.github ?? new GitHubProvider();
+    try {
+      const activity = await github.activity(researchHandle);
+      const context = await extractionContext(db, campaignId);
+      const extracted = extractSignals(activity.events, activity.repos, context);
+      stored = await storeSignals(db, workspaceId, personId, extracted, stamp);
+      await setStatus(db, campaignId, personId, 'researching');
+    } catch (error) {
+      // A quota wall is not a prospect failure — keep what we have and let the
+      // next tick resume research.
+      if (!(error instanceof GitHubRateLimitError)) throw error;
+    }
   }
 
   // ---------------------------------------------------------------- score
@@ -237,7 +291,7 @@ async function linkIdentities(
   db: Client,
   personId: string,
   candidate: PersonCandidate,
-  provider: GitHubProvider,
+  origin: CandidateOrigin,
   stamp: string,
 ): Promise<number> {
   const workspace = await queryOne<{ auto_merge_threshold: number; candidate_threshold: number }>(
@@ -262,14 +316,16 @@ async function linkIdentities(
     const evidence: EvidenceInput[] = deriveEvidence({
       identity,
       candidate,
-      capabilities: provider.capabilities(),
+      capabilities: origin.capabilities,
       crossLinkedHandles: declared,
       ...(candidate.companyName ? { platformEmployer: candidate.companyName } : {}),
     });
 
-    // The GitHub account itself is the anchor, not an inference about it.
+    // The anchor identity *is* the person the run started from, not an
+    // inference about them, so it links without a confidence test. A crawl has
+    // no anchor: every identity on a company page is a claim to be resolved.
     const resolution =
-      identity.network === 'github'
+      origin.anchorNetwork && identity.network === origin.anchorNetwork
         ? { decision: 'merge' as const, score: 1, verifiedBy: ['provider_asserted_link'] }
         : resolveIdentity(evidence, { thresholds });
 
@@ -277,7 +333,7 @@ async function linkIdentities(
       await db.execute({
         sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
               profile_url, confidence, source_type, verified_by, first_seen_at, last_verified_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 'official_api', ?, ?, ?)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               -- The uniqueness index is partial, so the conflict target has to
               -- repeat its WHERE clause or SQLite refuses to match it.
               ON CONFLICT(network, platform_user_id) WHERE platform_user_id IS NOT NULL
@@ -290,6 +346,7 @@ async function linkIdentities(
           identity.platformUserId ?? null,
           identity.profileUrl ?? null,
           resolution.score,
+          origin.capabilities.sourceType,
           JSON.stringify(resolution.verifiedBy),
           stamp,
           stamp,
@@ -519,6 +576,7 @@ async function recordProvenance(
   db: Client,
   personId: string,
   candidate: PersonCandidate,
+  origin: CandidateOrigin,
   stamp: string,
 ): Promise<void> {
   const fields: [string, string | undefined][] = [
@@ -531,15 +589,22 @@ async function recordProvenance(
   for (const [field, value] of fields) {
     if (!value) continue;
     await db.execute({
+      // Attribution follows the provider that actually supplied the value.
+      // Hardcoding GitHub's here was harmless while GitHub was the only source;
+      // with a crawl in the mix it would label a scraped name as an API fact
+      // and mis-classify what may be retained and exported (PRD §35).
       sql: `INSERT INTO field_provenance (id, entity_kind, entity_id, field, value, source_type,
             provider, source_record_id, license_class, confidence, observed_at, created_at)
-            VALUES (?, 'person', ?, ?, ?, 'official_api', 'github', ?, 'public_api', 1.0, ?, ?)`,
+            VALUES (?, 'person', ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?)`,
       args: [
         newId('fieldProvenance'),
         personId,
         field,
         value,
+        origin.capabilities.sourceType,
+        origin.capabilities.slug,
         candidate.sourceRecordId ?? null,
+        origin.capabilities.licenseClass,
         candidate.observedAt,
         stamp,
       ],

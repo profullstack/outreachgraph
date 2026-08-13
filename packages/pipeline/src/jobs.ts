@@ -24,6 +24,8 @@ export const JOB_KINDS = [
   'expire_signals',
   'process_deletion',
   'poll_drop',
+  /** Fetch one company URL, read it, and run everyone it names. */
+  'crawl_site',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
