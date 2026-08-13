@@ -41,3 +41,19 @@ export {
 export { draftForRecommendation, type DraftResult } from './draft';
 
 export { draftProfile, type ProfileDraft, type ProfileDraftResult } from './profile';
+
+export {
+  GeminiModel,
+  GeminiApiError,
+  MissingGeminiKeyError,
+  DEFAULT_GEMINI_MODEL,
+  type GeminiModelOptions,
+} from './gemini';
+
+export {
+  FallbackModel,
+  isBudgetExhausted,
+  type FallbackAttempt,
+  type FallbackEntry,
+  type FallbackModelOptions,
+} from './fallback';

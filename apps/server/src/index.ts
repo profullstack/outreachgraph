@@ -20,7 +20,7 @@
  */
 
 import { closeDatabase, getDatabase, migrate, queryAll } from '@outreachgraph/db';
-import { ClaudeModel } from '@outreachgraph/ai';
+import { ClaudeModel, FallbackModel, GeminiModel, type FallbackEntry } from '@outreachgraph/ai';
 import { ResendMailer } from '@outreachgraph/email';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
@@ -79,13 +79,39 @@ if (process.env.RUN_MIGRATIONS !== 'false') {
  * message. Refusing to boot over a missing key would take the whole system
  * down for a feature that is, by design, allowed to produce nothing.
  */
-const model = process.env.ANTHROPIC_API_KEY
-  ? new ClaudeModel({
-      ...(process.env.ANTHROPIC_MODEL ? { model: process.env.ANTHROPIC_MODEL } : {}),
-    })
-  : undefined;
+const chain: FallbackEntry[] = [];
 
-if (!model) console.log('no ANTHROPIC_API_KEY: drafting disabled, queue still runs');
+if (process.env.ANTHROPIC_API_KEY) {
+  chain.push({
+    name: 'anthropic',
+    model: new ClaudeModel({
+      ...(process.env.ANTHROPIC_MODEL ? { model: process.env.ANTHROPIC_MODEL } : {}),
+    }),
+  });
+}
+
+// Second, not instead of. A capped Anthropic key regains access on its own, and
+// when it does the chain returns to Claude with no redeploy — which is what a
+// fallback should do rather than becoming a permanent quiet substitution.
+if (process.env.GEMINI_API_KEY) {
+  chain.push({
+    name: 'gemini',
+    model: new GeminiModel({
+      ...(process.env.GEMINI_MODEL ? { model: process.env.GEMINI_MODEL } : {}),
+    }),
+  });
+}
+
+const model =
+  chain.length > 0
+    ? new FallbackModel(chain, {
+        onFallback: (attempt) =>
+          console.log(`model fallback: ${attempt.provider} unavailable — ${attempt.reason ?? ''}`),
+      })
+    : undefined;
+
+if (model) console.log(`model chain: ${model.providers.join(' -> ')}`);
+else console.log('no model key configured: drafting disabled, queue still runs');
 
 /**
  * Account email.
