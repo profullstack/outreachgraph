@@ -38,6 +38,14 @@ export interface CrawlResult {
   readonly fetchedAt: string;
   readonly detail?: string;
   /**
+   * Set when the model pass was asked for and never answered.
+   *
+   * `people: []` alone is ambiguous — a homepage that names nobody and a model
+   * that is down produce the identical result — and the two deserve opposite
+   * treatment: one is a finished crawl, the other is worth trying again.
+   */
+  readonly extractionUnavailable?: string;
+  /**
    * The page's visible prose, markup stripped.
    *
    * Carried so a caller that wants to reason about the page itself — reading
@@ -133,6 +141,7 @@ export class SiteProvider implements PersonEnrichmentProvider {
     // to a company name was its <title> can still get a better one.
     const needsPeople = people.length === 0;
     const needsName = !company.name;
+    let extractionUnavailable: string | undefined;
 
     if (this.#options.model && (needsPeople || needsName)) {
       const fromModel = await extractWithModel(
@@ -141,6 +150,8 @@ export class SiteProvider implements PersonEnrichmentProvider {
         page.finalUrl,
         company,
       );
+
+      extractionUnavailable = fromModel.unavailable;
 
       if (needsName && fromModel.company.name) {
         company = { ...company, name: fromModel.company.name };
@@ -164,6 +175,7 @@ export class SiteProvider implements PersonEnrichmentProvider {
       usedSignals,
       ...(page.contentHash ? { contentHash: page.contentHash } : {}),
       fetchedAt: page.fetchedAt,
+      ...(extractionUnavailable ? { extractionUnavailable } : {}),
       pageText: visibleText(page.html),
     };
   }

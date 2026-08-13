@@ -52,6 +52,17 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
     return { url, outcome: result.outcome, peopleFound: 0, peopleQueued: 0, usedSignals: [] };
   }
 
+  // A page that names nobody is finished; a page nobody was able to read is
+  // not. Both arrive here as `people: []`, and calling the second one done is
+  // how an expired model key turned into "the URL box does nothing" — every
+  // batch reporting success, every prospect list staying empty, and no error
+  // anywhere to explain it. Throwing puts the reason in `last_error`, where
+  // the batch view already shows it, and lets the backoff retry once the key
+  // works again.
+  if (result.people.length === 0 && result.extractionUnavailable) {
+    throw new Error(`could not read people from ${url}: ${result.extractionUnavailable}`);
+  }
+
   const campaign = await queryOne<{ id: string }>(
     deps.db,
     `SELECT id FROM campaigns WHERE workspace_id = ? ORDER BY created_at LIMIT 1`,

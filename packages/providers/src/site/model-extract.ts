@@ -80,6 +80,16 @@ function parseReply(text: string): unknown {
 export interface ModelExtraction {
   readonly company: { readonly name?: string; readonly description?: string };
   readonly people: readonly PersonCandidate[];
+  /**
+   * Why the model produced nothing, when the reason was not the page.
+   *
+   * Set only for an outage — the call threw. A refusal or an unreadable reply
+   * leaves this undefined, because those are answers about this page and
+   * asking again would get the same one. An empty extraction on its own cannot
+   * tell "the page names nobody" from "nobody was asked", and the caller has to
+   * treat those differently.
+   */
+  readonly unavailable?: string;
 }
 
 const EMPTY: ModelExtraction = { company: {}, people: [] };
@@ -89,7 +99,9 @@ const EMPTY: ModelExtraction = { company: {}, people: [] };
  *
  * Every failure mode returns empty rather than throwing: a refusal, an
  * unparseable reply, a model outage. None of those should fail a crawl whose
- * deterministic half may already have produced a usable company.
+ * deterministic half may already have produced a usable company — but an
+ * outage is reported on `unavailable` so the caller can tell it apart from a
+ * page that genuinely names nobody.
  */
 export async function extractWithModel(
   model: ExtractionModel,
@@ -107,8 +119,9 @@ export async function extractWithModel(
       user: `Page URL: ${pageUrl}\n\nPage text:\n${text}`,
       maxTokens: 1200,
     });
-  } catch {
-    return EMPTY;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ...EMPTY, unavailable: reason.slice(0, 300) };
   }
 
   if (reply.refused) return EMPTY;

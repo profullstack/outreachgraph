@@ -130,12 +130,36 @@ const mailer =
 
 if (!mailer) console.log('no RESEND_API_KEY/EMAIL_FROM: verification links are logged, not sent');
 
+/**
+ * Where the links in outbound email point.
+ *
+ * `APP_URL` unset used to mean `http://localhost:8080`, which is right in
+ * development and useless everywhere else — and because a send failure is
+ * audited but a *delivered* mail is not, production spent a week mailing real
+ * people a link to their own machine with nothing anywhere saying so.
+ *
+ * Railway always supplies the public hostname, so on a deployed service the
+ * fallback is derivable rather than guessed. The localhost default survives
+ * only where it is correct.
+ */
+const appUrl =
+  process.env.APP_URL ??
+  (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : undefined);
+
+if (!appUrl && ENVIRONMENT === 'production') {
+  console.log(
+    'APP_URL is unset and no public domain is known: email links will point at localhost',
+  );
+} else if (!process.env.APP_URL && appUrl) {
+  console.log(`APP_URL unset; email links will use ${appUrl}`);
+}
+
 // ---------------------------------------------------------------------- api
 const api = createApp({
   db,
   ...(model ? { model } : {}),
   ...(mailer ? { mailer } : {}),
-  ...(process.env.APP_URL ? { appUrl: process.env.APP_URL } : {}),
+  ...(appUrl ? { appUrl } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
