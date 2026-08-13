@@ -38,11 +38,14 @@ import {
 } from './auth';
 import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
 import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
-import { runPipeline } from '@outreachgraph/pipeline';
-import { GitHubProvider } from '@outreachgraph/providers';
+import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
+import { GitHubProvider, normaliseUrl } from '@outreachgraph/providers';
 import { ConsoleMailer, verificationEmail, type Mailer } from '@outreachgraph/email';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
+
+/** One paste, one reviewable unit of work. */
+const MAX_BULK_URLS = 100;
 
 export interface AppOptions {
   readonly db: Client;
@@ -391,6 +394,135 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       recommendationId: result.recommendationId,
       ...(result.stoppedBecause ? { reason: result.stoppedBecause } : {}),
     });
+  });
+
+  // ------------------------------------------------------------ by url
+  /**
+   * Adds prospects from company URLs (PRD §8, URL-first intake).
+   *
+   * Accepts one URL or up to a hundred, and answers immediately with a batch
+   * id. Nothing is fetched inside the request: a single URL fans out to a
+   * crawl, an extraction, an identity resolution per person named and a draft
+   * per recommendation, and doing that inline for a hundred URLs is not a slow
+   * request but a request that never returns.
+   *
+   * A URL already queued is reported as a duplicate rather than rejected. The
+   * same address appearing twice in one paste is a normal thing for a human to
+   * do and must not fail the other ninety-nine.
+   */
+  api.post('/prospects/by-url', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('adding prospects');
+
+    const raw = safeJson(await c.req.raw.text());
+    const submitted = Array.isArray(raw.urls) ? raw.urls : [raw.url];
+
+    const cleaned: string[] = [];
+    const rejected: { url: string; reason: string }[] = [];
+    const seen = new Set<string>();
+
+    for (const entry of submitted) {
+      if (typeof entry !== 'string' || !entry.trim()) continue;
+
+      let parsed: URL;
+      try {
+        parsed = new URL(normaliseUrl(entry));
+      } catch {
+        rejected.push({ url: String(entry), reason: 'not a url' });
+        continue;
+      }
+
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        rejected.push({ url: entry, reason: 'unsupported scheme' });
+        continue;
+      }
+
+      // `new URL` is far more permissive than a domain is: prefixing a scheme
+      // onto free text such as "not a url at all" produces a URL object with a
+      // one-word host, which would otherwise become a crawl job that can only
+      // ever fail. Require something that looks like a registrable domain.
+      if (
+        !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(parsed.hostname)
+      ) {
+        rejected.push({ url: entry, reason: 'not a domain' });
+        continue;
+      }
+
+      // Deduped by host, not by the full string: `example.com`,
+      // `https://example.com/` and `https://www.example.com` are one company,
+      // and crawling a homepage three times helps nobody.
+      const key = parsed.hostname.replace(/^www\./, '').toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      cleaned.push(parsed.toString());
+    }
+
+    if (cleaned.length === 0) {
+      throw ApiError.badRequest('enter at least one company URL', { urls: ['none were usable'] });
+    }
+
+    if (cleaned.length > MAX_BULK_URLS) {
+      throw ApiError.badRequest(`at most ${MAX_BULK_URLS} URLs at a time`, {
+        urls: [`received ${cleaned.length}`],
+      });
+    }
+
+    const batchId = newId('job');
+    const queued: string[] = [];
+    const duplicates: string[] = [];
+
+    for (const url of cleaned) {
+      const result = await enqueue(db, {
+        workspaceId: actor.workspaceId,
+        kind: 'crawl_site',
+        payload: { url },
+        batchId,
+        // One outstanding crawl per host per workspace. Releases itself when
+        // the job finishes, so the site can be re-crawled later.
+        dedupeKey: `crawl:${new URL(url).hostname.replace(/^www\./, '')}`,
+      });
+
+      if (result.queued) queued.push(url);
+      else duplicates.push(url);
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'prospects.bulk_queued',
+      entityKind: 'job',
+      entityId: batchId,
+      detail: { queued: queued.length, duplicates: duplicates.length, rejected: rejected.length },
+    });
+
+    return c.json(
+      {
+        batchId,
+        queued: queued.length,
+        urls: queued,
+        ...(duplicates.length ? { duplicates } : {}),
+        ...(rejected.length ? { rejected } : {}),
+      },
+      202,
+    );
+  });
+
+  /**
+   * Progress for one bulk submission.
+   *
+   * Reports the individual rows, not just counts: after a hundred URLs the
+   * useful question is which ones failed and why, and that answer is on the row.
+   */
+  api.get('/batches/:id', async (c) => {
+    const actor = c.get('actor');
+    const status = await batchStatus(c.get('db'), actor.workspaceId, c.req.param('id'));
+
+    if (!status) throw ApiError.notFound('batch');
+    return c.json(status);
   });
 
   // -------------------------------------------------------------- people

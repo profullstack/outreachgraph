@@ -29,8 +29,11 @@ import {
   expireSignals,
   processDeletion,
   rescoreProspect,
+  runPipelineForCandidate,
   type QueuedJob,
 } from '@outreachgraph/pipeline';
+import { BlueskyProvider, SiteProvider } from '@outreachgraph/providers';
+import { queryOne } from '@outreachgraph/db';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const WEB_PORT = Number(process.env.WEB_PORT ?? 3001);
@@ -225,8 +228,79 @@ let inFlight: Promise<void> = Promise.resolve();
  * success. A throw here is how the queue is told to retry or, once attempts
  * run out, to keep the row as `failed` with the reason attached.
  */
+/** The site crawler, sharing the composer's key for its extraction fallback. */
+const site = new SiteProvider(model ? { model } : {});
+
+/**
+ * Providers the fan-out may consult once a candidate exists.
+ *
+ * Bluesky only, for now, and deliberately: its AppView needs no key and no
+ * contract, so it can run here without a commercial decision attached. X and
+ * the enrichment vendors both do, and shipping an adapter that cannot be
+ * exercised would be code pretending to be a feature.
+ */
+const fanOutProviders = [new BlueskyProvider()];
+
+/**
+ * Fetches one company URL and runs everyone it names.
+ *
+ * A page that names nobody is a completed job, not a failed one. Homepages
+ * frequently describe a company without naming a single person, and retrying
+ * that four more times would spend the crawl budget re-reading a page whose
+ * answer will not change.
+ */
+async function crawlSite(job: QueuedJob): Promise<void> {
+  const { url } = job.payload as { url?: string };
+  if (!url) throw new Error('crawl_site needs a url');
+
+  const result = await site.crawl(url);
+
+  if (result.outcome !== 'ok') {
+    // A refusal is the site's answer and re-asking will not change it, so this
+    // resolves the job rather than throwing it back into the retry loop.
+    console.log(`crawl ${url}: ${result.outcome}${result.detail ? ` (${result.detail})` : ''}`);
+    return;
+  }
+
+  const campaign = await queryOne<{ id: string }>(
+    db,
+    `SELECT id FROM campaigns WHERE workspace_id = ? ORDER BY created_at LIMIT 1`,
+    [job.workspaceId],
+  );
+
+  if (!campaign) throw new Error(`workspace ${job.workspaceId} has no campaign`);
+
+  let queued = 0;
+  for (const candidate of result.people) {
+    await runPipelineForCandidate(
+      {
+        db,
+        workspaceId: job.workspaceId,
+        campaignId: campaign.id,
+        providers: fanOutProviders,
+        ...(model ? { model } : {}),
+      },
+      candidate,
+      {
+        capabilities: site.capabilities(),
+        // No anchor: nobody named on a company page is proven to be that
+        // person. Every identity found there is a claim for the resolver.
+      },
+    );
+    queued += 1;
+  }
+
+  console.log(
+    `crawl ${url}: ${result.company.name ?? 'unnamed company'}, ${queued} people` +
+      ` (${result.usedSignals.join(', ') || 'no signals'})`,
+  );
+}
+
 async function runJob(job: QueuedJob): Promise<void> {
   switch (job.kind) {
+    case 'crawl_site':
+      await crawlSite(job);
+      return;
     case 'rescore_prospect': {
       const { campaignId, personId } = job.payload as { campaignId?: string; personId?: string };
       if (!campaignId || !personId)

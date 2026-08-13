@@ -50,6 +50,8 @@ export interface EnqueueInput {
   readonly maxAttempts?: number;
   /** Suppresses a duplicate while an identical job is still outstanding. */
   readonly dedupeKey?: string;
+  /** Groups this job with the rest of one bulk submission. */
+  readonly batchId?: string;
 }
 
 export interface EnqueueResult {
@@ -77,8 +79,8 @@ export async function enqueue(db: Client, input: EnqueueInput): Promise<EnqueueR
   try {
     await db.execute({
       sql: `INSERT INTO jobs (id, workspace_id, kind, payload_json, status, attempts,
-              max_attempts, run_after, dedupe_key, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`,
+              max_attempts, run_after, dedupe_key, batch_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)`,
       args: [
         id,
         input.workspaceId,
@@ -87,6 +89,7 @@ export async function enqueue(db: Client, input: EnqueueInput): Promise<EnqueueR
         input.maxAttempts ?? 5,
         plus(stamp, input.delayMs ?? 0),
         input.dedupeKey ?? null,
+        input.batchId ?? null,
         stamp,
         stamp,
       ],
@@ -293,6 +296,75 @@ export async function drainQueue(
   }
 
   return { processed, succeeded, retried, dead, reclaimed };
+}
+
+export interface BatchItem {
+  readonly id: string;
+  readonly status: JobStatus;
+  readonly attempts: number;
+  /** The URL this job was created for, when it has one. */
+  readonly url?: string;
+  readonly lastError?: string;
+}
+
+export interface BatchStatus {
+  readonly batchId: string;
+  readonly total: number;
+  readonly pending: number;
+  readonly running: number;
+  readonly done: number;
+  readonly failed: number;
+  readonly items: readonly BatchItem[];
+}
+
+/**
+ * Progress for one bulk submission.
+ *
+ * Returns the individual rows rather than only the counts, because the useful
+ * question after a hundred URLs is not "how many failed" but "which ones, and
+ * why" — and that answer lives in each row's `last_error`.
+ */
+export async function batchStatus(
+  db: Client,
+  workspaceId: string,
+  batchId: string,
+): Promise<BatchStatus | undefined> {
+  const rows = await queryAll<{
+    id: string;
+    status: string;
+    attempts: number;
+    payload_json: string;
+    last_error: string | null;
+  }>(
+    db,
+    `SELECT id, status, attempts, payload_json, last_error
+       FROM jobs WHERE batch_id = ? AND workspace_id = ? ORDER BY created_at`,
+    [batchId, workspaceId],
+  );
+
+  if (rows.length === 0) return undefined;
+
+  const counts: Record<JobStatus, number> = { pending: 0, running: 0, done: 0, failed: 0 };
+  const items: BatchItem[] = [];
+
+  for (const row of rows) {
+    const status = (
+      (JOB_STATUSES as readonly string[]).includes(row.status) ? row.status : 'pending'
+    ) as JobStatus;
+    counts[status] += 1;
+
+    const url = safeParse(row.payload_json).url;
+
+    items.push({
+      id: row.id,
+      status,
+      attempts: Number(row.attempts),
+      ...(typeof url === 'string' ? { url } : {}),
+      ...(row.last_error ? { lastError: row.last_error } : {}),
+    });
+  }
+
+  return { batchId, total: rows.length, ...counts, items };
 }
 
 /** Queue depth by status, for the tick log and, later, an operator view. */
