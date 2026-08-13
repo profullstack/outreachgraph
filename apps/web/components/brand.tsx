@@ -36,11 +36,15 @@ export function BrandWordmark({ className = 'h-7 w-auto' }: { className?: string
  * the artwork while the wordmark's cap-height is a little over half of it, so
  * matching the type to the mark's box makes the light branch read a size larger
  * than the dark one.
+ *
+ * `md` and `lg` grow only from `sm` up. The light branch is mark plus the word
+ * "OutreachGraph", so at 64px it is around 260px wide — which on a 375px phone
+ * leaves nothing for the "Sign in" button sharing the nav row.
  */
 const SIZES = {
-  sm: { mark: 'h-8', text: 'text-[17px]' },
-  md: { mark: 'h-10 sm:h-11', text: 'text-[21px] sm:text-[23px]' },
-  lg: { mark: 'h-12 sm:h-14', text: 'text-[26px] sm:text-[30px]' },
+  sm: { mark: 'h-10', text: 'text-[21px]' },
+  md: { mark: 'h-10 sm:h-16', text: 'text-[21px] sm:text-[34px]' },
+  lg: { mark: 'h-14 sm:h-20', text: 'text-[30px] sm:text-[42px]' },
 } as const;
 
 /**
