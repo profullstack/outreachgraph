@@ -19,7 +19,7 @@ import type {
 } from '../provider';
 import { fetchPage, type FetchOptions, type FetchOutcome, type FetchedPage } from './fetch';
 import { extractSite, type ExtractedCompany } from './extract';
-import { extractWithModel, type ExtractionModel } from './model-extract';
+import { extractWithModel, visibleText, type ExtractionModel } from './model-extract';
 
 export interface SiteProviderOptions extends FetchOptions {
   /** Omit to run deterministic-only; the crawl still works, it just reads less. */
@@ -37,6 +37,14 @@ export interface CrawlResult {
   readonly contentHash?: string;
   readonly fetchedAt: string;
   readonly detail?: string;
+  /**
+   * The page's visible prose, markup stripped.
+   *
+   * Carried so a caller that wants to reason about the page itself — reading
+   * your *own* site to draft your profile, rather than mining someone else's
+   * for leads — does not have to fetch it a second time.
+   */
+  readonly pageText?: string;
 }
 
 function emptyCompany(): ExtractedCompany {
@@ -156,6 +164,7 @@ export class SiteProvider implements PersonEnrichmentProvider {
       usedSignals,
       ...(page.contentHash ? { contentHash: page.contentHash } : {}),
       fetchedAt: page.fetchedAt,
+      pageText: visibleText(page.html),
     };
   }
 }

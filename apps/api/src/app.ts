@@ -19,6 +19,7 @@ import {
   privacyRequestSchema,
   registerSchema,
   snoozeRecommendationSchema,
+  workspaceProfileSchema,
 } from '@outreachgraph/contracts';
 import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
@@ -37,12 +38,13 @@ import {
   workspacesForUser,
 } from './auth';
 import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
-import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
+import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
-import { GitHubProvider, normaliseUrl } from '@outreachgraph/providers';
+import { GitHubProvider, SiteProvider, normaliseUrl } from '@outreachgraph/providers';
 import { ConsoleMailer, verificationEmail, type Mailer } from '@outreachgraph/email';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
+import { loadWorkspaceProfile, saveWorkspaceProfile } from './workspace-profile';
 
 /** One paste, one reviewable unit of work. */
 const MAX_BULK_URLS = 100;
@@ -71,6 +73,8 @@ export interface AppOptions {
    * inject a fake; production leaves it unset and gets the real client.
    */
   readonly github?: GitHubProvider;
+  /** Reads the customer's own site during onboarding. Tests inject a fake. */
+  readonly site?: SiteProvider;
   /**
    * Sends account email. Omit to log messages instead of sending them, which
    * is what local development and the test suite do.
@@ -394,6 +398,125 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       recommendationId: result.recommendationId,
       ...(result.stoppedBecause ? { reason: result.stoppedBecause } : {}),
     });
+  });
+
+  // ---------------------------------------------------------- onboarding
+  /**
+   * Reads your own site and drafts your profile (PRD §7, §11).
+   *
+   * The mirror image of the crawler that reads a prospect's site: the page
+   * belongs to the person signing up, and what comes back describes their
+   * business rather than a lead — what they sell, who plausibly buys it, how
+   * they write, and where those buyers are active.
+   *
+   * Nothing is saved here. The reply is a draft to correct, because it is a
+   * model's reading of a marketing page and not a fact about someone's company.
+   * `PUT` is what commits it.
+   *
+   * Verified email is required before the model runs. An unverified signup is
+   * an unattributed one, and this is the first route where a stranger can spend
+   * our tokens.
+   */
+  api.post('/onboarding/profile', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('setting up the workspace');
+    await requireVerifiedEmail(db, actor, 'we read your site');
+
+    if (!options.model) {
+      throw new ApiError(
+        503,
+        'composer_unavailable',
+        'no language model is configured; fill the profile in by hand for now',
+      );
+    }
+
+    const raw = safeJson(await c.req.raw.text());
+    if (typeof raw.url !== 'string' || !raw.url.trim()) {
+      throw ApiError.badRequest('enter your website address', { url: ['required'] });
+    }
+
+    let target: URL;
+    try {
+      target = new URL(normaliseUrl(raw.url));
+    } catch {
+      throw ApiError.badRequest('that does not look like a web address', { url: ['invalid'] });
+    }
+
+    const page = await (options.site ?? new SiteProvider()).crawl(target.toString());
+    if (page.outcome !== 'ok') {
+      // The site's own answer, phrased for the person who owns it.
+      const why =
+        page.outcome === 'robots_denied'
+          ? 'your robots.txt blocks us from reading it'
+          : `we could not read it (${page.outcome})`;
+      throw ApiError.badRequest(`we could not read ${target.hostname}: ${why}`, {
+        url: [page.outcome],
+      });
+    }
+
+    const result = await draftProfile(options.model, page.pageText ?? '', page.finalUrl);
+    if (!result.ok || !result.draft) {
+      throw new ApiError(502, 'profile_draft_failed', result.reason ?? 'could not draft a profile');
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'onboarding.profile_drafted',
+      entityKind: 'workspace',
+      entityId: actor.workspaceId,
+      detail: { url: page.finalUrl },
+    });
+
+    return c.json({
+      url: page.finalUrl,
+      companyName: page.company.name,
+      draft: result.draft,
+    });
+  });
+
+  /**
+   * Commits the profile the person confirmed.
+   *
+   * Takes the edited draft rather than re-reading the site: what is saved has
+   * to be what they approved, and re-running the model here would quietly
+   * replace their corrections with a fresh guess.
+   */
+  api.put('/onboarding/profile', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('setting up the workspace');
+
+    const raw = safeJson(await c.req.raw.text());
+    const parsed = workspaceProfileSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw ApiError.badRequest('that profile is incomplete', parsed.error.flatten().fieldErrors);
+    }
+
+    const saved = await saveWorkspaceProfile(db, actor.workspaceId, parsed.data);
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'onboarding.profile_saved',
+      entityKind: 'offering',
+      entityId: saved.offeringId,
+      detail: { name: parsed.data.offering.name },
+    });
+
+    return c.json({ saved: true, ...saved });
+  });
+
+  /** What the workspace currently believes about itself. */
+  api.get('/onboarding/profile', async (c) => {
+    const actor = c.get('actor');
+    const profile = await loadWorkspaceProfile(c.get('db'), actor.workspaceId);
+    return c.json(profile);
   });
 
   // ------------------------------------------------------------ by url
@@ -1164,11 +1287,15 @@ function numberOr(value: unknown, fallback: number): number {
  * A service token has no user, so this cannot apply to it; machine callers
  * are authorised by holding the token.
  */
-async function requireVerifiedEmail(db: Client, actor: RequestActor): Promise<void> {
+async function requireVerifiedEmail(
+  db: Client,
+  actor: RequestActor,
+  action = 'sending anything',
+): Promise<void> {
   if (actor.userId === 'usr_service') return;
   if (await isEmailVerified(db, actor.userId)) return;
 
-  throw new ApiError(403, 'email_unverified', 'confirm your email address before sending anything');
+  throw new ApiError(403, 'email_unverified', `confirm your email address before ${action}`);
 }
 
 /**
