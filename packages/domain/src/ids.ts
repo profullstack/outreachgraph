@@ -28,6 +28,7 @@ export const ID_PREFIXES = {
   approval: 'apr',
   action: 'act',
   interaction: 'int',
+  videoAsset: 'vid',
   suppression: 'sup',
   privacyRequest: 'pri',
   deletionJob: 'del',

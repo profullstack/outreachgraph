@@ -24,6 +24,7 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 | §13.2 Recommendation schema        | `packages/domain/src/outreach.ts`                                        | —                                 |
 | §14.1 Outreach composer            | `packages/ai/src/composer.ts`, `model.ts`, `draft.ts`                    | 29 tests                          |
 | §14.2 Quality checks               | `packages/ai/src/checks.ts`, `packages/domain/src/outreach.ts`           | 40 tests                          |
+| §14.3 Personalised video           | `packages/media/src/script.ts`, `renderer.ts`, `render.ts`               | 36 tests                          |
 | §15 Approval queue                 | `apps/api` `GET /recommendations`                                        | `apps/api/src/app.test.ts`        |
 | §16 Platform policy                | `packages/policy/src/capability-matrix.ts`                               | 46 tests                          |
 | §16.2 Policy modes                 | `packages/policy/src/capability-matrix.ts`                               | included above                    |
@@ -34,7 +35,7 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 | §17.6 Source deletion              | `packages/pipeline/src/jobs.ts` `markSourceUnavailable`                  | pipeline tests                    |
 | §18 Rate limits, cooldowns         | `packages/policy/src/engine.ts`                                          | policy tests                      |
 | §20.8 Policy engine                | `packages/policy/src/engine.ts`                                          | 46 tests                          |
-| §21 Database model                 | `migrations/0000`–`0006`                                                 | `packages/db/src/migrate.test.ts` |
+| §21 Database model                 | `migrations/0000`–`0007`                                                 | `packages/db/src/migrate.test.ts` |
 | §23 API endpoints                  | `apps/api/src/app.ts`                                                    | 61 tests                          |
 | §34 Workspace isolation            | `apps/api/src/repository.ts`                                             | `apps/api/src/app.test.ts`        |
 | §37 Feature flags                  | `feature_flags` table, policy `feature_flag` gate                        | policy + API tests                |
