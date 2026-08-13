@@ -232,7 +232,7 @@ function ClosingCta() {
   return (
     <Band className="bg-ink py-16 text-center text-white sm:py-20">
       {/* This band is `bg-ink` in both themes, so the wordmark is safe here. */}
-      <BrandWordmark className="mx-auto mb-8 h-12 w-auto sm:h-16" />
+      <BrandWordmark className="mx-auto mb-8 h-16 w-auto sm:h-24" />
 
       <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-balance sm:text-[34px]">
         Find the people already talking about your problem.

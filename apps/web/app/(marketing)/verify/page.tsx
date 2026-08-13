@@ -19,8 +19,9 @@ export default async function VerifyPage({
 }) {
   const { token } = await searchParams;
 
+  // Same full-bleed parent as /login: this page has to supply its own gutter.
   return (
-    <div className="mx-auto flex max-w-sm flex-col gap-4 pt-12">
+    <div className="mx-auto flex max-w-sm flex-col gap-4 px-5 pt-12">
       <BrandLockup size="md" />
       <h1 className="text-xl font-semibold">Confirm your email</h1>
       <VerifyForm token={token ?? ''} />
