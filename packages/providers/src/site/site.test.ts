@@ -304,6 +304,16 @@ describe('model extraction', () => {
 
     const result = await extractWithModel(model, '<p>x</p>', 'https://b.co/', { identities: [] });
     expect(result.people).toHaveLength(0);
+    expect(result.unavailable).toContain('api down');
+  });
+
+  test('a refusal is an answer about the page, not an outage', async () => {
+    const result = await extractWithModel(modelReturning('no', true), '<p>x</p>', 'https://b.co/', {
+      identities: [],
+    });
+
+    expect(result.people).toHaveLength(0);
+    expect(result.unavailable).toBeUndefined();
   });
 });
 
@@ -364,6 +374,31 @@ describe('SiteProvider', () => {
     expect(result.company.name).toBe('Handmade Ltd');
     expect(result.people[0]!.fullName).toBe('Sam Rivers');
     expect(result.usedSignals).toContain('model');
+    expect(result.extractionUnavailable).toBeUndefined();
+  });
+
+  test('a dead model is reported rather than read as an empty page', async () => {
+    const model: ExtractionModel = {
+      generate: async () => {
+        throw new Error('400 you have reached your specified API usage limits');
+      },
+    };
+
+    const provider = new SiteProvider({
+      model,
+      fetchImpl: stubFetch({
+        'https://handmade.example/robots.txt': ROBOTS,
+        'https://handmade.example/': {
+          body: '<html><body><h1>We build things</h1></body></html>',
+        },
+      }),
+    });
+
+    const result = await provider.crawl('https://handmade.example/');
+
+    expect(result.outcome).toBe('ok');
+    expect(result.people).toHaveLength(0);
+    expect(result.extractionUnavailable).toContain('usage limits');
   });
 
   test('without a model it degrades to deterministic-only', async () => {

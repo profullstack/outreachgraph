@@ -173,6 +173,43 @@ describe('URL to approval card', () => {
     expect(job?.status).toBe('done');
   });
 
+  test('a page nobody could read retries instead of reporting success', async () => {
+    const { db } = await setup('e2e-model-down');
+
+    const added = await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      payload: { url: 'https://bespoke.example' },
+    });
+
+    const site = new SiteProvider({
+      fetchImpl: stubNetwork('<html><body><p>We build things.</p></body></html>'),
+      model: {
+        generate: async () => {
+          throw new Error('400 you have reached your specified API usage limits');
+        },
+      },
+    });
+
+    const summary = await drainQueue(db, async (job) => {
+      await runCrawlJob({ db, site, providers: [] }, job);
+    });
+
+    // The distinction the whole fix turns on: this page looks exactly like the
+    // one above — no people — but nothing actually read it, so calling it done
+    // would report success for work that never happened.
+    expect(summary.succeeded).toBe(0);
+    expect(summary.retried).toBe(1);
+
+    const job = await queryOne<{ status: string; last_error: string }>(
+      db,
+      'SELECT status, last_error FROM jobs WHERE id = ?',
+      [added.id!],
+    );
+    expect(job?.status).toBe('pending');
+    expect(job?.last_error).toContain('usage limits');
+  });
+
   test('a blocked site completes rather than burning retries', async () => {
     const { db } = await setup('e2e-blocked');
 
