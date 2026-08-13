@@ -903,7 +903,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       throw new ApiError(
         503,
         'composer_unavailable',
-        'no language model is configured; set ANTHROPIC_API_KEY to enable drafting',
+        'no language model is configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY to enable drafting',
       );
     }
 

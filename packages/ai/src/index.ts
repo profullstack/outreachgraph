@@ -43,6 +43,14 @@ export { draftForRecommendation, type DraftResult } from './draft';
 export { draftProfile, type ProfileDraft, type ProfileDraftResult } from './profile';
 
 export {
+  OpenAIModel,
+  OpenAIApiError,
+  MissingOpenAIKeyError,
+  DEFAULT_OPENAI_MODEL,
+  type OpenAIModelOptions,
+} from './openai';
+
+export {
   GeminiModel,
   GeminiApiError,
   MissingGeminiKeyError,
