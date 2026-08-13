@@ -29,6 +29,21 @@ export function BrandWordmark({ className = 'h-7 w-auto' }: { className?: string
 }
 
 /**
+ * Named steps rather than a free height, so the two branches of the lockup stay
+ * the same size as each other and the text stays in proportion to the mark.
+ *
+ * The ratio is roughly `text ≈ 0.53 × height`: the mark fills the full height of
+ * the artwork while the wordmark's cap-height is a little over half of it, so
+ * matching the type to the mark's box makes the light branch read a size larger
+ * than the dark one.
+ */
+const SIZES = {
+  sm: { mark: 'h-8', text: 'text-[17px]' },
+  md: { mark: 'h-10 sm:h-11', text: 'text-[21px] sm:text-[23px]' },
+  lg: { mark: 'h-12 sm:h-14', text: 'text-[26px] sm:text-[30px]' },
+} as const;
+
+/**
  * Safe anywhere the surface follows the colour scheme.
  *
  * Only one branch is ever rendered, so assistive technology sees a single
@@ -36,19 +51,19 @@ export function BrandWordmark({ className = 'h-7 w-auto' }: { className?: string
  */
 export function BrandLockup({
   className = '',
-  height = 'h-7',
-  text = 'text-[17px]',
+  size = 'sm',
 }: {
   className?: string;
-  height?: string;
-  text?: string;
+  size?: keyof typeof SIZES;
 }) {
+  const { mark, text } = SIZES[size];
+
   return (
     <span className={`inline-flex items-center ${className}`}>
-      <BrandWordmark className={`hidden w-auto dark:block ${height}`} />
+      <BrandWordmark className={`hidden w-auto dark:block ${mark}`} />
 
       <span className="inline-flex items-center gap-2 dark:hidden">
-        <BrandMark className={`aspect-square w-auto ${height}`} />
+        <BrandMark className={`aspect-square w-auto ${mark}`} />
         <span className={`font-bold tracking-tight ${text}`}>OutreachGraph</span>
       </span>
     </span>

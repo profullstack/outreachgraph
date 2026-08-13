@@ -9,7 +9,7 @@ export default function LoginPage() {
       <header className="mb-6">
         {/* The lockup is the heading here, so it carries the h1 rather than sitting above one. */}
         <h1>
-          <BrandLockup height="h-9" text="text-2xl" />
+          <BrandLockup size="lg" />
         </h1>
         <p className="text-ink-muted mt-1 text-sm">
           Turn public intent signals into warm conversations.
