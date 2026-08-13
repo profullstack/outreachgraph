@@ -109,6 +109,16 @@
         "@outreachgraph/domain": "workspace:*",
       },
     },
+    "packages/media": {
+      "name": "@outreachgraph/media",
+      "version": "0.1.0",
+      "dependencies": {
+        "@outreachgraph/ai": "workspace:*",
+        "@outreachgraph/db": "workspace:*",
+        "@outreachgraph/domain": "workspace:*",
+        "@outreachgraph/policy": "workspace:*",
+      },
+    },
     "packages/pipeline": {
       "name": "@outreachgraph/pipeline",
       "version": "0.1.0",
@@ -297,6 +307,8 @@
     "@outreachgraph/email": ["@outreachgraph/email@workspace:packages/email"],
 
     "@outreachgraph/identity": ["@outreachgraph/identity@workspace:packages/identity"],
+
+    "@outreachgraph/media": ["@outreachgraph/media@workspace:packages/media"],
 
     "@outreachgraph/pipeline": ["@outreachgraph/pipeline@workspace:packages/pipeline"],
 
