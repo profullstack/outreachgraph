@@ -29,11 +29,10 @@ import {
   expireSignals,
   processDeletion,
   rescoreProspect,
-  runPipelineForCandidate,
+  runCrawlJob,
   type QueuedJob,
 } from '@outreachgraph/pipeline';
 import { BlueskyProvider, SiteProvider } from '@outreachgraph/providers';
-import { queryOne } from '@outreachgraph/db';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const WEB_PORT = Number(process.env.WEB_PORT ?? 3001);
@@ -250,49 +249,19 @@ const fanOutProviders = [new BlueskyProvider()];
  * answer will not change.
  */
 async function crawlSite(job: QueuedJob): Promise<void> {
-  const { url } = job.payload as { url?: string };
-  if (!url) throw new Error('crawl_site needs a url');
-
-  const result = await site.crawl(url);
+  const result = await runCrawlJob(
+    { db, site, providers: fanOutProviders, ...(model ? { model } : {}) },
+    job,
+  );
 
   if (result.outcome !== 'ok') {
-    // A refusal is the site's answer and re-asking will not change it, so this
-    // resolves the job rather than throwing it back into the retry loop.
-    console.log(`crawl ${url}: ${result.outcome}${result.detail ? ` (${result.detail})` : ''}`);
+    console.log(`crawl ${result.url}: ${result.outcome}`);
     return;
   }
 
-  const campaign = await queryOne<{ id: string }>(
-    db,
-    `SELECT id FROM campaigns WHERE workspace_id = ? ORDER BY created_at LIMIT 1`,
-    [job.workspaceId],
-  );
-
-  if (!campaign) throw new Error(`workspace ${job.workspaceId} has no campaign`);
-
-  let queued = 0;
-  for (const candidate of result.people) {
-    await runPipelineForCandidate(
-      {
-        db,
-        workspaceId: job.workspaceId,
-        campaignId: campaign.id,
-        providers: fanOutProviders,
-        ...(model ? { model } : {}),
-      },
-      candidate,
-      {
-        capabilities: site.capabilities(),
-        // No anchor: nobody named on a company page is proven to be that
-        // person. Every identity found there is a claim for the resolver.
-      },
-    );
-    queued += 1;
-  }
-
   console.log(
-    `crawl ${url}: ${result.company.name ?? 'unnamed company'}, ${queued} people` +
-      ` (${result.usedSignals.join(', ') || 'no signals'})`,
+    `crawl ${result.url}: ${result.companyName ?? 'unnamed company'},` +
+      ` ${result.peopleQueued} people (${result.usedSignals.join(', ') || 'no signals'})`,
   );
 }
 

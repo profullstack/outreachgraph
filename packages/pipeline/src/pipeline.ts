@@ -214,17 +214,37 @@ async function upsertPerson(
   candidate: PersonCandidate,
   stamp: string,
 ): Promise<string> {
-  const githubIdentity = candidate.identities.find((i) => i.network === 'github');
+  // Match on the stable platform id wherever the provider supplied one — it
+  // survives a rename and is the strongest key available.
+  for (const identity of candidate.identities) {
+    if (!identity.platformUserId) continue;
+    const byId = await queryOne<{ person_id: string }>(
+      db,
+      'SELECT person_id FROM social_identities WHERE network = ? AND platform_user_id = ?',
+      [identity.network, identity.platformUserId],
+    );
+    if (byId) return byId.person_id;
+  }
 
-  const existing = githubIdentity?.platformUserId
-    ? await queryOne<{ person_id: string }>(
-        db,
-        'SELECT person_id FROM social_identities WHERE network = ? AND platform_user_id = ?',
-        ['github', githubIdentity.platformUserId],
-      )
-    : undefined;
-
-  if (existing) return existing.person_id;
+  // Then by handle. A crawl never has a platform id — a company page gives
+  // `github.com/alexchen`, not GitHub's numeric id — so without this every
+  // re-crawl of the same site created a second copy of everyone on it.
+  //
+  // The trade is real and is taken deliberately: handles are renameable, so a
+  // freed-and-reused handle could match the wrong person. But that only
+  // compares against handles already linked to a person *with evidence*, and
+  // the alternative is guaranteed duplicates on every crawl, which corrupts
+  // the queue rather than merely risking it.
+  for (const identity of candidate.identities) {
+    if (!identity.handle) continue;
+    const byHandle = await queryOne<{ person_id: string }>(
+      db,
+      `SELECT person_id FROM social_identities
+        WHERE network = ? AND handle = ? COLLATE NOCASE`,
+      [identity.network, identity.handle],
+    );
+    if (byHandle) return byHandle.person_id;
+  }
 
   const companyId = candidate.companyName ? await upsertCompany(db, candidate, stamp) : undefined;
 
