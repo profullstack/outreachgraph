@@ -14,16 +14,16 @@ message.
 `POST /prospects` takes one GitHub handle and runs the whole chain inline, in
 the request (`apps/api/src/app.ts:334`, `packages/pipeline/src/pipeline.ts:60`):
 
-| Stage | Where |
-| --- | --- |
-| enrich | `github.enrich({ handles: { github: handle } })` — `pipeline.ts:69` |
-| suppression check | `isSuppressed` — `pipeline.ts:88` |
-| resolve identities | `linkIdentities` — `pipeline.ts:100` |
-| research | `github.activity` → `extractSignals` — `pipeline.ts:106` |
-| score | `rescoreProspect` — `pipeline.ts:118` |
-| recommend | `createRecommendation` — `pipeline.ts:122` |
-| draft | `draftForRecommendation` — `pipeline.ts:140` |
-| await approval | `setStatus(…, 'awaiting_approval')` — `pipeline.ts:145` |
+| Stage              | Where                                                               |
+| ------------------ | ------------------------------------------------------------------- |
+| enrich             | `github.enrich({ handles: { github: handle } })` — `pipeline.ts:69` |
+| suppression check  | `isSuppressed` — `pipeline.ts:88`                                   |
+| resolve identities | `linkIdentities` — `pipeline.ts:100`                                |
+| research           | `github.activity` → `extractSignals` — `pipeline.ts:106`            |
+| score              | `rescoreProspect` — `pipeline.ts:118`                               |
+| recommend          | `createRecommendation` — `pipeline.ts:122`                          |
+| draft              | `draftForRecommendation` — `pipeline.ts:140`                        |
+| await approval     | `setStatus(…, 'awaiting_approval')` — `pipeline.ts:145`             |
 
 GitHub is not one source among several here. It is the **anchor identity**: if
 `github.enrich` returns nothing the run stops at `no GitHub profile for …`
@@ -127,7 +127,7 @@ The prerequisite for everything else.
 - Reuse the existing `JOB_KINDS` union — it becomes the real thing it already
   describes.
 
-*Deliberately not Redis.* `REDIS_URL` sits empty in the vault and unreferenced
+_Deliberately not Redis._ `REDIS_URL` sits empty in the vault and unreferenced
 in the code. Turso is already there, already backed up, and a table is enough at
 this volume.
 
@@ -187,12 +187,12 @@ likely: deterministic for structured markup, LLM only where that finds nothing.
 
 ## 5. Sequencing and risk
 
-| Phase | Depends on | Main risk |
-| --- | --- | --- |
-| 1 — job queue | — | Low. Well-understood, fully testable offline. |
-| 2 — site provider | 1 | **High.** Extraction quality is the product. |
-| 3 — entry points | 1, 2 | Medium. Mostly refactor; touches tested code. |
-| 4 — network fan-out | 2, 3 | Medium. Per-vendor cost, quota and contract terms. |
+| Phase               | Depends on | Main risk                                          |
+| ------------------- | ---------- | -------------------------------------------------- |
+| 1 — job queue       | —          | Low. Well-understood, fully testable offline.      |
+| 2 — site provider   | 1          | **High.** Extraction quality is the product.       |
+| 3 — entry points    | 1, 2       | Medium. Mostly refactor; touches tested code.      |
+| 4 — network fan-out | 2, 3       | Medium. Per-vendor cost, quota and contract terms. |
 
 Phase 1 is worth doing regardless of what happens to the rest — the synchronous
 `POST /prospects` is already a latency problem at one URL.
