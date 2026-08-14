@@ -54,6 +54,19 @@ const GOOD_DRAFT = JSON.stringify({
   whereToFind: ['GitHub issues on agent frameworks — people describe failures there.'],
 });
 
+/** What a real model returns: prose in the lists, not tidy fixture terms. */
+const CHATTY_DRAFT = JSON.stringify({
+  ...JSON.parse(GOOD_DRAFT),
+  offering: {
+    ...JSON.parse(GOOD_DRAFT).offering,
+    valuePropositions: [
+      'Enterprise-grade engineering discipline applied to agent reliability, so teams ship ' +
+        'autonomous features without discovering the regressions in production alongside their ' +
+        'own customers, which is the expensive way to find out.',
+    ],
+  },
+});
+
 async function harness(
   label: string,
   options: { actor?: RequestActor | null; model?: StubModel; verified?: boolean } = {},
@@ -252,11 +265,35 @@ describe('PUT /onboarding/profile', () => {
     expect(Number(rows.rows[0]!.n)).toBe(1);
   });
 
-  test('an incomplete profile is rejected', async () => {
+  test('an incomplete profile is rejected, and says which field', async () => {
     const { app } = await harness('onboard-invalid');
 
     const response = await put(app, '/onboarding/profile', { offering: { name: '' } });
     expect(response.status).toBe(400);
+
+    // "that profile is incomplete" on its own is unactionable in a nine-field
+    // form: the paths are what tell someone which box to go and fix.
+    const { error } = await response.json();
+    expect(Object.keys(error.details)).toContain('offering.name');
+  });
+
+  test('a drafted profile can be saved as drafted', async () => {
+    // The whole point of the review step: whatever comes back from POST has to
+    // be acceptable to PUT untouched. It once was not — a value proposition
+    // longer than the contract allowed failed the save with no way to correct
+    // it, because that field had no input on the page.
+    const model = new StubModel(CHATTY_DRAFT);
+    const { app } = await harness('onboard-roundtrip', { model });
+
+    const drafted = await (await post(app, '/onboarding/profile', { url: 'loopwright.io' })).json();
+    const saved = await put(app, '/onboarding/profile', {
+      url: drafted.url,
+      offering: drafted.draft.offering,
+      icp: drafted.draft.icp,
+      voice: drafted.draft.voice,
+    });
+
+    expect(saved.status).toBe(200);
   });
 
   test('GET reports an unconfigured workspace as unconfigured', async () => {

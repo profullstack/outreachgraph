@@ -70,6 +70,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.70.0",
+        "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/db": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
       },
