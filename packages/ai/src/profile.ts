@@ -12,6 +12,7 @@
  * has seen it and confirmed it.
  */
 
+import { profileLimits } from '@outreachgraph/contracts';
 import type { TextModel } from './model';
 
 export interface ProfileDraft {
@@ -71,6 +72,8 @@ const SYSTEM = [
   '- whereToFind: concrete places these buyers are active and why — a subreddit,',
   '  a GitHub topic, a conference, a job-board signal. Each entry one sentence.',
   '- Never mention LinkedIn automation. Research there is fine; automating is not.',
+  '- Keep icp entries to a term of a few words. valuePropositions, likelyPains and',
+  '  exclusions may be a sentence, but one sentence, under 300 characters.',
 ].join('\n');
 
 /** Pulls the JSON object out of a reply that may be fenced or prefaced. */
@@ -88,16 +91,38 @@ function parseReply(text: string): unknown {
   }
 }
 
-function strings(value: unknown, limit = 12): string[] {
+/**
+ * Shortens one entry to what the profile contract will accept.
+ *
+ * A draft that cannot be saved is worse than a shorter one. The model is asked
+ * for terms and sentences and mostly obliges, but one line over the limit used
+ * to fail the whole save with "that profile is incomplete" — naming no field,
+ * and in a form that had no box for the offending one. Cutting on a word
+ * boundary and marking the cut keeps the draft honest about what was lost.
+ */
+function clamp(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const cut = value.slice(0, max - 1);
+  const boundary = cut.lastIndexOf(' ');
+  return `${(boundary > max / 2 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
+}
+
+function strings(value: unknown, limit = 12, max: number = profileLimits.term): string[] {
   if (!Array.isArray(value)) return [];
   return value
     .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
-    .map((entry) => entry.trim())
+    .map((entry) => clamp(entry.trim(), max))
     .slice(0, limit);
 }
 
-function text(value: unknown, fallback = ''): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+/** Sentences the model writes for a human to read, not terms to filter on. */
+function sentences(value: unknown, limit = 12): string[] {
+  return strings(value, limit, profileLimits.sentence);
+}
+
+function text(value: unknown, fallback = '', max: number = profileLimits.label): string {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return clamp(trimmed || fallback, max);
 }
 
 /**
@@ -153,9 +178,9 @@ export async function draftProfile(
       offering: {
         name,
         category: text(offering.category, 'unspecified'),
-        description: text(offering.description),
-        valuePropositions: strings(offering.valuePropositions),
-        likelyPains: strings(offering.likelyPains),
+        description: text(offering.description, '', profileLimits.description),
+        valuePropositions: sentences(offering.valuePropositions),
+        likelyPains: sentences(offering.likelyPains),
         competitors: strings(offering.competitors, 8),
       },
       icp: {
@@ -164,15 +189,15 @@ export async function draftProfile(
         industries: strings(icp.industries),
         technologies: strings(icp.technologies),
         keywords: strings(icp.keywords, 16),
-        exclusions: strings(icp.exclusions),
+        exclusions: sentences(icp.exclusions),
       },
       voice: {
-        style: text(voice.style, 'direct and specific'),
-        instructions: text(voice.instructions),
+        style: text(voice.style, 'direct and specific', profileLimits.style),
+        instructions: text(voice.instructions, '', profileLimits.instructions),
         // A cap is what keeps a first message short enough to read on a phone.
         maxWords: Number.isFinite(maxWords) && maxWords > 0 ? Math.min(maxWords, 400) : 120,
       },
-      whereToFind: strings(root.whereToFind, 10),
+      whereToFind: sentences(root.whereToFind, 10),
     },
   };
 }

@@ -35,6 +35,18 @@ interface Draft {
   whereToFind: string[];
 }
 
+/**
+ * Turns the API's per-field complaints into something worth reading.
+ *
+ * A rejected save that says only "that profile is incomplete" leaves someone
+ * hunting through nine fields for the one the server disliked, so the paths
+ * come along: `offering.valuePropositions.3` means the fourth line of that box.
+ */
+function fieldSummary(details: unknown): string {
+  if (!details || typeof details !== 'object') return '';
+  return Object.keys(details as Record<string, unknown>).join(', ');
+}
+
 const lines = (values: string[]) => values.join('\n');
 const parseLines = (value: string) =>
   value
@@ -48,6 +60,9 @@ export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  // Separate from the read error: the save button sits at the bottom of a long
+  // form, and an explanation rendered up by the URL box is off-screen.
+  const [saveError, setSaveError] = useState<string | undefined>();
   const [draft, setDraft] = useState<Draft | undefined>();
   const [saved, setSaved] = useState(false);
 
@@ -57,6 +72,7 @@ export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
 
     setBusy(true);
     setError(undefined);
+    setSaveError(undefined);
     setSaved(false);
 
     try {
@@ -85,7 +101,7 @@ export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
   async function save() {
     if (!draft) return;
     setSaving(true);
-    setError(undefined);
+    setSaveError(undefined);
 
     try {
       const response = await fetch('/api/v1/onboarding/profile', {
@@ -103,14 +119,16 @@ export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
       const payload = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        setError(payload?.error?.message ?? `that failed (${response.status})`);
+        const message = payload?.error?.message ?? `that failed (${response.status})`;
+        const fields = fieldSummary(payload?.error?.details);
+        setSaveError(fields ? `${message}: ${fields}` : message);
         return;
       }
 
       setSaved(true);
       router.refresh();
     } catch {
-      setError('could not reach the server');
+      setSaveError('could not reach the server');
     } finally {
       setSaving(false);
     }
@@ -173,6 +191,15 @@ export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
             value={draft.offering.description}
             rows={3}
             onChange={(description) => edit({ offering: { ...draft.offering, description } })}
+          />
+
+          <ListField
+            label="Why they should care"
+            hint="The claims a message can make. Shown here because it is saved with the rest."
+            values={draft.offering.valuePropositions}
+            onChange={(valuePropositions) =>
+              edit({ offering: { ...draft.offering, valuePropositions } })
+            }
           />
 
           <ListField
@@ -239,6 +266,11 @@ export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
               {saving ? 'Saving…' : 'Save profile'}
             </button>
             {saved ? <span className="text-good text-sm">Saved.</span> : null}
+            {saveError ? (
+              <span role="alert" className="text-hot text-sm">
+                {saveError}
+              </span>
+            ) : null}
           </div>
         </div>
       ) : null}

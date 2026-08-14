@@ -494,7 +494,15 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const raw = safeJson(await c.req.raw.text());
     const parsed = workspaceProfileSchema.safeParse(raw);
     if (!parsed.success) {
-      throw ApiError.badRequest('that profile is incomplete', parsed.error.flatten().fieldErrors);
+      // Keyed by full path, not by `flatten().fieldErrors` — that reports the
+      // top-level object ("offering"), which tells someone staring at a form
+      // nothing about which line of which list it objected to.
+      const details: Record<string, string[]> = {};
+      for (const issue of parsed.error.issues) {
+        const key = issue.path.join('.') || 'profile';
+        (details[key] ??= []).push(issue.message);
+      }
+      throw ApiError.badRequest('that profile is incomplete', details);
     }
 
     const saved = await saveWorkspaceProfile(db, actor.workspaceId, parsed.data);

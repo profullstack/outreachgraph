@@ -118,30 +118,55 @@ export type AddProspectInput = z.infer<typeof addProspectSchema>;
  * write forty rows of noise into the targeting filters. Everything except the
  * offering name and category is optional: a person who wants to fill in one
  * line and get on with it should be able to.
+ *
+ * Two length limits, because the lists are two different kinds of thing. A job
+ * title or an industry is a *term*, and anything longer is the model narrating
+ * instead of naming. A value proposition or a buyer's pain is a *sentence*, and
+ * holding it to a term's length is what used to make setup unsavable: the model
+ * would write a perfectly good 132-character line and the save rejected it.
  */
-const shortList = z.array(z.string().trim().min(1).max(120)).max(20).default([]);
+export const profileLimits = {
+  term: 120,
+  sentence: 300,
+  entries: 20,
+  label: 200,
+  description: 4000,
+  style: 500,
+  instructions: 2000,
+  url: 500,
+} as const;
+
+const termList = z
+  .array(z.string().trim().min(1).max(profileLimits.term))
+  .max(profileLimits.entries)
+  .default([]);
+
+const sentenceList = z
+  .array(z.string().trim().min(1).max(profileLimits.sentence))
+  .max(profileLimits.entries)
+  .default([]);
 
 export const workspaceProfileSchema = z.object({
-  url: z.string().trim().max(500).optional(),
+  url: z.string().trim().max(profileLimits.url).optional(),
   offering: z.object({
-    name: z.string().trim().min(1).max(200),
-    category: z.string().trim().min(1).max(200),
-    description: z.string().trim().max(4000).optional(),
-    valuePropositions: shortList,
-    likelyPains: shortList,
-    competitors: shortList,
+    name: z.string().trim().min(1).max(profileLimits.label),
+    category: z.string().trim().min(1).max(profileLimits.label),
+    description: z.string().trim().max(profileLimits.description).optional(),
+    valuePropositions: sentenceList,
+    likelyPains: sentenceList,
+    competitors: termList,
   }),
   icp: z.object({
-    titles: shortList,
-    seniorities: shortList,
-    industries: shortList,
-    technologies: shortList,
-    keywords: shortList,
-    exclusions: shortList,
+    titles: termList,
+    seniorities: termList,
+    industries: termList,
+    technologies: termList,
+    keywords: termList,
+    exclusions: sentenceList,
   }),
   voice: z.object({
-    style: z.string().trim().min(1).max(500),
-    instructions: z.string().trim().max(2000).optional(),
+    style: z.string().trim().min(1).max(profileLimits.style),
+    instructions: z.string().trim().max(profileLimits.instructions).optional(),
     maxWords: z.number().int().positive().max(400).optional(),
   }),
 });

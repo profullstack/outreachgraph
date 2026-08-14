@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.0",
+    "@outreachgraph/contracts": "workspace:*",
     "@outreachgraph/domain": "workspace:*",
     "@outreachgraph/db": "workspace:*"
   }
