@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer, Message, SendResult } from '@outreachgraph/email';
+import type { GenerateResult, TextModel } from '@outreachgraph/ai';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { runAutopilot } from './autopilot';
 
@@ -364,5 +365,73 @@ describe('sending as the customer rather than as us', () => {
 
     expect(event?.level).toBe('error');
     expect(event?.message).toContain('sending domain is not verified');
+  });
+});
+
+/**
+ * A lead whose draft was never written.
+ *
+ * Drafting happened once, when the recommendation was created, and nothing
+ * retried it — so a composer that was briefly unavailable left the lead
+ * permanently undraftable. The send sweep then found it every tick and logged
+ * "no drafted message": one prospect in production collected 98 identical
+ * warnings while nothing attempted the thing being warned about.
+ */
+describe('a recommendation with no draft', () => {
+  function countingModel(text: string): { calls: () => number; model: TextModel } {
+    const state = { calls: 0 };
+    return {
+      calls: () => state.calls,
+      model: {
+        generate: async (): Promise<GenerateResult> => {
+          state.calls += 1;
+          return {
+            text,
+            model: 'test',
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedTokens: 0,
+            refused: false,
+          };
+        },
+      },
+    };
+  }
+
+  async function withoutDraft(db: Client): Promise<void> {
+    await db.execute({
+      sql: 'DELETE FROM drafts WHERE recommendation_id = ?',
+      args: [SEED.recommendationId],
+    });
+  }
+
+  test('is written and sent rather than warned about forever', async () => {
+    seeded = await seedDatabase('autopilot-drafts-missing');
+    const { db } = seeded;
+    await makeSendable(db, { personEmail: 'jane@acme.com' });
+    await withoutDraft(db);
+
+    const { sent, mailer } = recordingMailer();
+    const composer = countingModel('We ran into a similar cross-border settlement issue.');
+
+    const result = await runAutopilot({ db, mailer, model: composer.model }, SEED.workspaceId);
+
+    expect(composer.calls()).toBeGreaterThan(0);
+    expect(result.sent).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+  });
+
+  test('is still only reported when there is no composer at all', async () => {
+    seeded = await seedDatabase('autopilot-drafts-no-model');
+    const { db } = seeded;
+    await makeSendable(db, { personEmail: 'jane@acme.com' });
+    await withoutDraft(db);
+
+    const { sent, mailer } = recordingMailer();
+    const result = await runAutopilot({ db, mailer }, SEED.workspaceId);
+
+    // Unchanged behaviour without a model: reported, skipped, never invented.
+    expect(sent).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toContain('no drafted message');
   });
 });

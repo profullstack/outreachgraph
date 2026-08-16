@@ -125,9 +125,18 @@ export async function fetchProducts(): Promise<ProductSummaryView[]> {
   return body.products;
 }
 
-export async function fetchApprovals(): Promise<ApprovalCard[]> {
-  const body = await request<{ recommendations: ApprovalCard[] }>('/recommendations?limit=50');
-  return body.recommendations;
+export type ApprovalFilter = 'all' | 'ready' | 'needs_draft' | 'research';
+
+export interface ApprovalQueue {
+  readonly recommendations: ApprovalCard[];
+  readonly counts: Record<ApprovalFilter, number>;
+  readonly filter: ApprovalFilter;
+}
+
+export async function fetchApprovals(filter: ApprovalFilter = 'ready'): Promise<ApprovalQueue> {
+  return await request<ApprovalQueue>(
+    `/recommendations?limit=50&filter=${encodeURIComponent(filter)}`,
+  );
 }
 
 export async function fetchSignals(): Promise<SignalRow[]> {

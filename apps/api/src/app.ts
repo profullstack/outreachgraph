@@ -1049,13 +1049,20 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // ----------------------------------------------------- approval queue
   api.get('/recommendations', async (c) => {
     const actor = c.get('actor');
+    const db = c.get('db');
     const limit = clampLimit(c.req.query('limit'));
-    const recommendations = await repo.listPendingRecommendations(
-      c.get('db'),
-      actor.workspaceId,
-      limit,
-    );
-    return c.json({ recommendations });
+
+    // An unknown filter falls back to `all` rather than erroring: a stale
+    // bookmark should show the queue, not a 400.
+    const requested = c.req.query('filter');
+    const filter = repo.isApprovalFilter(requested) ? requested : 'all';
+
+    const [recommendations, counts] = await Promise.all([
+      repo.listPendingRecommendations(db, actor.workspaceId, limit, filter),
+      repo.approvalCounts(db, actor.workspaceId),
+    ]);
+
+    return c.json({ recommendations, counts, filter });
   });
 
   /**
