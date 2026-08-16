@@ -11,6 +11,7 @@ import {
   fetchSignals,
   fetchStatus,
   relativeTime,
+  type ApprovalQueue,
 } from '../../../lib/api';
 
 export const dynamic = 'force-dynamic';
@@ -24,7 +25,9 @@ export const metadata = { title: 'Today · OutreachGraph' };
  * the signed-in home; `/` is the public landing page.
  */
 export default async function TodayPage() {
-  let approvals: Awaited<ReturnType<typeof fetchApprovals>> = [];
+  // The queue endpoint returns counts alongside the cards now, so Today
+  // unwraps it rather than indexing the response directly.
+  let approvals: ApprovalQueue['recommendations'] = [];
   let signals: Awaited<ReturnType<typeof fetchSignals>> = [];
   let me: Awaited<ReturnType<typeof fetchMe>> | undefined;
   let profile: Awaited<ReturnType<typeof fetchProfile>> | undefined;
@@ -32,13 +35,15 @@ export default async function TodayPage() {
   let offline = false;
 
   try {
-    [approvals, signals, me, profile, live] = await Promise.all([
-      fetchApprovals(),
+    let queue: Awaited<ReturnType<typeof fetchApprovals>>;
+    [queue, signals, me, profile, live] = await Promise.all([
+      fetchApprovals('ready'),
       fetchSignals(),
       fetchMe(),
       fetchProfile(),
       fetchStatus(),
     ]);
+    approvals = queue.recommendations;
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
