@@ -234,6 +234,123 @@ export async function actionCounts(
   };
 }
 
+export interface ContactAddress {
+  readonly address: string;
+  /** True when this is the company's inbox rather than the person's own. */
+  readonly shared: boolean;
+}
+
+/**
+ * The address an email to this person would actually be delivered to.
+ *
+ * Mirrors `pickEmailRecipient` in `@outreachgraph/pipeline` deliberately: the
+ * policy engine has to count against the same mailbox the sender will use, and
+ * if the two ever disagree the limits are protecting an address nobody writes
+ * to. Personal identity first, company inbox second, nothing third.
+ */
+export async function resolveContactAddress(
+  db: Client,
+  personId: string,
+): Promise<ContactAddress | undefined> {
+  const personal = await queryOne<{ handle: string }>(
+    db,
+    `SELECT handle FROM social_identities
+      WHERE person_id = ? AND network = 'email' AND handle IS NOT NULL AND trim(handle) <> ''
+   ORDER BY confidence DESC LIMIT 1`,
+    [personId],
+  );
+  if (personal?.handle) return { address: personal.handle.trim().toLowerCase(), shared: false };
+
+  const company = await queryOne<{ contact_email: string }>(
+    db,
+    `SELECT co.contact_email FROM people p
+       JOIN companies co ON co.id = p.current_company_id
+      WHERE p.id = ? AND co.contact_email IS NOT NULL AND trim(co.contact_email) <> ''`,
+    [personId],
+  );
+  if (company?.contact_email) {
+    return { address: company.contact_email.trim().toLowerCase(), shared: true };
+  }
+
+  return undefined;
+}
+
+/**
+ * How much mail one address has had, regardless of who it was addressed to.
+ *
+ * Counted from `interactions` rather than `actions` because an interaction is
+ * the record of something that actually went out. An approved action that has
+ * not been sent has not reached anyone's inbox, and refusing on account of it
+ * would block the very send it is waiting for.
+ */
+export async function addressCounts(
+  db: Client,
+  workspaceId: string,
+  address: string,
+  /** The action being executed, which must not count against its own limit. */
+  excludeActionId?: string,
+): Promise<{ thisWeek: number; hoursSinceLast?: number }> {
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const exclude = excludeActionId ? 'AND (action_id IS NULL OR action_id != ?)' : '';
+  const excludeArgs = excludeActionId ? [excludeActionId] : [];
+
+  const week = await queryOne<{ n: number }>(
+    db,
+    `SELECT count(*) AS n FROM interactions
+      WHERE workspace_id = ? AND contact_address = ? AND direction = 'outbound'
+        AND occurred_at >= ? ${exclude}`,
+    [workspaceId, address, weekAgo, ...excludeArgs],
+  );
+
+  const last = await queryOne<{ occurred_at: string }>(
+    db,
+    `SELECT occurred_at FROM interactions
+      WHERE workspace_id = ? AND contact_address = ? AND direction = 'outbound' ${exclude}
+   ORDER BY occurred_at DESC LIMIT 1`,
+    [workspaceId, address, ...excludeArgs],
+  );
+
+  const hoursSinceLast = last ? (Date.now() - Date.parse(last.occurred_at)) / 3_600_000 : undefined;
+
+  return {
+    thisWeek: Number(week?.n ?? 0),
+    ...(hoursSinceLast === undefined ? {} : { hoursSinceLast }),
+  };
+}
+
+/**
+ * Whether this contact has written back.
+ *
+ * Checked by person *and* by address: a reply from a shared inbox answers on
+ * behalf of everyone who was written to there, and continuing to mail
+ * colleagues after someone at the company has replied is the same mistake in
+ * a thinner disguise.
+ */
+export async function conversationOpen(
+  db: Client,
+  workspaceId: string,
+  personId: string,
+  address?: string,
+): Promise<boolean> {
+  const byPerson = await queryOne<{ n: number }>(
+    db,
+    `SELECT count(*) AS n FROM interactions
+      WHERE workspace_id = ? AND person_id = ? AND direction = 'inbound'`,
+    [workspaceId, personId],
+  );
+  if (Number(byPerson?.n ?? 0) > 0) return true;
+
+  if (!address) return false;
+
+  const byAddress = await queryOne<{ n: number }>(
+    db,
+    `SELECT count(*) AS n FROM interactions
+      WHERE workspace_id = ? AND contact_address = ? AND direction = 'inbound'`,
+    [workspaceId, address],
+  );
+  return Number(byAddress?.n ?? 0) > 0;
+}
+
 /** True when any suppression key matches this person (PRD §17.3). */
 export async function isSuppressed(
   db: Client,

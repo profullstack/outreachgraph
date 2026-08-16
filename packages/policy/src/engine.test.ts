@@ -240,6 +240,106 @@ describe('rate limits and budget (PRD §7.7, §18)', () => {
     expect(result.gate).toBe('budget_exhausted');
   });
 
+  test('deny a second message to an address, even for an untouched prospect', () => {
+    // The production bug: fourteen prospects at one company, each contacted
+    // for the first time, all delivering to the same support@ inbox.
+    const result = evaluatePolicy(
+      request({
+        actionsToThisProspectThisWeek: 0,
+        maxActionsPerProspectPerWeek: 1,
+        actionsToThisAddressThisWeek: 1,
+        addressShared: true,
+      }),
+    );
+
+    expect(result.decision).toBe('deny');
+    expect(result.gate).toBe('rate_limit_address');
+    expect(result.reason).toContain('shares a company inbox');
+  });
+
+  test('deny inside the cooldown for the address as well as the person', () => {
+    const result = evaluatePolicy(
+      request({ hoursSinceLastActionToAddress: 12, minHoursBetweenActions: 72 }),
+    );
+    expect(result.decision).toBe('deny');
+    expect(result.gate).toBe('cooldown');
+  });
+
+  test('a personal address the prospect has to itself is unaffected', () => {
+    const result = evaluatePolicy(
+      request({ actionsToThisAddressThisWeek: 0, addressShared: false }),
+    );
+    expect(result.decision).toBe('allow_with_approval');
+  });
+
+  test('no resolved address means the address gates simply do not fire', () => {
+    const result = evaluatePolicy(request({ actionsToThisAddressThisWeek: undefined }));
+    expect(result.decision).toBe('allow_with_approval');
+  });
+
+  test('the address cap defaults to one when the caller sets none', () => {
+    const result = evaluatePolicy(request({ actionsToThisAddressThisWeek: 1 }));
+    expect(result.decision).toBe('deny');
+    expect(result.gate).toBe('rate_limit_address');
+  });
+
+  test('a raised address cap is respected', () => {
+    const result = evaluatePolicy(
+      request({ actionsToThisAddressThisWeek: 1, maxActionsPerAddressPerWeek: 3 }),
+    );
+    expect(result.decision).toBe('allow_with_approval');
+  });
+});
+
+describe('a contact who has replied', () => {
+  test('denies further cold outreach outright', () => {
+    const result = evaluatePolicy(request({ conversationOpen: true }));
+
+    expect(result.decision).toBe('deny');
+    expect(result.gate).toBe('conversation_open');
+    expect(result.reason).toContain('already replied');
+  });
+
+  test('downgrades an explicit follow-up to human approval rather than allowing it', () => {
+    const result = evaluatePolicy(request({ conversationOpen: true, isFollowUp: true }));
+
+    expect(result.decision).toBe('allow_with_approval');
+    expect(isExecutable(result.decision, true)).toBe(true);
+    expect(isExecutable(result.decision, false)).toBe(false);
+  });
+
+  test('a follow-up is still refused when a rate limit already denied it', () => {
+    // `deny` outranks `allow_with_approval`, so the follow-up downgrade must
+    // not be able to loosen a decision another gate has already tightened.
+    const result = evaluatePolicy(
+      request({
+        conversationOpen: true,
+        isFollowUp: true,
+        actionsToThisAddressThisWeek: 5,
+      }),
+    );
+    expect(result.decision).toBe('deny');
+  });
+
+  test('trusted automation may not continue an open thread unattended', () => {
+    const result = evaluatePolicy(
+      request({
+        network: 'email',
+        action: 'send_email',
+        approvalMode: 'trusted_automation',
+        conversationOpen: true,
+      }),
+    );
+
+    expect(result.decision).toBe('deny');
+    expect(isExecutable(result.decision, false)).toBe(false);
+  });
+
+  test('leaves a contact who has not replied alone', () => {
+    const result = evaluatePolicy(request({ conversationOpen: false }));
+    expect(result.decision).toBe('allow_with_approval');
+  });
+
   test('exempt internal bookkeeping from the daily cap', () => {
     const result = evaluatePolicy(
       request({ action: 'observe', actionsToday: 999, maxActionsPerDay: 50 }),

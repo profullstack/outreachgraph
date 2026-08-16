@@ -16,6 +16,8 @@ import {
   connectEmailAccountSchema,
   createSuppressionSchema,
   executeActionSchema,
+  backfillDraftsSchema,
+  recordReplySchema,
   loginSchema,
   privacyRequestSchema,
   registerSchema,
@@ -23,7 +25,7 @@ import {
   workspaceProfileSchema,
 } from '@outreachgraph/contracts';
 import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
-import { now, queryOne, type Client } from '@outreachgraph/db';
+import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
   actorFromSession,
   clearedCookie,
@@ -933,6 +935,60 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   /**
+   * Records that this person replied, which takes them out of cold outreach.
+   *
+   * The product sends over SMTP and reads no mailbox, so it cannot notice a
+   * reply by itself. Until inbound polling exists, this route is how a reply
+   * becomes something the policy engine can act on: `conversation_open` then
+   * refuses further outreach, and a follow-up has to be an explicit human
+   * decision rather than the queue's next tick.
+   *
+   * Idempotent by intent rather than by constraint — recording a second reply
+   * is a real event, and the gate only asks whether any exist.
+   */
+  api.post('/people/:id/replied', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const personId = c.req.param('id');
+    const body = await parseBody(c.req.raw, recordReplySchema);
+
+    const person = await repo.getPerson(db, personId);
+    if (!person) throw ApiError.notFound('person');
+
+    const contact = await repo.resolveContactAddress(db, personId);
+    const at = body.occurredAt ?? now();
+    const address = body.fromAddress?.trim().toLowerCase() ?? contact?.address ?? null;
+
+    await db.execute({
+      sql: `INSERT INTO interactions (id, workspace_id, person_id, network, direction,
+            state, body, contact_address, shared_inbox, occurred_at, recorded_at)
+            VALUES (?, ?, ?, 'email', 'inbound', 'replied', ?, ?, ?, ?, ?)`,
+      args: [
+        newId('interaction'),
+        actor.workspaceId,
+        personId,
+        body.body ?? null,
+        address,
+        contact?.shared ? 1 : 0,
+        at,
+        now(),
+      ],
+    });
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'interaction.reply_recorded',
+      entityKind: 'person',
+      entityId: personId,
+      detail: { address },
+    });
+
+    return c.json({ recorded: true, personId, conversationOpen: true });
+  });
+
+  /**
    * Deletes a person and everything derived from them, leaving a suppression
    * tombstone so a later provider lookup cannot re-ingest them (PRD §17.3,
    * §47.16).
@@ -1126,6 +1182,75 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   /**
+   * Writes the missing drafts for a queue that has gone unreviewed.
+   *
+   * Drafting has only ever happened one card at a time, on request, so a queue
+   * that filled faster than anyone clicked ends up as a wall of cards with
+   * nothing written on them — which is what the approvals page had become: 74
+   * pending recommendations, zero drafts.
+   *
+   * Bounded rather than exhaustive, and sequential rather than parallel. Each
+   * card is a model call, so an unbounded version of this route is an
+   * unbounded invoice; `limit` is what the caller is willing to spend and the
+   * response says exactly what was written, refused and skipped.
+   */
+  api.post('/recommendations/drafts/backfill', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const body = await parseBody(c.req.raw, backfillDraftsSchema);
+
+    if (!options.model) {
+      throw new ApiError(
+        503,
+        'composer_unavailable',
+        'no language model is configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY to enable drafting',
+      );
+    }
+
+    const pending = await queryAll<{ id: string }>(
+      db,
+      `SELECT r.id FROM recommendations r
+        WHERE r.workspace_id = ? AND r.status IN ('pending', 'approved')
+          AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.recommendation_id = r.id)
+     ORDER BY r.created_at ASC
+        LIMIT ?`,
+      [actor.workspaceId, body.limit],
+    );
+
+    const written: string[] = [];
+    const withheld: { id: string; reason: string }[] = [];
+
+    for (const row of pending) {
+      // One failure is not the batch's failure. A model that refuses this card
+      // will happily write the next, and stopping here would leave the queue
+      // as empty as it was found.
+      try {
+        const result = await draftForRecommendation(db, options.model, row.id);
+        if (result.ok) written.push(row.id);
+        else withheld.push({ id: row.id, reason: result.reason ?? 'withheld' });
+      } catch (error) {
+        withheld.push({ id: row.id, reason: error instanceof Error ? error.message : 'failed' });
+      }
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'drafts.backfilled',
+      entityKind: 'workspace',
+      entityId: actor.workspaceId,
+      detail: { considered: pending.length, written: written.length, withheld: withheld.length },
+    });
+
+    return c.json({
+      considered: pending.length,
+      written: written.length,
+      withheld,
+    });
+  });
+
+  /**
    * Compose (or recompose) the message for a recommendation.
    *
    * Separate from generation because a draft is optional: the pipeline places
@@ -1303,6 +1428,16 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     }
 
     const stamp = now();
+
+    // A message a human sent by hand still landed in someone's mailbox, so it
+    // is recorded against the same address the automated path would have used.
+    // Leaving it null here would let the queue offer that inbox again tomorrow
+    // on the grounds that the product had never written to it.
+    const manualContact =
+      action.network === 'email'
+        ? await repo.resolveContactAddress(db, action.person_id)
+        : undefined;
+
     await db.batch([
       {
         sql: `UPDATE actions SET status = 'completed', mode = ?, external_url = ?, executed_at = ?
@@ -1311,14 +1446,16 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       },
       {
         sql: `INSERT INTO interactions (id, workspace_id, person_id, action_id, network, direction,
-              state, occurred_at, recorded_at)
-              VALUES (?, ?, ?, ?, ?, 'outbound', 'contacted', ?, ?)`,
+              state, contact_address, shared_inbox, occurred_at, recorded_at)
+              VALUES (?, ?, ?, ?, ?, 'outbound', 'contacted', ?, ?, ?, ?)`,
         args: [
           newId('interaction'),
           actor.workspaceId,
           action.person_id,
           action.id,
           action.network,
+          manualContact?.address ?? null,
+          manualContact?.shared ? 1 : 0,
           stamp,
           stamp,
         ],
@@ -1893,13 +2030,16 @@ async function recheckPolicy(
   /** The action being executed, which must not count against its own limit. */
   excludeActionId?: string,
 ) {
-  const [person, workspace, campaign, counts, flags, connected] = await Promise.all([
+  const [person, workspace, campaign, counts, flags, connected, contact] = await Promise.all([
     repo.getPerson(db, recommendation.person_id),
     repo.getWorkspace(db, actor.workspaceId),
     repo.getCampaign(db, actor.workspaceId, recommendation.campaign_id),
     repo.actionCounts(db, actor.workspaceId, recommendation.person_id, excludeActionId),
     repo.featureFlags(db, actor.workspaceId),
     repo.hasConnectedAccount(db, actor.workspaceId, recommendation.network as Network),
+    recommendation.network === 'email'
+      ? repo.resolveContactAddress(db, recommendation.person_id)
+      : Promise.resolve(undefined),
   ]);
 
   if (!person) throw ApiError.notFound('person');
@@ -1908,6 +2048,15 @@ async function recheckPolicy(
   const matchKeys = await repo.suppressionKeysForPerson(db, recommendation.person_id);
   const suppressed =
     person.status === 'suppressed' || (await repo.isSuppressed(db, actor.workspaceId, matchKeys));
+
+  // Counted against the mailbox rather than the person. Skipped entirely when
+  // no address resolves — there is nothing to protect and nothing to count.
+  const [addressUsage, replied] = await Promise.all([
+    contact
+      ? repo.addressCounts(db, actor.workspaceId, contact.address, excludeActionId)
+      : Promise.resolve(undefined),
+    repo.conversationOpen(db, actor.workspaceId, recommendation.person_id, contact?.address),
+  ]);
 
   const budget = safeJson(campaign.budget_json);
 
@@ -1928,6 +2077,17 @@ async function recheckPolicy(
     ...(counts.hoursSinceLast === undefined
       ? {}
       : { hoursSinceLastActionToProspect: counts.hoursSinceLast }),
+    ...(addressUsage === undefined
+      ? {}
+      : {
+          actionsToThisAddressThisWeek: addressUsage.thisWeek,
+          maxActionsPerAddressPerWeek: numberOr(budget.maxActionsPerAddressPerWeek, 1),
+          addressShared: contact?.shared === true,
+          ...(addressUsage.hoursSinceLast === undefined
+            ? {}
+            : { hoursSinceLastActionToAddress: addressUsage.hoursSinceLast }),
+        }),
+    conversationOpen: replied,
     featureFlags: flags,
   });
 }

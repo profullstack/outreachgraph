@@ -112,10 +112,14 @@ export async function recordEmailSent(db: Client, record: SentEmailRecord): Prom
     args: [record.externalId ?? null, at, record.actionId],
   });
 
+  // `contact_address` is the mailbox this actually reached, which is not
+  // always a fact about the person: with no personal address it is their
+  // company's shared inbox. The rate limits count this column, so a send that
+  // does not write it is a send the next policy check cannot see.
   await db.execute({
     sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, action_id,
-          network, direction, state, body, occurred_at, recorded_at)
-          VALUES (?, ?, ?, ?, ?, 'email', 'outbound', 'contacted', ?, ?, ?)`,
+          network, direction, state, body, contact_address, shared_inbox, occurred_at, recorded_at)
+          VALUES (?, ?, ?, ?, ?, 'email', 'outbound', 'contacted', ?, ?, ?, ?, ?)`,
     args: [
       newId('interaction'),
       record.workspaceId,
@@ -123,6 +127,8 @@ export async function recordEmailSent(db: Client, record: SentEmailRecord): Prom
       record.campaignId,
       record.actionId,
       record.body,
+      record.to.trim().toLowerCase(),
+      record.sharedInbox ? 1 : 0,
       at,
       at,
     ],
