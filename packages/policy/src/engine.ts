@@ -57,7 +57,9 @@ export const POLICY_GATES = [
   'budget_exhausted',
   'rate_limit_daily',
   'rate_limit_prospect',
+  'rate_limit_address',
   'cooldown',
+  'conversation_open',
   'no_connected_account',
   'capability_mode',
   'outbound_requires_approval',
@@ -92,6 +94,42 @@ export interface PolicyRequest {
   readonly minHoursBetweenActions?: number;
   readonly budgetExhausted?: boolean;
 
+  /**
+   * The same limits again, counted against the address a message would
+   * actually be delivered to rather than the person it is addressed to.
+   *
+   * These are not redundant. Every limit above is keyed on `person_id`, but a
+   * person with no personal address falls back to their company's shared inbox
+   * — so fourteen different prospects at one company are fourteen separate
+   * people, each within its own weekly limit, and one `support@` mailbox
+   * receives fourteen messages. That is what "we look like a bot" is made of,
+   * and no person-keyed limit can see it.
+   *
+   * Omitted when the caller could not resolve an address, in which case these
+   * gates simply do not fire.
+   */
+  readonly actionsToThisAddressThisWeek?: number;
+  readonly maxActionsPerAddressPerWeek?: number;
+  readonly hoursSinceLastActionToAddress?: number;
+  /** True when the address is a shared company inbox rather than a person's. */
+  readonly addressShared?: boolean;
+
+  /**
+   * Whether this contact has written back.
+   *
+   * A reply ends the cold-outreach phase. Anything further is a reply or a
+   * follow-up a human decided to send, never something a queue emits on its
+   * own — mailing someone who already answered is the single most bot-like
+   * thing the product can do.
+   */
+  readonly conversationOpen?: boolean;
+  /**
+   * A deliberate follow-up to an open conversation, which downgrades the
+   * `conversation_open` gate from a refusal to a human approval rather than
+   * bypassing it.
+   */
+  readonly isFollowUp?: boolean;
+
   /** Explicit flag overrides. A missing key means enabled (PRD §37). */
   readonly featureFlags?: Readonly<Record<string, boolean>>;
 
@@ -117,6 +155,15 @@ export interface PolicyTraceEntry {
 }
 
 const DEFAULT_COOLDOWN_HOURS = 72;
+
+/**
+ * How many messages one delivery address may receive in a week.
+ *
+ * One, like the per-prospect limit it mirrors. A shared inbox is read by a
+ * human who does not care that the fourteen messages were addressed to
+ * fourteen different colleagues.
+ */
+const DEFAULT_ADDRESS_CAP_PER_WEEK = 1;
 
 /**
  * Evaluates a single (network, action) request.
@@ -225,6 +272,53 @@ export function evaluatePolicy(request: PolicyRequest): PolicyResult {
         'cooldown',
         'deny',
         `Only ${round(elapsed)}h since the last contact; the cooldown is ${cooldown}h.`,
+      );
+    }
+
+    // The same two limits, counted against the delivery address. A shared
+    // inbox is the case they exist for, so it is named in the refusal —
+    // "weekly limit reached" is baffling for a prospect who has never been
+    // contacted, until you know fourteen colleagues share their mailbox.
+    const addressCount = request.actionsToThisAddressThisWeek;
+    const addressCap = request.maxActionsPerAddressPerWeek ?? DEFAULT_ADDRESS_CAP_PER_WEEK;
+    if (addressCount !== undefined && addressCount >= addressCap) {
+      restrict(
+        'rate_limit_address',
+        'deny',
+        request.addressShared === true
+          ? `This prospect shares a company inbox that has already had ` +
+              `${addressCount} message(s) this week; the limit is ${addressCap}.`
+          : `Weekly limit for this address reached (${addressCount}/${addressCap}).`,
+      );
+    }
+
+    const addressElapsed = request.hoursSinceLastActionToAddress;
+    if (addressElapsed !== undefined && addressElapsed < cooldown) {
+      restrict(
+        'cooldown',
+        'deny',
+        `Only ${round(addressElapsed)}h since this address was last contacted; ` +
+          `the cooldown is ${cooldown}h.`,
+      );
+    }
+  }
+
+  // 7b. A contact who has replied is out of the cold-outreach flow for good.
+  //     Denied outright unless the sender says this is a follow-up, and even
+  //     then a human approves it — an open thread is never autopilot's to
+  //     continue.
+  if (isOutboundAction(request.action) && request.conversationOpen === true) {
+    if (request.isFollowUp === true) {
+      restrict(
+        'conversation_open',
+        'allow_with_approval',
+        'This contact has replied. A follow-up needs a human to approve it.',
+      );
+    } else {
+      restrict(
+        'conversation_open',
+        'deny',
+        'This contact has already replied; reply to them instead of sending new outreach.',
       );
     }
   }

@@ -102,40 +102,70 @@ if (process.env.RUN_MIGRATIONS !== 'false') {
  * message. Refusing to boot over a missing key would take the whole system
  * down for a feature that is, by design, allowed to produce nothing.
  */
+/**
+ * Which provider leads, and which ones back it up.
+ *
+ * `MODEL_CHAIN` is a comma list of provider names in preference order, e.g.
+ * `openai,anthropic`. It exists because the right leader is a billing
+ * decision, not an architectural one: drafting one short email per prospect is
+ * the highest-volume model call the product makes, and a frontier model is
+ * simply the wrong tool for it. Naming the order in the environment lets that
+ * be changed without a deploy, and a provider left out of the list is not
+ * built at all — the cheap chain stays cheap rather than quietly falling
+ * through to an expensive one.
+ *
+ * Unset preserves the original order, so nothing changes for a deployment that
+ * has not thought about it.
+ */
+const DEFAULT_CHAIN_ORDER = ['anthropic', 'openai', 'gemini'] as const;
+
+const builders: Record<string, () => FallbackEntry | undefined> = {
+  anthropic: () =>
+    process.env.ANTHROPIC_API_KEY
+      ? {
+          name: 'anthropic',
+          model: new ClaudeModel({
+            ...(process.env.ANTHROPIC_MODEL ? { model: process.env.ANTHROPIC_MODEL } : {}),
+          }),
+        }
+      : undefined,
+  openai: () =>
+    process.env.OPENAI_API_KEY
+      ? {
+          name: 'openai',
+          model: new OpenAIModel({
+            ...(process.env.OPENAI_MODEL ? { model: process.env.OPENAI_MODEL } : {}),
+          }),
+        }
+      : undefined,
+  gemini: () =>
+    process.env.GEMINI_API_KEY
+      ? {
+          name: 'gemini',
+          model: new GeminiModel({
+            ...(process.env.GEMINI_MODEL ? { model: process.env.GEMINI_MODEL } : {}),
+          }),
+        }
+      : undefined,
+};
+
+const requestedOrder = (process.env.MODEL_CHAIN ?? '')
+  .split(',')
+  .map((name) => name.trim().toLowerCase())
+  .filter(Boolean);
+
+// An unrecognised name is louder than it is fatal: booting with a silently
+// shorter chain is how a deployment ends up with no composer and no clue why.
+for (const name of requestedOrder) {
+  if (!(name in builders)) console.log(`MODEL_CHAIN: ignoring unknown provider "${name}"`);
+}
+
+const order = requestedOrder.length > 0 ? requestedOrder : [...DEFAULT_CHAIN_ORDER];
+
 const chain: FallbackEntry[] = [];
-
-if (process.env.ANTHROPIC_API_KEY) {
-  chain.push({
-    name: 'anthropic',
-    model: new ClaudeModel({
-      ...(process.env.ANTHROPIC_MODEL ? { model: process.env.ANTHROPIC_MODEL } : {}),
-    }),
-  });
-}
-
-// Second, not instead of. A capped Anthropic key regains access on its own, and
-// when it does the chain returns to Claude with no redeploy — which is what a
-// fallback should do rather than becoming a permanent quiet substitution.
-//
-// OpenAI comes before Gemini because it is the closer substitute: the prompts
-// and the deterministic gates were built around Claude, and a same-shaped model
-// is likelier to produce a draft that still passes them.
-if (process.env.OPENAI_API_KEY) {
-  chain.push({
-    name: 'openai',
-    model: new OpenAIModel({
-      ...(process.env.OPENAI_MODEL ? { model: process.env.OPENAI_MODEL } : {}),
-    }),
-  });
-}
-
-if (process.env.GEMINI_API_KEY) {
-  chain.push({
-    name: 'gemini',
-    model: new GeminiModel({
-      ...(process.env.GEMINI_MODEL ? { model: process.env.GEMINI_MODEL } : {}),
-    }),
-  });
+for (const name of order) {
+  const entry = builders[name]?.();
+  if (entry && !chain.some((existing) => existing.name === entry.name)) chain.push(entry);
 }
 
 const model =

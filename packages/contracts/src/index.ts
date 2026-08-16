@@ -254,6 +254,38 @@ export const executeActionSchema = z.object({
 });
 
 /**
+ * Filling in the drafts a queue is missing.
+ *
+ * `limit` is capped because every card is a model call: the ceiling is what
+ * stops "catch the queue up" from being an open-ended invoice.
+ */
+export const backfillDraftsSchema = z.object({
+  limit: z.number().int().min(1).max(200).default(25),
+});
+
+/**
+ * Recording that a contact wrote back.
+ *
+ * The product cannot see replies on its own — it sends through SMTP and reads
+ * no mailbox — so until inbound polling exists this is how a reply becomes a
+ * fact the policy engine can act on. It matters more than it looks: an
+ * unrecorded reply leaves the contact in the cold-outreach pool, and mailing
+ * someone who has already answered is the most bot-like thing we can do.
+ */
+export const recordReplySchema = z.object({
+  /** When they replied. Defaults to now; accepted so backfills stay honest. */
+  occurredAt: z.string().datetime().optional(),
+  /** The reply itself, when the caller has it. */
+  body: z.string().max(20_000).optional(),
+  /**
+   * The address that replied, for a shared inbox where the person who answered
+   * is not necessarily the person written to. Defaults to the address the
+   * outreach was delivered to.
+   */
+  fromAddress: z.string().email().optional(),
+});
+
+/**
  * Connecting the mailbox outreach is sent from.
  *
  * The password is write-only: it is accepted here, verified against the real
