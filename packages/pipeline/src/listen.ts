@@ -31,11 +31,20 @@ import {
   type FeedSource,
 } from '@outreachgraph/providers';
 import { recordDiscovered } from './stages';
+import { loadListeningTargets, type ListeningTargets } from './listening-targets';
 
 export interface ListenDeps {
   readonly db: Client;
-  /** The feeds to search. An empty list is a no-op, not an error. */
-  readonly sources: readonly FeedSource[];
+  /**
+   * Builds the feed clients for one campaign's own targets.
+   *
+   * A factory rather than a fixed list because *where* to listen belongs to
+   * the campaign, not to the deployment: two workspaces on one container sell
+   * different things to different people and have no business sharing a set of
+   * subreddits. The caller supplies credentials and user agents; this decides
+   * which communities and feeds they are pointed at.
+   */
+  readonly resolveSources: (targets: ListeningTargets) => readonly FeedSource[];
   readonly now?: Date;
 }
 
@@ -51,6 +60,8 @@ export interface ListenInput {
 export interface ListenResult {
   readonly campaignId: string;
   readonly terms: readonly string[];
+  /** Where this campaign was pointed, as stored on it. */
+  readonly targets: ListeningTargets;
   /** Posts returned by the sources, before de-duplication. */
   readonly found: number;
   /** Signals actually written — posts not already seen. */
@@ -79,12 +90,14 @@ export async function runListening(deps: ListenDeps, input: ListenInput): Promis
   const at = deps.now ?? new Date();
 
   const terms = await campaignTerms(db, input.workspaceId, input.campaignId);
+  const targets = await loadListeningTargets(db, input.workspaceId, input.campaignId);
   const bySource: Record<string, number> = {};
   const failures: { slug: string; reason: string }[] = [];
 
   const empty: ListenResult = {
     campaignId: input.campaignId,
     terms,
+    targets,
     found: 0,
     kept: 0,
     peopleCreated: 0,
@@ -92,7 +105,12 @@ export async function runListening(deps: ListenDeps, input: ListenInput): Promis
     failures,
   };
 
-  if (terms.length === 0 || deps.sources.length === 0) return empty;
+  // Nothing to search for, or nowhere chosen to search. Both are ordinary
+  // states for a campaign that has not opted in, and neither is an error.
+  if (terms.length === 0 || targets.sources.length === 0) return empty;
+
+  const sources = deps.resolveSources(targets);
+  if (sources.length === 0) return empty;
 
   const since = input.since ?? new Date(at.getTime() - DEFAULT_WINDOW_DAYS * 86_400_000);
 
@@ -100,7 +118,7 @@ export async function runListening(deps: ListenDeps, input: ListenInput): Promis
   let kept = 0;
   let peopleCreated = 0;
 
-  for (const source of deps.sources) {
+  for (const source of sources) {
     let posts: readonly FeedPost[];
 
     try {
@@ -160,7 +178,16 @@ export async function runListening(deps: ListenDeps, input: ListenInput): Promis
     }
   }
 
-  return { campaignId: input.campaignId, terms, found, kept, peopleCreated, bySource, failures };
+  return {
+    campaignId: input.campaignId,
+    terms,
+    targets,
+    found,
+    kept,
+    peopleCreated,
+    bySource,
+    failures,
+  };
 }
 
 /**
@@ -170,7 +197,7 @@ export async function runListening(deps: ListenDeps, input: ListenInput): Promis
  * complaining about a competitor by name is the strongest listening signal
  * there is, and it is already written down during setup.
  */
-async function campaignTerms(
+export async function campaignTerms(
   db: Client,
   workspaceId: string,
   campaignId: string,
@@ -347,16 +374,24 @@ async function linkToCampaign(
   }
 }
 
-/** Every campaign a listening pass should run for. */
+/**
+ * Every campaign a listening pass should run for.
+ *
+ * Only those that have chosen somewhere to listen. Returning all of them and
+ * letting each no-op would work, but it would also mean a workspace that never
+ * enabled listening paid a pair of queries per campaign per tick forever.
+ */
 export async function listeningCampaigns(
   db: Client,
   workspaceId: string,
 ): Promise<{ id: string; name: string }[]> {
   return queryAll<{ id: string; name: string }>(
     db,
-    `SELECT id, name FROM campaigns
-      WHERE workspace_id = ? AND status != 'archived'
-      ORDER BY created_at ASC`,
+    `SELECT c.id, c.name FROM campaigns c
+       JOIN campaign_filters f ON f.campaign_id = c.id
+      WHERE c.workspace_id = ? AND c.status != 'archived'
+        AND f.listen_sources NOT IN ('', '[]')
+      ORDER BY c.created_at ASC`,
     [workspaceId],
   );
 }

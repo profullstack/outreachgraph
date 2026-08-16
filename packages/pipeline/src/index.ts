@@ -19,10 +19,23 @@ export {
 export {
   runListening,
   listeningCampaigns,
+  campaignTerms,
   type ListenDeps,
   type ListenInput,
   type ListenResult,
 } from './listen';
+export {
+  loadListeningTargets,
+  saveListeningTargets,
+  normaliseTargets,
+  normaliseSubreddit,
+  normaliseFeedUrl,
+  LISTEN_SOURCE_SLUGS,
+  NO_LISTENING,
+  type ListeningTargets,
+  type ListeningTargetsInput,
+  type ListenSourceSlug,
+} from './listening-targets';
 export {
   connectEmailAccount,
   disconnectEmailAccount,

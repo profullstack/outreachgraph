@@ -48,6 +48,7 @@ import {
   sendDailyDigest,
   sendLeadAlerts,
   workspacesWithReadableMailbox,
+  type ListeningTargets,
   type QueuedJob,
 } from '@outreachgraph/pipeline';
 import {
@@ -228,35 +229,28 @@ if (!encryptionKey) {
 }
 
 /**
- * The public feeds this deployment listens to.
+ * The feed clients for one campaign's own targets.
  *
- * Off unless asked for. Listening writes people and signals on a schedule, and
- * a deployment that starts polling four networks the moment it boots is not
- * something to switch on by accident.
+ * The split here is deliberate, and it is the whole point of this function.
+ * *Where* to listen — which subreddits, which feeds — comes from the campaign,
+ * because two workspaces on this container sell different things to different
+ * people and sharing a set of communities makes at most one of them right.
+ * *How* to reach a network — user agents, tokens, relay hosts — comes from the
+ * environment, because that is infrastructure and genuinely is per-deployment.
  *
- * Reddit and RSS are the two that matter for reaching buyers outside software,
- * and both are configured by *where* to look rather than by credentials:
- * `LISTEN_SUBREDDITS` and `LISTEN_RSS_FEEDS` are the whole setting. An
- * unscoped Reddit search returns noise; three trade subreddits return buyers.
+ * Listening previously read its targeting from `LISTEN_SUBREDDITS` and
+ * `LISTEN_RSS_FEEDS`, which put both halves in the environment and quietly
+ * cross-wired every workspace. Those variables are gone; targeting now lives on
+ * `campaign_filters` (migration 0012) and is edited per campaign in setup.
  */
-const listeningSources = buildListeningSources();
-
-function buildListeningSources(): FeedSource[] {
-  const enabled = new Set(
-    (process.env.LISTEN_SOURCES ?? '')
-      .split(',')
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean),
-  );
-
-  if (enabled.size === 0) return [];
-
+function buildListeningSources(targets: ListeningTargets): FeedSource[] {
+  const enabled = new Set<string>(targets.sources);
   const sources: FeedSource[] = [];
 
   if (enabled.has('reddit')) {
     sources.push(
       new RedditSource({
-        subreddits: splitList(process.env.LISTEN_SUBREDDITS),
+        subreddits: targets.subreddits,
         ...(process.env.REDDIT_USER_AGENT ? { userAgent: process.env.REDDIT_USER_AGENT } : {}),
         ...(process.env.REDDIT_ACCESS_TOKEN
           ? { accessToken: process.env.REDDIT_ACCESS_TOKEN }
@@ -265,13 +259,10 @@ function buildListeningSources(): FeedSource[] {
     );
   }
 
-  if (enabled.has('rss')) {
-    const feedUrls = splitList(process.env.LISTEN_RSS_FEEDS);
-    // A feed source with no feeds polls nothing; saying so beats a silent
-    // no-op that looks like the feature not working.
-    if (feedUrls.length === 0)
-      console.log('LISTEN_SOURCES includes rss but LISTEN_RSS_FEEDS is empty');
-    else sources.push(new RssSource({ feedUrls }));
+  // A feed source with no feeds polls nothing, so it is left out rather than
+  // constructed: an empty RSS client in the list reads as working listening.
+  if (enabled.has('rss') && targets.feeds.length > 0) {
+    sources.push(new RssSource({ feedUrls: targets.feeds }));
   }
 
   if (enabled.has('bluesky')) sources.push(new BlueskyFeedSource());
@@ -279,10 +270,6 @@ function buildListeningSources(): FeedSource[] {
   if (enabled.has('nostr')) {
     const relays = splitList(process.env.LISTEN_NOSTR_RELAYS);
     sources.push(new NostrSource(relays.length > 0 ? { relays } : {}));
-  }
-
-  if (sources.length > 0) {
-    console.log(`listening to: ${sources.map((source) => source.slug).join(', ')}`);
   }
 
   return sources;
@@ -608,32 +595,33 @@ async function tick(): Promise<void> {
   // intake that does not start from a company: it finds the person from what
   // they said, which is the only way to reach buyers who have no engineering
   // blog and no GitHub profile.
-  if (listeningSources.length > 0) {
-    for (const workspace of workspaces) {
-      try {
-        for (const campaign of await listeningCampaigns(db, workspace.id)) {
-          const heard = await runListening(
-            { db, sources: listeningSources },
-            { workspaceId: workspace.id, campaignId: campaign.id },
+  //
+  // `listeningCampaigns` returns only campaigns that chose somewhere to
+  // listen, so a workspace that never enabled it costs one query per tick.
+  for (const workspace of workspaces) {
+    try {
+      for (const campaign of await listeningCampaigns(db, workspace.id)) {
+        const heard = await runListening(
+          { db, resolveSources: buildListeningSources },
+          { workspaceId: workspace.id, campaignId: campaign.id },
+        );
+
+        if (heard.kept > 0) {
+          console.log(
+            `listening ${campaign.name}: ${heard.kept} new from ${heard.found} posts ` +
+              `(${heard.peopleCreated} new people)`,
           );
-
-          if (heard.kept > 0) {
-            console.log(
-              `listening ${campaign.name}: ${heard.kept} new from ${heard.found} posts ` +
-                `(${heard.peopleCreated} new people)`,
-            );
-          }
-
-          // A source that could not be reached is reported rather than
-          // swallowed: "found nothing" and "could not look" are different
-          // problems, and only one of them is worth investigating.
-          for (const failure of heard.failures) {
-            console.log(`listening ${campaign.name}: ${failure.slug} — ${failure.reason}`);
-          }
         }
-      } catch (error) {
-        console.error(`listening failed for ${workspace.id}`, error);
+
+        // A source that could not be reached is reported rather than
+        // swallowed: "found nothing" and "could not look" are different
+        // problems, and only one of them is worth investigating.
+        for (const failure of heard.failures) {
+          console.log(`listening ${campaign.name}: ${failure.slug} — ${failure.reason}`);
+        }
       }
+    } catch (error) {
+      console.error(`listening failed for ${workspace.id}`, error);
     }
   }
 

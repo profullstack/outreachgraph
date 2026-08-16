@@ -43,16 +43,21 @@ import {
 import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
 import {
   campaignFunnel,
+  campaignTerms,
   connectEmailAccount,
   deliverEmailAction,
   disconnectEmailAccount,
   emailAccountSummary,
   leadTimeline,
+  loadListeningTargets,
   loadNotifySettings,
   mailerForWorkspace,
+  normaliseTargets,
   notifyAddress,
+  saveListeningTargets,
   workspaceAnalytics,
   EmailAccountError,
+  LISTEN_SOURCE_SLUGS,
 } from '@outreachgraph/pipeline';
 import {
   archiveCampaign,
@@ -69,7 +74,13 @@ import { readEvents, workflowStatus } from '@outreachgraph/pipeline';
 import { SHARE_TARGETS, type ShareNetwork } from '@outreachgraph/domain';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
-import { GitHubProvider, SiteProvider, normaliseUrl } from '@outreachgraph/providers';
+import {
+  GitHubProvider,
+  SiteProvider,
+  normaliseUrl,
+  suggestSubreddits,
+  FeedRateLimitError,
+} from '@outreachgraph/providers';
 import { ConsoleMailer, SMTP_PRESETS, verificationEmail, type Mailer } from '@outreachgraph/email';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
@@ -120,6 +131,13 @@ export interface AppOptions {
    * already-stored mailbox reads as disconnected.
    */
   readonly encryptionKey?: Buffer | undefined;
+  /**
+   * Suggests the communities a campaign should listen to.
+   *
+   * Injected so the suggestion route is testable without reaching Reddit, and
+   * so a deployment with its own registered OAuth app can pass a token.
+   */
+  readonly suggestSubreddits?: typeof suggestSubreddits;
   /** Public origin, used to build links that land in someone's inbox. */
   readonly appUrl?: string;
   readonly version?: string;
@@ -472,6 +490,115 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     }
 
     return c.json({ campaignId, ...changed });
+  });
+
+  // --------------------------------------------------------------- listening
+  //
+  // Where a campaign listens, kept beside the keywords it listens for. This is
+  // per campaign and not per deployment on purpose: a workspace selling to
+  // plumbers and one selling to clinics share a container and share nothing
+  // else, and a single set of subreddits could only ever suit one of them.
+
+  api.get('/campaigns/:id/listening', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaignId = c.req.param('id');
+
+    if (!(await campaignInWorkspace(db, actor.workspaceId, campaignId))) {
+      throw ApiError.notFound('campaign');
+    }
+
+    const targets = await loadListeningTargets(db, actor.workspaceId, campaignId);
+
+    return c.json({
+      campaignId,
+      ...targets,
+      available: LISTEN_SOURCE_SLUGS,
+      // What it would search for if switched on, so the screen can say so
+      // before anyone commits to a set of communities.
+      terms: await campaignTerms(db, actor.workspaceId, campaignId),
+    });
+  });
+
+  api.put('/campaigns/:id/listening', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaignId = c.req.param('id');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('changing where a campaign listens');
+
+    const body = safeJson(await c.req.raw.text());
+    const { targets, unknown } = normaliseTargets({
+      sources: stringList(body.sources),
+      subreddits: stringList(body.subreddits),
+      feeds: stringList(body.feeds),
+    });
+
+    // A typo would otherwise be dropped in silence, leaving the screen showing
+    // listening as on while nothing polls.
+    if (unknown.length > 0) {
+      throw ApiError.badRequest(
+        `unknown listening source: ${unknown.join(', ')}. Available: ${LISTEN_SOURCE_SLUGS.join(', ')}`,
+      );
+    }
+
+    if (targets.sources.includes('rss') && targets.feeds.length === 0) {
+      throw ApiError.badRequest(
+        'rss needs at least one feed URL — a feed has no search of its own',
+      );
+    }
+
+    if (!(await saveListeningTargets(db, actor.workspaceId, campaignId, targets))) {
+      throw ApiError.notFound('campaign');
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'campaign.listening_changed',
+      entityKind: 'campaign',
+      entityId: campaignId,
+      detail: { ...targets },
+    });
+
+    return c.json({ campaignId, ...targets });
+  });
+
+  /**
+   * Communities worth listening to, found from the campaign's own keywords.
+   *
+   * Scoping Reddit is the difference between buyers and noise, and it asks the
+   * operator to name subreddits they have usually never heard of. Reddit
+   * indexes its own communities, so the product can answer that instead of
+   * handing the research back.
+   */
+  api.get('/campaigns/:id/listening/suggestions', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaignId = c.req.param('id');
+
+    if (!(await campaignInWorkspace(db, actor.workspaceId, campaignId))) {
+      throw ApiError.notFound('campaign');
+    }
+
+    const terms = await campaignTerms(db, actor.workspaceId, campaignId);
+    if (terms.length === 0) return c.json({ campaignId, terms, suggestions: [] });
+
+    const suggest = options.suggestSubreddits ?? suggestSubreddits;
+
+    try {
+      return c.json({ campaignId, terms, suggestions: await suggest(terms) });
+    } catch (error) {
+      if (error instanceof FeedRateLimitError) {
+        throw new ApiError(
+          503,
+          'suggestions_unavailable',
+          'Reddit is rate limiting suggestions — try again shortly, or add subreddits by hand',
+        );
+      }
+      throw error;
+    }
   });
 
   api.get('/campaigns/:id/recommendations', async (c) => {
@@ -2195,6 +2322,35 @@ function safeJson(text: string): Record<string, unknown> {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** Accepts a JSON array of strings, or a comma-separated string. */
+function stringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  if (typeof value === 'string') return value.split(',');
+  return [];
+}
+
+/**
+ * Whether this campaign belongs to the caller's workspace.
+ *
+ * Read routes need it explicitly: the loaders below answer "no targets" for a
+ * campaign in someone else's workspace and for one that does not exist, which
+ * is the right default for the worker and the wrong answer for an API that
+ * should say 404.
+ */
+async function campaignInWorkspace(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    db,
+    'SELECT id FROM campaigns WHERE id = ? AND workspace_id = ?',
+    [campaignId, workspaceId],
+  );
+
+  return row !== undefined;
 }
 
 /**

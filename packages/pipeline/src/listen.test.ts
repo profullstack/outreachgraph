@@ -47,14 +47,35 @@ function failing(slug: string): FeedSource {
   };
 }
 
-/** Gives the campaign something to listen for. */
-async function setTerms(db: Client, keywords: string[]): Promise<void> {
+/**
+ * Gives the campaign something to listen for, and somewhere to listen.
+ *
+ * Both halves are per-campaign, so a test that sets only the terms is testing
+ * a campaign that has not opted in and will correctly do nothing.
+ */
+async function setTerms(
+  db: Client,
+  keywords: string[],
+  targets: { sources?: string[]; subreddits?: string[]; feeds?: string[] } = {},
+): Promise<void> {
   await db.execute({
     sql: `INSERT INTO campaign_filters (campaign_id, titles, seniorities, industries,
-          technologies, keywords, exclusions, updated_at)
-          VALUES (?, '[]', '[]', '[]', '[]', ?, '[]', ?)
-          ON CONFLICT(campaign_id) DO UPDATE SET keywords = excluded.keywords`,
-    args: [SEED.campaignId, JSON.stringify(keywords), '2026-08-10T00:00:00.000Z'],
+          technologies, keywords, exclusions, listen_sources, listen_subreddits,
+          listen_feeds, updated_at)
+          VALUES (?, '[]', '[]', '[]', '[]', ?, '[]', ?, ?, ?, ?)
+          ON CONFLICT(campaign_id) DO UPDATE SET
+            keywords          = excluded.keywords,
+            listen_sources    = excluded.listen_sources,
+            listen_subreddits = excluded.listen_subreddits,
+            listen_feeds      = excluded.listen_feeds`,
+    args: [
+      SEED.campaignId,
+      JSON.stringify(keywords),
+      JSON.stringify(targets.sources ?? ['reddit']),
+      JSON.stringify(targets.subreddits ?? []),
+      JSON.stringify(targets.feeds ?? []),
+      '2026-08-10T00:00:00.000Z',
+    ],
   });
 }
 
@@ -65,7 +86,7 @@ describe('runListening', () => {
     await setTerms(db, ['scheduling software']);
 
     const result = await runListening(
-      { db, sources: [source([post()])] },
+      { db, resolveSources: () => [source([post()])] },
       { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
     );
 
@@ -97,7 +118,7 @@ describe('runListening', () => {
     await setTerms(db, ['scheduling software']);
 
     await runListening(
-      { db, sources: [source([post()])] },
+      { db, resolveSources: () => [source([post()])] },
       { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
     );
 
@@ -116,7 +137,7 @@ describe('runListening', () => {
     await setTerms(db, ['scheduling software']);
 
     await runListening(
-      { db, sources: [source([post()])] },
+      { db, resolveSources: () => [source([post()])] },
       { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
     );
 
@@ -145,7 +166,7 @@ describe('runListening', () => {
     const { db } = seeded;
     await setTerms(db, ['scheduling software']);
 
-    const deps = { db, sources: [source([post()])] };
+    const deps = { db, resolveSources: () => [source([post()])] };
     const input = { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId };
 
     await runListening(deps, input);
@@ -169,7 +190,7 @@ describe('runListening', () => {
     const result = await runListening(
       {
         db,
-        sources: [
+        resolveSources: () => [
           source([
             post(),
             post({
@@ -193,7 +214,7 @@ describe('runListening', () => {
     await setTerms(db, ['scheduling software']);
 
     await runListening(
-      { db, sources: [source([post()])] },
+      { db, resolveSources: () => [source([post()])] },
       { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
     );
 
@@ -219,7 +240,12 @@ describe('runListening', () => {
     });
 
     const result = await runListening(
-      { db, sources: [source([post({ text: 'We are migrating off Fieldwire next month' })])] },
+      {
+        db,
+        resolveSources: () => [
+          source([post({ text: 'We are migrating off Fieldwire next month' })]),
+        ],
+      },
       { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
     );
 
@@ -235,7 +261,7 @@ describe('runListening', () => {
     await setTerms(db, ['scheduling software']);
 
     const result = await runListening(
-      { db, sources: [failing('nostr'), source([post()])] },
+      { db, resolveSources: () => [failing('nostr'), source([post()])] },
       { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
     );
 
@@ -266,7 +292,7 @@ describe('runListening', () => {
     };
 
     const result = await runListening(
-      { db, sources: [watcher] },
+      { db, resolveSources: () => [watcher] },
       { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
     );
 
@@ -285,11 +311,60 @@ describe('runListening', () => {
     });
 
     const result = await runListening(
-      { db, sources: [source([post()])] },
+      { db, resolveSources: () => [source([post()])] },
       { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
     );
 
     expect(result.terms).toEqual([]);
     expect(result.kept).toBe(0);
+  });
+
+  test('a campaign that has chosen no source listens to nothing', async () => {
+    seeded = await seedDatabase('listen-not-opted-in');
+    const { db } = seeded;
+    await setTerms(db, ['scheduling software'], { sources: [] });
+
+    let built = false;
+    const result = await runListening(
+      {
+        db,
+        resolveSources: () => {
+          built = true;
+          return [source([post()])];
+        },
+      },
+      { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
+    );
+
+    // Having keywords is not opting in. Listening polls networks on a
+    // schedule and writes people, so it starts only when someone says where.
+    expect(built).toBe(false);
+    expect(result.kept).toBe(0);
+  });
+
+  test('the campaign chooses its own communities, not the deployment', async () => {
+    seeded = await seedDatabase('listen-own-targets');
+    const { db } = seeded;
+    await setTerms(db, ['scheduling software'], {
+      sources: ['reddit'],
+      subreddits: ['plumbing', 'HVAC'],
+    });
+
+    let saw: readonly string[] = [];
+    const result = await runListening(
+      {
+        db,
+        resolveSources: (targets) => {
+          saw = targets.subreddits;
+          return [source([post()])];
+        },
+      },
+      { workspaceId: SEED.workspaceId, campaignId: SEED.campaignId },
+    );
+
+    // The whole point of migration 0012: two workspaces on one container must
+    // be able to listen in different places.
+    expect(saw).toEqual(['plumbing', 'HVAC']);
+    expect(result.targets.sources).toEqual(['reddit']);
   });
 });
