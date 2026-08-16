@@ -28,21 +28,32 @@ import {
   type FallbackEntry,
 } from '@outreachgraph/ai';
 import { ResendMailer } from '@outreachgraph/email';
+import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
 import {
   drainQueue,
   expireSignals,
+  listeningCampaigns,
   processDeletion,
   rescoreProspect,
   runAutopilot,
   runCrawlJob,
   runDiscoveryJob,
+  runListening,
   sendDailyDigest,
   sendLeadAlerts,
   type QueuedJob,
 } from '@outreachgraph/pipeline';
-import { BlueskyProvider, SiteProvider } from '@outreachgraph/providers';
+import {
+  BlueskyFeedSource,
+  BlueskyProvider,
+  NostrSource,
+  RedditSource,
+  RssSource,
+  SiteProvider,
+  type FeedSource,
+} from '@outreachgraph/providers';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const WEB_PORT = Number(process.env.WEB_PORT ?? 3001);
@@ -154,6 +165,89 @@ const mailer =
 if (!mailer) console.log('no RESEND_API_KEY/EMAIL_FROM: verification links are logged, not sent');
 
 /**
+ * Unlocks mailbox credentials a workspace has stored.
+ *
+ * A bad key is fatal on purpose, unlike an absent one. Absent means "nobody
+ * has connected a mailbox here yet", which is a normal state for a fresh
+ * deployment. Present-but-wrong means every stored credential silently reads
+ * as no-account, and a product that quietly stops sending is worse than one
+ * that refuses to start.
+ */
+const encryptionKey = secretKeyFromEnv();
+
+if (!encryptionKey) {
+  console.log('no SECRET_ENCRYPTION_KEY: workspaces cannot connect their own sending mailbox');
+}
+
+/**
+ * The public feeds this deployment listens to.
+ *
+ * Off unless asked for. Listening writes people and signals on a schedule, and
+ * a deployment that starts polling four networks the moment it boots is not
+ * something to switch on by accident.
+ *
+ * Reddit and RSS are the two that matter for reaching buyers outside software,
+ * and both are configured by *where* to look rather than by credentials:
+ * `LISTEN_SUBREDDITS` and `LISTEN_RSS_FEEDS` are the whole setting. An
+ * unscoped Reddit search returns noise; three trade subreddits return buyers.
+ */
+const listeningSources = buildListeningSources();
+
+function buildListeningSources(): FeedSource[] {
+  const enabled = new Set(
+    (process.env.LISTEN_SOURCES ?? '')
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  if (enabled.size === 0) return [];
+
+  const sources: FeedSource[] = [];
+
+  if (enabled.has('reddit')) {
+    sources.push(
+      new RedditSource({
+        subreddits: splitList(process.env.LISTEN_SUBREDDITS),
+        ...(process.env.REDDIT_USER_AGENT ? { userAgent: process.env.REDDIT_USER_AGENT } : {}),
+        ...(process.env.REDDIT_ACCESS_TOKEN
+          ? { accessToken: process.env.REDDIT_ACCESS_TOKEN }
+          : {}),
+      }),
+    );
+  }
+
+  if (enabled.has('rss')) {
+    const feedUrls = splitList(process.env.LISTEN_RSS_FEEDS);
+    // A feed source with no feeds polls nothing; saying so beats a silent
+    // no-op that looks like the feature not working.
+    if (feedUrls.length === 0)
+      console.log('LISTEN_SOURCES includes rss but LISTEN_RSS_FEEDS is empty');
+    else sources.push(new RssSource({ feedUrls }));
+  }
+
+  if (enabled.has('bluesky')) sources.push(new BlueskyFeedSource());
+
+  if (enabled.has('nostr')) {
+    const relays = splitList(process.env.LISTEN_NOSTR_RELAYS);
+    sources.push(new NostrSource(relays.length > 0 ? { relays } : {}));
+  }
+
+  if (sources.length > 0) {
+    console.log(`listening to: ${sources.map((source) => source.slug).join(', ')}`);
+  }
+
+  return sources;
+}
+
+function splitList(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+/**
  * Where the links in outbound email point.
  *
  * `APP_URL` unset used to mean `http://localhost:8080`, which is right in
@@ -182,6 +276,7 @@ const api = createApp({
   db,
   ...(model ? { model } : {}),
   ...(mailer ? { mailer } : {}),
+  ...(encryptionKey ? { encryptionKey } : {}),
   ...(appUrl ? { appUrl } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
   // Cookies must not be Secure over plain HTTP, or local development can
@@ -331,6 +426,10 @@ async function crawlSite(job: QueuedJob): Promise<void> {
       // Tells the policy engine email is a channel this deployment can
       // actually send through. Without it `email/send_email` evaluates to
       // `manual_only` and no email recommendation is ever produced.
+      //
+      // A workspace with its own connected mailbox is covered by the
+      // `integration_accounts` check inside the pipeline, so this only has to
+      // account for the platform sender.
       emailSendingEnabled: mailer !== undefined,
     },
     job,
@@ -424,6 +523,41 @@ async function tick(): Promise<void> {
     );
   }
 
+  // ------------------------------------------------------------- listening
+  //
+  // Public feeds, searched for each campaign's own keywords. This is the only
+  // intake that does not start from a company: it finds the person from what
+  // they said, which is the only way to reach buyers who have no engineering
+  // blog and no GitHub profile.
+  if (listeningSources.length > 0) {
+    for (const workspace of workspaces) {
+      try {
+        for (const campaign of await listeningCampaigns(db, workspace.id)) {
+          const heard = await runListening(
+            { db, sources: listeningSources },
+            { workspaceId: workspace.id, campaignId: campaign.id },
+          );
+
+          if (heard.kept > 0) {
+            console.log(
+              `listening ${campaign.name}: ${heard.kept} new from ${heard.found} posts ` +
+                `(${heard.peopleCreated} new people)`,
+            );
+          }
+
+          // A source that could not be reached is reported rather than
+          // swallowed: "found nothing" and "could not look" are different
+          // problems, and only one of them is worth investigating.
+          for (const failure of heard.failures) {
+            console.log(`listening ${campaign.name}: ${failure.slug} — ${failure.reason}`);
+          }
+        }
+      } catch (error) {
+        console.error(`listening failed for ${workspace.id}`, error);
+      }
+    }
+  }
+
   // ------------------------------------------------------------- autopilot
   //
   // Sending, alerting and the digest, per workspace. Each is wrapped
@@ -432,7 +566,14 @@ async function tick(): Promise<void> {
   // outreach sweep that follows it.
   for (const workspace of workspaces) {
     try {
-      const result = await runAutopilot({ db, ...(mailer ? { mailer } : {}) }, workspace.id);
+      const result = await runAutopilot(
+        {
+          db,
+          ...(mailer ? { mailer } : {}),
+          ...(encryptionKey ? { encryptionKey } : {}),
+        },
+        workspace.id,
+      );
 
       if (result.sent.length > 0 || result.failed > 0) {
         console.log(

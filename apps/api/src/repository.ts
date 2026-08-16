@@ -184,30 +184,45 @@ export async function actionCounts(
   db: Client,
   workspaceId: string,
   personId: string,
+  /**
+   * An action to leave out of the counts — the one being executed.
+   *
+   * Approval creates the action row *after* the policy check, so it never
+   * counts against itself there. Re-checking at execution time reads a table
+   * that already contains it, and with the default of one action per prospect
+   * per week that is enough for every send to be refused by its own existence.
+   * The limit is about how often we contact someone, not about how many times
+   * we ask permission to.
+   */
+  excludeActionId?: string,
 ): Promise<{ today: number; thisProspectThisWeek: number; hoursSinceLast?: number }> {
   const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
   const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
 
+  const exclude = excludeActionId ? 'AND id != ?' : '';
+  const excludeArgs = excludeActionId ? [excludeActionId] : [];
+
   const today = await queryOne<{ n: number }>(
     db,
     `SELECT count(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= ? AND status != 'cancelled'`,
-    [workspaceId, dayAgo],
+      WHERE workspace_id = ? AND created_at >= ? AND status != 'cancelled' ${exclude}`,
+    [workspaceId, dayAgo, ...excludeArgs],
   );
 
   const week = await queryOne<{ n: number }>(
     db,
     `SELECT count(*) AS n FROM actions
-      WHERE workspace_id = ? AND person_id = ? AND created_at >= ? AND status != 'cancelled'`,
-    [workspaceId, personId, weekAgo],
+      WHERE workspace_id = ? AND person_id = ? AND created_at >= ? AND status != 'cancelled'
+        ${exclude}`,
+    [workspaceId, personId, weekAgo, ...excludeArgs],
   );
 
   const last = await queryOne<{ created_at: string }>(
     db,
     `SELECT created_at FROM actions
-      WHERE workspace_id = ? AND person_id = ? AND status != 'cancelled'
+      WHERE workspace_id = ? AND person_id = ? AND status != 'cancelled' ${exclude}
    ORDER BY created_at DESC LIMIT 1`,
-    [workspaceId, personId],
+    [workspaceId, personId, ...excludeArgs],
   );
 
   const hoursSinceLast = last ? (Date.now() - Date.parse(last.created_at)) / 3_600_000 : undefined;
@@ -293,7 +308,7 @@ export interface RecordActionInput {
   readonly personId: string;
   readonly kind: ActionKind;
   readonly network: Network;
-  readonly mode: 'official_api' | 'manual' | 'crm';
+  readonly mode: 'official_api' | 'manual' | 'crm' | 'customer_managed';
   readonly body?: string;
   readonly externalUrl?: string;
 }

@@ -170,6 +170,35 @@ const GITHUB: readonly CapabilityRule[] = [
   rule('github', 'follow', 'manual_only', 'Follow from your own account if you choose.'),
 ];
 
+/**
+ * Nostr (added with the listening sources).
+ *
+ * The only network here with no gatekeeper: relays are open, anyone may run
+ * one, and there are no terms that can be revised to close the door. Reads and
+ * public replies are permitted by the protocol itself rather than by anyone's
+ * permission.
+ *
+ * Direct messages are the interesting case. Nobody forbids them — NIP-17 is
+ * part of the protocol and there is no platform to ban an account. They stay
+ * `manual_only` anyway, because "unsolicited" is a property of the message and
+ * not of the network's rules, and the product's default is that a human sees
+ * an outbound message before a stranger does.
+ */
+const NOSTR: readonly CapabilityRule[] = [
+  rule('nostr', 'observe', 'official_api', 'Public relay reads; the protocol is open.'),
+  rule('nostr', 'refresh_research', 'official_api', 'Public relay reads; the protocol is open.'),
+  rule('nostr', 'view_profile', 'official_api', 'Public profile metadata from relays.'),
+  rule('nostr', 'reply', 'official_api', 'Public replies from the connected key.'),
+  rule('nostr', 'comment', 'official_api', 'Public replies from the connected key.'),
+  rule(
+    'nostr',
+    'send_dm',
+    'manual_only',
+    'No platform forbids it, but an unsolicited message still gets a human first.',
+    'product_decision',
+  ),
+];
+
 /** Read-only research surfaces. */
 const READ_ONLY: readonly CapabilityRule[] = [
   rule('website', 'observe', 'research_only', 'Permitted public web retrieval.'),
@@ -218,6 +247,7 @@ export const DEFAULT_CAPABILITY_RULES: readonly CapabilityRule[] = [
   ...LINKEDIN,
   ...X,
   ...BLUESKY,
+  ...NOSTR,
   ...GITHUB,
   ...READ_ONLY,
   ...OWNED,

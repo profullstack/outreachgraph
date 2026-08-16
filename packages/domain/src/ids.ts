@@ -29,6 +29,8 @@ export const ID_PREFIXES = {
   action: 'act',
   interaction: 'int',
   videoAsset: 'vid',
+  integration: 'itg',
+  integrationAccount: 'ita',
   suppression: 'sup',
   privacyRequest: 'pri',
   deletionJob: 'del',
