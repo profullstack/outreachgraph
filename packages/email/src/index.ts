@@ -26,19 +26,12 @@ export {
   type SendResult,
 } from './mailer';
 export {
-  SmtpError,
   SmtpMailer,
-  buildMessage,
-  verifySmtp,
-  type SmtpConfig,
-  type VerifyResult,
+  SMTP_PRESETS,
+  formatFrom,
+  type SmtpCredentials,
+  type SmtpPreset,
 } from './smtp';
-export {
-  SecretUnavailableError,
-  canStoreSecrets,
-  decryptSecret,
-  encryptSecret,
-} from './secret-box';
 export { verificationEmail } from './templates';
 export {
   dailyDigestEmail,

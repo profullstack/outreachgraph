@@ -200,7 +200,6 @@ export interface SendingSnapshot {
   readonly verified: boolean;
   readonly provider?: string;
   readonly fromEmail?: string;
-  readonly lastError?: string;
   readonly sentToday: number;
   readonly failedToday: number;
   readonly dailyCap: number;
@@ -273,9 +272,17 @@ export async function workflowStatus(
        FROM actions WHERE workspace_id = ? AND created_at >= ?`,
       [workspaceId, dayStart],
     ),
-    queryOne<{ provider: string; from_email: string; status: string; last_error: string | null }>(
+    // The workspace's own mailbox, read from the same pair the policy engine
+    // reads. A connected row here is already a verified one — `connectEmailAccount`
+    // authenticates against the real server before it writes anything — so
+    // "configured but not working" is a state this table cannot hold.
+    queryOne<{ kind: string; config_json: string; status: string }>(
       db,
-      `SELECT provider, from_email, status, last_error FROM email_accounts WHERE workspace_id = ?`,
+      `SELECT i.kind, i.config_json, ia.status
+         FROM integrations i
+         JOIN integration_accounts ia ON ia.integration_id = i.id
+        WHERE i.workspace_id = ? AND i.kind = 'smtp' AND i.network = 'email'
+        LIMIT 1`,
       [workspaceId],
     ),
     queryOne<{ autopilot_daily_cap: number }>(
@@ -293,6 +300,20 @@ export async function workflowStatus(
   const byKind: Record<string, number> = {};
   for (const row of kinds) byKind[row.kind] = row.n;
 
+  // The sending address lives inside the integration's config blob rather than
+  // its own column, and a blob that will not parse is reported as no address
+  // rather than as a broken panel.
+  const accountFrom = ((): string | undefined => {
+    if (!account?.config_json) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(account.config_json);
+      const from = (parsed as { fromEmail?: unknown }).fromEmail;
+      return typeof from === 'string' && from.length > 0 ? from : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
   const pending = jobs?.pending ?? 0;
   const running = jobs?.running ?? 0;
 
@@ -307,10 +328,9 @@ export async function workflowStatus(
     },
     sending: {
       configured: account !== undefined && account !== null,
-      verified: account?.status === 'verified',
-      ...(account?.provider ? { provider: account.provider } : {}),
-      ...(account?.from_email ? { fromEmail: account.from_email } : {}),
-      ...(account?.last_error ? { lastError: account.last_error } : {}),
+      verified: account?.status === 'active',
+      ...(account?.kind ? { provider: account.kind } : {}),
+      ...(accountFrom ? { fromEmail: accountFrom } : {}),
       sentToday: sends?.sent ?? 0,
       failedToday: sends?.failed ?? 0,
       dailyCap: settings?.autopilot_daily_cap ?? 25,

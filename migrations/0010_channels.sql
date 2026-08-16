@@ -1,71 +1,23 @@
 -- 0010_channels.sql
--- Sending as yourself, posting by hand, and being able to watch either happen.
+-- Posting by hand, and being able to watch the pipeline work.
 --
--- Three gaps this closes:
+-- Two gaps this closes:
 --
---   1. Outreach could only leave through one shared Resend key on one verified
---      domain, so every customer's mail said it came from us. Sending as
---      yourself means your own SMTP server, your own envelope, your own
---      reputation — and credentials that live per workspace rather than in the
---      container's environment.
---   2. Nothing recorded that a human posted somewhere by hand. The networks the
+--   1. Nothing recorded that a human posted somewhere by hand. The networks the
 --      capability matrix marks `manual_only` are not a gap in the product, they
 --      are the product working correctly, but the human's work still has to
 --      land in the same funnel as an automated send or the numbers lie.
---   3. The pipeline reported itself only through container logs. A campaign
+--   2. The pipeline reported itself only through container logs. A campaign
 --      that is quietly working and a campaign that is quietly stuck look
 --      identical from the outside, which is the single most common way this
 --      product feels broken.
-
--- ---------------------------------------------------------------- sending
 --
--- One sending account per workspace. `UNIQUE` rather than a PK on workspace_id
--- so the row can be replaced without disturbing anything that references it.
---
--- The secret is stored encrypted (AES-256-GCM) and is never read back out to a
--- client — the API returns everything on this row except `secret_encrypted`.
--- A password that can be round-tripped through a settings form is a password
--- that leaks through the settings form.
-CREATE TABLE email_accounts (
-  id                 TEXT PRIMARY KEY,
-  workspace_id       TEXT NOT NULL UNIQUE REFERENCES workspaces(id) ON DELETE CASCADE,
-  -- 'smtp' today. The column exists so adding a hosted provider later is a new
-  -- value rather than a new table.
-  provider           TEXT NOT NULL DEFAULT 'smtp',
-  host               TEXT,
-  port               INTEGER,
-  -- 1 = implicit TLS from the first byte (465). 0 = plaintext connect then
-  -- STARTTLS (587). Both are TLS by the time credentials move; see smtp.ts.
-  secure             INTEGER NOT NULL DEFAULT 0,
-  username           TEXT,
-  secret_encrypted   TEXT,
-  -- Two deliberate escape hatches, both off by default and both stored so the
-  -- choice is visible rather than buried in an environment variable.
-  --
-  -- A self-hosted mail server may present a certificate signed by a private CA,
-  -- and a relay on loopback may offer no TLS at all. Both are real, legitimate
-  -- deployments. Refusing them outright would push people towards putting their
-  -- real mailbox password into a server they trust less, which is worse than
-  -- letting them say "yes, I know" about this one.
-  allow_invalid_cert INTEGER NOT NULL DEFAULT 0,
-  allow_insecure     INTEGER NOT NULL DEFAULT 0,
-  from_email         TEXT NOT NULL,
-  from_name          TEXT,
-  -- Envelope reply-to for outreach sent through this account. NULL falls back
-  -- to workspace_settings.reply_to_email and then to the owner's address.
-  reply_to           TEXT,
-  -- unverified | verified | failed
-  --
-  -- Load-bearing, not decorative: `runAutopilot` only accepts an account that
-  -- reached 'verified', which is what makes "test it before it sends" a
-  -- property of the system rather than a thing we ask people to remember.
-  status             TEXT NOT NULL DEFAULT 'unverified',
-  verified_at        TEXT,
-  last_test_at       TEXT,
-  last_error         TEXT,
-  created_at         TEXT NOT NULL,
-  updated_at         TEXT NOT NULL
-);
+-- Sending as yourself is deliberately *not* here. A workspace's own mail server
+-- is stored on `integrations` + `integration_accounts` (migration 0000), which
+-- is the pair `packages/policy` reads for `hasConnectedAccount` — a second
+-- table holding the same fact would answer that question differently depending
+-- on which one a caller happened to read, and the policy engine is the one
+-- place that must never be ambiguous about whether a mailbox exists.
 
 -- ------------------------------------------------------------ manual posts
 --

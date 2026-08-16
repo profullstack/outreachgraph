@@ -9,7 +9,15 @@
  */
 
 import { cookies } from 'next/headers';
-import type { ApprovalCard, CurrentUser, ProspectDetail, ProspectRow, SignalRow } from './types';
+import type {
+  ApprovalCard,
+  CurrentUser,
+  EmailIntegrationView,
+  ProductSummaryView,
+  ProspectDetail,
+  ProspectRow,
+  SignalRow,
+} from './types';
 
 export type {
   ApprovalCard,
@@ -92,15 +100,29 @@ export async function fetchMe(): Promise<CurrentUser> {
   return request<CurrentUser>('/auth/me');
 }
 
-/** What the workspace believes about itself, for the setup page. */
+/** What the workspace believes about one of its products, for the setup page. */
 export interface WorkspaceProfileView {
   readonly configured: boolean;
+  readonly offeringId?: string;
   readonly url?: string;
   readonly offering?: { readonly name: string; readonly category: string };
+  readonly products?: ProductSummaryView[];
 }
 
-export async function fetchProfile(): Promise<WorkspaceProfileView> {
-  return request<WorkspaceProfileView>('/onboarding/profile');
+/**
+ * Loads one product's profile.
+ *
+ * Omitting the id loads the first, which is what every caller wanted back when
+ * a workspace could only describe one thing.
+ */
+export async function fetchProfile(offeringId?: string): Promise<WorkspaceProfileView> {
+  const query = offeringId ? `?offeringId=${encodeURIComponent(offeringId)}` : '';
+  return request<WorkspaceProfileView>(`/onboarding/profile${query}`);
+}
+
+export async function fetchProducts(): Promise<ProductSummaryView[]> {
+  const body = await request<{ products: ProductSummaryView[] }>('/products');
+  return body.products;
 }
 
 export async function fetchApprovals(): Promise<ApprovalCard[]> {
@@ -203,40 +225,8 @@ export async function fetchSettings(): Promise<SettingsView> {
   return request<SettingsView>('/settings');
 }
 
-export interface EmailAccountView {
-  readonly configured: boolean;
-  readonly provider?: string;
-  readonly host?: string;
-  readonly port?: number;
-  readonly secure?: boolean;
-  readonly username?: string;
-  readonly fromEmail?: string;
-  readonly fromName?: string;
-  readonly replyTo?: string;
-  readonly status?: string;
-  readonly verifiedAt?: string;
-  readonly lastTestAt?: string;
-  readonly lastError?: string;
-  readonly hasPassword?: boolean;
-  readonly allowInvalidCertificate?: boolean;
-  readonly allowInsecureAuth?: boolean;
-  readonly canStore: boolean;
-}
-
-export interface EmailTestResult {
-  readonly ok: boolean;
-  readonly error?: string;
-  readonly encrypted?: boolean;
-  readonly authenticated?: boolean;
-  readonly greeting?: string;
-  readonly sentTo?: string;
-}
-
-export async function fetchEmailAccount(): Promise<{
-  account: EmailAccountView;
-  testTo: string | null;
-}> {
-  return request<{ account: EmailAccountView; testTo: string | null }>('/settings/email');
+export async function fetchEmailIntegration(): Promise<EmailIntegrationView> {
+  return request<EmailIntegrationView>('/integrations/email');
 }
 
 export interface CampaignSummaryView extends CampaignRow {
@@ -280,7 +270,6 @@ export interface WorkflowStatusView {
     readonly verified: boolean;
     readonly provider?: string;
     readonly fromEmail?: string;
-    readonly lastError?: string;
     readonly sentToday: number;
     readonly failedToday: number;
     readonly dailyCap: number;

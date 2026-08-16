@@ -13,6 +13,7 @@ export const NETWORKS = [
   'github',
   'bluesky',
   'reddit',
+  'nostr',
   'youtube',
   'instagram',
   'website',

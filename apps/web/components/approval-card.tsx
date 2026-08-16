@@ -109,9 +109,22 @@ export function ApprovalCard({ card }: { card: Card }) {
         body: JSON.stringify(payload ?? {}),
       });
 
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+        delivery?: { sent?: boolean; to?: string; reason?: string };
+      };
+
       if (!response.ok) {
-        const failure = await response.json().catch(() => ({}));
-        setError(failure?.error?.message ?? `that failed (${response.status})`);
+        setError(result.error?.message ?? `that failed (${response.status})`);
+        return;
+      }
+
+      // Approving an email sends it. Whether it actually left is the only
+      // thing the reviewer wants to know next, and it is not something a page
+      // refresh communicates on its own — a card that simply disappears reads
+      // as success even when the mail server refused the login.
+      if (result.delivery && !result.delivery.sent) {
+        setError(`Approved, but not sent: ${result.delivery.reason ?? 'unknown reason'}`);
         return;
       }
 
@@ -240,7 +253,15 @@ export function ApprovalCard({ card }: { card: Card }) {
           onClick={() => act('approve', body && body !== original ? { editedBody: body } : {})}
           className="bg-accent rounded-xl py-2 text-sm font-medium text-white disabled:opacity-60"
         >
-          {busy === 'approve' ? 'Approving…' : 'Approve'}
+          {busy === 'approve'
+            ? card.network === 'email'
+              ? 'Sending…'
+              : 'Approving…'
+            : // Say what the button does. On email it is not a filing action:
+              // pressing it puts the message in someone's inbox.
+              card.network === 'email'
+              ? 'Approve & send'
+              : 'Approve'}
         </button>
 
         <button

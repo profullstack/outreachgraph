@@ -7,8 +7,12 @@
  * it into their own mail client. `POST /actions/:id/execute` did not send
  * anything — it recorded that a send had happened elsewhere.
  *
- * This is the executor. It is the only place outreach is put on the wire, and
- * it holds to the two rules that make that safe:
+ * This is the unattended executor. It is no longer the only way outreach
+ * reaches the wire: approving a card in the queue now sends too, through the
+ * same `outreach-email` mechanics, because a product that drafts a message and
+ * then tells a human to go and paste it somewhere has not finished the job.
+ * What is still unique here is the *lack* of a human — and that is what these
+ * two rules exist for:
  *
  *   - **Policy is re-checked here, from live state.** The decision stored on
  *     the recommendation is a snapshot from generation time and is never
@@ -25,30 +29,36 @@
  * it was, so the next tick retries rather than silently dropping a lead.
  */
 
-import { newId, type ActionKind, type Network, type ProspectStatus } from '@outreachgraph/domain';
+import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluatePolicy, isExecutable } from '@outreachgraph/policy';
 import type { Mailer } from '@outreachgraph/email';
+import { mailerForWorkspace } from './email-account';
 import { emitEvent } from './events';
-import { recordStatus } from './stages';
+import {
+  defaultEmailSubject,
+  loadOutreachSettings,
+  pickEmailRecipient,
+  recordEmailFailure,
+  recordEmailSent,
+  AUTOPILOT_ACTOR,
+} from './outreach-email';
 
 export interface AutopilotDeps {
   readonly db: Client;
-  /** Omit and nothing sends — the queue still runs and still reports why. */
+  /**
+   * The platform sender, used by any workspace that has not connected its own
+   * mailbox. Omit it and a workspace without a mailbox sends nothing — the
+   * queue still runs and still reports why.
+   */
   readonly mailer?: Mailer;
+  /**
+   * Unlocks a workspace's stored SMTP password. Without it, connected
+   * mailboxes are unreadable and every workspace falls back to `mailer`.
+   */
+  readonly encryptionKey?: Buffer | undefined;
   /** Reply-to for outbound mail. Falls back to the workspace owner. */
   readonly replyTo?: string;
-  /**
-   * Which transport `mailer` is.
-   *
-   * Recorded on every send. Two very different things can be true — "sent from
-   * your own mail server" and "sent from ours on your behalf" — and the
-   * difference determines whose domain reputation is at stake and where a reply
-   * lands, so it must never be something a customer has to infer.
-   */
-  readonly via?: 'workspace' | 'platform';
-  /** The address recipients will see. Recorded alongside `via`. */
-  readonly fromAddress?: string;
   readonly now?: Date;
 }
 
@@ -123,8 +133,16 @@ export async function runAutopilot(
   const skipped: SkippedOutreach[] = [];
   let failed = 0;
 
-  const settings = await loadSettings(db, workspaceId);
+  const settings = await loadOutreachSettings(db, workspaceId);
   const cap = settings.autopilot_daily_cap;
+
+  // The workspace's own mailbox when it has connected one, the platform sender
+  // otherwise. Resolved once per run rather than per message so a workspace
+  // with a hundred queued leads opens one SMTP connection, not a hundred.
+  const sender = await mailerForWorkspace(db, workspaceId, {
+    encryptionKey: deps.encryptionKey,
+    fallback: deps.mailer,
+  });
 
   let today = await countActionsToday(db, workspaceId, at);
   if (today >= cap) {
@@ -219,7 +237,7 @@ export async function runAutopilot(
       continue;
     }
 
-    const recipient = pickRecipient(row);
+    const recipient = pickEmailRecipient(row);
     if (!recipient) {
       await note('no address published for this person or their company');
       continue;
@@ -235,7 +253,7 @@ export async function runAutopilot(
       network: row.network as Network,
       action: row.action as ActionKind,
       approvalMode: row.approval_mode as 'trusted_automation',
-      hasConnectedAccount: deps.mailer !== undefined,
+      hasConnectedAccount: sender !== undefined,
       personSuppressed: row.person_status === 'suppressed' || row.outreach_eligible === 0,
       personBelievedMinor: row.believed_minor === 1,
       personDeleted: row.person_status === 'deleted',
@@ -264,15 +282,15 @@ export async function runAutopilot(
       continue;
     }
 
-    if (!deps.mailer) {
-      await note('no mailer is configured, so nothing can be sent');
+    if (!sender) {
+      await note('no mailbox is connected, so nothing can be sent');
       continue;
     }
 
     // --------------------------------------------------------------- send
     const actionId = newId('action');
     const stamp = now();
-    const subject = row.subject?.trim() || defaultSubject(row);
+    const subject = row.subject?.trim() || defaultEmailSubject(row.company_name);
 
     await db.execute({
       sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
@@ -281,69 +299,30 @@ export async function runAutopilot(
       args: [actionId, workspaceId, row.recommendation_id, row.person_id, row.body, stamp],
     });
 
-    const replyTo = deps.replyTo ?? settings.reply_to_email ?? undefined;
+    // The workspace's own reply-to wins over the platform default, because a
+    // customer who connected their own mailbox meant replies to reach it.
+    const replyTo = deps.replyTo ?? sender.replyTo ?? settings.reply_to_email ?? undefined;
 
     try {
-      const result = await deps.mailer.send({
+      const result = await sender.mailer.send({
         to: recipient.address,
         subject,
         text: row.body,
         ...(replyTo ? { replyTo } : {}),
       });
 
-      const executedAt = now();
-
-      await db.execute({
-        sql: `UPDATE actions SET status = 'completed', external_id = ?, executed_at = ?
-               WHERE id = ?`,
-        args: [result.id ?? null, executedAt, actionId],
-      });
-
-      await db.execute({
-        sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, action_id,
-              network, direction, state, body, occurred_at, recorded_at)
-              VALUES (?, ?, ?, ?, ?, 'email', 'outbound', 'contacted', ?, ?, ?)`,
-        args: [
-          newId('interaction'),
-          workspaceId,
-          row.person_id,
-          row.campaign_id,
-          actionId,
-          row.body,
-          executedAt,
-          executedAt,
-        ],
-      });
-
-      await db.execute({
-        sql: `UPDATE recommendations SET status = 'executed' WHERE id = ?`,
-        args: [row.recommendation_id],
-      });
-
-      await db.execute({
-        sql: `UPDATE campaign_people SET interaction_state = 'contacted', last_actioned_at = ?
-               WHERE campaign_id = ? AND person_id = ?`,
-        args: [executedAt, row.campaign_id, row.person_id],
-      });
-
-      await recordStatus(db, {
+      await recordEmailSent(db, {
         workspaceId,
         campaignId: row.campaign_id,
         personId: row.person_id,
-        status: 'executed' satisfies ProspectStatus,
-        reason: `autopilot emailed ${recipient.address}`,
-        at: executedAt,
-      });
-
-      await audit(db, workspaceId, actionId, {
-        eventType: 'action.executed',
-        detail: {
-          mode: 'autopilot',
-          to: recipient.address,
-          sharedInbox: recipient.shared,
-          policyVersion: decision.policyVersion,
-          via: deps.via ?? 'platform',
-        },
+        actionId,
+        recommendationId: row.recommendation_id,
+        to: recipient.address,
+        sharedInbox: recipient.shared,
+        body: row.body,
+        externalId: result.id,
+        actor: AUTOPILOT_ACTOR,
+        policyVersion: decision.policyVersion,
       });
 
       await emitEvent(db, {
@@ -359,8 +338,7 @@ export async function runAutopilot(
           to: recipient.address,
           subject,
           sharedInbox: recipient.shared,
-          via: deps.via ?? 'platform',
-          ...(deps.fromAddress ? { from: deps.fromAddress } : {}),
+          via: sender.ownMailbox ? 'workspace' : 'platform',
         },
       });
 
@@ -386,14 +364,12 @@ export async function runAutopilot(
       // Left as `failed` with the reason attached, and the recommendation left
       // pending. A bounced domain or a rate-limited provider is worth another
       // attempt on a later tick; losing the lead over it is not.
-      await db.execute({
-        sql: `UPDATE actions SET status = 'failed', error = ? WHERE id = ?`,
-        args: [message.slice(0, 500), actionId],
-      });
-
-      await audit(db, workspaceId, actionId, {
-        eventType: 'action.send_failed',
-        detail: { to: recipient.address, error: message.slice(0, 500) },
+      await recordEmailFailure(db, {
+        workspaceId,
+        actionId,
+        to: recipient.address,
+        error: message,
+        actor: AUTOPILOT_ACTOR,
       });
 
       // The most important line this whole system produces. A send that fails
@@ -410,38 +386,13 @@ export async function runAutopilot(
           to: recipient.address,
           error: message.slice(0, 500),
           attempt: row.failed_attempts + 1,
-          via: deps.via ?? 'platform',
+          via: sender.ownMailbox ? 'workspace' : 'platform',
         },
       });
     }
   }
 
   return { sent, skipped, failed };
-}
-
-interface Recipient {
-  readonly address: string;
-  /** True when this is a company inbox, not the person's own address. */
-  readonly shared: boolean;
-}
-
-/**
- * The best address for this person.
- *
- * Their own if the site published one. Otherwise the company's shared inbox,
- * flagged as shared so nothing downstream pretends a named human is reading
- * it. A campaign with neither is skipped rather than guessed at — inventing
- * `firstname@company.com` is how a sending domain gets burned.
- */
-function pickRecipient(row: Candidate): Recipient | undefined {
-  if (row.person_email) return { address: row.person_email, shared: false };
-  if (row.company_contact_email) return { address: row.company_contact_email, shared: true };
-  return undefined;
-}
-
-/** A subject the composer did not supply. Kept plain and specific. */
-function defaultSubject(row: Candidate): string {
-  return row.company_name ? `Quick question about ${row.company_name}` : 'Quick question';
 }
 
 /** True when any recorded quality gate failed. Unparseable checks fail closed. */
@@ -462,26 +413,6 @@ function hasFailingCheck(checksJson: string | null): boolean {
     if (entry.passed === false) return true;
     return entry.ok === false;
   });
-}
-
-interface Settings {
-  readonly autopilot_daily_cap: number;
-  readonly reply_to_email: string | null;
-}
-
-async function loadSettings(db: Client, workspaceId: string): Promise<Settings> {
-  const row = await queryOne<{ autopilot_daily_cap: number; reply_to_email: string | null }>(
-    db,
-    `SELECT autopilot_daily_cap, reply_to_email FROM workspace_settings WHERE workspace_id = ?`,
-    [workspaceId],
-  );
-
-  // Defaults match the migration, so a workspace with no settings row behaves
-  // exactly like one that has accepted the defaults.
-  return {
-    autopilot_daily_cap: row?.autopilot_daily_cap ?? 25,
-    reply_to_email: row?.reply_to_email ?? null,
-  };
 }
 
 function dayStart(at: Date): string {
@@ -533,25 +464,4 @@ function safeJson(value: string): Record<string, unknown> {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-async function audit(
-  db: Client,
-  workspaceId: string,
-  actionId: string,
-  entry: { eventType: string; detail: Record<string, unknown> },
-): Promise<void> {
-  await db.execute({
-    sql: `INSERT INTO audit_events (id, workspace_id, actor_kind, actor_id, event_type,
-          entity_kind, entity_id, detail_json, occurred_at)
-          VALUES (?, ?, 'system', 'autopilot', ?, 'action', ?, ?, ?)`,
-    args: [
-      newId('auditEvent'),
-      workspaceId,
-      entry.eventType,
-      actionId,
-      JSON.stringify(entry.detail),
-      now(),
-    ],
-  });
 }

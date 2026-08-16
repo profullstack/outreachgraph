@@ -150,16 +150,29 @@ describe('workflowStatus', () => {
 
   test('reports whether sending is verified, not merely configured', async () => {
     seeded = await seedDatabase('status-sending');
+    const at = '2026-01-01T00:00:00.000Z';
+
     await seeded.db.execute({
-      sql: `INSERT INTO email_accounts (id, workspace_id, provider, from_email, status,
+      sql: `INSERT INTO integrations (id, workspace_id, kind, network, status, config_json,
               created_at, updated_at)
-            VALUES ('eml_1', ?, 'smtp', 'a@b.com', 'unverified', ?, ?)`,
-      args: [WS, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'],
+            VALUES ('int_1', ?, 'smtp', 'email', 'connected', ?, ?, ?)`,
+      args: [WS, JSON.stringify({ fromEmail: 'a@b.com' }), at, at],
+    });
+
+    // Revoked rather than active: the panel must say "not sending" for a
+    // mailbox that exists but has been disconnected, which is the whole
+    // distinction between configured and verified.
+    await seeded.db.execute({
+      sql: `INSERT INTO integration_accounts (id, integration_id, workspace_id, network,
+              handle, status, created_at, updated_at)
+            VALUES ('ia_1', 'int_1', ?, 'email', 'a@b.com', 'revoked', ?, ?)`,
+      args: [WS, at, at],
     });
 
     const status = await workflowStatus(seeded.db, WS);
     expect(status.sending.configured).toBe(true);
     expect(status.sending.verified).toBe(false);
+    expect(status.sending.fromEmail).toBe('a@b.com');
   });
 });
 

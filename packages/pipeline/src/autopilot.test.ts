@@ -303,10 +303,7 @@ describe('sending as the customer rather than as us', () => {
     await makeSendable(db, { personEmail: 'jane@acme.com' });
 
     const { mailer } = recordingMailer();
-    await runAutopilot(
-      { db, mailer, via: 'workspace', fromAddress: 'sales@customer.com' },
-      SEED.workspaceId,
-    );
+    await runAutopilot({ db, mailer }, SEED.workspaceId);
 
     const event = await queryOne<{ detail_json: string }>(
       db,
@@ -315,10 +312,11 @@ describe('sending as the customer rather than as us', () => {
 
     // "Sent from your own mail server" and "sent from ours on your behalf" are
     // materially different claims — whose domain reputation is spent, and where
-    // a reply lands — so which one happened is never left to inference.
+    // a reply lands — so which one happened is never left to inference. This
+    // workspace has connected no mailbox, so the platform sender carried it and
+    // the event must say so rather than leaving it blank.
     const detail = JSON.parse(event?.detail_json ?? '{}');
-    expect(detail.via).toBe('workspace');
-    expect(detail.from).toBe('sales@customer.com');
+    expect(detail.via).toBe('platform');
   });
 
   test('uses the account’s reply-to so answers reach the customer', async () => {

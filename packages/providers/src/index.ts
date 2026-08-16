@@ -107,3 +107,24 @@ export {
 } from './bluesky/provider';
 
 export { findIdentities, type FanOutAttempt, type FanOutResult } from './fan-out';
+
+export {
+  classifyPost,
+  BlueskyFeedSource,
+  FeedRateLimitError,
+  NostrSource,
+  RedditSource,
+  RssSource,
+  DEFAULT_NOSTR_RELAYS,
+  REDDIT_API,
+  type BlueskyFeedSourceOptions,
+  type Classification,
+  type FeedPost,
+  type FeedSearchInput,
+  type FeedSource,
+  type NostrSocket,
+  type NostrSocketFactory,
+  type NostrSourceOptions,
+  type RedditSourceOptions,
+  type RssSourceOptions,
+} from './feeds';

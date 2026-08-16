@@ -9,7 +9,11 @@ export const metadata = { title: 'More · OutreachGraph' };
 
 /** Real destinations, listed above the things that are still placeholders. */
 const LINKS = [
-  { href: '/settings', label: 'Settings', hint: 'Alerts, the daily digest, autopilot limits' },
+  {
+    href: '/settings',
+    label: 'Settings',
+    hint: 'Your sending mailbox, alerts, the daily digest, autopilot limits',
+  },
   { href: '/signals', label: 'Signals', hint: 'The raw observations behind every score' },
   { href: '/setup', label: 'Setup', hint: 'What you sell, and who buys it' },
   { href: '/funnel', label: 'Funnel', hint: 'Stages, conversion and each lead over time' },
@@ -17,7 +21,7 @@ const LINKS = [
 
 const SECTIONS = [
   { label: 'Conversations', hint: 'Interaction tracking only' },
-  { label: 'Integrations', hint: 'Website and GitHub as sources; email for sending' },
+  { label: 'CRM integrations', hint: 'Website and GitHub are sources; the mailbox is in Settings' },
   { label: 'Usage', hint: 'Metering recorded, not enforced' },
 ] as const;
 

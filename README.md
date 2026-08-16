@@ -37,21 +37,15 @@ fixture provider, so a fresh checkout works with an empty `.env`.
 
 ### Sending outreach
 
-Outreach leaves through the workspace's **own** SMTP server, configured on
-Settings and unusable until a test message has actually been delivered — a
-saved account stays `unverified`, and `runAutopilot` refuses it. Workspaces
-with no server connected fall back to the platform mailer, and which of the two
-carried a message is recorded on every send.
+Outreach leaves through the workspace's **own** SMTP server, connected on
+Settings. The password is authenticated against the real server before anything
+is stored, so a saved mailbox is by construction a working one. Workspaces with
+no mailbox connected fall back to the platform mailer, and which of the two
+carried a message is recorded on every send and shown in the live status panel.
 
-Storing a customer's mail password needs a key to encrypt it with:
-
-```bash
-CREDENTIAL_KEY=<any long random string>   # falls back to API_TOKEN
-```
-
-Without either, saving a password is refused in production rather than stored
-in the clear. Rotating it does not lose data — the account keeps working until
-someone edits it, and the password simply has to be entered again.
+Storing a customer's mail password needs a key to encrypt it with —
+`SECRET_ENCRYPTION_KEY`, documented in `.env.example`. Without it, connecting a
+mailbox is refused rather than stored in the clear.
 
 ## Layout
 

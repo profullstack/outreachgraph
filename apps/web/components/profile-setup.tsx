@@ -54,7 +54,16 @@ const parseLines = (value: string) =>
     .map((line) => line.trim())
     .filter(Boolean);
 
-export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
+export function ProfileSetup({
+  initialUrl,
+  offeringId,
+  adding = false,
+}: {
+  initialUrl?: string;
+  /** The product being edited. Absent when adding one. */
+  offeringId?: string;
+  adding?: boolean;
+}) {
   const router = useRouter();
   const [url, setUrl] = useState(initialUrl ?? '');
   const [busy, setBusy] = useState(false);
@@ -104,12 +113,16 @@ export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
     setSaveError(undefined);
 
     try {
-      const response = await fetch('/api/v1/onboarding/profile', {
+      // `?new=1` adds a product; without it the save edits one. Sending
+      // neither is what used to overwrite the first product every time
+      // somebody described a second.
+      const response = await fetch(`/api/v1/onboarding/profile${adding ? '?new=1' : ''}`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify({
           url,
+          ...(!adding && offeringId ? { offeringId } : {}),
           offering: draft.offering,
           icp: draft.icp,
           voice: draft.voice,
@@ -126,6 +139,13 @@ export function ProfileSetup({ initialUrl }: { initialUrl?: string }) {
       }
 
       setSaved(true);
+
+      // A newly added product has an id now; staying on `?product=new` would
+      // make the next save add a third.
+      if (adding && typeof payload?.offeringId === 'string') {
+        router.push(`/setup?product=${encodeURIComponent(payload.offeringId)}`);
+      }
+
       router.refresh();
     } catch {
       setSaveError('could not reach the server');

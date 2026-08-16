@@ -29,6 +29,8 @@ export const ID_PREFIXES = {
   action: 'act',
   interaction: 'int',
   videoAsset: 'vid',
+  integration: 'itg',
+  integrationAccount: 'ita',
   suppression: 'sup',
   privacyRequest: 'pri',
   deletionJob: 'del',
@@ -38,7 +40,6 @@ export const ID_PREFIXES = {
   auditEvent: 'aud',
   stageEvent: 'stg',
   notification: 'ntf',
-  emailAccount: 'eml',
   socialPost: 'spo',
   workflowEvent: 'wfe',
 } as const;
