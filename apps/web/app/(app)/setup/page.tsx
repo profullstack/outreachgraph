@@ -1,11 +1,14 @@
 import { redirect } from 'next/navigation';
+import { ListeningForm } from '../../../components/listening-form';
 import { ProductSwitcher } from '../../../components/product-switcher';
 import { ProfileSetup } from '../../../components/profile-setup';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
+  fetchListening,
   fetchMe,
   fetchProfile,
+  type ListeningView,
   type WorkspaceProfileView,
 } from '../../../lib/api';
 
@@ -56,6 +59,21 @@ export default async function SetupPage({
   const verified = me?.emailVerified ?? false;
   const products = profile?.products ?? [];
 
+  // Listening is configured per product, so it hangs off this product's own
+  // campaign. A product without one yet simply has nothing to configure.
+  const campaignId = products.find((p) => p.offeringId === profile?.offeringId)?.campaignId;
+
+  let listening: ListeningView | undefined;
+  if (!adding && campaignId) {
+    try {
+      listening = await fetchListening(campaignId);
+    } catch {
+      // A missing listening panel must not take the profile form down with
+      // it — the rest of this page is what a new workspace needs first.
+      listening = undefined;
+    }
+  }
+
   return (
     <div className="pt-4">
       <header className="mb-5">
@@ -98,6 +116,12 @@ export default async function SetupPage({
             {...(!adding && profile?.url ? { initialUrl: profile.url } : {})}
             {...(!adding && profile?.offeringId ? { offeringId: profile.offeringId } : {})}
           />
+
+          {listening && (
+            <div className="mt-4">
+              <ListeningForm initial={listening} />
+            </div>
+          )}
         </>
       )}
     </div>

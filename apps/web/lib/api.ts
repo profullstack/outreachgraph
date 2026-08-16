@@ -13,6 +13,7 @@ import type {
   ApprovalCard,
   CurrentUser,
   EmailIntegrationView,
+  ListeningView,
   ProductSummaryView,
   ProspectDetail,
   ProspectRow,
@@ -23,9 +24,11 @@ export type {
   ApprovalCard,
   CurrentUser,
   IdentityRow,
+  ListeningView,
   ProspectDetail,
   ProspectRow,
   SignalRow,
+  SubredditSuggestionView,
 } from './types';
 export { relativeTime } from './format';
 
@@ -227,6 +230,10 @@ export async function fetchSettings(): Promise<SettingsView> {
 
 export async function fetchEmailIntegration(): Promise<EmailIntegrationView> {
   return request<EmailIntegrationView>('/integrations/email');
+}
+
+export async function fetchListening(campaignId: string): Promise<ListeningView> {
+  return request<ListeningView>(`/campaigns/${encodeURIComponent(campaignId)}/listening`);
 }
 
 export interface CampaignSummaryView extends CampaignRow {

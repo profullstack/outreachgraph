@@ -115,6 +115,7 @@ export {
   NostrSource,
   RedditSource,
   RssSource,
+  suggestSubreddits,
   DEFAULT_NOSTR_RELAYS,
   REDDIT_API,
   type BlueskyFeedSourceOptions,
@@ -127,4 +128,6 @@ export {
   type NostrSourceOptions,
   type RedditSourceOptions,
   type RssSourceOptions,
+  type SubredditSuggestion,
+  type SuggestSubredditsOptions,
 } from './feeds';

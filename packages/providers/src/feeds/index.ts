@@ -18,6 +18,11 @@ export {
   type FeedSource,
 } from './source';
 export { RedditSource, REDDIT_API, type RedditSourceOptions } from './reddit';
+export {
+  suggestSubreddits,
+  type SubredditSuggestion,
+  type SuggestSubredditsOptions,
+} from './subreddit-search';
 export { RssSource, type RssSourceOptions } from './rss';
 export { BlueskyFeedSource, type BlueskyFeedSourceOptions } from './bluesky';
 export {
