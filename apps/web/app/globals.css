@@ -39,6 +39,20 @@
 
 /* Touch targets stay at least 44px; iOS zooms any input under 16px. */
 @layer base {
+  /**
+   * Tells the browser both themes are supported, so the parts it paints
+   * itself follow the one in use.
+   *
+   * Without this the tokens above flipped to dark while every browser-drawn
+   * control kept its light defaults — and a `<select>` inherits the page's
+   * `color` while keeping that default white background, which rendered the
+   * provider dropdown as white text on white. Same cause for the native
+   * option popup, scrollbars, autofill and date pickers.
+   */
+  :root {
+    color-scheme: light dark;
+  }
+
   button,
   a[role='button'] {
     min-height: 44px;
@@ -48,6 +62,20 @@
   textarea,
   select {
     font-size: 16px;
+  }
+
+  /* Belt and braces: the controls carry the theme explicitly rather than
+     relying on the user agent to have got it right. */
+  input,
+  textarea,
+  select {
+    background-color: var(--color-surface);
+    color: var(--color-ink);
+  }
+
+  option {
+    background-color: var(--color-surface);
+    color: var(--color-ink);
   }
 
   /* Momentum scrolling without the rubber-band on the whole document. */

@@ -162,7 +162,7 @@ export function MailboxForm({ initial }: { initial: EmailIntegrationView }) {
           <select
             value={presetId}
             onChange={(e) => choosePreset(e.target.value)}
-            className="border-border mt-1 w-full rounded-xl border p-2 text-sm"
+            className="border-border bg-surface text-ink mt-1 w-full rounded-xl border p-2 text-sm"
           >
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
