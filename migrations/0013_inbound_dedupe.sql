@@ -1,4 +1,4 @@
--- 0012_inbound_dedupe.sql
+-- 0013_inbound_dedupe.sql
 -- Give an interaction the sender's own id for the message, so polling a
 -- mailbox twice does not record the same reply twice.
 --
