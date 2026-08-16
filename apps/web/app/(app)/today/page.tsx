@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { LiveStatus } from '../../../components/live-status';
 import { VerifyBanner } from '../../../components/verify-banner';
 import {
   ApiUnavailableError,
@@ -8,6 +9,7 @@ import {
   fetchMe,
   fetchProfile,
   fetchSignals,
+  fetchStatus,
   relativeTime,
 } from '../../../lib/api';
 
@@ -26,14 +28,16 @@ export default async function TodayPage() {
   let signals: Awaited<ReturnType<typeof fetchSignals>> = [];
   let me: Awaited<ReturnType<typeof fetchMe>> | undefined;
   let profile: Awaited<ReturnType<typeof fetchProfile>> | undefined;
+  let live: Awaited<ReturnType<typeof fetchStatus>> | undefined;
   let offline = false;
 
   try {
-    [approvals, signals, me, profile] = await Promise.all([
+    [approvals, signals, me, profile, live] = await Promise.all([
       fetchApprovals(),
       fetchSignals(),
       fetchMe(),
       fetchProfile(),
+      fetchStatus(),
     ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
@@ -81,6 +85,20 @@ export default async function TodayPage() {
           href="/signals"
         />
       </div>
+
+      {/*
+        Placed above the queue deliberately. "Is it doing anything?" is the
+        question people were opening the container logs to answer, and it has to
+        be answered before "what should I look at", because an empty queue means
+        completely different things depending on whether work is in flight.
+      */}
+      {!offline ? (
+        <div className="mb-5">
+          <LiveStatus
+            {...(live ? { initialStatus: live.status, initialEvents: live.events } : {})}
+          />
+        </div>
+      ) : null}
 
       {top ? (
         <section>

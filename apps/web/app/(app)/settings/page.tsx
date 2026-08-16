@@ -1,9 +1,12 @@
 import { redirect } from 'next/navigation';
+import { MailServerForm } from '../../../components/mail-server-form';
 import { SettingsForm } from '../../../components/settings-form';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
+  fetchEmailAccount,
   fetchSettings,
+  type EmailAccountView,
   type SettingsView,
 } from '../../../lib/api';
 
@@ -21,10 +24,11 @@ export const metadata = { title: 'Settings · OutreachGraph' };
  */
 export default async function SettingsPage() {
   let settings: SettingsView | undefined;
+  let email: { account: EmailAccountView; testTo: string | null } | undefined;
   let offline = false;
 
   try {
-    settings = await fetchSettings();
+    [settings, email] = await Promise.all([fetchSettings(), fetchEmailAccount()]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
@@ -43,7 +47,12 @@ export default async function SettingsPage() {
           Waiting for the API.
         </p>
       ) : (
-        <SettingsForm initial={settings} />
+        <div className="flex flex-col gap-8">
+          {/* First, because it is the one setting that changes who the
+              recipient thinks the message is from. */}
+          {email ? <MailServerForm initial={email.account} testTo={email.testTo} /> : null}
+          <SettingsForm initial={settings} />
+        </div>
       )}
     </div>
   );

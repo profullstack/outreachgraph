@@ -11,6 +11,7 @@ import { newId } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import type { PersonEnrichmentProvider, SiteProvider } from '@outreachgraph/providers';
 import type { TextModel } from '@outreachgraph/ai';
+import { emitEvent } from './events';
 import { runPipelineForCandidate } from './pipeline';
 import type { QueuedJob } from './queue';
 
@@ -49,9 +50,29 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
   const { url, campaignId } = job.payload as { url?: string; campaignId?: string };
   if (!url) throw new Error('crawl_site needs a url');
 
+  await emitEvent(deps.db, {
+    workspaceId: job.workspaceId,
+    ...(campaignId ? { campaignId } : {}),
+    phase: 'crawl',
+    message: `Reading ${displayUrl(url)}`,
+    detail: { url },
+  });
+
   const result = await deps.site.crawl(url);
 
   if (result.outcome !== 'ok') {
+    // A refusal is the site's answer, not a fault — but it is the single most
+    // common reason a campaign looks like it did nothing, so it is reported at
+    // `warn` rather than swallowed.
+    await emitEvent(deps.db, {
+      workspaceId: job.workspaceId,
+      ...(campaignId ? { campaignId } : {}),
+      phase: 'crawl',
+      level: 'warn',
+      message: `${displayUrl(url)} could not be read (${result.outcome})`,
+      detail: { url, outcome: result.outcome },
+    });
+
     return { url, outcome: result.outcome, peopleFound: 0, peopleQueued: 0, usedSignals: [] };
   }
 
@@ -140,6 +161,25 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
     }
   }
 
+  await emitEvent(deps.db, {
+    workspaceId: job.workspaceId,
+    campaignId: campaign.id,
+    phase: 'crawl',
+    level: result.people.length > 0 || result.contactEmail ? 'success' : 'warn',
+    message: describeCrawl(
+      result.company.name ?? domain ?? url,
+      result.people.length,
+      result.contactEmail,
+    ),
+    detail: {
+      url,
+      ...(result.company.name ? { company: result.company.name } : {}),
+      people: result.people.length,
+      contactEmail: result.contactEmail ?? null,
+      signals: result.usedSignals,
+    },
+  });
+
   let queued = 0;
   for (const candidate of result.people) {
     await runPipelineForCandidate(
@@ -174,6 +214,27 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
     peopleQueued: queued,
     usedSignals: result.usedSignals,
   };
+}
+
+/** The host, for a progress line nobody wants to read a full URL in. */
+function displayUrl(url: string): string {
+  return hostOf(url) ?? url;
+}
+
+/**
+ * What the crawl found, in one line.
+ *
+ * "Nobody named, but info@ is published" and "nothing at all" look the same in
+ * a count and mean completely different things for whether outreach can happen,
+ * so they are worded differently here.
+ */
+function describeCrawl(subject: string, people: number, contactEmail?: string): string {
+  if (people > 0) {
+    return `${subject}: found ${people} ${people === 1 ? 'person' : 'people'}`;
+  }
+  return contactEmail
+    ? `${subject}: nobody named, but ${contactEmail} is published`
+    : `${subject}: no people and no contact address on the page`;
 }
 
 /** The host actually fetched, which is known even when extraction found little. */

@@ -46,11 +46,26 @@ import {
   workspaceAnalytics,
 } from '@outreachgraph/pipeline';
 import {
+  archiveCampaign,
   createCampaignFromIntake,
   IntakeError,
+  listCampaigns,
+  renameCampaign,
   saveWorkspaceSettings,
   setCampaignAutopilot,
+  setCampaignStatus,
 } from './campaigns';
+import {
+  deleteEmailAccount,
+  EmailAccountError,
+  loadEmailAccountView,
+  ownerAddress,
+  saveEmailAccount,
+  testEmailAccount,
+} from './email-account';
+import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
+import { readEvents, workflowStatus } from '@outreachgraph/pipeline';
+import { SHARE_TARGETS, type ShareNetwork } from '@outreachgraph/domain';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
 import { GitHubProvider, SiteProvider, normaliseUrl } from '@outreachgraph/providers';
@@ -322,12 +337,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // ------------------------------------------------------------ campaigns
   api.get('/campaigns', async (c) => {
     const actor = c.get('actor');
-    const rows = await c.get('db').execute({
-      sql: `SELECT id, name, status, approval_mode, created_at, started_at
-                FROM campaigns WHERE workspace_id = ? ORDER BY created_at DESC`,
-      args: [actor.workspaceId],
-    });
-    return c.json({ campaigns: rows.rows });
+    return c.json({ campaigns: await listCampaigns(c.get('db'), actor.workspaceId) });
   });
 
   api.get('/campaigns/:id', async (c) => {
@@ -381,42 +391,75 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json(result, 202);
   });
 
-  /** Switches autopilot on or off. The only control unattended sending has. */
+  /**
+   * Changes one campaign: autopilot, run state, or name.
+   *
+   * All three in one route because they are all "edit this campaign" and the
+   * client sends whichever fields it changed. Each is applied only when
+   * present, so a form that posts just a name cannot silently switch autopilot
+   * off by omitting it.
+   */
   api.patch('/campaigns/:id', async (c) => {
     const actor = c.get('actor');
     const db = c.get('db');
+    const campaignId = c.req.param('id');
 
     if (!canApprove(actor)) throw ApiError.forbidden('changing a campaign');
 
     const body = safeJson(await c.req.raw.text());
-    if (typeof body.autopilot !== 'boolean') {
-      throw ApiError.badRequest('autopilot must be true or false');
+    const changed: Record<string, unknown> = {};
+    let touched = false;
+
+    if (typeof body.autopilot === 'boolean') {
+      // Turning it *on* spends money without asking again, so it carries the
+      // same verification gate as starting a campaign.
+      if (body.autopilot) await requireVerifiedEmail(db, actor);
+
+      if (!(await setCampaignAutopilot(db, actor.workspaceId, campaignId, body.autopilot))) {
+        throw ApiError.notFound('campaign');
+      }
+
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: body.autopilot ? 'campaign.autopilot_enabled' : 'campaign.autopilot_disabled',
+        entityKind: 'campaign',
+        entityId: campaignId,
+        detail: {},
+      });
+
+      changed.autopilot = body.autopilot;
+      touched = true;
     }
 
-    // Turning it *on* spends money without asking again, so it carries the
-    // same verification gate as starting a campaign.
-    if (body.autopilot) await requireVerifiedEmail(db, actor);
+    if (typeof body.name === 'string') {
+      if (!(await renameCampaign(db, actor.workspaceId, campaignId, body.name))) {
+        throw ApiError.notFound('campaign');
+      }
+      changed.name = body.name.trim();
+      touched = true;
+    }
 
-    const updated = await setCampaignAutopilot(
-      db,
-      actor.workspaceId,
-      c.req.param('id'),
-      body.autopilot,
-    );
+    if (body.status === 'active' || body.status === 'paused') {
+      if (!(await setCampaignStatus(db, actor.workspaceId, campaignId, body.status))) {
+        throw ApiError.notFound('campaign');
+      }
+      changed.status = body.status;
+      touched = true;
+    } else if (body.status === 'archived') {
+      if (!(await archiveCampaign(db, actor.workspaceId, campaignId))) {
+        throw ApiError.notFound('campaign');
+      }
+      changed.status = 'archived';
+      touched = true;
+    }
 
-    if (!updated) throw ApiError.notFound('campaign');
+    if (!touched) {
+      throw ApiError.badRequest('send at least one of autopilot, name or status');
+    }
 
-    await repo.audit(db, {
-      workspaceId: actor.workspaceId,
-      actorKind: 'user',
-      actorId: actor.userId,
-      eventType: body.autopilot ? 'campaign.autopilot_enabled' : 'campaign.autopilot_disabled',
-      entityKind: 'campaign',
-      entityId: c.req.param('id'),
-      detail: {},
-    });
-
-    return c.json({ campaignId: c.req.param('id'), autopilot: body.autopilot });
+    return c.json({ campaignId, ...changed });
   });
 
   api.get('/campaigns/:id/recommendations', async (c) => {
@@ -1255,6 +1298,303 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ saved: true });
+  });
+
+  // --------------------------------------------------------- sending account
+  //
+  // Connect a mail server, prove it works, then send through it. The order is
+  // enforced in `email-account.ts`: saving leaves the account `unverified`, and
+  // only a successful test promotes it.
+  api.get('/settings/email', async (c) => {
+    const actor = c.get('actor');
+    const [account, suggested] = await Promise.all([
+      loadEmailAccountView(c.get('db'), actor.workspaceId),
+      ownerAddress(c.get('db'), actor.workspaceId),
+    ]);
+
+    return c.json({ account, testTo: suggested ?? null });
+  });
+
+  api.put('/settings/email', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting a mail server');
+
+    const body = safeJson(await c.req.raw.text());
+
+    try {
+      await saveEmailAccount(db, actor.workspaceId, {
+        host: String(body.host ?? ''),
+        port: Number(body.port ?? 587),
+        secure: body.secure === true,
+        ...(typeof body.username === 'string' ? { username: body.username } : {}),
+        // An empty string means "unchanged", not "clear it": the form cannot
+        // display the stored password, so it posts blank unless retyped.
+        ...(typeof body.password === 'string' && body.password.length > 0
+          ? { password: body.password }
+          : {}),
+        fromEmail: String(body.fromEmail ?? ''),
+        ...(typeof body.fromName === 'string' ? { fromName: body.fromName } : {}),
+        ...(typeof body.replyTo === 'string' ? { replyTo: body.replyTo } : {}),
+        allowInvalidCertificate: body.allowInvalidCertificate === true,
+        allowInsecureAuth: body.allowInsecureAuth === true,
+      });
+    } catch (error) {
+      if (error instanceof EmailAccountError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+
+    return c.json({ account: await loadEmailAccountView(db, actor.workspaceId) });
+  });
+
+  /**
+   * Tests the connection and sends one real message.
+   *
+   * Not idempotent and deliberately not cheap — it opens a socket and delivers
+   * mail — but it is the only thing that can turn an account `verified`, and
+   * everything downstream depends on that having actually happened.
+   */
+  api.post('/settings/email/test', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('testing the mail server');
+
+    const body = safeJson(await c.req.raw.text());
+    const to =
+      (typeof body.to === 'string' && body.to.trim()) ||
+      (await ownerAddress(db, actor.workspaceId));
+
+    if (!to) throw ApiError.badRequest('there is no address to send the test to');
+
+    try {
+      const result = await testEmailAccount(db, actor.workspaceId, to);
+      return c.json({ ...result, account: await loadEmailAccountView(db, actor.workspaceId) });
+    } catch (error) {
+      if (error instanceof EmailAccountError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+  });
+
+  api.delete('/settings/email', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('disconnecting the mail server');
+
+    const removed = await deleteEmailAccount(c.get('db'), actor.workspaceId);
+    if (!removed) throw ApiError.notFound('mail server');
+
+    return c.json({ removed: true });
+  });
+
+  // ---------------------------------------------------------------- status
+  //
+  // What the workflow is doing right now, and the running commentary behind it.
+  api.get('/status', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaignId = c.req.query('campaignId');
+
+    const [status, events] = await Promise.all([
+      workflowStatus(db, actor.workspaceId),
+      readEvents(db, {
+        workspaceId: actor.workspaceId,
+        ...(campaignId ? { campaignId } : {}),
+        limit: clampLimit(c.req.query('limit')),
+      }),
+    ]);
+
+    return c.json({ status, events });
+  });
+
+  /**
+   * The live feed, as Server-Sent Events.
+   *
+   * SSE rather than a WebSocket because the traffic is one-way and this process
+   * already proxies HTTP for the PWA — a socket upgrade through that proxy is a
+   * second transport to get right for no gain. Reconnection is the browser's
+   * job and it resumes from `Last-Event-ID`, which is the `seq` cursor, so a
+   * dropped connection replays exactly what was missed and nothing else.
+   *
+   * The loop polls rather than subscribing to an in-process bus: the writes
+   * come from the worker loop, the API and (in future) any other process, and
+   * a cursor over a table is the only thing that sees all three.
+   */
+  api.get('/events', (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaignId = c.req.query('campaignId');
+
+    // `Last-Event-ID` is sent by the browser on reconnect; the query parameter
+    // is for a first connection that already rendered a page of history.
+    const resumeFrom = Number(c.req.header('last-event-id') ?? c.req.query('since') ?? 0);
+
+    let cursor = Number.isFinite(resumeFrom) && resumeFrom > 0 ? resumeFrom : 0;
+    let closed = false;
+
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const encoder = new TextEncoder();
+
+        const send = (event: string, data: unknown, id?: number): void => {
+          if (closed) return;
+          try {
+            controller.enqueue(
+              encoder.encode(
+                `${id === undefined ? '' : `id: ${id}\n`}event: ${event}\n` +
+                  `data: ${JSON.stringify(data)}\n\n`,
+              ),
+            );
+          } catch {
+            closed = true;
+          }
+        };
+
+        // Tell the client how long to wait before reconnecting, then send the
+        // current picture immediately so the UI is never blank while waiting
+        // for something to happen.
+        controller.enqueue(encoder.encode('retry: 3000\n\n'));
+
+        try {
+          const initial = await workflowStatus(db, actor.workspaceId);
+          if (cursor === 0) cursor = initial.latestSeq;
+          send('status', initial);
+        } catch {
+          // A failed first snapshot must not close the stream; the poll below
+          // will produce one shortly.
+        }
+
+        let ticks = 0;
+
+        while (!closed) {
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          if (closed) break;
+
+          try {
+            const events = await readEvents(db, {
+              workspaceId: actor.workspaceId,
+              ...(campaignId ? { campaignId } : {}),
+              sinceSeq: cursor,
+              limit: 100,
+            });
+
+            for (const event of events) {
+              cursor = Math.max(cursor, event.seq);
+              send('workflow', event, event.seq);
+            }
+
+            // The status block is a set of aggregates, so it is refreshed on a
+            // slower beat than the event tail — every fifth tick — rather than
+            // running six aggregate queries every two seconds per open tab.
+            ticks += 1;
+            if (events.length > 0 || ticks % 5 === 0) {
+              send('status', await workflowStatus(db, actor.workspaceId));
+            } else {
+              // A comment frame. Keeps proxies and load balancers from closing
+              // an idle connection, and costs one line.
+              controller.enqueue(encoder.encode(': keepalive\n\n'));
+            }
+          } catch {
+            closed = true;
+          }
+        }
+
+        try {
+          controller.close();
+        } catch {
+          // Already closed by the client going away.
+        }
+      },
+      cancel() {
+        closed = true;
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        // The PWA is served through this same process's proxy, and a buffering
+        // intermediary turns a live feed into a batch delivered at the end.
+        'x-accel-buffering': 'no',
+      },
+    });
+  });
+
+  // ----------------------------------------------------------------- social
+  //
+  // Prefilled composers for the networks the capability matrix marks
+  // manual-only. Nothing here posts on anyone's behalf.
+  api.get('/recommendations/:id/share', async (c) => {
+    const actor = c.get('actor');
+
+    try {
+      const view = await shareLinksFor(c.get('db'), actor.workspaceId, c.req.param('id'), {
+        ...(c.req.query('mastodonInstance')
+          ? { mastodonInstance: c.req.query('mastodonInstance') as string }
+          : {}),
+        ...(c.req.query('subreddit') ? { subreddit: c.req.query('subreddit') as string } : {}),
+        ...(c.req.query('url') ? { url: c.req.query('url') as string } : {}),
+      });
+
+      return c.json(view);
+    } catch (error) {
+      if (error instanceof SocialError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+  });
+
+  /**
+   * Records that a composer was opened.
+   *
+   * The client calls this as it opens the window rather than after, because
+   * the window is the network's own site and nothing comes back from it.
+   */
+  api.post('/recommendations/:id/share', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('posting on a network');
+
+    const body = safeJson(await c.req.raw.text());
+    const network = String(body.network ?? '') as ShareNetwork;
+
+    if (!(network in SHARE_TARGETS)) throw ApiError.badRequest('unknown network');
+
+    try {
+      const view = await shareLinksFor(db, actor.workspaceId, c.req.param('id'), {
+        ...(typeof body.text === 'string' ? { text: body.text } : {}),
+        ...(typeof body.url === 'string' ? { url: body.url } : {}),
+        ...(typeof body.mastodonInstance === 'string'
+          ? { mastodonInstance: body.mastodonInstance }
+          : {}),
+        ...(typeof body.subreddit === 'string' ? { subreddit: body.subreddit } : {}),
+      });
+
+      const link = view.links.find((candidate) => candidate.network === network);
+      if (!link) throw new SocialError(`${network} cannot be posted to for this lead`);
+
+      const recorded = await recordShare(db, actor.workspaceId, {
+        recommendationId: c.req.param('id'),
+        network,
+        shareUrl: link.url,
+        text: link.text || view.text,
+        ...(typeof body.url === 'string' ? { url: body.url } : {}),
+      });
+
+      return c.json({ ...recorded, link }, 201);
+    } catch (error) {
+      if (error instanceof SocialError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+  });
+
+  api.post('/social-posts/:id/confirm', async (c) => {
+    const actor = c.get('actor');
+    const confirmed = await confirmShare(c.get('db'), actor.workspaceId, c.req.param('id'));
+    if (!confirmed) throw ApiError.notFound('post');
+    return c.json({ confirmed: true });
   });
 
   // --------------------------------------------------------------- signals

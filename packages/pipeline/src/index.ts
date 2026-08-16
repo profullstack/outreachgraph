@@ -31,6 +31,28 @@ export {
   type StatusChangeResult,
 } from './stages';
 export {
+  emitEvent,
+  pruneWorkflowEvents,
+  readEvents,
+  workflowStatus,
+  WORKFLOW_LEVELS,
+  WORKFLOW_PHASES,
+  type QueueSnapshot,
+  type ReadEventsQuery,
+  type SendingSnapshot,
+  type WorkflowEvent,
+  type WorkflowEventInput,
+  type WorkflowLevel,
+  type WorkflowPhase,
+  type WorkflowStatus,
+} from './events';
+export {
+  loadEmailAccount,
+  resolveWorkspaceSender,
+  type EmailAccountRow,
+  type WorkspaceSender,
+} from './sending';
+export {
   campaignFunnel,
   leadTimeline,
   workspaceAnalytics,

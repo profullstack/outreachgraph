@@ -15,6 +15,7 @@ export * from './signal';
 export * from './campaign';
 export * from './intake';
 export * from './funnel';
+export * from './share-links';
 export * from './pipeline';
 export * from './outreach';
 export * from './video';

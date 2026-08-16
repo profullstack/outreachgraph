@@ -202,3 +202,106 @@ export interface SettingsView {
 export async function fetchSettings(): Promise<SettingsView> {
   return request<SettingsView>('/settings');
 }
+
+export interface EmailAccountView {
+  readonly configured: boolean;
+  readonly provider?: string;
+  readonly host?: string;
+  readonly port?: number;
+  readonly secure?: boolean;
+  readonly username?: string;
+  readonly fromEmail?: string;
+  readonly fromName?: string;
+  readonly replyTo?: string;
+  readonly status?: string;
+  readonly verifiedAt?: string;
+  readonly lastTestAt?: string;
+  readonly lastError?: string;
+  readonly hasPassword?: boolean;
+  readonly allowInvalidCertificate?: boolean;
+  readonly allowInsecureAuth?: boolean;
+  readonly canStore: boolean;
+}
+
+export interface EmailTestResult {
+  readonly ok: boolean;
+  readonly error?: string;
+  readonly encrypted?: boolean;
+  readonly authenticated?: boolean;
+  readonly greeting?: string;
+  readonly sentTo?: string;
+}
+
+export async function fetchEmailAccount(): Promise<{
+  account: EmailAccountView;
+  testTo: string | null;
+}> {
+  return request<{ account: EmailAccountView; testTo: string | null }>('/settings/email');
+}
+
+export interface CampaignSummaryView extends CampaignRow {
+  readonly brief: string | null;
+  readonly people: number;
+  readonly contacted: number;
+  readonly replied: number;
+  readonly awaiting_approval: number;
+  readonly jobs_pending: number;
+  readonly last_activity_at: string | null;
+}
+
+export async function fetchCampaignSummaries(): Promise<CampaignSummaryView[]> {
+  const body = await request<{ campaigns: CampaignSummaryView[] }>('/campaigns');
+  return body.campaigns;
+}
+
+export interface WorkflowEventView {
+  readonly seq: number;
+  readonly id: string;
+  readonly campaignId?: string;
+  readonly personId?: string;
+  readonly phase: string;
+  readonly level: string;
+  readonly message: string;
+  readonly detail: Record<string, unknown>;
+  readonly occurredAt: string;
+}
+
+export interface WorkflowStatusView {
+  readonly queue: {
+    readonly pending: number;
+    readonly running: number;
+    readonly failed: number;
+    readonly doneToday: number;
+    readonly byKind: Record<string, number>;
+    readonly oldestPendingAt?: string;
+  };
+  readonly sending: {
+    readonly configured: boolean;
+    readonly verified: boolean;
+    readonly provider?: string;
+    readonly fromEmail?: string;
+    readonly lastError?: string;
+    readonly sentToday: number;
+    readonly failedToday: number;
+    readonly dailyCap: number;
+  };
+  readonly activeCampaigns: number;
+  readonly autopilotCampaigns: number;
+  readonly busy: boolean;
+  readonly latestSeq: number;
+  readonly at: string;
+}
+
+/**
+ * The first paint of the live panel.
+ *
+ * Rendered on the server so the panel is never blank while `EventSource`
+ * connects, and so it says something useful with JavaScript disabled.
+ */
+export async function fetchStatus(campaignId?: string): Promise<{
+  status: WorkflowStatusView;
+  events: WorkflowEventView[];
+}> {
+  const query = campaignId ? `?campaignId=${encodeURIComponent(campaignId)}&limit=40` : '?limit=40';
+  return request<{ status: WorkflowStatusView; events: WorkflowEventView[] }>(`/status${query}`);
+}

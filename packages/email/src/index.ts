@@ -25,6 +25,20 @@ export {
   type Message,
   type SendResult,
 } from './mailer';
+export {
+  SmtpError,
+  SmtpMailer,
+  buildMessage,
+  verifySmtp,
+  type SmtpConfig,
+  type VerifyResult,
+} from './smtp';
+export {
+  SecretUnavailableError,
+  canStoreSecrets,
+  decryptSecret,
+  encryptSecret,
+} from './secret-box';
 export { verificationEmail } from './templates';
 export {
   dailyDigestEmail,

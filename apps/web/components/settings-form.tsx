@@ -93,7 +93,8 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
           className="border-border bg-surface mt-1 w-full rounded-xl border px-3 py-2.5"
         />
         <p className="text-ink-muted mt-1 text-xs">
-          Outreach is sent from our domain but replies go here — that is the one part you handle.
+          Where a prospect&rsquo;s reply lands — the one part you handle. Connecting your own mail
+          server above overrides this with its own reply address.
         </p>
       </section>
 

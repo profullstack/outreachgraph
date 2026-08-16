@@ -295,3 +295,76 @@ describe('runAutopilot', () => {
     expect(sent).toHaveLength(1);
   });
 });
+
+describe('sending as the customer rather than as us', () => {
+  test('records which transport carried the message', async () => {
+    seeded = await seedDatabase('autopilot-via');
+    const { db } = seeded;
+    await makeSendable(db, { personEmail: 'jane@acme.com' });
+
+    const { mailer } = recordingMailer();
+    await runAutopilot(
+      { db, mailer, via: 'workspace', fromAddress: 'sales@customer.com' },
+      SEED.workspaceId,
+    );
+
+    const event = await queryOne<{ detail_json: string }>(
+      db,
+      `SELECT detail_json FROM workflow_events WHERE phase = 'send' AND level = 'success'`,
+    );
+
+    // "Sent from your own mail server" and "sent from ours on your behalf" are
+    // materially different claims — whose domain reputation is spent, and where
+    // a reply lands — so which one happened is never left to inference.
+    const detail = JSON.parse(event?.detail_json ?? '{}');
+    expect(detail.via).toBe('workspace');
+    expect(detail.from).toBe('sales@customer.com');
+  });
+
+  test('uses the account’s reply-to so answers reach the customer', async () => {
+    seeded = await seedDatabase('autopilot-replyto');
+    const { db } = seeded;
+    await makeSendable(db, { personEmail: 'jane@acme.com' });
+
+    const { sent, mailer } = recordingMailer();
+    await runAutopilot({ db, mailer, replyTo: 'anthony@customer.com' }, SEED.workspaceId);
+
+    expect(sent[0]?.replyTo).toBe('anthony@customer.com');
+  });
+
+  test('a lead held back explains itself in the live feed', async () => {
+    seeded = await seedDatabase('autopilot-skip-event');
+    const { db } = seeded;
+    // No address anywhere: the most common reason a campaign looks stuck.
+    await makeSendable(db);
+
+    const { mailer } = recordingMailer();
+    const result = await runAutopilot({ db, mailer }, SEED.workspaceId);
+
+    expect(result.sent).toHaveLength(0);
+
+    const event = await queryOne<{ message: string; level: string }>(
+      db,
+      `SELECT message, level FROM workflow_events WHERE phase = 'send'`,
+    );
+
+    expect(event?.level).toBe('warn');
+    expect(event?.message).toContain('no address published');
+  });
+
+  test('a failed send says why, rather than vanishing', async () => {
+    seeded = await seedDatabase('autopilot-fail-event');
+    const { db } = seeded;
+    await makeSendable(db, { personEmail: 'jane@acme.com' });
+
+    await runAutopilot({ db, mailer: failingMailer() }, SEED.workspaceId);
+
+    const event = await queryOne<{ message: string; level: string }>(
+      db,
+      `SELECT message, level FROM workflow_events WHERE phase = 'send' AND level = 'error'`,
+    );
+
+    expect(event?.level).toBe('error');
+    expect(event?.message).toContain('sending domain is not verified');
+  });
+});

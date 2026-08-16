@@ -35,6 +35,24 @@ bun run --filter '@outreachgraph/web' dev     # :3000
 No API keys are needed. The pipeline runs end to end on a deterministic
 fixture provider, so a fresh checkout works with an empty `.env`.
 
+### Sending outreach
+
+Outreach leaves through the workspace's **own** SMTP server, configured on
+Settings and unusable until a test message has actually been delivered — a
+saved account stays `unverified`, and `runAutopilot` refuses it. Workspaces
+with no server connected fall back to the platform mailer, and which of the two
+carried a message is recorded on every send.
+
+Storing a customer's mail password needs a key to encrypt it with:
+
+```bash
+CREDENTIAL_KEY=<any long random string>   # falls back to API_TOKEN
+```
+
+Without either, saving a password is refused in production rather than stored
+in the clear. Rotating it does not lose data — the account keeps working until
+someone edits it, and the password simply has to be entered again.
+
 ## Layout
 
 ```text
@@ -45,7 +63,7 @@ apps/
 packages/
   ai/         the only package that talks to a model: composer + quality gates
   pipeline/   the discovery-to-queue chain and its background jobs
-  email/      account email only — verification links, never outreach
+  email/      the sending boundary: Resend for account mail, SMTP for outreach
   domain/     canonical types — depends on nothing
   db/         Turso/libSQL client and migration runner
   policy/     the deterministic policy engine

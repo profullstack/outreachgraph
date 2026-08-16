@@ -32,9 +32,13 @@ import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
 import {
   drainQueue,
+  emitEvent,
   expireSignals,
+  loadEmailAccount,
   processDeletion,
+  pruneWorkflowEvents,
   rescoreProspect,
+  resolveWorkspaceSender,
   runAutopilot,
   runCrawlJob,
   runDiscoveryJob,
@@ -322,16 +326,25 @@ const fanOutProviders = [new BlueskyProvider()];
  * answer will not change.
  */
 async function crawlSite(job: QueuedJob): Promise<void> {
+  // Whether *this workspace* can send email, not merely whether the container
+  // has a Resend key.
+  //
+  // This decides whether an email recommendation is produced at all — without
+  // it `email/send_email` evaluates to `manual_only` and the lead dead-ends.
+  // Reading it from the container alone was wrong in both directions once
+  // workspaces bring their own server: a customer with a verified SMTP account
+  // on a deployment with no Resend key would never get an email recommendation,
+  // and would have no way to find out why.
+  const account = await loadEmailAccount(db, job.workspaceId);
+  const canSendEmail = account?.status === 'verified' || mailer !== undefined;
+
   const result = await runCrawlJob(
     {
       db,
       site,
       providers: fanOutProviders,
       ...(model ? { model } : {}),
-      // Tells the policy engine email is a channel this deployment can
-      // actually send through. Without it `email/send_email` evaluates to
-      // `manual_only` and no email recommendation is ever produced.
-      emailSendingEnabled: mailer !== undefined,
+      emailSendingEnabled: canSendEmail,
     },
     job,
   );
@@ -414,6 +427,12 @@ async function tick(): Promise<void> {
   const pruned = await pruneSessions(db);
   if (pruned > 0) console.log(`pruned ${pruned} expired sessions`);
 
+  // Progress rows accumulate at roughly one per prospect per stage. Nothing
+  // reads a fortnight-old one, and the audit log they would otherwise bloat is
+  // a separate table precisely so this can be aggressive.
+  const prunedEvents = await pruneWorkflowEvents(db);
+  if (prunedEvents > 0) console.log(`pruned ${prunedEvents} workflow events`);
+
   // The queue drains before the send sweep, so anything discovered this tick
   // can go out on the same tick rather than waiting for the next one.
   const drained = await drainQueue(db, runJob);
@@ -424,6 +443,31 @@ async function tick(): Promise<void> {
     );
   }
 
+  // A job that has run out of attempts is the one queue outcome a user needs
+  // told about: it means a piece of their campaign stopped for good, and until
+  // now that fact lived only in `jobs.last_error`.
+  if (drained.dead > 0) {
+    for (const workspace of workspaces) {
+      const dead = await queryAll<{ kind: string; last_error: string | null }>(
+        db,
+        `SELECT kind, last_error FROM jobs
+          WHERE workspace_id = ? AND status = 'failed' AND finished_at >= ?
+          ORDER BY finished_at DESC LIMIT 5`,
+        [workspace.id, new Date(Date.now() - TICK_MS * 2).toISOString()],
+      );
+
+      for (const job of dead) {
+        await emitEvent(db, {
+          workspaceId: workspace.id,
+          phase: 'system',
+          level: 'error',
+          message: `A ${job.kind.replace(/_/g, ' ')} job gave up: ${(job.last_error ?? 'no reason recorded').slice(0, 200)}`,
+          detail: { kind: job.kind },
+        });
+      }
+    }
+  }
+
   // ------------------------------------------------------------- autopilot
   //
   // Sending, alerting and the digest, per workspace. Each is wrapped
@@ -432,12 +476,32 @@ async function tick(): Promise<void> {
   // outreach sweep that follows it.
   for (const workspace of workspaces) {
     try {
-      const result = await runAutopilot({ db, ...(mailer ? { mailer } : {}) }, workspace.id);
+      // The customer's own mail server when they have connected and verified
+      // one, and only then. Falling back to the platform mailer keeps every
+      // workspace that has not configured SMTP working exactly as before —
+      // but the two are never confused, because `via` is recorded on the send
+      // and shown in the status panel. Outreach quietly going out under our
+      // domain when the customer believes it is going out under theirs is the
+      // one outcome worth engineering against.
+      const sender = await resolveWorkspaceSender(db, workspace.id);
+      const outreachMailer = sender?.mailer ?? mailer;
+
+      const result = await runAutopilot(
+        {
+          db,
+          ...(outreachMailer ? { mailer: outreachMailer } : {}),
+          ...(sender?.replyTo ? { replyTo: sender.replyTo } : {}),
+          via: sender ? 'workspace' : 'platform',
+          ...(sender?.from ? { fromAddress: sender.from } : {}),
+        },
+        workspace.id,
+      );
 
       if (result.sent.length > 0 || result.failed > 0) {
         console.log(
           `autopilot ${workspace.id}: ${result.sent.length} sent, ` +
-            `${result.failed} failed, ${result.skipped.length} skipped`,
+            `${result.failed} failed, ${result.skipped.length} skipped` +
+            ` (via ${sender ? `${sender.from} over SMTP` : 'the platform mailer'})`,
         );
       }
 

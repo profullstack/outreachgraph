@@ -38,6 +38,9 @@ export const ID_PREFIXES = {
   auditEvent: 'aud',
   stageEvent: 'stg',
   notification: 'ntf',
+  emailAccount: 'eml',
+  socialPost: 'spo',
+  workflowEvent: 'wfe',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

@@ -14,8 +14,8 @@
  */
 
 import { classifyIntake, newId, type ClassifiedIntake } from '@outreachgraph/domain';
-import { now, queryOne, type Client } from '@outreachgraph/db';
-import { enqueue } from '@outreachgraph/pipeline';
+import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { emitEvent, enqueue } from '@outreachgraph/pipeline';
 
 export interface IntakeActor {
   readonly workspaceId: string;
@@ -115,6 +115,18 @@ export async function createCampaignFromIntake(
     });
   }
 
+  await emitEvent(db, {
+    workspaceId: actor.workspaceId,
+    campaignId,
+    phase: 'intake',
+    level: 'success',
+    message:
+      intake.kind === 'url'
+        ? `Started “${name}” from ${intake.value}`
+        : `Started “${name}” — looking for companies matching “${intake.value}”`,
+    detail: { kind: intake.kind, seed: intake.value, autopilot: options.autopilot === true },
+  });
+
   return {
     campaignId,
     name,
@@ -125,6 +137,154 @@ export async function createCampaignFromIntake(
     queued,
     needsProfile: offering.placeholder,
   };
+}
+
+export interface CampaignSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly status: string;
+  readonly approval_mode: string;
+  readonly seed_kind: string | null;
+  readonly seed_value: string | null;
+  readonly brief: string | null;
+  readonly created_at: string;
+  readonly started_at: string | null;
+  /** Leads in this campaign, and how far they have got. */
+  readonly people: number;
+  readonly contacted: number;
+  readonly replied: number;
+  readonly awaiting_approval: number;
+  /** Crawls and discoveries still outstanding, so "still working" is visible. */
+  readonly jobs_pending: number;
+  readonly last_activity_at: string | null;
+}
+
+/**
+ * Every campaign in the workspace, with enough on each row to choose between
+ * them.
+ *
+ * A bare list of names was fine when there was effectively one campaign. With
+ * several running at once the only question anyone asks is "which of these is
+ * actually doing anything", so the counts are part of the list rather than
+ * something you learn by opening each one in turn.
+ *
+ * The counts are correlated subqueries rather than joins on purpose: a campaign
+ * with no leads must still appear, and four `LEFT JOIN`s with `GROUP BY` over
+ * the same base table is how a row silently multiplies.
+ */
+export async function listCampaigns(db: Client, workspaceId: string): Promise<CampaignSummary[]> {
+  return queryAll<CampaignSummary>(
+    db,
+    `SELECT c.id, c.name, c.status, c.approval_mode, c.seed_kind, c.seed_value, c.brief,
+            c.created_at, c.started_at,
+            (SELECT COUNT(*) FROM campaign_people cp WHERE cp.campaign_id = c.id) AS people,
+            (SELECT COUNT(*) FROM campaign_people cp
+              WHERE cp.campaign_id = c.id AND cp.interaction_state = 'contacted') AS contacted,
+            (SELECT COUNT(*) FROM interactions i
+              WHERE i.campaign_id = c.id AND i.direction = 'inbound') AS replied,
+            (SELECT COUNT(*) FROM recommendations r
+              WHERE r.campaign_id = c.id AND r.status = 'pending') AS awaiting_approval,
+            (SELECT COUNT(*) FROM jobs j
+              WHERE j.workspace_id = c.workspace_id
+                AND j.status IN ('pending', 'running')
+                AND j.payload_json LIKE '%' || c.id || '%') AS jobs_pending,
+            (SELECT MAX(e.occurred_at) FROM lead_stage_events e
+              WHERE e.campaign_id = c.id) AS last_activity_at
+       FROM campaigns c
+      WHERE c.workspace_id = ?
+      ORDER BY CASE c.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+               c.created_at DESC`,
+    [workspaceId],
+  );
+}
+
+/**
+ * Pauses or resumes a campaign.
+ *
+ * Pausing is the control people reach for that autopilot alone does not give
+ * them: switching autopilot off still leaves the campaign crawling, scoring and
+ * filling the approval queue. `paused` stops the work; `active` resumes it.
+ */
+export async function setCampaignStatus(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+  status: 'active' | 'paused',
+): Promise<boolean> {
+  const result = await db.execute({
+    sql: `UPDATE campaigns SET status = ?, updated_at = ?
+           WHERE id = ? AND workspace_id = ? AND status != 'archived'`,
+    args: [status, now(), campaignId, workspaceId],
+  });
+
+  if (result.rowsAffected > 0) {
+    await emitEvent(db, {
+      workspaceId,
+      campaignId,
+      phase: 'system',
+      level: status === 'paused' ? 'warn' : 'info',
+      message: status === 'paused' ? 'Campaign paused' : 'Campaign resumed',
+    });
+  }
+
+  return result.rowsAffected > 0;
+}
+
+/**
+ * Archives a campaign and cancels its outstanding work.
+ *
+ * Leaving the queue alone would mean an archived campaign kept crawling for
+ * hours — the jobs were queued before the archive and know nothing about it.
+ * The rows are marked `done` rather than deleted so the batch view of a
+ * half-finished run still resolves.
+ */
+export async function archiveCampaign(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+): Promise<boolean> {
+  const result = await db.execute({
+    sql: `UPDATE campaigns SET status = 'archived', updated_at = ?
+           WHERE id = ? AND workspace_id = ?`,
+    args: [now(), campaignId, workspaceId],
+  });
+
+  if (result.rowsAffected === 0) return false;
+
+  await db.execute({
+    sql: `UPDATE jobs SET status = 'done', finished_at = ?, last_error = 'campaign archived',
+             updated_at = ?
+           WHERE workspace_id = ? AND status = 'pending'
+             AND payload_json LIKE '%' || ? || '%'`,
+    args: [now(), now(), workspaceId, campaignId],
+  });
+
+  await emitEvent(db, {
+    workspaceId,
+    campaignId,
+    phase: 'system',
+    level: 'warn',
+    message: 'Campaign archived — its queued work was cancelled',
+  });
+
+  return true;
+}
+
+export async function renameCampaign(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+  name: string,
+): Promise<boolean> {
+  const trimmed = name.trim().slice(0, 200);
+  if (!trimmed) return false;
+
+  const result = await db.execute({
+    sql: `UPDATE campaigns SET name = ?, updated_at = ? WHERE id = ? AND workspace_id = ?`,
+    args: [trimmed, now(), campaignId, workspaceId],
+  });
+
+  return result.rowsAffected > 0;
 }
 
 function defaultName(intake: ClassifiedIntake): string {
