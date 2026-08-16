@@ -24,7 +24,7 @@ import {
   snoozeRecommendationSchema,
   workspaceProfileSchema,
 } from '@outreachgraph/contracts';
-import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
+import { newId, OUTBOUND_ACTION_KINDS, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
   actorFromSession,
@@ -1207,14 +1207,22 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       );
     }
 
+    // Only actions that put a message in front of a human. Most of a real
+    // queue is `refresh_research` and friends, which have no message by
+    // definition — production had 75 of those against 2 genuinely undrafted
+    // emails, so an unfiltered version of this route would have spent 75 model
+    // calls to write nothing and reported them all as refusals.
+    const outbound = OUTBOUND_ACTION_KINDS.map(() => '?').join(', ');
+
     const pending = await queryAll<{ id: string }>(
       db,
       `SELECT r.id FROM recommendations r
         WHERE r.workspace_id = ? AND r.status IN ('pending', 'approved')
+          AND r.action IN (${outbound})
           AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.recommendation_id = r.id)
      ORDER BY r.created_at ASC
         LIMIT ?`,
-      [actor.workspaceId, body.limit],
+      [actor.workspaceId, ...OUTBOUND_ACTION_KINDS, body.limit],
     );
 
     const written: string[] = [];
