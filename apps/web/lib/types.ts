@@ -37,6 +37,32 @@ export interface ProductSummaryView {
   configured: boolean;
 }
 
+/**
+ * Where one campaign listens.
+ *
+ * Per campaign rather than per deployment: two products sold to two different
+ * trades have no reason to watch the same communities.
+ */
+export interface ListeningView {
+  campaignId: string;
+  sources: string[];
+  subreddits: string[];
+  feeds: string[];
+  /** Every source this build supports, for rendering the choices. */
+  available: string[];
+  /** What it would search for, from the ICP keywords and competitors. */
+  terms: string[];
+}
+
+export interface SubredditSuggestionView {
+  name: string;
+  title: string;
+  subscribers: number;
+  description: string;
+  url: string;
+  matchedTerms: string[];
+}
+
 /** The mailbox outreach is sent from. Never carries the password. */
 export interface EmailAccountView {
   connected: boolean;
