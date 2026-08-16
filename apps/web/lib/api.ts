@@ -121,3 +121,84 @@ export async function fetchProspects(): Promise<ProspectRow[]> {
 export async function fetchProspect(id: string): Promise<ProspectDetail> {
   return request<ProspectDetail>(`/people/${encodeURIComponent(id)}`);
 }
+
+export interface CampaignRow {
+  readonly id: string;
+  readonly name: string;
+  readonly status: string;
+  readonly approval_mode: string;
+  readonly seed_kind: string | null;
+  readonly seed_value: string | null;
+  readonly created_at: string;
+  readonly started_at: string | null;
+}
+
+export async function fetchCampaigns(): Promise<CampaignRow[]> {
+  const body = await request<{ campaigns: CampaignRow[] }>('/campaigns');
+  return body.campaigns;
+}
+
+export interface FunnelStageView {
+  readonly stage: string;
+  readonly label: string;
+  readonly current: number;
+  readonly reached: number;
+}
+
+export interface AnalyticsView {
+  readonly funnel: {
+    readonly stages: readonly FunnelStageView[];
+    readonly lost: number;
+    readonly total: number;
+  };
+  readonly sentThisWeek: number;
+  readonly repliesThisWeek: number;
+  readonly awaitingApproval: number;
+  readonly activeCampaigns: number;
+  readonly autopilotCampaigns: number;
+  readonly medianHoursToContact?: number;
+}
+
+export async function fetchAnalytics(campaignId?: string): Promise<AnalyticsView> {
+  const query = campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '';
+  return request<AnalyticsView>(`/analytics${query}`);
+}
+
+export interface TimelineSegmentView {
+  readonly stage: string;
+  readonly enteredAt: string;
+  readonly leftAt?: string;
+  readonly hours?: number;
+}
+
+export interface LeadTimelineView {
+  readonly personId: string;
+  readonly personName: string;
+  readonly companyName?: string;
+  readonly currentStage: string;
+  readonly opportunity?: number;
+  readonly firstSeenAt: string;
+  readonly segments: readonly TimelineSegmentView[];
+}
+
+export async function fetchTimeline(campaignId?: string): Promise<LeadTimelineView[]> {
+  const query = campaignId ? `?campaignId=${encodeURIComponent(campaignId)}&limit=50` : '?limit=50';
+  const body = await request<{ leads: LeadTimelineView[] }>(`/analytics/timeline${query}`);
+  return body.leads;
+}
+
+export interface SettingsView {
+  readonly notifyEmail: string | null;
+  readonly effectiveNotifyEmail: string | null;
+  readonly instantAlerts: boolean;
+  readonly dailyDigest: boolean;
+  readonly digestHourUtc: number;
+  readonly alertMinOpportunity: number;
+  readonly autopilotDailyCap: number;
+  readonly replyToEmail: string | null;
+  readonly lastDigestSentOn: string | null;
+}
+
+export async function fetchSettings(): Promise<SettingsView> {
+  return request<SettingsView>('/settings');
+}

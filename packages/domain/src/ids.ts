@@ -36,6 +36,8 @@ export const ID_PREFIXES = {
   policyRule: 'pol',
   usageEvent: 'usg',
   auditEvent: 'aud',
+  stageEvent: 'stg',
+  notification: 'ntf',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

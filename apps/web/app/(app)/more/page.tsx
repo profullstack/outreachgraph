@@ -7,10 +7,17 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'More · OutreachGraph' };
 
+/** Real destinations, listed above the things that are still placeholders. */
+const LINKS = [
+  { href: '/settings', label: 'Settings', hint: 'Alerts, the daily digest, autopilot limits' },
+  { href: '/signals', label: 'Signals', hint: 'The raw observations behind every score' },
+  { href: '/setup', label: 'Setup', hint: 'What you sell, and who buys it' },
+  { href: '/funnel', label: 'Funnel', hint: 'Stages, conversion and each lead over time' },
+] as const;
+
 const SECTIONS = [
-  { label: 'Campaigns', hint: 'Wizard not built yet' },
   { label: 'Conversations', hint: 'Interaction tracking only' },
-  { label: 'Integrations', hint: 'GitHub only so far' },
+  { label: 'Integrations', hint: 'Website and GitHub as sources; email for sending' },
   { label: 'Usage', hint: 'Metering recorded, not enforced' },
 ] as const;
 
@@ -35,6 +42,19 @@ export default async function MorePage() {
           </p>
         ) : null}
       </header>
+
+      <ul className="border-border divide-border mb-6 divide-y overflow-hidden rounded-2xl border">
+        {LINKS.map((link) => (
+          <li key={link.href}>
+            <Link href={link.href} className="bg-surface-raised block p-4">
+              <div className="font-medium">{link.label}</div>
+              <div className="text-ink-muted text-xs">{link.hint}</div>
+            </Link>
+          </li>
+        ))}
+      </ul>
+
+      <p className="text-ink-muted mb-2 text-xs">Not built yet</p>
 
       <ul className="border-border divide-border divide-y overflow-hidden rounded-2xl border">
         {SECTIONS.map((section) => (

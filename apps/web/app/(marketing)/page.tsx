@@ -103,7 +103,7 @@ function Hero() {
           </div>
 
           <p className="text-ink-muted mt-4 text-[13px]">
-            Free while in beta · No card · Starts from a GitHub handle
+            Free while in beta · No card · Starts from a website or a keyword
           </p>
         </div>
 
@@ -169,9 +169,9 @@ function ApprovalCardSample() {
 
 function EvidenceSection() {
   const identities = [
-    ['github', '1.00', 'The handle you started from.'],
-    ['x', '0.96', 'Linked from his own GitHub profile field.'],
-    ['website', '0.92', 'Same domain in his bio and his commits.'],
+    ['website', '1.00', 'Named on the company page you started from.'],
+    ['github', '0.96', 'Linked from that same page, and the bio matches.'],
+    ['x', '0.92', 'Listed in his own GitHub profile field.'],
   ];
 
   return (

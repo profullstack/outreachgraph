@@ -1,6 +1,5 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { AddProspect } from '../../../components/add-prospect';
 import { ApiUnavailableError, NotAuthenticatedError, fetchProspects } from '../../../lib/api';
 import type { ProspectRow } from '../../../lib/types';
 
@@ -36,22 +35,17 @@ export default async function ProspectsPage() {
         </p>
       </header>
 
-      {/* The bulk form used to sit here. It moved to its own tab, because a
-          list of prospects is where you go once you have some — not where
-          anyone thinks to look for how to get them. One implementation, one
-          place, and a link for whoever arrives here first. */}
-      <div className="flex flex-col gap-3">
-        <Link
-          href="/outreach"
-          className="border-accent/40 bg-accent/5 block rounded-2xl border p-4"
-        >
-          <span className="text-sm font-medium">Add from company websites</span>
-          <span className="text-ink-muted mt-1 block text-[13px] leading-relaxed">
-            Paste a list of URLs — or upload one — on the Outreach tab.
-          </span>
-        </Link>
-        <AddProspect />
-      </div>
+      {/* Intake lives on Outreach, in one box that takes a website or a
+          description of a market. The GitHub-handle form that used to sit here
+          is gone: asking a salesperson for a GitHub username to start a sales
+          campaign was the single strangest thing about this product. GitHub is
+          still read as a signal source, which is where it belongs. */}
+      <Link href="/outreach" className="border-accent/40 bg-accent/5 block rounded-2xl border p-4">
+        <span className="text-sm font-medium">Start a campaign</span>
+        <span className="text-ink-muted mt-1 block text-[13px] leading-relaxed">
+          Enter a company website, or describe who you want to reach.
+        </span>
+      </Link>
 
       {people.length > 0 ? (
         <ul className="mt-4 flex flex-col gap-2">
@@ -61,9 +55,8 @@ export default async function ProspectsPage() {
         </ul>
       ) : !offline ? (
         <p className="border-border text-ink-muted mt-4 rounded-2xl border border-dashed p-8 text-center text-sm">
-          No prospects yet. Paste company websites on the <Link href="/outreach">Outreach</Link> tab
-          — or a GitHub handle above — and the pipeline will enrich, resolve, collect signals and
-          score them.
+          No prospects yet. Start a campaign on the <Link href="/outreach">Outreach</Link> tab and
+          the pipeline will find people, resolve who they are, collect signals and score them.
         </p>
       ) : null}
     </div>

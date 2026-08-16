@@ -26,6 +26,8 @@ export const JOB_KINDS = [
   'poll_drop',
   /** Fetch one company URL, read it, and run everyone it names. */
   'crawl_site',
+  /** Expand a keyword into real companies and queue a crawl for each. */
+  'discover_domains',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];

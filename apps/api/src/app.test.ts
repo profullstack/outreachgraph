@@ -740,7 +740,15 @@ describe('adding a prospect (PRD §8)', () => {
 /** Collects sent messages instead of delivering them. */
 function recordingMailer(): { sent: Message[]; mailer: Mailer } {
   const sent: Message[] = [];
-  return { sent, mailer: { send: async (message) => void sent.push(message) } };
+  return {
+    sent,
+    mailer: {
+      send: async (message) => {
+        sent.push(message);
+        return {};
+      },
+    },
+  };
 }
 
 describe('email verification', () => {

@@ -38,6 +38,19 @@ import {
   workspacesForUser,
 } from './auth';
 import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
+import {
+  campaignFunnel,
+  leadTimeline,
+  loadNotifySettings,
+  notifyAddress,
+  workspaceAnalytics,
+} from '@outreachgraph/pipeline';
+import {
+  createCampaignFromIntake,
+  IntakeError,
+  saveWorkspaceSettings,
+  setCampaignAutopilot,
+} from './campaigns';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
 import { GitHubProvider, SiteProvider, normaliseUrl } from '@outreachgraph/providers';
@@ -322,6 +335,88 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const campaign = await repo.getCampaign(c.get('db'), actor.workspaceId, c.req.param('id'));
     if (!campaign) throw ApiError.notFound('campaign');
     return c.json({ campaign });
+  });
+
+  /**
+   * The front door (PRD §8).
+   *
+   * One box, two paths. A company website is crawled directly; a description
+   * of a market goes to discovery, which names real companies and queues a
+   * crawl for each. The caller gets a campaign id straight back and watches it
+   * fill, because neither path can finish inside a request.
+   */
+  api.post('/campaigns', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('starting a campaign');
+    await requireVerifiedEmail(db, actor);
+
+    const body = safeJson(await c.req.raw.text());
+    const input = typeof body.input === 'string' ? body.input : '';
+
+    let result;
+    try {
+      result = await createCampaignFromIntake(db, actor, input, {
+        autopilot: body.autopilot === true,
+        ...(typeof body.name === 'string' ? { name: body.name } : {}),
+      });
+    } catch (error) {
+      if (error instanceof IntakeError) {
+        throw ApiError.badRequest(error.message, { input: [error.message] });
+      }
+      throw error;
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'campaign.created',
+      entityKind: 'campaign',
+      entityId: result.campaignId,
+      detail: { kind: result.kind, seed: result.seed, autopilot: result.autopilot },
+    });
+
+    return c.json(result, 202);
+  });
+
+  /** Switches autopilot on or off. The only control unattended sending has. */
+  api.patch('/campaigns/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('changing a campaign');
+
+    const body = safeJson(await c.req.raw.text());
+    if (typeof body.autopilot !== 'boolean') {
+      throw ApiError.badRequest('autopilot must be true or false');
+    }
+
+    // Turning it *on* spends money without asking again, so it carries the
+    // same verification gate as starting a campaign.
+    if (body.autopilot) await requireVerifiedEmail(db, actor);
+
+    const updated = await setCampaignAutopilot(
+      db,
+      actor.workspaceId,
+      c.req.param('id'),
+      body.autopilot,
+    );
+
+    if (!updated) throw ApiError.notFound('campaign');
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: body.autopilot ? 'campaign.autopilot_enabled' : 'campaign.autopilot_disabled',
+      entityKind: 'campaign',
+      entityId: c.req.param('id'),
+      detail: {},
+    });
+
+    return c.json({ campaignId: c.req.param('id'), autopilot: body.autopilot });
   });
 
   api.get('/campaigns/:id/recommendations', async (c) => {
@@ -1064,6 +1159,102 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ executed: true, actionId: action.id });
+  });
+
+  // ------------------------------------------------------------- analytics
+  /**
+   * The funnel, plus the headline numbers above it (PRD §25).
+   *
+   * Stage counts come from the event log rather than the current-status
+   * column, which is the only way "how many ever reached Contacted" is
+   * answerable at all — see `lead_stage_events`.
+   */
+  api.get('/analytics', async (c) => {
+    const actor = c.get('actor');
+    const campaignId = c.req.query('campaignId');
+
+    const [analytics, funnel] = await Promise.all([
+      workspaceAnalytics(c.get('db'), actor.workspaceId),
+      campaignId
+        ? campaignFunnel(c.get('db'), { workspaceId: actor.workspaceId, campaignId })
+        : undefined,
+    ]);
+
+    // A campaign-scoped request still gets the workspace headline numbers, so
+    // the page has one request rather than two.
+    return c.json({ ...analytics, ...(funnel ? { funnel } : {}) });
+  });
+
+  /** One row per lead, each a sequence of dated stage segments. */
+  api.get('/analytics/timeline', async (c) => {
+    const actor = c.get('actor');
+    const campaignId = c.req.query('campaignId');
+
+    const leads = await leadTimeline(c.get('db'), {
+      workspaceId: actor.workspaceId,
+      ...(campaignId ? { campaignId } : {}),
+      limit: clampLimit(c.req.query('limit')),
+    });
+
+    return c.json({ leads });
+  });
+
+  // -------------------------------------------------------------- settings
+  api.get('/settings', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const settings = await loadNotifySettings(db, actor.workspaceId);
+    const address = await notifyAddress(db, actor.workspaceId, settings);
+
+    const cap = await queryOne<{ autopilot_daily_cap: number; reply_to_email: string | null }>(
+      db,
+      `SELECT autopilot_daily_cap, reply_to_email FROM workspace_settings WHERE workspace_id = ?`,
+      [actor.workspaceId],
+    );
+
+    return c.json({
+      notifyEmail: settings.notify_email,
+      // What mail would actually go to right now, resolved through the owner
+      // fallback. Without this the settings page can only show an empty box
+      // and leave the user unsure whether anything is configured at all.
+      effectiveNotifyEmail: address ?? null,
+      instantAlerts: settings.instant_alerts === 1,
+      dailyDigest: settings.daily_digest === 1,
+      digestHourUtc: settings.digest_hour_utc,
+      alertMinOpportunity: settings.alert_min_opportunity,
+      autopilotDailyCap: cap?.autopilot_daily_cap ?? 25,
+      replyToEmail: cap?.reply_to_email ?? null,
+      lastDigestSentOn: settings.last_digest_sent_on,
+    });
+  });
+
+  api.put('/settings', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('changing workspace settings');
+
+    const body = safeJson(await c.req.raw.text());
+
+    await saveWorkspaceSettings(db, actor.workspaceId, {
+      ...(body.notifyEmail === undefined
+        ? {}
+        : { notifyEmail: body.notifyEmail === null ? null : String(body.notifyEmail) }),
+      ...(body.replyToEmail === undefined
+        ? {}
+        : { replyToEmail: body.replyToEmail === null ? null : String(body.replyToEmail) }),
+      instantAlerts: body.instantAlerts !== false,
+      dailyDigest: body.dailyDigest !== false,
+      ...(body.digestHourUtc === undefined ? {} : { digestHourUtc: Number(body.digestHourUtc) }),
+      ...(body.alertMinOpportunity === undefined
+        ? {}
+        : { alertMinOpportunity: Number(body.alertMinOpportunity) }),
+      ...(body.autopilotDailyCap === undefined
+        ? {}
+        : { autopilotDailyCap: Number(body.autopilotDailyCap) }),
+    });
+
+    return c.json({ saved: true });
   });
 
   // --------------------------------------------------------------- signals

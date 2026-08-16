@@ -13,11 +13,16 @@ import { usePathname } from 'next/navigation';
  * list, approve — because the first question a new account has is "where do I
  * begin", and the answer has to be a tab rather than a form buried at the top
  * of another screen.
+ *
+ * Signals moved to More to make room for Funnel. Six is already the most
+ * labels that fit a 375px phone without wrapping, and between "the raw
+ * observations we collected" and "where every lead stands", the second is the
+ * one someone opens the app to see. Signals is still a route and still linked.
  */
 const TABS = [
   { href: '/today', label: 'Today', icon: SunIcon },
   { href: '/outreach', label: 'Outreach', icon: SendIcon },
-  { href: '/signals', label: 'Signals', icon: BoltIcon },
+  { href: '/funnel', label: 'Funnel', icon: FunnelIcon },
   { href: '/prospects', label: 'Prospects', icon: PeopleIcon },
   { href: '/approvals', label: 'Approvals', icon: CheckIcon },
   { href: '/more', label: 'More', icon: DotsIcon },
@@ -94,10 +99,10 @@ function SendIcon() {
   );
 }
 
-function BoltIcon() {
+function FunnelIcon() {
   return (
     <svg {...ICON_PROPS}>
-      <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />
+      <path d="M3 4h18l-7 8v7l-4 2v-9L3 4z" />
     </svg>
   );
 }

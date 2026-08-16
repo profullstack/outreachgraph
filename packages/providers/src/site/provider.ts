@@ -20,6 +20,7 @@ import type {
 import { fetchPage, type FetchOptions, type FetchOutcome, type FetchedPage } from './fetch';
 import { extractSite, type ExtractedCompany } from './extract';
 import { extractWithModel, visibleText, type ExtractionModel } from './model-extract';
+import { assignEmails, findEmails } from './emails';
 
 export interface SiteProviderOptions extends FetchOptions {
   /** Omit to run deterministic-only; the crawl still works, it just reads less. */
@@ -53,6 +54,14 @@ export interface CrawlResult {
    * for leads — does not have to fetch it a second time.
    */
   readonly pageText?: string;
+  /**
+   * The company's shared inbox, when the page published one.
+   *
+   * The fallback for a site that names people but gives no personal address —
+   * which is most of them. Kept off `company.identities` because it is a way
+   * to reach the company, not a profile belonging to it.
+   */
+  readonly contactEmail?: string;
 }
 
 function emptyCompany(): ExtractedCompany {
@@ -166,6 +175,31 @@ export class SiteProvider implements PersonEnrichmentProvider {
       if (fromModel.company.name || fromModel.people.length > 0) usedSignals.push('model');
     }
 
+    // Addresses are read last, once the people are known: matching
+    // `jane@acme.com` to a person needs the person, and the model pass is
+    // often what produced them.
+    const found = findEmails(page.html);
+    let contactEmail: string | undefined;
+
+    if (found.length > 0) {
+      const assigned = assignEmails(
+        found,
+        people.map((person) => person.fullName),
+        company.domain ?? hostOf(page.finalUrl),
+      );
+
+      if (assigned.byPerson.size > 0) {
+        people = people.map((person) => {
+          const email = assigned.byPerson.get(person.fullName);
+          return email ? { ...person, email } : person;
+        });
+        usedSignals.push('email');
+      }
+
+      contactEmail = assigned.companyEmail;
+      if (contactEmail && !usedSignals.includes('email')) usedSignals.push('email');
+    }
+
     return {
       url,
       finalUrl: page.finalUrl,
@@ -173,11 +207,21 @@ export class SiteProvider implements PersonEnrichmentProvider {
       company,
       people,
       usedSignals,
+      ...(contactEmail ? { contactEmail } : {}),
       ...(page.contentHash ? { contentHash: page.contentHash } : {}),
       fetchedAt: page.fetchedAt,
       ...(extractionUnavailable ? { extractionUnavailable } : {}),
       pageText: visibleText(page.html),
     };
+  }
+}
+
+/** The host a page was finally served from, for matching addresses against. */
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return undefined;
   }
 }
 

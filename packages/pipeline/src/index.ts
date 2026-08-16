@@ -8,6 +8,36 @@
  */
 
 export { runCrawlJob, type CrawlJobDeps, type CrawlJobResult } from './crawl';
+export { runDiscoveryJob, type DiscoveryJobDeps, type DiscoveryJobResult } from './discovery';
+export {
+  runAutopilot,
+  type AutopilotDeps,
+  type AutopilotResult,
+  type SentOutreach,
+  type SkippedOutreach,
+} from './autopilot';
+export {
+  loadNotifySettings,
+  notifyAddress,
+  sendDailyDigest,
+  sendLeadAlerts,
+  type NotifyDeps,
+  type NotifySettings,
+} from './notify';
+export {
+  recordDiscovered,
+  recordStatus,
+  type StatusChange,
+  type StatusChangeResult,
+} from './stages';
+export {
+  campaignFunnel,
+  leadTimeline,
+  workspaceAnalytics,
+  type FunnelQuery,
+  type LeadTimeline,
+  type WorkspaceAnalytics,
+} from './analytics';
 export {
   runPipeline,
   runPipelineForCandidate,
