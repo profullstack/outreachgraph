@@ -17,6 +17,13 @@ export {
   type SkippedOutreach,
 } from './autopilot';
 export {
+  runListening,
+  listeningCampaigns,
+  type ListenDeps,
+  type ListenInput,
+  type ListenResult,
+} from './listen';
+export {
   connectEmailAccount,
   disconnectEmailAccount,
   emailAccountSummary,
