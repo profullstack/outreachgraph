@@ -25,7 +25,12 @@
 
 import { newId } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
-import { SmtpMailer, type Mailer, type SmtpCredentials } from '@outreachgraph/email';
+import {
+  SmtpMailer,
+  type ImapCredentials,
+  type Mailer,
+  type SmtpCredentials,
+} from '@outreachgraph/email';
 import { decryptSecret, encryptSecret, SecretDecryptError } from '@outreachgraph/secrets';
 
 /** The kind recorded on the `integrations` row. */
@@ -42,6 +47,23 @@ export interface EmailAccountInput {
   readonly fromName?: string | undefined;
   /** Where replies go, when that is not the sending address. */
   readonly replyTo?: string | undefined;
+  /**
+   * Where the same mailbox is read from, when the workspace wants replies
+   * noticed.
+   *
+   * Optional, and its absence is a real configuration rather than an
+   * incomplete one: a workspace may legitimately want to send and handle
+   * replies by hand. What it costs is that nothing can notice an answer, so
+   * the `conversation_open` gate has no input and the queue keeps offering a
+   * prospect who has already written back.
+   *
+   * There is no second password. IMAP and SMTP are two ports on one mailbox,
+   * and asking for the credential twice would only create a way for them to
+   * disagree.
+   */
+  readonly imapHost?: string | undefined;
+  readonly imapPort?: number | undefined;
+  readonly imapSecure?: boolean | undefined;
 }
 
 /** What the settings page may see. Never includes the password. */
@@ -54,6 +76,9 @@ export interface EmailAccountSummary {
   readonly fromEmail?: string;
   readonly fromName?: string;
   readonly replyTo?: string;
+  readonly imapHost?: string;
+  readonly imapPort?: number;
+  readonly imapSecure?: boolean;
   readonly status?: string;
   readonly connectedAt?: string;
 }
@@ -76,6 +101,9 @@ interface StoredConfig {
   readonly fromEmail: string;
   readonly fromName?: string;
   readonly replyTo?: string;
+  readonly imapHost?: string;
+  readonly imapPort?: number;
+  readonly imapSecure?: boolean;
 }
 
 interface AccountRow {
@@ -144,6 +172,15 @@ export async function connectEmailAccount(
     fromEmail: input.account.fromEmail,
     ...(input.account.fromName ? { fromName: input.account.fromName } : {}),
     ...(input.account.replyTo ? { replyTo: input.account.replyTo } : {}),
+    // Only stored as a pair. A host with no port is not a mailbox anyone can
+    // read, and half-configured reading fails on a timer rather than here.
+    ...(input.account.imapHost
+      ? {
+          imapHost: input.account.imapHost,
+          imapPort: input.account.imapPort ?? 993,
+          imapSecure: input.account.imapSecure ?? true,
+        }
+      : {}),
   };
 
   const stamp = now();
@@ -254,6 +291,47 @@ export async function loadEmailCredentials(
     fromEmail: config.fromEmail,
     ...(config.fromName ? { fromName: config.fromName } : {}),
     ...(config.replyTo ? { replyTo: config.replyTo } : {}),
+  };
+}
+
+/**
+ * The credentials for *reading* this workspace's mailbox, or `undefined`.
+ *
+ * Undefined has three distinct causes and they are deliberately collapsed: no
+ * mailbox connected, no IMAP host configured, or a password that no longer
+ * decrypts. All three mean the same thing to the caller — this workspace's
+ * replies cannot be read right now — and none of them is an error worth
+ * failing a polling tick over.
+ */
+export async function loadImapCredentials(
+  db: Client,
+  workspaceId: string,
+  encryptionKey: Buffer | undefined,
+): Promise<ImapCredentials | undefined> {
+  if (!encryptionKey) return undefined;
+
+  const row = await loadRow(db, workspaceId);
+  if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
+
+  const config = parseConfig(row.config_json);
+  if (!config?.imapHost) return undefined;
+
+  let password: string;
+  try {
+    password = decryptSecret(row.access_token_enc, encryptionKey);
+  } catch (error) {
+    if (error instanceof SecretDecryptError) return undefined;
+    throw error;
+  }
+
+  return {
+    host: config.imapHost,
+    port: config.imapPort ?? 993,
+    secure: config.imapSecure ?? true,
+    // The same mailbox, so the same login. Storing a second copy would only
+    // create a way for the two to drift apart.
+    username: config.username,
+    password,
   };
 }
 

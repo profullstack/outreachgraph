@@ -302,6 +302,17 @@ export const connectEmailAccountSchema = z.object({
   fromName: z.string().max(120).optional(),
   replyTo: z.string().email().optional(),
   /**
+   * Where the same mailbox is read from, so replies can be noticed.
+   *
+   * Optional, and no second password: IMAP and SMTP are two ports on one
+   * mailbox. Leaving it out is a real choice — the workspace sends, and
+   * handles replies by hand — but it means nothing can see an answer, so the
+   * queue keeps offering prospects who are already mid-conversation.
+   */
+  imapHost: z.string().max(255).optional(),
+  imapPort: z.number().int().min(1).max(65_535).optional(),
+  imapSecure: z.boolean().optional(),
+  /**
    * Skips the live login check. Off by default and deliberately awkward to
    * reach: an unverified credential produces a workspace that looks connected
    * and fails on its first real prospect.

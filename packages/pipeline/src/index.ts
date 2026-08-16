@@ -41,11 +41,18 @@ export {
   disconnectEmailAccount,
   emailAccountSummary,
   loadEmailCredentials,
+  loadImapCredentials,
   mailerForWorkspace,
   EmailAccountError,
   type EmailAccountInput,
   type EmailAccountSummary,
 } from './email-account';
+export {
+  receiveReplies,
+  workspacesWithReadableMailbox,
+  type ReceiveRepliesInput,
+  type ReceiveRepliesResult,
+} from './receive-email';
 export {
   deliverEmailAction,
   defaultEmailSubject,

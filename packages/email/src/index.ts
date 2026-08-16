@@ -32,6 +32,14 @@ export {
   type SmtpCredentials,
   type SmtpPreset,
 } from './smtp';
+export {
+  classifyAutomated,
+  ImapReader,
+  parseHeaders,
+  type ImapCredentials,
+  type IncomingMessage,
+  type MailReader,
+} from './imap';
 export { verificationEmail } from './templates';
 export {
   dailyDigestEmail,

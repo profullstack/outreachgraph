@@ -27,7 +27,7 @@ import {
   OpenAIModel,
   type FallbackEntry,
 } from '@outreachgraph/ai';
-import { ResendMailer } from '@outreachgraph/email';
+import { ImapReader, ResendMailer } from '@outreachgraph/email';
 import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
@@ -42,9 +42,12 @@ import {
   runAutopilot,
   runCrawlJob,
   runDiscoveryJob,
+  loadImapCredentials,
+  receiveReplies,
   runListening,
   sendDailyDigest,
   sendLeadAlerts,
+  workspacesWithReadableMailbox,
   type ListeningTargets,
   type QueuedJob,
 } from '@outreachgraph/pipeline';
@@ -61,6 +64,19 @@ import {
 const PORT = Number(process.env.PORT ?? 8080);
 const WEB_PORT = Number(process.env.WEB_PORT ?? 3001);
 const TICK_MS = Number(process.env.WORKER_TICK_MS ?? 60_000);
+
+/**
+ * How often a mailbox is read, as opposed to how often the worker ticks.
+ *
+ * Five minutes because a reply is not urgent — the thing it must beat is the
+ * next outreach send, not the reader's patience — and an IMAP login per
+ * workspace per minute is a great deal of connection churn for a mailbox that
+ * receives a handful of replies a day.
+ */
+const RECEIVE_POLL_MS = Number(process.env.RECEIVE_POLL_MS ?? 300_000);
+
+/** Last successful poll per workspace, so the slower clock survives a tick. */
+const lastPolledAt = new Map<string, number>();
 const ENVIRONMENT = process.env.NODE_ENV ?? 'development';
 
 const db = getDatabase();
@@ -606,6 +622,53 @@ async function tick(): Promise<void> {
       }
     } catch (error) {
       console.error(`listening failed for ${workspace.id}`, error);
+    }
+  }
+
+  // ------------------------------------------------------------- receiving
+  //
+  // Replies, read over IMAP. This runs *before* the send sweep on purpose: a
+  // reply noticed on this tick has to stop a message that would otherwise go
+  // out on the same tick, and reading afterwards would let exactly the send we
+  // are trying to prevent slip through every time.
+  //
+  // Polled on its own, slower clock. The worker tick is a minute; opening an
+  // IMAP connection per workspace per minute is a lot of login traffic for a
+  // mailbox that gets a handful of replies a day.
+  for (const workspaceId of await workspacesWithReadableMailbox(db)) {
+    const last = lastPolledAt.get(workspaceId) ?? 0;
+    if (Date.now() - last < RECEIVE_POLL_MS) continue;
+    lastPolledAt.set(workspaceId, Date.now());
+
+    try {
+      const credentials = await loadImapCredentials(db, workspaceId, encryptionKey);
+      // Undefined covers "no mailbox", "no IMAP host" and "the key changed so
+      // the password no longer decrypts". All three mean the same thing here.
+      if (!credentials) continue;
+
+      const received = await receiveReplies({
+        db,
+        workspaceId,
+        reader: new ImapReader(credentials),
+      });
+
+      if (received.recorded > 0) {
+        console.log(`replies ${workspaceId}: ${received.recorded} recorded`);
+      }
+
+      // Worth a line even at zero: an inbox full of skipped auto-replies and
+      // an inbox nobody answers look identical from the outside, and only one
+      // of them is a problem.
+      const skipped = Object.entries(received.automated);
+      if (skipped.length > 0) {
+        console.log(
+          `replies ${workspaceId}: ignored ${skipped.map(([k, n]) => `${n} ${k}`).join(', ')}`,
+        );
+      }
+    } catch (error) {
+      // A mailbox that will not open is this workspace's problem, not the
+      // tick's. Sending still has to happen for everyone else.
+      console.error(`reading replies failed for ${workspaceId}`, error);
     }
   }
 

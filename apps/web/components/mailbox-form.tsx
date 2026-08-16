@@ -36,6 +36,8 @@ export function MailboxForm({ initial }: { initial: EmailIntegrationView }) {
   const [fromEmail, setFromEmail] = useState(account.fromEmail ?? '');
   const [fromName, setFromName] = useState(account.fromName ?? '');
   const [replyTo, setReplyTo] = useState(account.replyTo ?? '');
+  const [imapHost, setImapHost] = useState(account.imapHost ?? '');
+  const [imapPort, setImapPort] = useState(account.imapPort ?? 993);
 
   const [busy, setBusy] = useState<'save' | 'remove' | undefined>();
   const [error, setError] = useState<string | undefined>();
@@ -53,6 +55,15 @@ export function MailboxForm({ initial }: { initial: EmailIntegrationView }) {
     setHost(chosen.host);
     setPort(chosen.port);
     setSecure(chosen.secure);
+
+    // One picker fills in both halves, because they are one mailbox on one
+    // credential. Making someone look up that Forward Email sends on
+    // smtp.forwardemail.net and is read on imap.forwardemail.net is asking
+    // them for something we already know.
+    if (chosen.imapHost) {
+      setImapHost(chosen.imapHost);
+      setImapPort(chosen.imapPort ?? 993);
+    }
   }
 
   async function submit(event: FormEvent): Promise<void> {
@@ -75,6 +86,7 @@ export function MailboxForm({ initial }: { initial: EmailIntegrationView }) {
           fromEmail: fromEmail || username,
           ...(fromName ? { fromName } : {}),
           ...(replyTo ? { replyTo } : {}),
+          ...(imapHost ? { imapHost, imapPort: Number(imapPort), imapSecure: true } : {}),
         }),
       });
 
@@ -213,6 +225,35 @@ export function MailboxForm({ initial }: { initial: EmailIntegrationView }) {
           <input type="checkbox" checked={secure} onChange={(e) => setSecure(e.target.checked)} />
           <span>TLS on connect (port 465). Uncheck for STARTTLS submission (587).</span>
         </label>
+
+        <div className="grid grid-cols-3 gap-2">
+          <label className="col-span-2 text-sm">
+            <span className="text-ink-muted text-xs">IMAP host (to read replies)</span>
+            <input
+              value={imapHost}
+              onChange={(e) => setImapHost(e.target.value)}
+              autoComplete="off"
+              placeholder="imap.example.com"
+              className="border-border bg-surface text-ink mt-1 w-full rounded-xl border p-2 text-sm"
+            />
+          </label>
+
+          <label className="text-sm">
+            <span className="text-ink-muted text-xs">IMAP port</span>
+            <input
+              type="number"
+              value={imapPort}
+              onChange={(e) => setImapPort(Number(e.target.value))}
+              className="border-border bg-surface text-ink mt-1 w-full rounded-xl border p-2 text-sm"
+            />
+          </label>
+        </div>
+
+        <p className="text-ink-muted text-xs">
+          Optional, and no second password — IMAP and SMTP are two ports on the same mailbox. Leave
+          it blank to send only; replies then have to be spotted by hand, and the queue will keep
+          offering people who have already written back.
+        </p>
 
         <label className="text-sm">
           <span className="text-ink-muted text-xs">Username</span>

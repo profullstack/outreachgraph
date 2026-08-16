@@ -154,6 +154,18 @@ export interface SmtpPreset {
   readonly port: number;
   readonly secure: boolean;
   readonly note?: string;
+  /**
+   * Where the same mailbox is read from.
+   *
+   * One picker fills in both halves because they are one mailbox and one
+   * credential — asking someone to know that Forward Email sends on
+   * `smtp.forwardemail.net` and is read on `imap.forwardemail.net` is asking
+   * them to look up something we already know. Absent on the generic entry,
+   * where the whole point is that the host is typed in.
+   */
+  readonly imapHost?: string;
+  readonly imapPort?: number;
+  readonly imapSecure?: boolean;
 }
 
 export const SMTP_PRESETS: readonly SmtpPreset[] = [
@@ -163,7 +175,10 @@ export const SMTP_PRESETS: readonly SmtpPreset[] = [
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,
-    note: 'Use a 16-character app password, not your account password. Requires 2-step verification.',
+    imapHost: 'imap.gmail.com',
+    imapPort: 993,
+    imapSecure: true,
+    note: 'Use a 16-character app password, not your account password. Requires 2-step verification. The same app password reads the mailbox.',
   },
   {
     id: 'microsoft',
@@ -171,6 +186,9 @@ export const SMTP_PRESETS: readonly SmtpPreset[] = [
     host: 'smtp.office365.com',
     port: 587,
     secure: false,
+    imapHost: 'outlook.office365.com',
+    imapPort: 993,
+    imapSecure: true,
     note: 'SMTP AUTH must be enabled for the mailbox in the Microsoft 365 admin centre.',
   },
   {
@@ -179,7 +197,10 @@ export const SMTP_PRESETS: readonly SmtpPreset[] = [
     host: 'smtp.fastmail.com',
     port: 465,
     secure: true,
-    note: 'Create an app password scoped to SMTP.',
+    imapHost: 'imap.fastmail.com',
+    imapPort: 993,
+    imapSecure: true,
+    note: 'Create an app password scoped to both SMTP and IMAP.',
   },
   {
     id: 'forwardemail',
@@ -187,6 +208,10 @@ export const SMTP_PRESETS: readonly SmtpPreset[] = [
     host: 'smtp.forwardemail.net',
     port: 465,
     secure: true,
+    imapHost: 'imap.forwardemail.net',
+    imapPort: 993,
+    imapSecure: true,
+    note: 'The same generated password sends and reads.',
   },
   {
     id: 'zoho',
@@ -194,6 +219,9 @@ export const SMTP_PRESETS: readonly SmtpPreset[] = [
     host: 'smtp.zoho.com',
     port: 465,
     secure: true,
+    imapHost: 'imap.zoho.com',
+    imapPort: 993,
+    imapSecure: true,
   },
   {
     id: 'custom',
@@ -201,5 +229,8 @@ export const SMTP_PRESETS: readonly SmtpPreset[] = [
     host: '',
     port: 587,
     secure: false,
+    imapHost: '',
+    imapPort: 993,
+    imapSecure: true,
   },
 ];
