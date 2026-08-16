@@ -1625,6 +1625,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
           fromEmail: body.fromEmail,
           ...(body.fromName ? { fromName: body.fromName } : {}),
           ...(body.replyTo ? { replyTo: body.replyTo } : {}),
+          ...(body.imapHost
+            ? {
+                imapHost: body.imapHost,
+                imapPort: body.imapPort ?? 993,
+                imapSecure: body.imapSecure ?? true,
+              }
+            : {}),
         },
         encryptionKey: options.encryptionKey,
         verify: body.skipVerification !== true,

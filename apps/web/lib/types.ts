@@ -47,6 +47,9 @@ export interface EmailAccountView {
   fromEmail?: string;
   fromName?: string;
   replyTo?: string;
+  imapHost?: string;
+  imapPort?: number;
+  imapSecure?: boolean;
   status?: string;
   connectedAt?: string;
 }
@@ -58,6 +61,10 @@ export interface SmtpPresetView {
   port: number;
   secure: boolean;
   note?: string;
+  /** The read side of the same mailbox, so one choice fills in both. */
+  imapHost?: string;
+  imapPort?: number;
+  imapSecure?: boolean;
 }
 
 export interface EmailIntegrationView {
