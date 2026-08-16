@@ -143,7 +143,21 @@ export async function listPendingRecommendations(
     research: `AND r.action NOT IN (${outbound})`,
   };
 
-  const filterArgs: string[] = filter === 'all' ? [] : [...OUTBOUND_ACTION_KINDS];
+  // Every row carries the bucket it belongs to, whatever the query was
+  // narrowed to. That is what lets the page fetch once and switch tabs
+  // without going back to the server: the classification the tabs sort by
+  // comes from the same SQL that produces the counts, so a client-side tab
+  // can never disagree with the badge next to it.
+  const bucketExpression = `CASE
+              WHEN r.action NOT IN (${outbound}) THEN 'research'
+              WHEN d.id IS NOT NULL THEN 'ready'
+              ELSE 'needs_draft'
+            END AS bucket`;
+
+  // Placeholders bind in the order they appear in the statement, so the
+  // bucket expression's arguments come first — it sits in the SELECT list,
+  // ahead of the WHERE clause the filter narrows.
+  const clauseArgs: string[] = filter === 'all' ? [] : [...OUTBOUND_ACTION_KINDS];
 
   return queryAll(
     db,
@@ -151,7 +165,8 @@ export async function listPendingRecommendations(
             s.summary AS signal_summary, s.source_url AS signal_url,
             s.source_timestamp AS signal_at,
             d.body AS draft_body, d.subject AS draft_subject,
-            sc.opportunity
+            sc.opportunity,
+            ${bucketExpression}
        FROM recommendations r
        JOIN people p ON p.id = r.person_id
   LEFT JOIN signals s ON s.id = r.trigger_signal_id
@@ -162,7 +177,7 @@ export async function listPendingRecommendations(
         ${clause[filter]}
    ORDER BY r.priority DESC, r.created_at ASC
       LIMIT ?`,
-    [workspaceId, now(), ...filterArgs, limit],
+    [...OUTBOUND_ACTION_KINDS, workspaceId, now(), ...clauseArgs, limit],
   );
 }
 

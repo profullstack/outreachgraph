@@ -21,6 +21,7 @@ import type {
 } from './types';
 
 export type {
+  ApprovalBucket,
   ApprovalCard,
   CurrentUser,
   IdentityRow,
@@ -136,9 +137,12 @@ export interface ApprovalQueue {
   readonly filter: ApprovalFilter;
 }
 
-export async function fetchApprovals(filter: ApprovalFilter = 'ready'): Promise<ApprovalQueue> {
+export async function fetchApprovals(
+  filter: ApprovalFilter = 'ready',
+  limit = 50,
+): Promise<ApprovalQueue> {
   return await request<ApprovalQueue>(
-    `/recommendations?limit=50&filter=${encodeURIComponent(filter)}`,
+    `/recommendations?limit=${limit}&filter=${encodeURIComponent(filter)}`,
   );
 }
 
