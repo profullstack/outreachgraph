@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { queryAll, queryOne } from '@outreachgraph/db';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
-import { createCampaignFromIntake, IntakeError, setCampaignAutopilot } from './campaigns';
+import {
+  archiveCampaign,
+  createCampaignFromIntake,
+  IntakeError,
+  listCampaigns,
+  renameCampaign,
+  setCampaignAutopilot,
+  setCampaignStatus,
+} from './campaigns';
 
 let seeded: SeededDatabase | undefined;
 
@@ -159,5 +167,104 @@ describe('setCampaignAutopilot', () => {
     const { db } = seeded;
 
     expect(await setCampaignAutopilot(db, 'wsp_other', SEED.campaignId, true)).toBe(false);
+  });
+});
+
+describe('running more than one campaign', () => {
+  test('each intake creates its own campaign rather than reusing one', async () => {
+    seeded = await seedDatabase('campaigns-many');
+    const { db } = seeded;
+
+    const first = await createCampaignFromIntake(db, ACTOR, 'https://brightsmile.com');
+    const second = await createCampaignFromIntake(db, ACTOR, 'plumbers in Leeds');
+
+    expect(first.campaignId).not.toBe(second.campaignId);
+
+    const summaries = await listCampaigns(db, SEED.workspaceId);
+    // Plus the one the fixture seeds.
+    expect(summaries).toHaveLength(3);
+  });
+
+  test('the list carries the counts needed to choose between them', async () => {
+    seeded = await seedDatabase('campaigns-counts');
+    const summaries = await listCampaigns(seeded.db, SEED.workspaceId);
+    const seededCampaign = summaries.find((row) => row.id === SEED.campaignId);
+
+    // A bare list of names cannot answer "which of these is doing anything",
+    // which is the only question worth asking once there are several.
+    expect(seededCampaign?.people).toBeGreaterThanOrEqual(1);
+    expect(seededCampaign?.awaiting_approval).toBeGreaterThanOrEqual(1);
+    expect(typeof seededCampaign?.jobs_pending).toBe('number');
+  });
+
+  test('a campaign with no leads still appears', async () => {
+    // The counts are correlated subqueries rather than joins precisely so this
+    // holds; a LEFT JOIN with GROUP BY drops or multiplies rows here.
+    seeded = await seedDatabase('campaigns-empty');
+    const created = await createCampaignFromIntake(seeded.db, ACTOR, 'https://nobody.example');
+
+    const summaries = await listCampaigns(seeded.db, SEED.workspaceId);
+    const fresh = summaries.find((row) => row.id === created.campaignId);
+
+    expect(fresh).toBeDefined();
+    expect(fresh?.people).toBe(0);
+  });
+
+  test('pausing stops the campaign without touching autopilot', async () => {
+    seeded = await seedDatabase('campaigns-pause');
+    const { db } = seeded;
+
+    await setCampaignAutopilot(db, SEED.workspaceId, SEED.campaignId, true);
+    expect(await setCampaignStatus(db, SEED.workspaceId, SEED.campaignId, 'paused')).toBe(true);
+
+    const row = await queryOne<{ status: string; approval_mode: string }>(
+      db,
+      `SELECT status, approval_mode FROM campaigns WHERE id = ?`,
+      [SEED.campaignId],
+    );
+
+    // Two separate controls: one stops sending, the other stops the work.
+    expect(row?.status).toBe('paused');
+    expect(row?.approval_mode).toBe('trusted_automation');
+  });
+
+  test('archiving cancels the work already queued', async () => {
+    seeded = await seedDatabase('campaigns-archive');
+    const { db } = seeded;
+
+    const created = await createCampaignFromIntake(db, ACTOR, 'https://brightsmile.com');
+    expect(await archiveCampaign(db, SEED.workspaceId, created.campaignId)).toBe(true);
+
+    const pending = await queryAll<{ id: string }>(
+      db,
+      `SELECT id FROM jobs WHERE workspace_id = ? AND status = 'pending'`,
+      [SEED.workspaceId],
+    );
+
+    // Otherwise an archived campaign keeps crawling for hours: the jobs were
+    // queued before the archive and know nothing about it.
+    expect(pending).toHaveLength(0);
+  });
+
+  test('will not touch a campaign in another workspace', async () => {
+    seeded = await seedDatabase('campaigns-tenant');
+    const { db } = seeded;
+
+    expect(await setCampaignStatus(db, 'wsp_other', SEED.campaignId, 'paused')).toBe(false);
+    expect(await archiveCampaign(db, 'wsp_other', SEED.campaignId)).toBe(false);
+    expect(await renameCampaign(db, 'wsp_other', SEED.campaignId, 'Hijacked')).toBe(false);
+  });
+
+  test('renaming refuses an empty name rather than blanking the row', async () => {
+    seeded = await seedDatabase('campaigns-rename');
+    const { db } = seeded;
+
+    expect(await renameCampaign(db, SEED.workspaceId, SEED.campaignId, '   ')).toBe(false);
+    expect(await renameCampaign(db, SEED.workspaceId, SEED.campaignId, 'Renamed')).toBe(true);
+
+    const row = await queryOne<{ name: string }>(db, `SELECT name FROM campaigns WHERE id = ?`, [
+      SEED.campaignId,
+    ]);
+    expect(row?.name).toBe('Renamed');
   });
 });

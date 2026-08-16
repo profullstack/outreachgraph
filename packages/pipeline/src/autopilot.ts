@@ -34,6 +34,7 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluatePolicy, isExecutable } from '@outreachgraph/policy';
 import type { Mailer } from '@outreachgraph/email';
 import { mailerForWorkspace } from './email-account';
+import { emitEvent } from './events';
 import {
   defaultEmailSubject,
   loadOutreachSettings,
@@ -183,11 +184,27 @@ export async function runAutopilot(
   for (const row of candidates) {
     if (today >= cap) break;
 
-    const note = (reason: string): void => {
+    // Skips are reported, not swallowed.
+    //
+    // "No address published for this person" and "still requires human
+    // approval" are the two reasons a campaign sits at a stage looking broken,
+    // and neither is an error anywhere else in the system — so if they are not
+    // surfaced here they are not surfaced at all.
+    const note = async (reason: string): Promise<void> => {
       skipped.push({
         recommendationId: row.recommendation_id,
         personName: row.display_name,
         reason,
+      });
+
+      await emitEvent(db, {
+        workspaceId,
+        campaignId: row.campaign_id,
+        personId: row.person_id,
+        phase: 'send',
+        level: 'warn',
+        message: `Held back ${row.display_name}: ${reason}`,
+        detail: { reason, recommendationId: row.recommendation_id },
       });
     };
 
@@ -200,7 +217,7 @@ export async function runAutopilot(
     // each one a row, and each one a request to a provider that has already
     // said no. The lead stays pending for a human rather than being deleted.
     if (row.failed_attempts >= MAX_SEND_ATTEMPTS) {
-      note(`giving up after ${row.failed_attempts} failed sends`);
+      await note(`giving up after ${row.failed_attempts} failed sends`);
       continue;
     }
 
@@ -208,7 +225,7 @@ export async function runAutopilot(
     // error: the composer is allowed to produce nothing rather than invent a
     // claim it cannot ground, and that outcome must stay a silent no-send.
     if (!row.body || !row.body.trim()) {
-      note('no drafted message');
+      await note('no drafted message');
       continue;
     }
 
@@ -216,13 +233,13 @@ export async function runAutopilot(
     // failed one is never shown to a human, so it must never be sent by a
     // machine either.
     if (hasFailingCheck(row.checks_json)) {
-      note('the draft did not pass its quality checks');
+      await note('the draft did not pass its quality checks');
       continue;
     }
 
     const recipient = pickEmailRecipient(row);
     if (!recipient) {
-      note('no address published for this person or their company');
+      await note('no address published for this person or their company');
       continue;
     }
 
@@ -257,7 +274,7 @@ export async function runAutopilot(
     // mean the capability matrix no longer marks email customer-managed.
     // Sending anyway would be exactly what the approval default prevents.
     if (!isExecutable(decision.decision, false)) {
-      note(
+      await note(
         decision.decision === 'allow_with_approval'
           ? 'this action still requires human approval'
           : decision.reason,
@@ -266,7 +283,7 @@ export async function runAutopilot(
     }
 
     if (!sender) {
-      note('no mailbox is connected, so nothing can be sent');
+      await note('no mailbox is connected, so nothing can be sent');
       continue;
     }
 
@@ -308,6 +325,23 @@ export async function runAutopilot(
         policyVersion: decision.policyVersion,
       });
 
+      await emitEvent(db, {
+        workspaceId,
+        campaignId: row.campaign_id,
+        personId: row.person_id,
+        phase: 'send',
+        level: 'success',
+        message:
+          `Emailed ${row.display_name}` +
+          `${row.company_name ? ` at ${row.company_name}` : ''} — ${recipient.address}`,
+        detail: {
+          to: recipient.address,
+          subject,
+          sharedInbox: recipient.shared,
+          via: sender.ownMailbox ? 'workspace' : 'platform',
+        },
+      });
+
       sent.push({
         workspaceId,
         campaignId: row.campaign_id,
@@ -336,6 +370,24 @@ export async function runAutopilot(
         to: recipient.address,
         error: message,
         actor: AUTOPILOT_ACTOR,
+      });
+
+      // The most important line this whole system produces. A send that fails
+      // silently is indistinguishable from one that never had a reason to
+      // happen, and telling those apart used to require reading container logs.
+      await emitEvent(db, {
+        workspaceId,
+        campaignId: row.campaign_id,
+        personId: row.person_id,
+        phase: 'send',
+        level: 'error',
+        message: `Could not email ${row.display_name}: ${message.slice(0, 200)}`,
+        detail: {
+          to: recipient.address,
+          error: message.slice(0, 500),
+          attempt: row.failed_attempts + 1,
+          via: sender.ownMailbox ? 'workspace' : 'platform',
+        },
       });
     }
   }

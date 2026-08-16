@@ -15,6 +15,7 @@
 import type { TextModel } from '@outreachgraph/ai';
 import { discoverCompanies } from '@outreachgraph/ai';
 import { now, queryOne, type Client } from '@outreachgraph/db';
+import { emitEvent } from './events';
 import { enqueue } from './queue';
 import type { QueuedJob } from './queue';
 
@@ -70,12 +71,29 @@ export async function runDiscoveryJob(
     ? [offering.name, offering.description].filter(Boolean).join(' — ')
     : undefined;
 
+  await emitEvent(deps.db, {
+    workspaceId: job.workspaceId,
+    campaignId,
+    phase: 'discover',
+    message: `Looking for companies matching “${keyword}”`,
+    detail: { keyword },
+  });
+
   const result = await discoverCompanies(deps.model, keyword, {
     limit: deps.limit ?? 25,
     ...(summary ? { offeringSummary: summary } : {}),
   });
 
   if (!result.ok) {
+    await emitEvent(deps.db, {
+      workspaceId: job.workspaceId,
+      campaignId,
+      phase: 'discover',
+      level: 'error',
+      message: `Could not expand “${keyword}”: ${result.reason ?? 'no reason given'}`,
+      detail: { keyword, reason: result.reason ?? null },
+    });
+
     throw new Error(`could not expand "${keyword}": ${result.reason ?? 'no reason given'}`);
   }
 
@@ -112,6 +130,20 @@ export async function runDiscoveryJob(
       args: [result.campaignName ?? keyword, result.brief ?? null, now(), campaignId, keyword],
     });
   }
+
+  await emitEvent(deps.db, {
+    workspaceId: job.workspaceId,
+    campaignId,
+    phase: 'discover',
+    level: queued > 0 ? 'success' : 'warn',
+    message: `Found ${result.companies.length} companies for “${keyword}”, queued ${queued} to read`,
+    detail: {
+      keyword,
+      found: result.companies.length,
+      queued,
+      domains: result.companies.slice(0, 25).map((company) => company.domain),
+    },
+  });
 
   return {
     keyword,

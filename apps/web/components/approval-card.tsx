@@ -5,6 +5,7 @@ import { useState } from 'react';
 // Imported from the server-safe modules, not lib/api: that pulls in
 // next/headers and cannot be bundled for the browser.
 import { relativeTime } from '../lib/format';
+import { ShareButtons } from './share-buttons';
 import type { ApprovalCard as Card } from '../lib/types';
 
 /**
@@ -229,6 +230,14 @@ export function ApprovalCard({ card }: { card: Card }) {
             {withheld}
           </p>
         ) : null}
+
+        {/*
+          Email is not the only way to reach someone, and for the networks the
+          policy engine marks manual-only it is the *only* way the product can
+          help at all. Offered once there is something to post: a prefilled
+          composer with no message in it is just a link to a social network.
+        */}
+        {body ? <ShareButtons recommendationId={card.id} /> : null}
       </section>
 
       {error ? (

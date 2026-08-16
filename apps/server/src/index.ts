@@ -33,9 +33,11 @@ import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
 import {
   drainQueue,
+  emitEvent,
   expireSignals,
   listeningCampaigns,
   processDeletion,
+  pruneWorkflowEvents,
   rescoreProspect,
   runAutopilot,
   runCrawlJob,
@@ -513,6 +515,12 @@ async function tick(): Promise<void> {
   const pruned = await pruneSessions(db);
   if (pruned > 0) console.log(`pruned ${pruned} expired sessions`);
 
+  // Progress rows accumulate at roughly one per prospect per stage. Nothing
+  // reads a fortnight-old one, and the audit log they would otherwise bloat is
+  // a separate table precisely so this can be aggressive.
+  const prunedEvents = await pruneWorkflowEvents(db);
+  if (prunedEvents > 0) console.log(`pruned ${prunedEvents} workflow events`);
+
   // The queue drains before the send sweep, so anything discovered this tick
   // can go out on the same tick rather than waiting for the next one.
   const drained = await drainQueue(db, runJob);
@@ -521,6 +529,31 @@ async function tick(): Promise<void> {
       `jobs: ${drained.succeeded} done, ${drained.retried} retrying, ` +
         `${drained.dead} failed, ${drained.reclaimed} reclaimed`,
     );
+  }
+
+  // A job that has run out of attempts is the one queue outcome a user needs
+  // told about: it means a piece of their campaign stopped for good, and until
+  // now that fact lived only in `jobs.last_error`.
+  if (drained.dead > 0) {
+    for (const workspace of workspaces) {
+      const dead = await queryAll<{ kind: string; last_error: string | null }>(
+        db,
+        `SELECT kind, last_error FROM jobs
+          WHERE workspace_id = ? AND status = 'failed' AND finished_at >= ?
+          ORDER BY finished_at DESC LIMIT 5`,
+        [workspace.id, new Date(Date.now() - TICK_MS * 2).toISOString()],
+      );
+
+      for (const job of dead) {
+        await emitEvent(db, {
+          workspaceId: workspace.id,
+          phase: 'system',
+          level: 'error',
+          message: `A ${job.kind.replace(/_/g, ' ')} job gave up: ${(job.last_error ?? 'no reason recorded').slice(0, 200)}`,
+          detail: { kind: job.kind },
+        });
+      }
+    }
   }
 
   // ------------------------------------------------------------- listening
@@ -566,6 +599,11 @@ async function tick(): Promise<void> {
   // outreach sweep that follows it.
   for (const workspace of workspaces) {
     try {
+      // The customer's own mail server when they have connected one, the
+      // platform mailer otherwise. `runAutopilot` resolves which, once per
+      // run, and records it on the send — outreach quietly going out under our
+      // domain when the customer believes it is going out under theirs is the
+      // one outcome worth engineering against.
       const result = await runAutopilot(
         {
           db,
