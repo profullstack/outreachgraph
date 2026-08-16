@@ -24,6 +24,19 @@ export interface ApprovalCard {
   draft_subject: string | null;
 }
 
+/** One thing the workspace sells. A workspace may sell several. */
+export interface ProductSummaryView {
+  offeringId: string;
+  name: string;
+  category: string;
+  url: string | null;
+  campaignId: string | null;
+  campaignStatus: string | null;
+  autopilot: boolean;
+  /** False for the placeholder a first campaign bootstraps. */
+  configured: boolean;
+}
+
 /** The mailbox outreach is sent from. Never carries the password. */
 export interface EmailAccountView {
   connected: boolean;

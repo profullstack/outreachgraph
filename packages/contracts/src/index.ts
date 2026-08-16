@@ -147,6 +147,15 @@ const sentenceList = z
   .default([]);
 
 export const workspaceProfileSchema = z.object({
+  /**
+   * Which product this profile describes.
+   *
+   * Absent means the workspace's first, which is what every caller meant when
+   * a workspace could only have one. Present targets that product, so a second
+   * product is an edit to a different row rather than an overwrite of the
+   * first — which is exactly what saving one used to do.
+   */
+  offeringId: z.string().trim().min(1).max(64).optional(),
   url: z.string().trim().max(profileLimits.url).optional(),
   offering: z.object({
     name: z.string().trim().min(1).max(profileLimits.label),

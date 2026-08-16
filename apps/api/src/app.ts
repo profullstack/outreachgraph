@@ -64,7 +64,12 @@ import { GitHubProvider, SiteProvider, normaliseUrl } from '@outreachgraph/provi
 import { ConsoleMailer, SMTP_PRESETS, verificationEmail, type Mailer } from '@outreachgraph/email';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
-import { loadWorkspaceProfile, saveWorkspaceProfile } from './workspace-profile';
+import {
+  listProducts,
+  loadWorkspaceProfile,
+  saveWorkspaceProfile,
+  UnknownProductError,
+} from './workspace-profile';
 
 /** One paste, one reviewable unit of work. */
 const MAX_BULK_URLS = 100;
@@ -613,13 +618,24 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       throw ApiError.badRequest('that profile is incomplete', details);
     }
 
-    const saved = await saveWorkspaceProfile(db, actor.workspaceId, parsed.data);
+    // `?new=1` adds a product instead of editing one. Without it, saving a
+    // second product lands on the first row and quietly replaces the product
+    // the workspace already sells.
+    const create = c.req.query('new') === '1';
+
+    let saved;
+    try {
+      saved = await saveWorkspaceProfile(db, actor.workspaceId, parsed.data, { create });
+    } catch (error) {
+      if (error instanceof UnknownProductError) throw ApiError.notFound('product');
+      throw error;
+    }
 
     await repo.audit(db, {
       workspaceId: actor.workspaceId,
       actorKind: 'user',
       actorId: actor.userId,
-      eventType: 'onboarding.profile_saved',
+      eventType: create ? 'onboarding.product_added' : 'onboarding.profile_saved',
       entityKind: 'offering',
       entityId: saved.offeringId,
       detail: { name: parsed.data.offering.name },
@@ -628,11 +644,69 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json({ saved: true, ...saved });
   });
 
-  /** What the workspace currently believes about itself. */
+  /**
+   * What the workspace believes about one of its products.
+   *
+   * `?offeringId=` picks which. Absent, it is the first — the answer every
+   * caller got back when a workspace could only describe one thing.
+   */
   api.get('/onboarding/profile', async (c) => {
     const actor = c.get('actor');
-    const profile = await loadWorkspaceProfile(c.get('db'), actor.workspaceId);
+    const offeringId = c.req.query('offeringId');
+    const profile = await loadWorkspaceProfile(
+      c.get('db'),
+      actor.workspaceId,
+      offeringId || undefined,
+    );
     return c.json(profile);
+  });
+
+  /** Everything the workspace sells. */
+  api.get('/products', async (c) => {
+    const actor = c.get('actor');
+    const products = await listProducts(c.get('db'), actor.workspaceId);
+    return c.json({ products });
+  });
+
+  /**
+   * Stops selling a product without deleting what it did.
+   *
+   * Archiving rather than deleting: an offering is referenced by campaigns,
+   * which are referenced by recommendations, actions and interactions — the
+   * record of every message already sent. Removing the row to tidy a settings
+   * page would take that history with it. Archived campaigns are skipped by
+   * the pipeline and by autopilot, which is the behaviour actually wanted.
+   */
+  api.delete('/products/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('archiving a product');
+
+    const owned = await queryOne<{ id: string }>(
+      db,
+      'SELECT id FROM offerings WHERE id = ? AND workspace_id = ?',
+      [c.req.param('id'), actor.workspaceId],
+    );
+    if (!owned) throw ApiError.notFound('product');
+
+    const result = await db.execute({
+      sql: `UPDATE campaigns SET status = 'archived', updated_at = ?
+             WHERE workspace_id = ? AND offering_id = ? AND status != 'archived'`,
+      args: [now(), actor.workspaceId, owned.id],
+    });
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'onboarding.product_archived',
+      entityKind: 'offering',
+      entityId: owned.id,
+      detail: { campaigns: Number(result.rowsAffected ?? 0) },
+    });
+
+    return c.json({ archived: true, offeringId: owned.id });
   });
 
   // ------------------------------------------------------------ by url

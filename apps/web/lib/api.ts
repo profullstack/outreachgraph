@@ -13,6 +13,7 @@ import type {
   ApprovalCard,
   CurrentUser,
   EmailIntegrationView,
+  ProductSummaryView,
   ProspectDetail,
   ProspectRow,
   SignalRow,
@@ -99,15 +100,29 @@ export async function fetchMe(): Promise<CurrentUser> {
   return request<CurrentUser>('/auth/me');
 }
 
-/** What the workspace believes about itself, for the setup page. */
+/** What the workspace believes about one of its products, for the setup page. */
 export interface WorkspaceProfileView {
   readonly configured: boolean;
+  readonly offeringId?: string;
   readonly url?: string;
   readonly offering?: { readonly name: string; readonly category: string };
+  readonly products?: ProductSummaryView[];
 }
 
-export async function fetchProfile(): Promise<WorkspaceProfileView> {
-  return request<WorkspaceProfileView>('/onboarding/profile');
+/**
+ * Loads one product's profile.
+ *
+ * Omitting the id loads the first, which is what every caller wanted back when
+ * a workspace could only describe one thing.
+ */
+export async function fetchProfile(offeringId?: string): Promise<WorkspaceProfileView> {
+  const query = offeringId ? `?offeringId=${encodeURIComponent(offeringId)}` : '';
+  return request<WorkspaceProfileView>(`/onboarding/profile${query}`);
+}
+
+export async function fetchProducts(): Promise<ProductSummaryView[]> {
+  const body = await request<{ products: ProductSummaryView[] }>('/products');
+  return body.products;
 }
 
 export async function fetchApprovals(): Promise<ApprovalCard[]> {
