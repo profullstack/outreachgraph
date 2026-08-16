@@ -11,10 +11,24 @@ export interface Message {
   readonly subject: string;
   readonly text: string;
   readonly html?: string;
+  /**
+   * Where a reply goes.
+   *
+   * Load-bearing for outreach rather than cosmetic: the product sends on the
+   * customer's behalf from its own verified domain, and if a reply came back
+   * here it would land in a mailbox nobody reads. The one thing the human is
+   * meant to do is answer, so the answer has to reach them.
+   */
+  readonly replyTo?: string;
+}
+
+export interface SendResult {
+  /** The provider's id for the message, when it gave one. */
+  readonly id?: string;
 }
 
 export interface Mailer {
-  send(message: Message): Promise<void>;
+  send(message: Message): Promise<SendResult>;
 }
 
 export interface ResendOptions {
@@ -45,7 +59,7 @@ export class ResendMailer implements Mailer {
     this.#fetch = options.fetchImpl ?? fetch;
   }
 
-  async send(message: Message): Promise<void> {
+  async send(message: Message): Promise<SendResult> {
     const response = await this.#fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -58,6 +72,7 @@ export class ResendMailer implements Mailer {
         subject: message.subject,
         text: message.text,
         ...(message.html ? { html: message.html } : {}),
+        ...(message.replyTo ? { reply_to: [message.replyTo] } : {}),
       }),
     });
 
@@ -66,6 +81,11 @@ export class ResendMailer implements Mailer {
       // Losing it would make every failure look the same in the logs.
       throw new MailerError(response.status, (await response.text().catch(() => '')).slice(0, 500));
     }
+
+    // Kept so a delivered outreach message can be traced back to the provider
+    // from the action row. A body that does not parse is not a failed send.
+    const body = (await response.json().catch(() => undefined)) as { id?: string } | undefined;
+    return body?.id ? { id: body.id } : {};
   }
 }
 
@@ -83,7 +103,8 @@ export class ConsoleMailer implements Mailer {
     this.#log = log;
   }
 
-  async send(message: Message): Promise<void> {
+  async send(message: Message): Promise<SendResult> {
     this.#log(`[email] to=${message.to} subject=${message.subject}\n${message.text}`);
+    return {};
   }
 }

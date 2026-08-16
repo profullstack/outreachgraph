@@ -27,6 +27,7 @@ import {
 import { generateRecommendation, type CandidateSignal } from '@outreachgraph/recommend';
 import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { rescoreProspect } from './jobs';
+import { recordDiscovered, recordStatus } from './stages';
 
 export interface PipelineOptions {
   readonly db: Client;
@@ -40,6 +41,16 @@ export interface PipelineOptions {
    * recommendation still reaches the queue, just without a draft.
    */
   readonly model?: TextModel;
+  /**
+   * Whether this deployment can actually put an email on the wire.
+   *
+   * `email/send_email` is `customer_managed` in the capability matrix, and
+   * that mode requires a connected account — otherwise the policy engine
+   * correctly returns `manual_only`, because a channel nothing can send
+   * through is a channel the human has to use themselves. The sending domain
+   * *is* that account, so the flag is true when a mailer is configured.
+   */
+  readonly emailSendingEnabled?: boolean;
   readonly now?: Date;
 }
 
@@ -92,6 +103,14 @@ export interface CandidateOrigin {
   readonly anchorNetwork?: Network;
   /** Enables the GitHub research stage when the candidate has a handle. */
   readonly githubHandle?: string;
+  /**
+   * The page this candidate was read off, when there was one.
+   *
+   * Turned into a stored signal, which is what lets a person found on a
+   * company site reach an outbound recommendation at all — see
+   * `storeSiteSignal`.
+   */
+  readonly sourceUrl?: string;
 }
 
 /**
@@ -139,7 +158,30 @@ export async function runPipelineForCandidate(
 
   const enriched = fanned?.candidate ?? candidate;
 
+  // The page they were named on is itself an identity for them.
+  //
+  // Recorded *before* resolution so it counts toward identity confidence.
+  // Without it a person read off a company site ends the run at confidence 0 —
+  // the aggregate of no identities at all — and the policy engine then denies
+  // every outbound action, correctly, on the grounds that we cannot say who
+  // they are. That is the last thing standing between the URL and keyword
+  // paths and any outreach whatsoever: 82 real people, fully researched and
+  // scored, all permanently uncontactable.
+  //
+  // A company naming its own staff on its own site is first-party evidence,
+  // and it is not a merge — nothing is being matched to anything. It says only
+  // "this named person is presented here as part of this company", which is
+  // exactly the claim any message to them would rest on.
+  if (origin.sourceUrl) await storeSiteIdentity(db, personId, enriched, origin, stamp);
+
   const linked = await linkIdentities(db, personId, enriched, origin, stamp);
+
+  // An address published beside this person's own name on their employer's
+  // site. Stored as an identity rather than a column so it inherits deletion,
+  // suppression and provenance from the machinery that already handles every
+  // other way of reaching someone.
+  if (enriched.email) await storeEmailIdentity(db, personId, enriched.email, origin, stamp);
+
   await setStatus(db, campaignId, personId, 'resolved');
 
   // ------------------------------------------------------------- research
@@ -153,13 +195,30 @@ export async function runPipelineForCandidate(
     candidate.identities.find((identity) => identity.network === 'github')?.handle;
 
   let stored = 0;
+
+  // The page itself is evidence.
+  //
+  // This closes the gap that made the URL path produce nothing: the
+  // recommendation engine refuses to propose an outbound action with no
+  // trigger signal behind it, and only GitHub ever produced signals. So
+  // everyone found by crawling a company site — which is now the main way in —
+  // reached "scored" and stopped, with the honest-looking reason "no permitted
+  // action" and no indication that the real problem was having nothing to say.
+  //
+  // A published team page stating someone's role is a genuine, citable,
+  // grounded fact about them, which is exactly what the composer needs and all
+  // it is allowed to use. It is not a buying signal and is not scored like
+  // one — its relevance is deliberately middling — but it is enough to open a
+  // message that is about them rather than about nobody.
+  stored += await storeSiteSignal(db, workspaceId, personId, enriched, origin, stamp);
+
   if (researchHandle) {
     const github = options.github ?? new GitHubProvider();
     try {
       const activity = await github.activity(researchHandle);
       const context = await extractionContext(db, campaignId);
       const extracted = extractSignals(activity.events, activity.repos, context);
-      stored = await storeSignals(db, workspaceId, personId, extracted, stamp);
+      stored += await storeSignals(db, workspaceId, personId, extracted, stamp);
       await setStatus(db, campaignId, personId, 'researching');
     } catch (error) {
       // A quota wall is not a prospect failure — keep what we have and let the
@@ -206,6 +265,160 @@ export async function runPipelineForCandidate(
     recommendationId,
     ...(draftId ? { draftId } : {}),
   };
+}
+
+/**
+ * Stores "their own site says this is their role" as a signal.
+ *
+ * Confidence is high — the company published it about its own staff — while
+ * relevance is deliberately mid. It is a fact worth citing, not evidence that
+ * anyone is in the market for anything, and scoring it as intent would put
+ * every receptionist on a team page at the top of the queue.
+ *
+ * Deduped on the source URL like every other signal, so re-crawling a site on
+ * a later tick does not accumulate one of these per run.
+ */
+async function storeSiteSignal(
+  db: Client,
+  workspaceId: string,
+  personId: string,
+  candidate: PersonCandidate,
+  origin: CandidateOrigin,
+  stamp: string,
+): Promise<number> {
+  if (!origin.sourceUrl || !candidate.title) return 0;
+
+  const existing = await queryOne<{ id: string }>(
+    db,
+    `SELECT id FROM signals WHERE workspace_id = ? AND person_id = ? AND source_url = ?
+        AND signal_type = 'content_topic' AND subtype = 'site_role'`,
+    [workspaceId, personId, origin.sourceUrl],
+  );
+  if (existing) return 0;
+
+  const where = candidate.companyName ? ` at ${candidate.companyName}` : '';
+  const summary = `Listed as ${candidate.title}${where} on the company website.`;
+  const evidence = `${candidate.fullName} — ${candidate.title}`;
+
+  await db.execute({
+    sql: `INSERT INTO signals (id, workspace_id, person_id, network, signal_type, subtype,
+          summary, evidence, source_url, source_timestamp, observed_at, confidence,
+          relevance, sentiment)
+          VALUES (?, ?, ?, 'website', 'content_topic', 'site_role', ?, ?, ?, ?, ?, 0.9, 0.5,
+                  'neutral')`,
+    args: [
+      newId('signal'),
+      workspaceId,
+      personId,
+      summary,
+      evidence,
+      origin.sourceUrl,
+      stamp,
+      stamp,
+    ],
+  });
+
+  return 1;
+}
+
+/**
+ * Records "named on this company's own site" as a website identity.
+ *
+ * Confidence is 0.9: high, because the employer published it about their own
+ * staff, and short of certain, because a page can be stale and a name can be
+ * shared. That clears the default 0.85 outreach threshold while still sitting
+ * below the 1.0 an anchor identity gets, and a workspace that wants a stricter
+ * bar can raise `min_outreach_confidence` and exclude these outright.
+ *
+ * `platform_user_id` is domain-plus-name rather than the URL, so re-crawling a
+ * deeper page on the same site recognises the same person instead of creating
+ * a second identity for them.
+ */
+async function storeSiteIdentity(
+  db: Client,
+  personId: string,
+  candidate: PersonCandidate,
+  origin: CandidateOrigin,
+  stamp: string,
+): Promise<void> {
+  if (!origin.sourceUrl) return;
+
+  const host = (() => {
+    try {
+      return new URL(origin.sourceUrl).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      return undefined;
+    }
+  })();
+
+  if (!host) return;
+
+  const slug = candidate.fullName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  if (!slug) return;
+
+  await db.execute({
+    sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
+          profile_url, confidence, source_type, verified_by, first_seen_at, last_verified_at)
+          VALUES (?, ?, 'website', ?, ?, ?, 0.9, ?, '["named_on_company_site"]', ?, ?)
+          ON CONFLICT(network, platform_user_id) WHERE platform_user_id IS NOT NULL
+          DO UPDATE SET last_verified_at = excluded.last_verified_at`,
+    args: [
+      newId('socialIdentity'),
+      personId,
+      candidate.fullName,
+      `${host}:${slug}`,
+      origin.sourceUrl,
+      origin.capabilities.sourceType,
+      stamp,
+      stamp,
+    ],
+  });
+}
+
+/**
+ * Records a personal email address as an identity on this person.
+ *
+ * `platform_user_id` is the address itself, which makes the existing unique
+ * index on `(network, platform_user_id)` do real work: two people resolved
+ * from two pages cannot both end up owning `jane@acme.com`, so nobody is ever
+ * written to twice under two names.
+ *
+ * Confidence is high but not certain. The address was published next to this
+ * person's name on their own employer's site, which is strong evidence and
+ * still not proof — shared initials and a departed employee's forwarded
+ * mailbox both produce the same page.
+ */
+async function storeEmailIdentity(
+  db: Client,
+  personId: string,
+  email: string,
+  origin: CandidateOrigin,
+  stamp: string,
+): Promise<void> {
+  const address = email.trim().toLowerCase();
+  if (!address.includes('@')) return;
+
+  await db.execute({
+    sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
+          profile_url, confidence, source_type, verified_by, first_seen_at, last_verified_at)
+          VALUES (?, ?, 'email', ?, ?, ?, 0.88, ?, '["published_on_company_site"]', ?, ?)
+          ON CONFLICT(network, platform_user_id) DO UPDATE
+            SET last_verified_at = excluded.last_verified_at`,
+    args: [
+      newId('socialIdentity'),
+      personId,
+      address,
+      address,
+      `mailto:${address}`,
+      origin.capabilities.sourceType,
+      stamp,
+      stamp,
+    ],
+  });
 }
 
 /** Matches on the stable platform id, never the renameable handle. */
@@ -525,6 +738,35 @@ async function createRecommendation(
     [personId],
   );
 
+  const reachable = identities.map((identity) => identity.network as Network);
+
+  // Their employer's published inbox counts as a way to reach them.
+  //
+  // Without this the whole keyword path dead-ends. `reachableNetworks` was
+  // built purely from a person's own identities, so `email` was only ever
+  // reachable for someone whose *personal* address appeared on the page — and
+  // small-business sites, which is what "dental practices in Austin" returns,
+  // almost never publish those. They name their staff and publish one shared
+  // `info@`. Every one of those leads reached "Researched" and stopped, with
+  // no permitted action and nothing to explain why.
+  //
+  // The address is real, published, and reaches the named person in practice,
+  // so it is honest to call the network reachable. What it is not is private:
+  // the send records `toSharedInbox`, so nothing downstream can mistake a
+  // shared mailbox for the individual.
+  if (!reachable.includes('email')) {
+    const inbox = await queryOne<{ contact_email: string }>(
+      db,
+      `SELECT co.contact_email
+         FROM people p
+         JOIN companies co ON co.id = p.current_company_id
+        WHERE p.id = ? AND co.contact_email IS NOT NULL`,
+      [personId],
+    );
+
+    if (inbox?.contact_email) reachable.push('email');
+  }
+
   const score = await queryOne<{ opportunity: number }>(
     db,
     'SELECT opportunity FROM scores WHERE campaign_id = ? AND person_id = ?',
@@ -540,14 +782,14 @@ async function createRecommendation(
     personId,
     campaignId,
     signals,
-    reachableNetworks: identities.map((i) => i.network as Network),
+    reachableNetworks: reachable,
     opportunity: score?.opportunity ?? 0,
     ...(options.now ? { now: options.now } : {}),
     policy: {
       approvalMode: campaign.approval_mode as 'draft_and_approve',
       // Resolved per-network below by the engine's own policy calls; this is
       // the workspace-wide answer for the common case.
-      hasConnectedAccount: connected.size > 0,
+      hasConnectedAccount: connected.size > 0 || options.emailSendingEnabled === true,
       personSuppressed: person.status === 'suppressed',
       personBelievedMinor: person.believed_minor === 1,
       personDeleted: person.status === 'deleted',
@@ -639,15 +881,29 @@ async function ensureCampaignMembership(
   workspaceId: string,
   stamp: string,
 ): Promise<void> {
-  await db.execute({
+  const result = await db.execute({
     sql: `INSERT INTO campaign_people (campaign_id, person_id, workspace_id, status,
           interaction_state, discovered_at, updated_at)
           VALUES (?, ?, ?, 'discovered', 'never_contacted', ?, ?)
           ON CONFLICT(campaign_id, person_id) DO NOTHING`,
     args: [campaignId, personId, workspaceId, stamp, stamp],
   });
+
+  // Only when the insert actually inserted. Re-crawling a site returns the
+  // same people, and stamping them all back to the top of the funnel every
+  // time would make the chart a record of how often the crawler ran.
+  if (result.rowsAffected > 0) {
+    await recordDiscovered(db, { workspaceId, campaignId, personId, at: stamp });
+  }
 }
 
+/**
+ * Moves a lead and records the move.
+ *
+ * The workspace is looked up rather than threaded through every call site
+ * because the stage event needs it and `campaign_people` already knows it —
+ * changing five signatures to carry a value the row holds would be noise.
+ */
 async function setStatus(
   db: Client,
   campaignId: string,
@@ -655,10 +911,20 @@ async function setStatus(
   status: string,
   reason?: string,
 ): Promise<void> {
-  await db.execute({
-    sql: `UPDATE campaign_people SET status = ?, status_reason = ?, updated_at = ?
-           WHERE campaign_id = ? AND person_id = ?`,
-    args: [status, reason ?? null, now(), campaignId, personId],
+  const membership = await queryOne<{ workspace_id: string }>(
+    db,
+    `SELECT workspace_id FROM campaign_people WHERE campaign_id = ? AND person_id = ?`,
+    [campaignId, personId],
+  );
+
+  if (!membership) return;
+
+  await recordStatus(db, {
+    workspaceId: membership.workspace_id,
+    campaignId,
+    personId,
+    status,
+    ...(reason ? { reason } : {}),
   });
 }
 

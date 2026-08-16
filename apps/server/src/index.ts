@@ -35,7 +35,11 @@ import {
   expireSignals,
   processDeletion,
   rescoreProspect,
+  runAutopilot,
   runCrawlJob,
+  runDiscoveryJob,
+  sendDailyDigest,
+  sendLeadAlerts,
   type QueuedJob,
 } from '@outreachgraph/pipeline';
 import { BlueskyProvider, SiteProvider } from '@outreachgraph/providers';
@@ -319,7 +323,16 @@ const fanOutProviders = [new BlueskyProvider()];
  */
 async function crawlSite(job: QueuedJob): Promise<void> {
   const result = await runCrawlJob(
-    { db, site, providers: fanOutProviders, ...(model ? { model } : {}) },
+    {
+      db,
+      site,
+      providers: fanOutProviders,
+      ...(model ? { model } : {}),
+      // Tells the policy engine email is a channel this deployment can
+      // actually send through. Without it `email/send_email` evaluates to
+      // `manual_only` and no email recommendation is ever produced.
+      emailSendingEnabled: mailer !== undefined,
+    },
     job,
   );
 
@@ -334,10 +347,29 @@ async function crawlSite(job: QueuedJob): Promise<void> {
   );
 }
 
+/**
+ * Expands one keyword into companies and queues a crawl for each.
+ *
+ * Throws when the model is unavailable rather than completing quietly: a
+ * campaign that reports success and produces nothing is the exact failure this
+ * whole path exists to remove, and the backoff will retry once a key works.
+ */
+async function discoverDomains(job: QueuedJob): Promise<void> {
+  const result = await runDiscoveryJob({ db, ...(model ? { model } : {}) }, job);
+
+  console.log(
+    `discover "${result.keyword}": ${result.found} companies, ${result.queued} queued` +
+      `${result.campaignName ? ` (${result.campaignName})` : ''}`,
+  );
+}
+
 async function runJob(job: QueuedJob): Promise<void> {
   switch (job.kind) {
     case 'crawl_site':
       await crawlSite(job);
+      return;
+    case 'discover_domains':
+      await discoverDomains(job);
       return;
     case 'rescore_prospect': {
       const { campaignId, personId } = job.payload as { campaignId?: string; personId?: string };
@@ -382,15 +414,65 @@ async function tick(): Promise<void> {
   const pruned = await pruneSessions(db);
   if (pruned > 0) console.log(`pruned ${pruned} expired sessions`);
 
-  // The queue drains last. The sweeps above are bounded and quick; this is the
-  // part that can take the whole tick, and `limit` is what stops it running
-  // away with the loop.
+  // The queue drains before the send sweep, so anything discovered this tick
+  // can go out on the same tick rather than waiting for the next one.
   const drained = await drainQueue(db, runJob);
   if (drained.processed > 0 || drained.reclaimed > 0) {
     console.log(
       `jobs: ${drained.succeeded} done, ${drained.retried} retrying, ` +
         `${drained.dead} failed, ${drained.reclaimed} reclaimed`,
     );
+  }
+
+  // ------------------------------------------------------------- autopilot
+  //
+  // Sending, alerting and the digest, per workspace. Each is wrapped
+  // separately: one workspace with a broken sending domain must not stop the
+  // others from being processed, and a failed digest must not prevent the
+  // outreach sweep that follows it.
+  for (const workspace of workspaces) {
+    try {
+      const result = await runAutopilot({ db, ...(mailer ? { mailer } : {}) }, workspace.id);
+
+      if (result.sent.length > 0 || result.failed > 0) {
+        console.log(
+          `autopilot ${workspace.id}: ${result.sent.length} sent, ` +
+            `${result.failed} failed, ${result.skipped.length} skipped`,
+        );
+      }
+
+      // Skips are the most useful log line this loop produces: "no address
+      // published" and "still requires human approval" are the two reasons a
+      // campaign looks like it is doing nothing, and neither is an error
+      // anywhere else.
+      for (const skip of result.skipped.slice(0, 5)) {
+        console.log(`autopilot skip ${skip.personName}: ${skip.reason}`);
+      }
+    } catch (error) {
+      console.error(`autopilot failed for ${workspace.id}`, error);
+    }
+
+    if (!appUrl) continue;
+
+    try {
+      const alerts = await sendLeadAlerts(
+        { db, ...(mailer ? { mailer } : {}), appUrl },
+        workspace.id,
+      );
+      if (alerts > 0) console.log(`sent ${alerts} lead alert(s) for ${workspace.id}`);
+    } catch (error) {
+      console.error(`lead alerts failed for ${workspace.id}`, error);
+    }
+
+    try {
+      const digested = await sendDailyDigest(
+        { db, ...(mailer ? { mailer } : {}), appUrl },
+        workspace.id,
+      );
+      if (digested) console.log(`sent the daily digest for ${workspace.id}`);
+    } catch (error) {
+      console.error(`daily digest failed for ${workspace.id}`, error);
+    }
   }
 }
 

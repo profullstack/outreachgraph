@@ -74,6 +74,14 @@ export interface PersonCandidate {
   readonly country?: string;
   readonly technologies?: readonly string[];
   readonly personalDomain?: string;
+  /**
+   * A published address believed to reach this person specifically.
+   *
+   * Only ever a personal address. A shared inbox is the company's and is
+   * carried separately, because a message addressed to a named human is the
+   * wrong message to put in one.
+   */
+  readonly email?: string;
   readonly identities: readonly CandidateIdentity[];
   /** Opaque provider-side record id, retained for deletion tracing. */
   readonly sourceRecordId?: string;

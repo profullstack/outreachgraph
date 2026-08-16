@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { CampaignIntake } from '../../../components/campaign-intake';
 import { BulkUrlIntake } from '../../../components/bulk-url-intake';
 import {
   ApiUnavailableError,
@@ -73,10 +74,23 @@ export default async function OutreachPage() {
             </Link>
           ) : null}
 
-          <BulkUrlIntake />
+          <CampaignIntake />
+
+          {/* Still here, and still useful — but no longer the front door. Most
+              people are starting from a market rather than from a list they
+              have already built, and the box above takes both. */}
+          <details className="border-border bg-surface-raised mt-4 rounded-2xl border p-4">
+            <summary className="cursor-pointer text-sm font-medium">
+              Already have a list of companies?
+            </summary>
+            <p className="text-ink-muted mt-1 mb-3 text-[13px] leading-relaxed">
+              Paste or upload up to a hundred URLs at once. They join your existing campaign.
+            </p>
+            <BulkUrlIntake />
+          </details>
 
           <p className="text-ink-muted mt-4 text-center text-sm">
-            Chasing one person instead? <Link href="/prospects">Add them by GitHub handle</Link>.
+            Watch what comes back on the <Link href="/funnel">Funnel</Link>.
           </p>
         </>
       )}

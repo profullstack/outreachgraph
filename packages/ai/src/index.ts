@@ -43,6 +43,14 @@ export { draftForRecommendation, type DraftResult } from './draft';
 export { draftProfile, type ProfileDraft, type ProfileDraftResult } from './profile';
 
 export {
+  discoverCompanies,
+  normaliseDomain,
+  type DiscoverOptions,
+  type DiscoveredCompany,
+  type DiscoveryResult,
+} from './discover';
+
+export {
   OpenAIModel,
   OpenAIApiError,
   MissingOpenAIKeyError,

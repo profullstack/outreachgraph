@@ -91,6 +91,15 @@ export {
 export { isAllowed, parseRobots, type RobotsRules } from './site/robots';
 
 export {
+  assignEmails,
+  findEmails,
+  matchesName,
+  parseEmail,
+  type AssignedEmails,
+  type FoundEmail,
+} from './site/emails';
+
+export {
   BlueskyProvider,
   BlueskyRateLimitError,
   BLUESKY_API,

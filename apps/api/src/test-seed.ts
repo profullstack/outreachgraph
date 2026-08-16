@@ -52,6 +52,14 @@ export async function seedDatabase(label: string): Promise<SeededDatabase> {
       args: [SEED.userId, stamp, stamp, stamp],
     },
     {
+      // Every real workspace has an owner, and notifications resolve their
+      // recipient through this row. A fixture without one is a workspace no
+      // signup path can produce.
+      sql: `INSERT INTO organization_members (organization_id, user_id, role, created_at)
+            VALUES (?, ?, 'owner', ?)`,
+      args: [SEED.organizationId, SEED.userId, stamp],
+    },
+    {
       sql: `INSERT INTO workspaces (id, organization_id, name, slug, min_outreach_confidence,
             created_at, updated_at) VALUES (?, ?, 'Test', 'test', 0.85, ?, ?)`,
       args: [SEED.workspaceId, SEED.organizationId, stamp, stamp],

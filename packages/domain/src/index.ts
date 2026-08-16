@@ -13,6 +13,8 @@ export * from './provenance';
 export * from './person';
 export * from './signal';
 export * from './campaign';
+export * from './intake';
+export * from './funnel';
 export * from './pipeline';
 export * from './outreach';
 export * from './video';
