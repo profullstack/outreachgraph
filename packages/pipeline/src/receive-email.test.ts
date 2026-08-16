@@ -109,6 +109,36 @@ describe('recording a reply', () => {
     expect(row?.interaction_state).toBe('responded');
   });
 
+  test('the reply reaches the funnel, not just the interaction row', async () => {
+    seeded = await seedDatabase('receive-stage-event');
+    await sentTo(seeded.db, 'jane@acme.com');
+
+    await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([message()]),
+    });
+
+    // The funnel is built from `campaign_people.status` and the stage log, so
+    // writing only `interaction_state` would record the reply everywhere
+    // except the chart that exists to show replies.
+    const membership = await queryOne<{ status: string }>(
+      seeded.db,
+      'SELECT status FROM campaign_people WHERE person_id = ?',
+      [SEED.personId],
+    );
+    expect(membership?.status).toBe('responded');
+
+    const event = await queryOne<{ to_status: string; stage: string }>(
+      seeded.db,
+      `SELECT to_status, stage FROM lead_stage_events
+        WHERE person_id = ? ORDER BY occurred_at DESC LIMIT 1`,
+      [SEED.personId],
+    );
+    expect(event?.to_status).toBe('responded');
+    expect(event?.stage).toBe('replied');
+  });
+
   test('does not record the same message twice across polls', async () => {
     seeded = await seedDatabase('receive-dedupe');
     await sentTo(seeded.db, 'jane@acme.com');

@@ -24,6 +24,7 @@
 import { newId } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { MailReader, IncomingMessage } from '@outreachgraph/email';
+import { recordStatus } from './stages';
 
 export interface ReceiveRepliesInput {
   readonly db: Client;
@@ -158,13 +159,35 @@ async function recordReply(
     ],
   });
 
-  // The funnel reads this, and a prospect who answered sitting in `contacted`
-  // is the one row a human most wants to see move.
   await db.execute({
     sql: `UPDATE campaign_people SET interaction_state = 'responded', updated_at = ?
            WHERE workspace_id = ? AND person_id = ?`,
     args: [stamp, workspaceId, person.personId],
   });
+
+  // `interaction_state` alone is not enough. The funnel is built from
+  // `campaign_people.status` and the `lead_stage_events` log, so setting only
+  // the former would record the reply everywhere except the chart that exists
+  // to show replies — the prospect would sit in "Contacted" having answered.
+  //
+  // Per campaign, because a person can be in more than one and the reply is
+  // news for every campaign that wrote to them.
+  const memberships = await queryAll<{ campaign_id: string }>(
+    db,
+    'SELECT campaign_id FROM campaign_people WHERE workspace_id = ? AND person_id = ?',
+    [workspaceId, person.personId],
+  );
+
+  for (const membership of memberships) {
+    await recordStatus(db, {
+      workspaceId,
+      campaignId: membership.campaign_id,
+      personId: person.personId,
+      status: 'responded',
+      reason: 'They replied by email.',
+      at: stamp,
+    });
+  }
 
   return true;
 }
