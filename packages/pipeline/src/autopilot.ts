@@ -33,6 +33,7 @@ import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluatePolicy, isExecutable } from '@outreachgraph/policy';
 import type { Mailer } from '@outreachgraph/email';
+import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { mailerForWorkspace } from './email-account';
 import { emitEvent } from './events';
 import {
@@ -59,6 +60,19 @@ export interface AutopilotDeps {
   readonly encryptionKey?: Buffer | undefined;
   /** Reply-to for outbound mail. Falls back to the workspace owner. */
   readonly replyTo?: string;
+  /**
+   * Writes a message for a recommendation that has none.
+   *
+   * Drafting happens once, when the recommendation is created, and nothing
+   * ever retried it — so a composer that was briefly unavailable, or a run
+   * that hit a grounding check, left the lead permanently undraftable. The
+   * send sweep then found it every tick, logged "no drafted message" and moved
+   * on: one prospect in production accumulated 98 identical warnings while
+   * nothing tried to fix the thing being warned about.
+   *
+   * Omit it to keep the old behaviour of reporting and skipping.
+   */
+  readonly model?: TextModel;
   readonly now?: Date;
 }
 
@@ -221,10 +235,58 @@ export async function runAutopilot(
       continue;
     }
 
-    // A recommendation with no draft has nothing to send. This is not an
-    // error: the composer is allowed to produce nothing rather than invent a
-    // claim it cannot ground, and that outcome must stay a silent no-send.
-    if (!row.body || !row.body.trim()) {
+    // A recommendation with no draft has nothing to send — but "the composer
+    // declined to write one" and "nobody ever tried" are different states, and
+    // until now they produced the same warning on every tick forever. Drafting
+    // happened once, at creation; nothing retried it. One prospect in
+    // production collected 98 identical "no drafted message" warnings while
+    // nothing attempted the thing being warned about.
+    let body = row.body;
+    let checks = row.checks_json;
+
+    if (!body || !body.trim()) {
+      const written = deps.model
+        ? await draftForRecommendation(db, deps.model, row.recommendation_id).catch(() => undefined)
+        : undefined;
+
+      const drafted = written?.ok
+        ? await queryOne<{ body: string; checks_json: string | null }>(
+            db,
+            `SELECT body, checks_json FROM drafts WHERE recommendation_id = ?
+          ORDER BY created_at DESC LIMIT 1`,
+            [row.recommendation_id],
+          )
+        : undefined;
+
+      if (!drafted?.body?.trim()) {
+        // A composer that refuses to ground a claim is a legitimate outcome
+        // and stays a no-send. Saying *why* is the difference between a queue
+        // that looks broken and one visibly waiting for a human.
+        await note(
+          written && !written.ok
+            ? `no drafted message (${written.reason ?? 'the composer declined'})`
+            : 'no drafted message',
+        );
+        continue;
+      }
+
+      body = drafted.body;
+      checks = drafted.checks_json;
+
+      await emitEvent(db, {
+        workspaceId,
+        campaignId: row.campaign_id,
+        personId: row.person_id,
+        phase: 'draft',
+        level: 'info',
+        message: `Wrote the missing message for ${row.display_name}`,
+        detail: { recommendationId: row.recommendation_id },
+      });
+    }
+
+    // Narrowing for the compiler as much as for safety: every path above
+    // either set a non-empty body or skipped this candidate.
+    if (!body || !body.trim()) {
       await note('no drafted message');
       continue;
     }
@@ -232,7 +294,7 @@ export async function runAutopilot(
     // The quality gates already ran when the draft was written. A draft that
     // failed one is never shown to a human, so it must never be sent by a
     // machine either.
-    if (hasFailingCheck(row.checks_json)) {
+    if (hasFailingCheck(checks)) {
       await note('the draft did not pass its quality checks');
       continue;
     }
@@ -307,7 +369,7 @@ export async function runAutopilot(
       const result = await sender.mailer.send({
         to: recipient.address,
         subject,
-        text: row.body,
+        text: body,
         ...(replyTo ? { replyTo } : {}),
       });
 
@@ -319,7 +381,7 @@ export async function runAutopilot(
         recommendationId: row.recommendation_id,
         to: recipient.address,
         sharedInbox: recipient.shared,
-        body: row.body,
+        body,
         externalId: result.id,
         actor: AUTOPILOT_ACTOR,
         policyVersion: decision.policyVersion,
@@ -351,7 +413,7 @@ export async function runAutopilot(
         actionId,
         to: recipient.address,
         subject,
-        body: row.body,
+        body,
         ...(row.company_name ? { companyName: row.company_name } : {}),
         toSharedInbox: recipient.shared,
       });

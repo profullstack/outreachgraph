@@ -6,7 +6,7 @@
  * a type error (PRD §34 row-level authorization).
  */
 
-import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
+import { newId, OUTBOUND_ACTION_KINDS, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 
 export interface PersonRow {
@@ -109,7 +109,42 @@ export async function getRecommendation(
 }
 
 /** The approval queue: pending work, highest priority first (PRD §15). */
-export async function listPendingRecommendations(db: Client, workspaceId: string, limit: number) {
+/**
+ * What the approval queue can be narrowed to.
+ *
+ * The queue was one undifferentiated list, and in practice that made it
+ * unusable: production held 73 `refresh_research` cards — internal actions
+ * that have no message by definition and never will — against a single email
+ * actually waiting for a decision. Every one of the 73 renders as a card with
+ * nothing written on it, so the queue reads as "the composer is broken" when
+ * it is really "you are looking at the wrong 73 rows".
+ */
+export const APPROVAL_FILTERS = ['all', 'ready', 'needs_draft', 'research'] as const;
+export type ApprovalFilter = (typeof APPROVAL_FILTERS)[number];
+
+export function isApprovalFilter(value: unknown): value is ApprovalFilter {
+  return typeof value === 'string' && (APPROVAL_FILTERS as readonly string[]).includes(value);
+}
+
+export async function listPendingRecommendations(
+  db: Client,
+  workspaceId: string,
+  limit: number,
+  filter: ApprovalFilter = 'all',
+) {
+  const outbound = OUTBOUND_ACTION_KINDS.map(() => '?').join(', ');
+
+  // `ready` is the one that answers "what can I actually approve right now" —
+  // an outbound action with a message already written.
+  const clause: Readonly<Record<ApprovalFilter, string>> = {
+    all: '',
+    ready: `AND r.action IN (${outbound}) AND d.id IS NOT NULL`,
+    needs_draft: `AND r.action IN (${outbound}) AND d.id IS NULL`,
+    research: `AND r.action NOT IN (${outbound})`,
+  };
+
+  const filterArgs: string[] = filter === 'all' ? [] : [...OUTBOUND_ACTION_KINDS];
+
   return queryAll(
     db,
     `SELECT r.*, p.display_name, p.current_title, p.identity_confidence,
@@ -124,10 +159,51 @@ export async function listPendingRecommendations(db: Client, workspaceId: string
   LEFT JOIN scores sc ON sc.person_id = r.person_id AND sc.campaign_id = r.campaign_id
       WHERE r.workspace_id = ? AND r.status = 'pending'
         AND (r.expires_at IS NULL OR r.expires_at > ?)
+        ${clause[filter]}
    ORDER BY r.priority DESC, r.created_at ASC
       LIMIT ?`,
-    [workspaceId, now(), limit],
+    [workspaceId, now(), ...filterArgs, limit],
   );
+}
+
+/** How many pending cards sit in each filter, for the counts on the tabs. */
+export async function approvalCounts(
+  db: Client,
+  workspaceId: string,
+): Promise<Record<ApprovalFilter, number>> {
+  const outbound = OUTBOUND_ACTION_KINDS.map(() => '?').join(', ');
+
+  const row = await queryOne<{
+    total: number;
+    ready: number;
+    needs_draft: number;
+    research: number;
+  }>(
+    db,
+    // Not `AS all` — `all` is a reserved word and SQLite rejects it outright.
+    `SELECT count(*) AS total,
+            sum(CASE WHEN r.action IN (${outbound}) AND d.id IS NOT NULL THEN 1 ELSE 0 END) AS ready,
+            sum(CASE WHEN r.action IN (${outbound}) AND d.id IS NULL THEN 1 ELSE 0 END) AS needs_draft,
+            sum(CASE WHEN r.action NOT IN (${outbound}) THEN 1 ELSE 0 END) AS research
+       FROM recommendations r
+  LEFT JOIN drafts d ON d.recommendation_id = r.id
+      WHERE r.workspace_id = ? AND r.status = 'pending'
+        AND (r.expires_at IS NULL OR r.expires_at > ?)`,
+    [
+      ...OUTBOUND_ACTION_KINDS,
+      ...OUTBOUND_ACTION_KINDS,
+      ...OUTBOUND_ACTION_KINDS,
+      workspaceId,
+      now(),
+    ],
+  );
+
+  return {
+    all: Number(row?.total ?? 0),
+    ready: Number(row?.ready ?? 0),
+    needs_draft: Number(row?.needs_draft ?? 0),
+    research: Number(row?.research ?? 0),
+  };
 }
 
 export async function listSignals(db: Client, workspaceId: string, limit: number) {
