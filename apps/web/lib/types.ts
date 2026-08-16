@@ -24,6 +24,38 @@ export interface ApprovalCard {
   draft_subject: string | null;
 }
 
+/** The mailbox outreach is sent from. Never carries the password. */
+export interface EmailAccountView {
+  connected: boolean;
+  host?: string;
+  port?: number;
+  secure?: boolean;
+  username?: string;
+  fromEmail?: string;
+  fromName?: string;
+  replyTo?: string;
+  status?: string;
+  connectedAt?: string;
+}
+
+export interface SmtpPresetView {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  note?: string;
+}
+
+export interface EmailIntegrationView {
+  account: EmailAccountView;
+  /** False when the deployment has no encryption key to store a password with. */
+  canConnect: boolean;
+  /** True when the platform sender can deliver without a connected mailbox. */
+  platformFallback: boolean;
+  presets: SmtpPresetView[];
+}
+
 export interface SignalRow {
   id: string;
   person_id: string | null;

@@ -233,9 +233,39 @@ export const privacyRequestSchema = z.object({
 });
 
 export const executeActionSchema = z.object({
-  mode: z.enum(['official_api', 'manual', 'crm']).default('manual'),
+  /**
+   * `customer_managed` means "send it" — the product puts the message on the
+   * wire through the workspace's connected mailbox. The others record that a
+   * human or another system already did, which is all this route could do
+   * before a mailbox could be connected.
+   */
+  mode: z.enum(['official_api', 'manual', 'crm', 'customer_managed']).default('manual'),
   externalUrl: z.string().url().optional(),
   note: z.string().max(1_000).optional(),
+});
+
+/**
+ * Connecting the mailbox outreach is sent from.
+ *
+ * The password is write-only: it is accepted here, verified against the real
+ * server, encrypted, and never returned by any route.
+ */
+export const connectEmailAccountSchema = z.object({
+  host: z.string().min(1).max(255),
+  port: z.number().int().min(1).max(65_535),
+  /** True for implicit TLS (465); false for STARTTLS submission (587). */
+  secure: z.boolean(),
+  username: z.string().min(1).max(320),
+  password: z.string().min(1).max(1_000),
+  fromEmail: z.string().email(),
+  fromName: z.string().max(120).optional(),
+  replyTo: z.string().email().optional(),
+  /**
+   * Skips the live login check. Off by default and deliberately awkward to
+   * reach: an unverified credential produces a workspace that looks connected
+   * and fails on its first real prospect.
+   */
+  skipVerification: z.boolean().optional(),
 });
 
 /** Health payload shared by every service (PRD §1.1 Docker requirements). */

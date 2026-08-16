@@ -23,6 +23,7 @@
         "@outreachgraph/policy": "workspace:*",
         "@outreachgraph/providers": "workspace:*",
         "@outreachgraph/scoring": "workspace:*",
+        "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
         "hono": "^4.6.14",
         "zod": "^3.24.1",
@@ -42,6 +43,7 @@
         "@outreachgraph/providers": "workspace:*",
         "@outreachgraph/recommend": "workspace:*",
         "@outreachgraph/scoring": "workspace:*",
+        "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
         "hono": "^4.6.14",
         "zod": "^3.24.1",
@@ -102,6 +104,12 @@
     "packages/email": {
       "name": "@outreachgraph/email",
       "version": "0.1.0",
+      "dependencies": {
+        "nodemailer": "^9.0.5",
+      },
+      "devDependencies": {
+        "@types/nodemailer": "^8.0.1",
+      },
     },
     "packages/identity": {
       "name": "@outreachgraph/identity",
@@ -133,6 +141,7 @@
         "@outreachgraph/providers": "workspace:*",
         "@outreachgraph/recommend": "workspace:*",
         "@outreachgraph/scoring": "workspace:*",
+        "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
       },
     },
@@ -167,6 +176,10 @@
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
       },
+    },
+    "packages/secrets": {
+      "name": "@outreachgraph/secrets",
+      "version": "0.1.0",
     },
     "packages/signals": {
       "name": "@outreachgraph/signals",
@@ -323,6 +336,8 @@
 
     "@outreachgraph/scoring": ["@outreachgraph/scoring@workspace:packages/scoring"],
 
+    "@outreachgraph/secrets": ["@outreachgraph/secrets@workspace:packages/secrets"],
+
     "@outreachgraph/server": ["@outreachgraph/server@workspace:apps/server"],
 
     "@outreachgraph/signals": ["@outreachgraph/signals@workspace:packages/signals"],
@@ -364,6 +379,8 @@
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
     "@types/node": ["@types/node@26.2.0", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-5IviulTZeRNp2vAJ514cc/HUlY5nZ9fCbq9DMyC52BrhFZACo3nI0R7qBxhQmo/d27NFe96ur/b7Wwxklda+kg=="],
+
+    "@types/nodemailer": ["@types/nodemailer@8.0.1", "", { "dependencies": { "@types/node": "*" } }, "sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw=="],
 
     "@types/react": ["@types/react@19.2.18", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w=="],
 
@@ -436,6 +453,8 @@
     "node-domexception": ["node-domexception@1.0.0", "", {}, "sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ=="],
 
     "node-fetch": ["node-fetch@3.3.2", "", { "dependencies": { "data-uri-to-buffer": "^4.0.0", "fetch-blob": "^3.1.4", "formdata-polyfill": "^4.0.10" } }, "sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA=="],
+
+    "nodemailer": ["nodemailer@9.0.5", "", {}, "sha512-wvjiKvjczmsN7U/8006JOdXubgBk2XFAbioDMbT+sM7cPs0QrhJTa6KBRX7P5REGGkDcLUz/EarWidb8G8C1jQ=="],
 
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 

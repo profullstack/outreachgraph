@@ -20,6 +20,7 @@
     "@outreachgraph/providers": "workspace:*",
     "@outreachgraph/recommend": "workspace:*",
     "@outreachgraph/scoring": "workspace:*",
+    "@outreachgraph/secrets": "workspace:*",
     "@outreachgraph/signals": "workspace:*"
   }
 }

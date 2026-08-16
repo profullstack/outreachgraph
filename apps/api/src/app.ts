@@ -13,6 +13,7 @@ import { z } from 'zod';
 import {
   addProspectSchema,
   approveRecommendationSchema,
+  connectEmailAccountSchema,
   createSuppressionSchema,
   executeActionSchema,
   loginSchema,
@@ -40,10 +41,16 @@ import {
 import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
 import {
   campaignFunnel,
+  connectEmailAccount,
+  deliverEmailAction,
+  disconnectEmailAccount,
+  emailAccountSummary,
   leadTimeline,
   loadNotifySettings,
+  mailerForWorkspace,
   notifyAddress,
   workspaceAnalytics,
+  EmailAccountError,
 } from '@outreachgraph/pipeline';
 import {
   createCampaignFromIntake,
@@ -54,7 +61,7 @@ import {
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
 import { GitHubProvider, SiteProvider, normaliseUrl } from '@outreachgraph/providers';
-import { ConsoleMailer, verificationEmail, type Mailer } from '@outreachgraph/email';
+import { ConsoleMailer, SMTP_PRESETS, verificationEmail, type Mailer } from '@outreachgraph/email';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
 import { loadWorkspaceProfile, saveWorkspaceProfile } from './workspace-profile';
@@ -93,6 +100,12 @@ export interface AppOptions {
    * is what local development and the test suite do.
    */
   readonly mailer?: Mailer;
+  /**
+   * Unlocks credentials a workspace has stored for its own mailbox. Without
+   * it, connecting one is refused rather than stored in the clear, and any
+   * already-stored mailbox reads as disconnected.
+   */
+  readonly encryptionKey?: Buffer | undefined;
   /** Public origin, used to build links that land in someone's inbox. */
   readonly appUrl?: string;
   readonly version?: string;
@@ -903,7 +916,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       throw ApiError.badRequest(`recommendation is already ${recommendation.status}`);
     }
 
-    const decision = await recheckPolicy(db, actor, recommendation);
+    const decision = await recheckPolicy(db, actor, recommendation, options.mailer !== undefined);
 
     if (!isExecutable(decision.decision, true)) {
       await repo.audit(db, {
@@ -981,11 +994,25 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       detail: { actionId, decision: decision.decision, edited: Boolean(body.editedBody) },
     });
 
+    // Approving an email is the instruction to send it.
+    //
+    // Splitting approval from delivery is what left the product telling people
+    // to go and paste the message into their own mail client. There is nothing
+    // for a reviewer to do between the two steps: they have already read the
+    // evidence, read the words and said yes. So the send happens here, inline,
+    // and its outcome is part of the same answer — a failure the reviewer can
+    // see beats an approved action sitting in a queue nobody is watching.
+    const delivery =
+      mode === 'customer_managed' && recommendation.network === 'email'
+        ? await sendEmailAction(db, options, actor, actionId, decision.policyVersion)
+        : undefined;
+
     return c.json({
       approved: true,
       approvalId,
       actionId,
       policy: { decision: decision.decision, policyVersion: decision.policyVersion },
+      ...(delivery ? { delivery } : {}),
     });
   });
 
@@ -1109,7 +1136,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json({ action });
   });
 
-  /** Marks a manual action complete, or records an API execution (PRD §27). */
+  /**
+   * Sends an approved action, or records that a human already did (PRD §27).
+   *
+   * Both meanings live here because both are real. An email goes out from the
+   * workspace's mailbox; a LinkedIn message cannot and never will, so for that
+   * the route records what the user did by hand. Which one happens is decided
+   * by the channel and the requested mode, not by the caller's optimism.
+   */
   api.post('/actions/:id/execute', async (c) => {
     const actor = c.get('actor');
     const db = c.get('db');
@@ -1120,6 +1154,44 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const action = await repo.getAction(db, actor.workspaceId, c.req.param('id'));
     if (!action) throw ApiError.notFound('action');
     if (action.status === 'completed') throw ApiError.badRequest('action is already completed');
+
+    // An email the product is meant to send, rather than one already sent
+    // elsewhere. `deliverEmailAction` does all the bookkeeping the manual path
+    // does below, plus the send itself.
+    if (action.network === 'email' && body.mode === 'customer_managed') {
+      const recommendation = await repo.getRecommendation(
+        db,
+        actor.workspaceId,
+        action.recommendation_id,
+      );
+      if (!recommendation) throw ApiError.notFound('recommendation');
+
+      const decision = await recheckPolicy(
+        db,
+        actor,
+        recommendation,
+        options.mailer !== undefined,
+        action.id,
+      );
+
+      // Re-checked here as well as at approval: a suppression added in between
+      // must stop the send, and this is the last moment it can.
+      if (!isExecutable(decision.decision, true)) {
+        throw ApiError.policyDenied(decision.reason, {
+          decision: decision.decision,
+          gate: decision.gate,
+          policyVersion: decision.policyVersion,
+        });
+      }
+
+      const delivery = await sendEmailAction(db, options, actor, action.id, decision.policyVersion);
+
+      if (!delivery.sent) {
+        return c.json({ executed: false, actionId: action.id, reason: delivery.reason }, 502);
+      }
+
+      return c.json({ executed: true, actionId: action.id, sent: true, to: delivery.to });
+    }
 
     const stamp = now();
     await db.batch([
@@ -1255,6 +1327,99 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ saved: true });
+  });
+
+  // ---------------------------------------------------------- integrations
+  //
+  // The mailbox outreach is sent from. One per workspace, and the only thing
+  // standing between a drafted message and a delivered one.
+
+  api.get('/integrations/email', async (c) => {
+    const actor = c.get('actor');
+    const summary = await emailAccountSummary(c.get('db'), actor.workspaceId);
+
+    return c.json({
+      account: summary,
+      // Whether a mailbox *could* be connected, so the form can say what is
+      // missing instead of failing on submit.
+      canConnect: options.encryptionKey !== undefined,
+      // The platform sender still works when no mailbox is connected. Saying
+      // so stops "not connected" reading as "nothing can be sent".
+      platformFallback: options.mailer !== undefined,
+      presets: SMTP_PRESETS,
+    });
+  });
+
+  api.put('/integrations/email', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting a sending mailbox');
+    await requireVerifiedEmail(db, actor);
+
+    const body = await parseBody(c.req.raw, connectEmailAccountSchema);
+
+    try {
+      const account = await connectEmailAccount(db, {
+        workspaceId: actor.workspaceId,
+        account: {
+          host: body.host,
+          port: body.port,
+          secure: body.secure,
+          username: body.username,
+          password: body.password,
+          fromEmail: body.fromEmail,
+          ...(body.fromName ? { fromName: body.fromName } : {}),
+          ...(body.replyTo ? { replyTo: body.replyTo } : {}),
+        },
+        encryptionKey: options.encryptionKey,
+        verify: body.skipVerification !== true,
+      });
+
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'integration.connected',
+        entityKind: 'workspace',
+        entityId: actor.workspaceId,
+        // The host and address are recorded; the password is not, here or
+        // anywhere else that is readable.
+        detail: { network: 'email', host: body.host, fromEmail: body.fromEmail },
+      });
+
+      return c.json({ connected: true, account });
+    } catch (error) {
+      if (error instanceof EmailAccountError) {
+        // The mail server's own words. "535 Username and Password not
+        // accepted" is actionable; "could not connect" is not.
+        throw new ApiError(error.code === 'not_configured' ? 503 : 400, error.code, error.message);
+      }
+      throw error;
+    }
+  });
+
+  api.delete('/integrations/email', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('disconnecting a sending mailbox');
+
+    const removed = await disconnectEmailAccount(db, actor.workspaceId);
+
+    if (removed) {
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'integration.disconnected',
+        entityKind: 'workspace',
+        entityId: actor.workspaceId,
+        detail: { network: 'email' },
+      });
+    }
+
+    return c.json({ disconnected: removed });
   });
 
   // --------------------------------------------------------------- signals
@@ -1393,12 +1558,27 @@ async function recheckPolicy(
   db: Client,
   actor: RequestActor,
   recommendation: repo.RecommendationRow,
+  /**
+   * True when this deployment can put email on the wire without the workspace
+   * connecting anything — the platform sender.
+   *
+   * This argument is the fix for the bug that made the whole email channel
+   * unusable. `hasConnectedAccount` was read only from `integration_accounts`,
+   * a table nothing could write to, so email always evaluated to `manual_only`
+   * and the approval queue answered "No connected email account, so this must
+   * be done manually." Meanwhile autopilot asked a different question — "is a
+   * mailer configured?" — and happily sent the very same message unattended.
+   * Two paths, two answers, and the one a human used was the broken one.
+   */
+  platformEmailEnabled = false,
+  /** The action being executed, which must not count against its own limit. */
+  excludeActionId?: string,
 ) {
   const [person, workspace, campaign, counts, flags, connected] = await Promise.all([
     repo.getPerson(db, recommendation.person_id),
     repo.getWorkspace(db, actor.workspaceId),
     repo.getCampaign(db, actor.workspaceId, recommendation.campaign_id),
-    repo.actionCounts(db, actor.workspaceId, recommendation.person_id),
+    repo.actionCounts(db, actor.workspaceId, recommendation.person_id, excludeActionId),
     repo.featureFlags(db, actor.workspaceId),
     repo.hasConnectedAccount(db, actor.workspaceId, recommendation.network as Network),
   ]);
@@ -1416,7 +1596,7 @@ async function recheckPolicy(
     network: recommendation.network as Network,
     action: recommendation.action as ActionKind,
     approvalMode: campaign.approval_mode as 'draft_and_approve',
-    hasConnectedAccount: connected,
+    hasConnectedAccount: connected || (recommendation.network === 'email' && platformEmailEnabled),
     personSuppressed: suppressed,
     personBelievedMinor: person.believed_minor === 1,
     personDeleted: person.status === 'deleted',
@@ -1433,9 +1613,57 @@ async function recheckPolicy(
   });
 }
 
+/**
+ * Puts one approved email on the wire.
+ *
+ * Resolves the sender the same way autopilot does — the workspace's own
+ * mailbox when it has connected one, the platform sender otherwise — so an
+ * approved message and an unattended one leave from the same address and are
+ * recorded identically.
+ *
+ * Returns a report rather than throwing. "No address published for this
+ * person" and "the mail server rejected the password" are both things the
+ * reviewer needs to read, and a 500 tells them neither.
+ */
+async function sendEmailAction(
+  db: Client,
+  options: AppOptions,
+  actor: RequestActor,
+  actionId: string,
+  policyVersion: string,
+): Promise<{ sent: boolean; to?: string; reason?: string }> {
+  const sender = await mailerForWorkspace(db, actor.workspaceId, {
+    encryptionKey: options.encryptionKey,
+    fallback: options.mailer,
+  });
+
+  if (!sender) {
+    return { sent: false, reason: 'no mailbox is connected, so nothing could be sent' };
+  }
+
+  const result = await deliverEmailAction(
+    {
+      db,
+      mailer: sender.mailer,
+      ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
+    },
+    {
+      workspaceId: actor.workspaceId,
+      actionId,
+      actor: { actorKind: 'user', actorId: actor.userId },
+      policyVersion,
+    },
+  );
+
+  return result.sent ? { sent: true, to: result.to } : { sent: false, reason: result.reason };
+}
+
 /** Networks we can act on through an API; everything else is manual. */
-function modeForNetwork(network: Network): 'official_api' | 'manual' | 'crm' {
+function modeForNetwork(network: Network): 'official_api' | 'manual' | 'crm' | 'customer_managed' {
   if (network === 'crm') return 'crm';
+  // Sent through a mailbox the customer owns, which is what the capability
+  // matrix has always called this channel.
+  if (network === 'email') return 'customer_managed';
   if (network === 'x' || network === 'bluesky' || network === 'github') return 'official_api';
   return 'manual';
 }

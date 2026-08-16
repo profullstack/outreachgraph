@@ -17,6 +17,29 @@ export {
   type SkippedOutreach,
 } from './autopilot';
 export {
+  connectEmailAccount,
+  disconnectEmailAccount,
+  emailAccountSummary,
+  loadEmailCredentials,
+  mailerForWorkspace,
+  EmailAccountError,
+  type EmailAccountInput,
+  type EmailAccountSummary,
+} from './email-account';
+export {
+  deliverEmailAction,
+  defaultEmailSubject,
+  loadOutreachSettings,
+  pickEmailRecipient,
+  recordEmailFailure,
+  recordEmailSent,
+  AUTOPILOT_ACTOR,
+  type AuditActor,
+  type DeliverEmailDeps,
+  type DeliverEmailResult,
+  type EmailRecipient,
+} from './outreach-email';
+export {
   loadNotifySettings,
   notifyAddress,
   sendDailyDigest,

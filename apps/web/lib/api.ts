@@ -9,7 +9,14 @@
  */
 
 import { cookies } from 'next/headers';
-import type { ApprovalCard, CurrentUser, ProspectDetail, ProspectRow, SignalRow } from './types';
+import type {
+  ApprovalCard,
+  CurrentUser,
+  EmailIntegrationView,
+  ProspectDetail,
+  ProspectRow,
+  SignalRow,
+} from './types';
 
 export type {
   ApprovalCard,
@@ -201,4 +208,8 @@ export interface SettingsView {
 
 export async function fetchSettings(): Promise<SettingsView> {
   return request<SettingsView>('/settings');
+}
+
+export async function fetchEmailIntegration(): Promise<EmailIntegrationView> {
+  return request<EmailIntegrationView>('/integrations/email');
 }

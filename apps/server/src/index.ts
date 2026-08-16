@@ -28,6 +28,7 @@ import {
   type FallbackEntry,
 } from '@outreachgraph/ai';
 import { ResendMailer } from '@outreachgraph/email';
+import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
 import {
@@ -154,6 +155,21 @@ const mailer =
 if (!mailer) console.log('no RESEND_API_KEY/EMAIL_FROM: verification links are logged, not sent');
 
 /**
+ * Unlocks mailbox credentials a workspace has stored.
+ *
+ * A bad key is fatal on purpose, unlike an absent one. Absent means "nobody
+ * has connected a mailbox here yet", which is a normal state for a fresh
+ * deployment. Present-but-wrong means every stored credential silently reads
+ * as no-account, and a product that quietly stops sending is worse than one
+ * that refuses to start.
+ */
+const encryptionKey = secretKeyFromEnv();
+
+if (!encryptionKey) {
+  console.log('no SECRET_ENCRYPTION_KEY: workspaces cannot connect their own sending mailbox');
+}
+
+/**
  * Where the links in outbound email point.
  *
  * `APP_URL` unset used to mean `http://localhost:8080`, which is right in
@@ -182,6 +198,7 @@ const api = createApp({
   db,
   ...(model ? { model } : {}),
   ...(mailer ? { mailer } : {}),
+  ...(encryptionKey ? { encryptionKey } : {}),
   ...(appUrl ? { appUrl } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
   // Cookies must not be Secure over plain HTTP, or local development can
@@ -331,6 +348,10 @@ async function crawlSite(job: QueuedJob): Promise<void> {
       // Tells the policy engine email is a channel this deployment can
       // actually send through. Without it `email/send_email` evaluates to
       // `manual_only` and no email recommendation is ever produced.
+      //
+      // A workspace with its own connected mailbox is covered by the
+      // `integration_accounts` check inside the pipeline, so this only has to
+      // account for the platform sender.
       emailSendingEnabled: mailer !== undefined,
     },
     job,
@@ -432,7 +453,14 @@ async function tick(): Promise<void> {
   // outreach sweep that follows it.
   for (const workspace of workspaces) {
     try {
-      const result = await runAutopilot({ db, ...(mailer ? { mailer } : {}) }, workspace.id);
+      const result = await runAutopilot(
+        {
+          db,
+          ...(mailer ? { mailer } : {}),
+          ...(encryptionKey ? { encryptionKey } : {}),
+        },
+        workspace.id,
+      );
 
       if (result.sent.length > 0 || result.failed > 0) {
         console.log(

@@ -25,6 +25,13 @@ export {
   type Message,
   type SendResult,
 } from './mailer';
+export {
+  SmtpMailer,
+  SMTP_PRESETS,
+  formatFrom,
+  type SmtpCredentials,
+  type SmtpPreset,
+} from './smtp';
 export { verificationEmail } from './templates';
 export {
   dailyDigestEmail,
