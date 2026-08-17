@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -30,6 +31,8 @@ export default async function SignalsPage() {
         <h1 className="text-xl font-semibold">Signals</h1>
         <p className="text-ink-muted text-sm">Recent public activity, newest first</p>
       </header>
+
+      <PageGuide page="signals" />
 
       {signals.length === 0 ? (
         <p className="border-border text-ink-muted rounded-2xl border border-dashed p-8 text-center text-sm">

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
+import { PageGuide } from '../../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -57,6 +58,10 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
           Identity confidence {Math.round((person.identity_confidence ?? 0) * 100)}%
         </p>
       </header>
+
+      <div className="mt-4">
+        <PageGuide page="prospect" />
+      </div>
 
       <section className="mt-6">
         <h2 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">

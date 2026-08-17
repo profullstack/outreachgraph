@@ -3,12 +3,11 @@ import { redirect } from 'next/navigation';
 import { CampaignIntake } from '../../../components/campaign-intake';
 import { CampaignList } from '../../../components/campaign-list';
 import { BulkUrlIntake } from '../../../components/bulk-url-intake';
+import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchCampaignSummaries,
-  fetchMe,
-  fetchProfile,
   type CampaignSummaryView,
 } from '../../../lib/api';
 
@@ -25,24 +24,19 @@ export const metadata = { title: 'Outreach · OutreachGraph' };
  * with the name people go looking for.
  */
 export default async function OutreachPage() {
-  let me;
-  let profile;
   let campaigns: CampaignSummaryView[] = [];
   let offline = false;
 
   try {
-    [me, profile, campaigns] = await Promise.all([
-      fetchMe(),
-      fetchProfile(),
-      fetchCampaignSummaries(),
-    ]);
+    // Only the campaign list is read here now. The signed-in user and the
+    // profile were fetched for the two banners the guide has taken over, and
+    // the guide reads them through the same memoized client.
+    campaigns = await fetchCampaignSummaries();
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
     else throw error;
   }
-
-  const verified = me?.emailVerified ?? false;
 
   return (
     <div className="pt-4">
@@ -53,35 +47,24 @@ export default async function OutreachPage() {
         </p>
       </header>
 
+      {/*
+        Both prerequisites for a useful run — a confirmed address and a filled
+        in profile — used to be two bespoke banners here. They are computed
+        action items now, which means they read the same on this page as on
+        every other one and disappear on their own once satisfied. Neither was
+        ever enforced here in any case: the API is what gates the spend.
+
+        `campaign` is suppressed because the box that starts one is directly
+        below; telling someone to go to the page they are reading is noise.
+      */}
+      <PageGuide page="outreach" suppress={['campaign']} />
+
       {offline ? (
         <p className="border-border text-ink-muted rounded-2xl border border-dashed p-8 text-center text-sm">
           Waiting for the API.
         </p>
       ) : (
         <>
-          {/* Both of these change what a run produces rather than whether it
-              runs, so they are said here and not enforced here — the API is
-              what actually gates the spend. */}
-          {!verified ? (
-            <p className="border-border bg-surface-raised mb-3 rounded-2xl border p-4 text-sm">
-              Confirm your email address first — we check it before running anything that costs
-              money. The link is in your inbox.
-            </p>
-          ) : null}
-
-          {verified && profile && !profile.configured ? (
-            <Link
-              href="/setup"
-              className="border-accent/40 bg-accent/5 mb-3 block rounded-2xl border p-4"
-            >
-              <span className="text-sm font-medium">Tell us what you sell first</span>
-              <span className="text-ink-muted mt-1 block text-[13px] leading-relaxed">
-                Until you do, every draft is grounded in placeholder text and the scoring has no
-                idea who a good fit is.
-              </span>
-            </Link>
-          ) : null}
-
           <CampaignIntake />
 
           {/* Still here, and still useful — but no longer the front door. Most

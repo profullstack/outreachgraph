@@ -1,13 +1,13 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { LiveStatus } from '../../../components/live-status';
+import { PageGuide } from '../../../components/page-guide';
 import { VerifyBanner } from '../../../components/verify-banner';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchApprovals,
   fetchMe,
-  fetchProfile,
   fetchSignals,
   fetchStatus,
   relativeTime,
@@ -30,17 +30,17 @@ export default async function TodayPage() {
   let approvals: ApprovalQueue['recommendations'] = [];
   let signals: Awaited<ReturnType<typeof fetchSignals>> = [];
   let me: Awaited<ReturnType<typeof fetchMe>> | undefined;
-  let profile: Awaited<ReturnType<typeof fetchProfile>> | undefined;
   let live: Awaited<ReturnType<typeof fetchStatus>> | undefined;
   let offline = false;
 
   try {
     let queue: Awaited<ReturnType<typeof fetchApprovals>>;
-    [queue, signals, me, profile, live] = await Promise.all([
+    // The profile is no longer read here: the guide asks for it, and `request`
+    // is memoized per render, so asking twice would have cost two calls.
+    [queue, signals, me, live] = await Promise.all([
       fetchApprovals('ready'),
       fetchSignals(),
       fetchMe(),
-      fetchProfile(),
       fetchStatus(),
     ]);
     approvals = queue.recommendations;
@@ -56,27 +56,25 @@ export default async function TodayPage() {
     <div className="pt-4">
       {me && !me.emailVerified ? <VerifyBanner email={me.user.email} /> : null}
 
-      {/* Until this is done every draft is grounded in placeholder text, so it
-          is worth interrupting for once rather than hiding in a settings page. */}
-      {me?.emailVerified && profile && !profile.configured ? (
-        <Link
-          href="/setup"
-          className="border-accent/40 bg-accent/5 mb-4 block rounded-2xl border p-4"
-        >
-          <span className="text-sm font-medium">Tell us what you sell</span>
-          <span className="text-ink-muted mt-1 block text-[13px] leading-relaxed">
-            Paste your website and we will draft your profile — what you sell, who buys it, and
-            where to find them. Outreach is grounded in it.
-          </span>
-        </Link>
-      ) : null}
-
       <header className="mb-5">
         <h1 className="text-xl font-semibold">Today</h1>
         <p className="text-ink-muted text-sm">
           {offline ? 'Waiting for the API' : `${approvals.length} to review`}
         </p>
       </header>
+
+      {/*
+        The bespoke "tell us what you sell" card that used to sit here is now
+        one of the guide's computed action items, so it appears in the same
+        place as every other outstanding step instead of being the one piece of
+        advice with its own layout.
+
+        No live line: the full `LiveStatus` panel is a few rows down, and two
+        descriptions of the queue on one screen means two `EventSource`
+        connections saying the same thing. Verification keeps its own banner
+        above, which can resend the link — something the guide cannot.
+      */}
+      <PageGuide page="today" live={false} suppress={['verify']} />
 
       <div className="mb-5 grid grid-cols-2 gap-3">
         <Stat

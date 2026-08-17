@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { FunnelChart, LeadTimelineChart } from '../../../components/funnel-chart';
+import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -73,6 +74,8 @@ export default async function FunnelPage({
           {selected ? selected.name : 'Every campaign in this workspace'}
         </p>
       </header>
+
+      <PageGuide page="funnel" />
 
       {campaigns.length > 1 ? (
         <nav className="mb-4 flex flex-wrap gap-2">

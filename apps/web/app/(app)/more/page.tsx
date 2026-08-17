@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { PageGuide } from '../../../components/page-guide';
 import { SignOutButton } from '../../../components/sign-out-button';
 import { ApiUnavailableError, NotAuthenticatedError, fetchMe } from '../../../lib/api';
 
@@ -46,6 +47,8 @@ export default async function MorePage() {
           </p>
         ) : null}
       </header>
+
+      <PageGuide page="more" />
 
       <ul className="border-border divide-border mb-6 divide-y overflow-hidden rounded-2xl border">
         {LINKS.map((link) => (
