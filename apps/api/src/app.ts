@@ -24,7 +24,14 @@ import {
   snoozeRecommendationSchema,
   workspaceProfileSchema,
 } from '@outreachgraph/contracts';
-import { newId, OUTBOUND_ACTION_KINDS, type ActionKind, type Network } from '@outreachgraph/domain';
+import {
+  channelForNetwork,
+  isNetwork,
+  newId,
+  OUTBOUND_ACTION_KINDS,
+  type ActionKind,
+  type Network,
+} from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
   actorFromSession,
@@ -1041,13 +1048,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const person = await repo.getPerson(db, personId);
     if (!person || person.status === 'deleted') throw ApiError.notFound('person');
 
-    const [identities, signals, provenance] = await Promise.all([
+    const [identities, companyIdentities, signals, provenance] = await Promise.all([
       repo.listIdentities(db, personId),
+      repo.listCompanyIdentities(db, personId),
       repo.listPersonSignals(db, actor.workspaceId, personId),
       repo.listProvenance(db, personId),
     ]);
 
-    return c.json({ person, identities, signals, provenance });
+    return c.json({ person, identities, companyIdentities, signals, provenance });
   });
 
   api.get('/people/:id/identities', async (c) => {
@@ -1184,12 +1192,27 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const requested = c.req.query('filter');
     const filter = repo.isApprovalFilter(requested) ? requested : 'all';
 
-    const [recommendations, counts] = await Promise.all([
+    // The channel narrows the same set on a second axis. It is applied here
+    // rather than in SQL because the network is already on every row, so the
+    // page can switch channels without another round trip — the counts are
+    // what has to come from the database, not the classification.
+    const requestedChannel = c.req.query('channel');
+    const channel = repo.isChannelFilter(requestedChannel) ? requestedChannel : 'all';
+
+    const [rows, counts] = await Promise.all([
       repo.listPendingRecommendations(db, actor.workspaceId, limit, filter),
       repo.approvalCounts(db, actor.workspaceId),
     ]);
 
-    return c.json({ recommendations, counts, filter });
+    const recommendations =
+      channel === 'all'
+        ? rows
+        : rows.filter((row) => {
+            const network = (row as { network?: unknown }).network;
+            return isNetwork(network) && channelForNetwork(network) === channel;
+          });
+
+    return c.json({ recommendations, counts, filter, channel });
   });
 
   /**

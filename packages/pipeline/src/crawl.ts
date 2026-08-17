@@ -9,7 +9,11 @@
 
 import { newId } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
-import type { PersonEnrichmentProvider, SiteProvider } from '@outreachgraph/providers';
+import type {
+  CandidateIdentity,
+  PersonEnrichmentProvider,
+  SiteProvider,
+} from '@outreachgraph/providers';
 import type { TextModel } from '@outreachgraph/ai';
 import { emitEvent } from './events';
 import { runPipelineForCandidate } from './pipeline';
@@ -130,7 +134,13 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
   // company actually wants used.
   const domain = result.company.domain ?? hostOf(result.finalUrl);
 
-  if (domain && (result.contactEmail || result.company.name)) {
+  // A page worth recording an inbox from is worth recording its profiles from,
+  // so the company row is written whenever the page named the company at all —
+  // the socials are frequently the only contact route a site publishes.
+  const worthRecording =
+    result.contactEmail || result.company.name || result.company.identities.length > 0;
+
+  if (domain && worthRecording) {
     const stamp = now();
     const existing = await queryOne<{ id: string }>(
       deps.db,
@@ -138,19 +148,23 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
       [domain],
     );
 
+    let companyId: string;
+
     if (existing) {
+      companyId = existing.id;
       await deps.db.execute({
         sql: `UPDATE companies SET contact_email = COALESCE(contact_email, ?), updated_at = ?
                WHERE id = ?`,
         args: [result.contactEmail ?? null, stamp, existing.id],
       });
     } else {
+      companyId = newId('company');
       await deps.db.execute({
         sql: `INSERT INTO companies (id, name, domain, technologies, contact_email,
               created_at, updated_at)
               VALUES (?, ?, ?, '[]', ?, ?, ?)`,
         args: [
-          newId('company'),
+          companyId,
           result.company.name ?? domain,
           domain,
           result.contactEmail ?? null,
@@ -159,6 +173,8 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
         ],
       });
     }
+
+    await recordCompanyIdentities(deps.db, companyId, result, stamp);
   }
 
   await emitEvent(deps.db, {
@@ -214,6 +230,67 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
     peopleQueued: queued,
     usedSignals: result.usedSignals,
   };
+}
+
+/**
+ * Stores the social profiles the page published about the company.
+ *
+ * The extractor has always returned these and nothing ever read them, so every
+ * crawl so far parsed a footer full of profile links and kept none of them.
+ * They are stored against the *company*, never against the people found on the
+ * same page: a company's `@handle` is the company's, and copying it onto an
+ * employee's row would be a merge with no evidence behind it (PRD §14.1).
+ *
+ * `website` is skipped — the company already has a domain, and a self-link is
+ * not a second way to reach anyone.
+ *
+ * Failures here are logged rather than thrown. A profile link is a bonus on
+ * top of the crawl; losing one is not worth failing a job that found people
+ * and an inbox, and the unique index means the common failure is a duplicate
+ * this is trying to ignore anyway.
+ */
+async function recordCompanyIdentities(
+  db: Client,
+  companyId: string,
+  result: {
+    readonly finalUrl: string;
+    readonly company: { readonly identities: readonly CandidateIdentity[] };
+  },
+  stamp: string,
+): Promise<void> {
+  for (const identity of result.company.identities) {
+    if (identity.network === 'website' || !identity.handle) continue;
+
+    try {
+      await db.execute({
+        // The conflict target is the unique index, so a re-crawl refreshes when
+        // it was last seen rather than appending the same link again.
+        sql: `INSERT INTO company_identities (id, company_id, network, handle, profile_url,
+              confidence, source_url, first_seen_at, last_seen_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(company_id, network, handle) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at,
+                profile_url = COALESCE(company_identities.profile_url, excluded.profile_url),
+                confidence = max(company_identities.confidence, excluded.confidence)`,
+        args: [
+          newId('companyIdentity'),
+          companyId,
+          identity.network,
+          identity.handle,
+          identity.profileUrl ?? null,
+          identity.providerConfidence ?? 0.6,
+          result.finalUrl,
+          stamp,
+          stamp,
+        ],
+      });
+    } catch (error) {
+      console.warn(
+        `could not record ${identity.network} identity for ${companyId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
 }
 
 /** The host, for a progress line nobody wants to read a full URL in. */

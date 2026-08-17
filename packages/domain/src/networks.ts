@@ -95,6 +95,56 @@ export const CAPABILITY_LEVELS = ['yes', 'limited', 'no'] as const;
 export type CapabilityLevel = (typeof CAPABILITY_LEVELS)[number];
 
 /**
+ * How you reach someone, one level up from the network.
+ *
+ * The approval queue needs this because "what can I act on" is usually a
+ * question about the medium rather than the site: only email actually sends
+ * today, so "show me the email ones" is the difference between a usable queue
+ * and scrolling past dozens of cards that were never going to be sendable.
+ *
+ * Deliberately coarser than `Network` — a reviewer sorting their own work does
+ * not care whether a profile is on Bluesky or Mastodon, only that acting on it
+ * means opening a social app rather than writing a message.
+ */
+export const CHANNELS = ['email', 'social', 'web'] as const;
+
+export type Channel = (typeof CHANNELS)[number];
+
+export function isChannel(value: unknown): value is Channel {
+  return typeof value === 'string' && (CHANNELS as readonly string[]).includes(value);
+}
+
+/**
+ * Which channel a network belongs to.
+ *
+ * `rss` and `crm` sit under `web` rather than earning buckets of their own:
+ * neither is a place a human is messaged, so grouping them with the website is
+ * closer to the truth than a third tab that is almost always empty. GitHub is
+ * `social` despite being a code host — it is a profile with a person behind it,
+ * and the PRD forbids messaging there, which is exactly the kind of card this
+ * filter exists to move out of the way.
+ */
+export function channelForNetwork(network: Network): Channel {
+  switch (network) {
+    case 'email':
+      return 'email';
+    case 'linkedin':
+    case 'x':
+    case 'bluesky':
+    case 'reddit':
+    case 'nostr':
+    case 'youtube':
+    case 'instagram':
+    case 'github':
+      return 'social';
+    case 'website':
+    case 'rss':
+    case 'crm':
+      return 'web';
+  }
+}
+
+/**
  * Per-network capability advertised to the campaign wizard (PRD §7.4).
  * Remotely configurable because platform rules change without notice.
  */

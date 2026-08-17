@@ -152,6 +152,24 @@ export interface IdentityRow {
   source_type: string | null;
 }
 
+/**
+ * A profile the prospect's employer published, not one of theirs.
+ *
+ * Kept as its own row type so the page cannot render it as if the person owned
+ * it. `company_name` rides along because "the company's X account" needs the
+ * company named to mean anything.
+ */
+export interface CompanyIdentityRow {
+  id: string;
+  company_id: string;
+  company_name: string | null;
+  network: string;
+  handle: string | null;
+  profile_url: string | null;
+  confidence: number;
+  source_url: string | null;
+}
+
 export interface ProspectDetail {
   person: {
     id: string;
@@ -161,6 +179,7 @@ export interface ProspectDetail {
     status: string;
   };
   identities: IdentityRow[];
+  companyIdentities: CompanyIdentityRow[];
   signals: SignalRow[];
 }
 

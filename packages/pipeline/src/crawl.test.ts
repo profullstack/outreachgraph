@@ -283,4 +283,80 @@ describe('URL to approval card', () => {
     ]);
     expect(people).toHaveLength(1);
   });
+
+  /**
+   * The extractor has always read these; nothing ever stored them.
+   *
+   * Production is what this test is written against: 208 people, 207 `website`
+   * identities, one GitHub and one X, from 64 crawled companies whose footers
+   * between them published far more than two profiles. The links were parsed
+   * on every crawl and dropped, so "we have no social contact info" was a
+   * persistence bug rather than a crawling one.
+   */
+  test('the social profiles on the page are kept, against the company', async () => {
+    const { db } = await setup('e2e-company-identities');
+
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      payload: { url: 'https://loopwright.io' },
+    });
+
+    const site = new SiteProvider({ fetchImpl: stubNetwork() });
+    await drainQueue(db, async (job) => {
+      await runCrawlJob({ db, site, providers: [] }, job);
+    });
+
+    const identities = await queryAll<{ network: string; handle: string; profile_url: string }>(
+      db,
+      `SELECT ci.network, ci.handle, ci.profile_url
+         FROM company_identities ci
+         JOIN companies co ON co.id = ci.company_id
+        WHERE co.domain = ?
+     ORDER BY ci.network`,
+      ['loopwright.io'],
+    );
+
+    const byNetwork = new Map(identities.map((row) => [row.network, row.handle]));
+
+    // `sameAs` on the Organization block, and the footer link.
+    expect(byNetwork.get('github')).toBe('loopwright');
+    expect(byNetwork.get('x')).toBe('loopwright');
+
+    // The company's handle, never the person's: Alex Chen's own GitHub is on
+    // the same page, and attributing `loopwright` to them would be a merge
+    // with nothing behind it.
+    expect(identities.every((row) => row.handle !== 'alexchen')).toBe(true);
+
+    // `/watch` is a YouTube video, not somebody's channel — the extractor
+    // refuses to read a handle out of it, so nothing is stored for it.
+    expect(byNetwork.has('youtube')).toBe(false);
+  });
+
+  test('re-crawling refreshes a profile rather than duplicating it', async () => {
+    const { db } = await setup('e2e-company-identities-idempotent');
+
+    const site = new SiteProvider({ fetchImpl: stubNetwork() });
+
+    for (let i = 0; i < 2; i += 1) {
+      await enqueue(db, {
+        workspaceId: SEED.workspaceId,
+        kind: 'crawl_site',
+        payload: { url: 'https://loopwright.io' },
+      });
+      await drainQueue(db, async (job) => {
+        await runCrawlJob({ db, site, providers: [] }, job);
+      });
+    }
+
+    // A page crawled weekly would otherwise turn one link into fifty-two.
+    const rows = await queryAll(
+      db,
+      `SELECT ci.id FROM company_identities ci
+         JOIN companies co ON co.id = ci.company_id
+        WHERE co.domain = ? AND ci.network = 'github'`,
+      ['loopwright.io'],
+    );
+    expect(rows).toHaveLength(1);
+  });
 });
