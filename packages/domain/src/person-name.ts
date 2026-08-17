@@ -166,6 +166,105 @@ export function isLikelyRoleAccount(name: string): boolean {
   return false;
 }
 
+/**
+ * Honorifics and post-nominals, which belong to neither name part.
+ *
+ * Only the unambiguous ones. `Miss` is absent because it is also a surname,
+ * and stripping it would rename a real person.
+ */
+const TITLES = new Set(['mr', 'mrs', 'ms', 'mx', 'dr', 'prof', 'professor', 'sir', 'dame']);
+const SUFFIXES = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'phd', 'md', 'mba', 'esq']);
+
+/**
+ * Surname particles, which belong with the surname rather than starting it.
+ *
+ * "Ludwig van Beethoven" has the surname "van Beethoven", not "Beethoven", and
+ * an address derived from the wrong half is simply a wrong address.
+ */
+const PARTICLES = new Set([
+  'van',
+  'von',
+  'de',
+  'del',
+  'della',
+  'der',
+  'den',
+  'di',
+  'da',
+  'do',
+  'dos',
+  'das',
+  'du',
+  'la',
+  'le',
+  'el',
+  'al',
+  'bin',
+  'ibn',
+  'ter',
+  'ten',
+  'op',
+  'mac',
+  'mc',
+  'st',
+]);
+
+export interface SplitName {
+  readonly firstName: string;
+  /** Absent for mononyms. Plenty of people have exactly one name. */
+  readonly lastName?: string;
+}
+
+/**
+ * Splits a display name into the two parts an address pattern needs.
+ *
+ * Production stores the whole name in `display_name` and leaves `first_name`
+ * and `last_name` null — 212 of 213 people. Nothing noticed, because nothing
+ * needed the parts until deriving `jack@usefathom.com` from "Jack Ellis" did.
+ *
+ * Deliberately conservative, and the reason is asymmetry again: this feeds
+ * address derivation, and a wrongly split name produces a plausible-looking
+ * address for somebody who does not exist. So anything ambiguous returns
+ * `undefined` rather than a guess, and a role account returns `undefined`
+ * outright — `webmaster` has no first name to find.
+ *
+ * The middle is dropped rather than guessed at. "Mary Anne Evans" gives
+ * `mary` / `evans`: the parts that address patterns actually use.
+ */
+export function splitPersonName(name: string): SplitName | undefined {
+  if (isLikelyRoleAccount(name)) return undefined;
+
+  const bare = (word: string): string => word.replace(/[.,]/g, '').toLowerCase();
+
+  let words = normalise(name)
+    .split(' ')
+    .filter((word) => word.length > 0);
+
+  // Strip honorifics from the front and post-nominals from the back, each
+  // repeatedly: "Dr. Prof. Jane Okafor PhD" is one person, not four words.
+  while (words.length > 1 && TITLES.has(bare(words[0] ?? ''))) words = words.slice(1);
+  while (words.length > 1 && SUFFIXES.has(bare(words.at(-1) ?? ''))) words = words.slice(0, -1);
+
+  // A comma means the surname was written first: "Okafor, Jane".
+  const comma = name.indexOf(',');
+  if (comma > 0 && !SUFFIXES.has(bare(name.slice(comma + 1)))) {
+    const surname = normalise(name.slice(0, comma));
+    const rest = normalise(name.slice(comma + 1)).split(' ')[0];
+    if (surname && rest) return { firstName: rest, lastName: surname };
+  }
+
+  const first = words[0];
+  if (!first) return undefined;
+  if (words.length === 1) return { firstName: first };
+
+  // Walk back over any particles so they stay attached to the surname.
+  let start = words.length - 1;
+  while (start > 1 && PARTICLES.has(bare(words[start - 1] ?? ''))) start -= 1;
+
+  const lastName = words.slice(start).join(' ');
+  return lastName ? { firstName: first, lastName } : { firstName: first };
+}
+
 /** The inverse, for readability at call sites that gate on the good case. */
 export function isPlausiblePersonName(name: string): boolean {
   return !isLikelyRoleAccount(name);

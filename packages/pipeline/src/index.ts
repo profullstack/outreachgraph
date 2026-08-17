@@ -144,3 +144,14 @@ export {
   type JobStatus,
   type QueuedJob,
 } from './queue';
+
+export {
+  candidatesForPerson,
+  confirmCandidate,
+  knownPatternsForDomain,
+  proposeAddresses,
+  rejectCandidate,
+  type DecisionInput,
+  type EnrichCandidateRow,
+  type ProposeResult,
+} from './enrich';

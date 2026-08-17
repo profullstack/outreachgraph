@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
+import { EmailCandidates } from '../../../../components/email-candidates';
 import { PageGuide } from '../../../../components/page-guide';
 import {
   ApiUnavailableError,
@@ -62,6 +63,16 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
       <div className="mt-4">
         <PageGuide page="prospect" />
       </div>
+
+      {/* Above the identity list on purpose: "can we reach this person at all"
+          is the question blocking every other decision about them. */}
+      <EmailCandidates
+        personId={person.id}
+        candidates={detail.emailCandidates ?? []}
+        hasPersonalAddress={identities.some(
+          (identity) => identity.network === 'email' && Boolean(identity.handle),
+        )}
+      />
 
       <section className="mt-6">
         <h2 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">

@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { isLikelyRoleAccount, isPlausiblePersonName } from './person-name';
+import { isLikelyRoleAccount, isPlausiblePersonName, splitPersonName } from './person-name';
 
 describe('role accounts are not prospects', () => {
   test('the ones actually found in production', () => {
@@ -96,5 +96,62 @@ describe('real people are left alone', () => {
 
   test('a long-but-plausible full name', () => {
     expect(isPlausiblePersonName('Maria Fernanda de Souza Oliveira Lima')).toBe(true);
+  });
+});
+
+/**
+ * Splitting feeds address derivation, so a wrong split is not a cosmetic bug:
+ * it produces a plausible-looking address belonging to nobody, which bounces
+ * and is charged to our sending domain. Ambiguity therefore returns nothing.
+ */
+describe('splitting a display name', () => {
+  test('the ordinary two-part case', () => {
+    expect(splitPersonName('Jack Ellis')).toEqual({ firstName: 'jack', lastName: 'ellis' });
+  });
+
+  test('keeps a hyphenated given name whole', () => {
+    expect(splitPersonName('Tuan-Anh Tran')).toEqual({ firstName: 'tuan-anh', lastName: 'tran' });
+  });
+
+  test('drops the middle rather than guessing at it', () => {
+    expect(splitPersonName('Mary Anne Evans')).toEqual({ firstName: 'mary', lastName: 'evans' });
+  });
+
+  test('keeps a surname particle with the surname', () => {
+    // "Beethoven" alone is the wrong surname, and so is the address built on it.
+    expect(splitPersonName('Ludwig van Beethoven')).toEqual({
+      firstName: 'ludwig',
+      lastName: 'van beethoven',
+    });
+    expect(splitPersonName('Maria de la Cruz')).toEqual({
+      firstName: 'maria',
+      lastName: 'de la cruz',
+    });
+  });
+
+  test('strips honorifics and post-nominals', () => {
+    expect(splitPersonName('Dr. Jane Okafor')).toEqual({ firstName: 'jane', lastName: 'okafor' });
+    expect(splitPersonName('John Smith Jr.')).toEqual({ firstName: 'john', lastName: 'smith' });
+  });
+
+  test('handles surname-first, written with a comma', () => {
+    expect(splitPersonName('Okafor, Jane')).toEqual({ firstName: 'jane', lastName: 'okafor' });
+  });
+
+  test('a mononym has a first name and no surname', () => {
+    expect(splitPersonName('Prince')).toEqual({ firstName: 'prince' });
+  });
+
+  test('a role account splits into nothing at all', () => {
+    // `webmaster` was a real prospect in production. It has no first name.
+    expect(splitPersonName('webmaster')).toBeUndefined();
+    expect(splitPersonName('no-reply')).toBeUndefined();
+    expect(splitPersonName('')).toBeUndefined();
+  });
+
+  test('every name the guard accepts yields a usable first name', () => {
+    for (const name of ['Grace Hopper', 'Björk', 'Maria Fernanda de Souza Oliveira Lima']) {
+      expect(splitPersonName(name)?.firstName).toBeTruthy();
+    }
   });
 });
