@@ -113,7 +113,22 @@ export function generateRecommendation(input: RecommendationInput): Recommendati
 
   const candidateActions = trigger ? ACTION_PREFERENCE : PASSIVE_PREFERENCE;
 
-  const choice = chooseAction(input, networks, candidateActions);
+  // Having something to say does not guarantee a way to say it.
+  //
+  // A prospect found by crawling is usually reachable only on `website`, which
+  // is a place to read and not a place to message, so no engagement action
+  // survives the policy check. Returning nothing there meant the person
+  // vanished — no card, no queue entry, no trace of a lead that had been
+  // enriched, resolved and scored. Falling back to the passive set keeps them
+  // visible as research, which is the honest description of the state: we know
+  // something about them and have no permitted channel to use it on.
+  //
+  // The fallback is only reached when the outbound set came back empty, so a
+  // reachable prospect is never downgraded to research by it.
+  const choice =
+    chooseAction(input, networks, candidateActions) ??
+    (trigger ? chooseAction(input, networks, PASSIVE_PREFERENCE) : undefined);
+
   if (!choice) {
     return {
       ok: false,

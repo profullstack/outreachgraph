@@ -268,12 +268,32 @@ export async function runPipelineForCandidate(
 }
 
 /**
- * Stores "their own site says this is their role" as a signal.
+ * Stores "their own site says this about them" as a signal.
  *
  * Confidence is high — the company published it about its own staff — while
  * relevance is deliberately mid. It is a fact worth citing, not evidence that
  * anyone is in the market for anything, and scoring it as intent would put
  * every receptionist on a team page at the top of the queue.
+ *
+ * **A missing job title used to mean no signal at all**, and that one condition
+ * was what stalled the entire queue. The correlation in production was exact:
+ * of 208 people, all 131 with a title had a signal and all 76 without had
+ * none — and every one of the 73 cards sitting in the approval queue was an
+ * untitled person. No signal means the recommendation engine falls to
+ * `PASSIVE_PREFERENCE` and can only ever propose `refresh_research`, which
+ * nothing executes, so they were stuck permanently.
+ *
+ * The gate was never a policy decision. "Listed as Office Manager on the
+ * company website" and "named on the company website" are equally (un)related
+ * to buying intent; the title was load-bearing only because the summary string
+ * needed it to be grammatical. So an untitled listing is stored too, at lower
+ * relevance — it is the same kind of fact carrying less to personalise with.
+ *
+ * The arithmetic matters, because `MIN_TRIGGER_WEIGHT` is 0.15 and the weight
+ * is `decay × confidence × relevance`. At 0.9 × 0.35 an untitled listing is
+ * 0.315 fresh and 0.205 at 30 days, so it triggers; by 60 days it is 0.126 and
+ * stops, which is the right shape — "their name is on a page" is a thin
+ * pretext to open with and ought to go stale faster than a stated role.
  *
  * Deduped on the source URL like every other signal, so re-crawling a site on
  * a later tick does not accumulate one of these per run.
@@ -286,7 +306,9 @@ async function storeSiteSignal(
   origin: CandidateOrigin,
   stamp: string,
 ): Promise<number> {
-  if (!origin.sourceUrl || !candidate.title) return 0;
+  // The source URL is still required: without it there is no page to cite, and
+  // an uncitable claim is one the composer is not allowed to use anyway.
+  if (!origin.sourceUrl) return 0;
 
   const existing = await queryOne<{ id: string }>(
     db,
@@ -297,14 +319,21 @@ async function storeSiteSignal(
   if (existing) return 0;
 
   const where = candidate.companyName ? ` at ${candidate.companyName}` : '';
-  const summary = `Listed as ${candidate.title}${where} on the company website.`;
-  const evidence = `${candidate.fullName} — ${candidate.title}`;
+  const titled = Boolean(candidate.title);
+
+  const summary = titled
+    ? `Listed as ${candidate.title}${where} on the company website.`
+    : `Named on the company website${where ? ` (${candidate.companyName})` : ''}.`;
+
+  // Evidence is what the page actually said, verbatim, and nothing more — an
+  // untitled listing has only the name to offer, so that is all it claims.
+  const evidence = titled ? `${candidate.fullName} — ${candidate.title}` : candidate.fullName;
 
   await db.execute({
     sql: `INSERT INTO signals (id, workspace_id, person_id, network, signal_type, subtype,
           summary, evidence, source_url, source_timestamp, observed_at, confidence,
           relevance, sentiment)
-          VALUES (?, ?, ?, 'website', 'content_topic', 'site_role', ?, ?, ?, ?, ?, 0.9, 0.5,
+          VALUES (?, ?, ?, 'website', 'content_topic', 'site_role', ?, ?, ?, ?, ?, 0.9, ?,
                   'neutral')`,
     args: [
       newId('signal'),
@@ -315,6 +344,7 @@ async function storeSiteSignal(
       origin.sourceUrl,
       stamp,
       stamp,
+      titled ? 0.5 : 0.35,
     ],
   });
 
@@ -807,6 +837,28 @@ async function createRecommendation(
 
   const recommendation = result.recommendation;
   const id = newId('recommendation');
+
+  // Retire the research card this one replaces.
+  //
+  // Recommendations were only ever inserted, never reconciled, which was
+  // harmless while a person was processed once and never revisited. Re-reading
+  // a site makes it a duplicate factory: the crawl that finally produces a
+  // signal leaves the old "refresh research" card sitting next to the new
+  // "send email" one, for the same person, both pending. Approve the email and
+  // the research card is still there proposing work that is already done.
+  //
+  // Only internal actions are superseded, and only pending ones. An outbound
+  // card may already carry a drafted message and a reviewer part-way through a
+  // decision; replacing that behind their back would discard real human work.
+  // A research card carries nothing by definition, so nothing is lost.
+  await db.execute({
+    sql: `UPDATE recommendations
+             SET status = 'superseded'
+           WHERE workspace_id = ? AND campaign_id = ? AND person_id = ?
+             AND status = 'pending'
+             AND action IN ('refresh_research', 'observe', 'wait')`,
+    args: [workspaceId, campaignId, personId],
+  });
 
   await db.execute({
     sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
