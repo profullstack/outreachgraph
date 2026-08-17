@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { ListeningForm } from '../../../components/listening-form';
+import { PageGuide } from '../../../components/page-guide';
 import { ProductSwitcher } from '../../../components/product-switcher';
 import { ProfileSetup } from '../../../components/profile-setup';
 import {
@@ -88,6 +89,10 @@ export default async function SetupPage({
               : 'Outreach is only as good as what we know about you. This takes a minute.'}
         </p>
       </header>
+
+      {/* Both suppressed items are this page: the unverified case has its own
+          gate below, and "tell us what you sell" is the form itself. */}
+      <PageGuide page="setup" suppress={['verify', 'profile']} />
 
       {offline ? (
         <p className="border-border text-ink-muted rounded-2xl border border-dashed p-8 text-center text-sm">

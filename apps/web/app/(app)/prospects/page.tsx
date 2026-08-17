@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { PageGuide } from '../../../components/page-guide';
 import { ApiUnavailableError, NotAuthenticatedError, fetchProspects } from '../../../lib/api';
 import type { ProspectRow } from '../../../lib/types';
 
@@ -34,6 +35,8 @@ export default async function ProspectsPage() {
           {offline ? 'Waiting for the API' : `${people.length} in this workspace`}
         </p>
       </header>
+
+      <PageGuide page="prospects" />
 
       {/* Intake lives on Outreach, in one box that takes a website or a
           description of a market. The GitHub-handle form that used to sit here

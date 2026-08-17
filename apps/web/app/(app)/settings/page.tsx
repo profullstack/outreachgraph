@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { SettingsForm } from '../../../components/settings-form';
 import { MailboxForm } from '../../../components/mailbox-form';
+import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -41,6 +42,9 @@ export default async function SettingsPage() {
         <h1 className="text-xl font-semibold">Settings</h1>
         <p className="text-ink-muted text-sm">What we send you, and what we send for you.</p>
       </header>
+
+      {/* The mailbox items point at the form directly below. */}
+      <PageGuide page="settings" suppress={['mailbox', 'verify-mailbox']} />
 
       {offline || !settings ? (
         <p className="border-border text-ink-muted rounded-2xl border border-dashed p-8 text-center text-sm">

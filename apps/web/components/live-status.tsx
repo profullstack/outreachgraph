@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { describeKinds } from '../lib/activity';
 import type { WorkflowEventView, WorkflowStatusView } from '../lib/api';
 
 /**
@@ -162,21 +163,6 @@ function Stat({ label, value, hint }: { label: string; value: number; hint?: str
       {hint ? <dd className="text-ink-muted text-[11px]">{hint}</dd> : null}
     </div>
   );
-}
-
-const KIND_LABELS: Record<string, string> = {
-  crawl_site: 'reading sites',
-  discover_domains: 'finding companies',
-  rescore_prospect: 'rescoring',
-  process_deletion: 'deleting',
-};
-
-function describeKinds(byKind: Record<string, number>): string | undefined {
-  const parts = Object.entries(byKind)
-    .filter(([, count]) => count > 0)
-    .map(([kind, count]) => `${count} ${KIND_LABELS[kind] ?? kind.replace(/_/g, ' ')}`);
-
-  return parts.length > 0 ? parts.join(', ') : undefined;
 }
 
 function PhaseDot({ level }: { level: string }) {

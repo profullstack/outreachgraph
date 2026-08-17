@@ -87,6 +87,15 @@ export function ApprovalQueue({
   counts,
   initialFilter,
   initialChannel,
+  /**
+   * The page's guidance panel, passed in as a slot.
+   *
+   * It belongs under this heading rather than above it, and the heading lives
+   * here because the tab blurb writes it. A server component handed to a
+   * client one as a prop renders on the server as normal, which is what keeps
+   * the panel off the client bundle.
+   */
+  guide,
 }: {
   cards: Card[];
   counts: {
@@ -95,6 +104,7 @@ export function ApprovalQueue({
   };
   initialFilter: ApprovalFilter;
   initialChannel: ChannelFilter;
+  guide?: React.ReactNode;
 }) {
   const [filter, setFilter] = useState<ApprovalFilter>(initialFilter);
   const [channel, setChannel] = useState<ChannelFilter>(initialChannel);
@@ -150,6 +160,8 @@ export function ApprovalQueue({
           {activeChannel?.blurb ? ` ${activeChannel.blurb}` : ''}
         </p>
       </header>
+
+      {guide}
 
       <nav className="mb-2 flex flex-wrap gap-2" aria-label="Filter the queue by stage">
         {TABS.map((tab) => (

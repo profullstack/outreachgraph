@@ -8,6 +8,7 @@
  * a shared service identity.
  */
 
+import { cache } from 'react';
 import { cookies } from 'next/headers';
 import type { Channel } from '@outreachgraph/domain';
 import type {
@@ -71,8 +72,14 @@ export class NotAuthenticatedError extends Error {
 /**
  * `cache: 'no-store'` because approval state and policy decisions must never
  * be stale — the same reason the service worker refuses to cache `/api`.
+ *
+ * Wrapped in React's `cache` so one render pass reads each path once. That is
+ * not a freshness compromise: within a single render two reads of one URL
+ * showing two different answers would be a bug, not extra accuracy. It is what
+ * lets the guidance panel ask for the state a page has usually already
+ * fetched without doubling that page's API calls.
  */
-async function request<T>(path: string): Promise<T> {
+const requestJson = cache(async (path: string): Promise<unknown> => {
   const jar = await cookies();
   const cookieHeader = jar
     .getAll()
@@ -98,7 +105,12 @@ async function request<T>(path: string): Promise<T> {
     throw new Error(`API ${response.status} for ${path}`);
   }
 
-  return (await response.json()) as T;
+  return await response.json();
+});
+
+/** The typed face of the memoized reader above. */
+async function request<T>(path: string): Promise<T> {
+  return (await requestJson(path)) as T;
 }
 
 export async function fetchMe(): Promise<CurrentUser> {

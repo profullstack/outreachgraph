@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { ApprovalQueue as Queue } from '../../../components/approval-queue';
+import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -63,6 +64,9 @@ export default async function ApprovalsPage({
       counts={queue.counts}
       initialFilter={filter}
       initialChannel={channel}
+      // Handed in as a slot so it lands under the heading the queue owns.
+      // `approve` is suppressed: the queue it would link to is this page.
+      guide={<PageGuide page="approvals" suppress={['approve']} />}
     />
   );
 }
