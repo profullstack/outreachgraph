@@ -435,3 +435,119 @@ describe('a recommendation with no draft', () => {
     expect(result.skipped[0]?.reason).toContain('no drafted message');
   });
 });
+
+describe('one mailbox, several colleagues', () => {
+  /**
+   * Adds a second prospect at the same company with no personal address, so
+   * both fall back to the one shared inbox. This is the production shape: no
+   * individual was ever contacted twice, and `support@canny.io` still received
+   * fourteen messages.
+   */
+  async function addColleague(db: Client, name: string): Promise<string> {
+    const stamp = now();
+    const personId = `per_${name.toLowerCase()}`;
+
+    await db.execute({
+      sql: `INSERT INTO people (id, display_name, current_company_id, status, believed_minor,
+            outreach_eligible, identity_confidence, created_at, updated_at)
+            VALUES (?, ?, ?, 'active', 0, 1, 0.95, ?, ?)`,
+      args: [personId, name, SEED.companyId, stamp, stamp],
+    });
+
+    await db.execute({
+      sql: `INSERT INTO campaign_people (campaign_id, person_id, workspace_id, status,
+            interaction_state, discovered_at, updated_at)
+            VALUES (?, ?, ?, 'recommended', 'never_contacted', ?, ?)`,
+      args: [SEED.campaignId, personId, SEED.workspaceId, stamp, stamp],
+    });
+
+    const recommendationId = `rec_${name.toLowerCase()}`;
+    await db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
+            priority, reason, policy_status, policy_version, status, created_at)
+            VALUES (?, ?, ?, ?, 'send_email', 'email', 50, 'same company',
+                    'allow', '2026-01-01', 'pending', ?)`,
+      args: [recommendationId, SEED.workspaceId, SEED.campaignId, personId, stamp],
+    });
+
+    await db.execute({
+      sql: `INSERT INTO drafts (id, workspace_id, recommendation_id, subject, body, checks_json,
+            created_at, updated_at)
+            VALUES (?, ?, ?, 'Hello', 'A grounded message.', '[]', ?, ?)`,
+      args: [`drf_${name.toLowerCase()}`, SEED.workspaceId, recommendationId, stamp, stamp],
+    });
+
+    return personId;
+  }
+
+  test('writes to a shared inbox once, however many colleagues are queued', async () => {
+    seeded = await seedDatabase('autopilot-shared-inbox');
+    const { db } = seeded;
+
+    // Neither has a personal address, so both resolve to the company's.
+    await makeSendable(db, { companyEmail: 'support@acme.com' });
+    await addColleague(db, 'Colleague');
+
+    const { sent, mailer } = recordingMailer();
+    const result = await runAutopilot({ db, mailer }, SEED.workspaceId);
+
+    // Two prospects, two drafts, two clean per-person limits — and one message.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.to).toBe('support@acme.com');
+    expect(result.sent).toHaveLength(1);
+
+    // The second is held back, and the reason names the *address* rather than
+    // the person — which is the only wording that makes sense to someone
+    // looking at a prospect who has never been contacted. Either address gate
+    // may be the one that fires; both are keyed on the mailbox.
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]?.reason).toMatch(/address|company inbox/i);
+  });
+
+  test('still writes to two different mailboxes', async () => {
+    // The guard must not become "one email per company" — two people with
+    // their own addresses are two conversations.
+    seeded = await seedDatabase('autopilot-distinct-inboxes');
+    const { db } = seeded;
+
+    await makeSendable(db, { personEmail: 'jane@acme.com' });
+    const colleagueId = await addColleague(db, 'Colleague');
+
+    await db.execute({
+      sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
+            confidence, source_type, verified_by, first_seen_at)
+            VALUES ('sid_col_email', ?, 'email', 'tom@acme.com', 'tom@acme.com', 0.95,
+                    'public_web', '[]', ?)`,
+      args: [colleagueId, now()],
+    });
+
+    const { sent, mailer } = recordingMailer();
+    await runAutopilot({ db, mailer }, SEED.workspaceId);
+
+    expect(sent.map((message) => message.to).sort()).toEqual(['jane@acme.com', 'tom@acme.com']);
+  });
+
+  test('counts a message the human sent by hand', async () => {
+    // A mailbox does not care which half of the product wrote to it, so an
+    // interaction recorded by the approval queue has to bind the automated
+    // path too.
+    seeded = await seedDatabase('autopilot-manual-counts');
+    const { db } = seeded;
+
+    await makeSendable(db, { companyEmail: 'support@acme.com' });
+
+    await db.execute({
+      sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, network,
+            direction, state, body, contact_address, shared_inbox, occurred_at, recorded_at)
+            VALUES ('int_manual', ?, ?, ?, 'email', 'outbound', 'contacted', 'sent by hand',
+                    'support@acme.com', 1, ?, ?)`,
+      args: [SEED.workspaceId, SEED.personId, SEED.campaignId, now(), now()],
+    });
+
+    const { sent, mailer } = recordingMailer();
+    const result = await runAutopilot({ db, mailer }, SEED.workspaceId);
+
+    expect(sent).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+  });
+});
