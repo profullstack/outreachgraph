@@ -13,6 +13,7 @@
 
 import type { Network } from '@outreachgraph/domain';
 import type { CandidateIdentity, PersonCandidate } from '../provider';
+import { parseFediverseUrl } from './fediverse';
 
 export interface ExtractedCompany {
   readonly name?: string;
@@ -42,13 +43,27 @@ const NETWORK_HOSTS: readonly (readonly [RegExp, Network])[] = [
   [/(^|\.)instagram\.com$/i, 'instagram'],
 ];
 
-export function networkForUrl(url: string): Network | undefined {
+function knownHostNetwork(url: string): Network | undefined {
   try {
     const host = new URL(url).hostname;
     return NETWORK_HOSTS.find(([pattern]) => pattern.test(host))?.[1];
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The network a link belongs to.
+ *
+ * Ordering is load-bearing. The host map runs first so `youtube.com/@name` is a
+ * YouTube channel rather than a Fediverse account — both use `/@name`, and only
+ * the host tells them apart. Fediverse detection is the fallback precisely
+ * because its hosts cannot be enumerated: Mastodon is thousands of independent
+ * servers and anyone can start another one this afternoon, so shape is the only
+ * durable signal.
+ */
+export function networkForUrl(url: string): Network | undefined {
+  return knownHostNetwork(url) ?? (parseFediverseUrl(url) ? 'mastodon' : undefined);
 }
 
 /** `https://github.com/octocat/repo` → `octocat`. */
@@ -69,6 +84,16 @@ const NOT_HANDLES =
   /^(watch|playlist|embed|shorts|results|feed|hashtag|search|explore|about|legal|terms|privacy|help|login|signup|share|intent|home|posts|status|p|reel|stories|tv|jobs|pricing|blog|docs|features|events|groups|topics|orgs|sponsors|marketplace|pulse|learning|today|new|trending)$/i;
 
 export function handleFromUrl(url: string): string | undefined {
+  // A Fediverse handle is `user@host`, not a path segment, and the host is the
+  // one that *owns* the account rather than the one serving the page. Taking
+  // the first segment of `defcon.social/@b0rk@jvns.ca` would yield the handle
+  // `@b0rk@jvns.ca` filed under defcon.social, and every later lookup would go
+  // to a server that has never heard of the account.
+  if (!knownHostNetwork(url)) {
+    const account = parseFediverseUrl(url);
+    if (account) return account.acct;
+  }
+
   try {
     const parsed = new URL(url);
     const segments = parsed.pathname.split('/').filter(Boolean);

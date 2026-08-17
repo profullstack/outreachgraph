@@ -201,3 +201,46 @@ describe('attributeToPeople', () => {
     expect(result.companyIdentities.length).toBeGreaterThan(0);
   });
 });
+
+describe('Fediverse accounts', () => {
+  const FEDI_TEAM = `
+    <main>
+      <div class="member">
+        <h3>Julia Evans</h3><p>Writer</p>
+        <a href="https://defcon.social/@b0rk@jvns.ca">Mastodon</a>
+      </div>
+      <div class="member">
+        <h3>Wes Todd</h3><p>Platform</p>
+        <a href="https://hachyderm.io/@wes">Mastodon</a>
+      </div>
+    </main>
+  `;
+
+  test('a remote view resolves to the server that owns the account', () => {
+    const julia = attribute(FEDI_TEAM, ['Julia Evans', 'Wes Todd']).identitiesByPerson.get(
+      'Julia Evans',
+    );
+    const mastodon = julia?.find((identity) => identity.network === 'mastodon');
+
+    // defcon.social was only rendering it; jvns.ca is where a reply has to go.
+    expect(mastodon?.handle).toBe('b0rk@jvns.ca');
+    expect(mastodon?.profileUrl).toBe('https://jvns.ca/@b0rk');
+  });
+
+  test('each account goes to the person whose card it sits in', () => {
+    const wes = attribute(FEDI_TEAM, ['Julia Evans', 'Wes Todd']).identitiesByPerson.get(
+      'Wes Todd',
+    );
+
+    expect(wes?.map((identity) => identity.handle)).toEqual(['wes@hachyderm.io']);
+  });
+
+  test('a /@name link on a host that is not a Fediverse server is not one', () => {
+    const html = `<main><div><h3>Julia Evans</h3>
+      <a href="https://medium.com/@b0rk">Blog</a></div></main>`;
+
+    const julia = attribute(html, ['Julia Evans']).identitiesByPerson.get('Julia Evans') ?? [];
+
+    expect(julia.some((identity) => identity.network === 'mastodon')).toBe(false);
+  });
+});
