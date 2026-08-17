@@ -6,6 +6,14 @@
  * the server module into the browser bundle and fail the build.
  */
 
+/**
+ * Which tab of the approvals queue a card belongs to.
+ *
+ * `all` is a view, never a card's own bucket — every card is exactly one of
+ * the other three.
+ */
+export type ApprovalBucket = 'ready' | 'needs_draft' | 'research';
+
 export interface ApprovalCard {
   id: string;
   person_id: string;
@@ -22,6 +30,13 @@ export interface ApprovalCard {
   signal_at: string | null;
   draft_body: string | null;
   draft_subject: string | null;
+  /**
+   * Computed by the API, not the browser. The tabs filter on this, so it has
+   * to be the same classification the counts are derived from — recomputing
+   * it here from `action` and `draft_body` would be a second implementation
+   * of a rule that already exists in SQL, free to drift from it.
+   */
+  bucket: ApprovalBucket;
 }
 
 /** One thing the workspace sells. A workspace may sell several. */

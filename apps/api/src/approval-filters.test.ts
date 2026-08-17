@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 interface Queue {
-  recommendations: { id: string; action: string }[];
+  recommendations: { id: string; action: string; bucket: string }[];
   counts: { all: number; ready: number; needs_draft: number; research: number };
   filter: string;
 }
@@ -139,6 +139,50 @@ describe('filtering the approval queue', () => {
     expect(counts.research).toBe(2);
     expect(counts.ready).toBeGreaterThanOrEqual(1);
     expect(counts.all).toBe(counts.ready + counts.needs_draft + counts.research);
+  });
+
+  /**
+   * The page fetches `all` once and the tabs pick from it in the browser, so
+   * the bucket on each row is what the tabs actually sort by. If it ever
+   * disagreed with the counts the tabs would show a number next to a list
+   * that contradicts it.
+   */
+  test('every card names its bucket, and the buckets add up to the counts', async () => {
+    const { app, db } = await harness('filter-buckets');
+    await add(db, 'rec_research_1', 'refresh_research', 'website', false);
+    await add(db, 'rec_research_2', 'refresh_research', 'website', false);
+    await add(db, 'rec_email_undrafted', 'send_email', 'email', false);
+    await add(db, 'rec_email_drafted', 'send_email', 'email', true);
+
+    const { recommendations, counts } = await queue(app, 'all');
+    const bucketOf = (id: string) => recommendations.find((r) => r.id === id)?.bucket;
+
+    expect(bucketOf('rec_research_1')).toBe('research');
+    expect(bucketOf('rec_email_undrafted')).toBe('needs_draft');
+    expect(bucketOf('rec_email_drafted')).toBe('ready');
+
+    // What the client-side tabs do, done here: filtering by bucket has to
+    // land on the same number the badge shows.
+    for (const bucket of ['ready', 'needs_draft', 'research'] as const) {
+      expect(recommendations.filter((r) => r.bucket === bucket)).toHaveLength(counts[bucket]);
+    }
+  });
+
+  test('the bucket survives a narrowed query', async () => {
+    const { app, db } = await harness('filter-buckets-narrowed');
+    await add(db, 'rec_research_1', 'refresh_research', 'website', false);
+    await add(db, 'rec_email_undrafted', 'send_email', 'email', false);
+
+    // The bucket is computed in the SELECT, so narrowing the WHERE clause
+    // shifts every placeholder after it — the classic way this breaks is a
+    // filtered query binding the wrong arguments.
+    const needsDraft = await queue(app, 'needs_draft');
+    expect(needsDraft.recommendations.map((r) => r.id)).toContain('rec_email_undrafted');
+    expect(needsDraft.recommendations.every((r) => r.bucket === 'needs_draft')).toBe(true);
+
+    const research = await queue(app, 'research');
+    expect(research.recommendations.map((r) => r.id)).toContain('rec_research_1');
+    expect(research.recommendations.every((r) => r.bucket === 'research')).toBe(true);
   });
 
   test('an unknown filter shows the queue rather than failing', async () => {
