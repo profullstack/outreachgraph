@@ -11,6 +11,7 @@ export * from './networks';
 export * from './confidence';
 export * from './provenance';
 export * from './person';
+export * from './person-name';
 export * from './signal';
 export * from './campaign';
 export * from './intake';

@@ -38,6 +38,7 @@ import {
   listeningCampaigns,
   processDeletion,
   pruneWorkflowEvents,
+  regenerateRecommendations,
   rescoreProspect,
   runAutopilot,
   runCrawlJob,
@@ -510,6 +511,26 @@ async function runJob(job: QueuedJob): Promise<void> {
       if (!campaignId || !personId)
         throw new Error('rescore_prospect needs campaignId and personId');
       await rescoreProspect(db, campaignId, personId);
+      return;
+    }
+    case 'regenerate_recommendations': {
+      const { campaignId, limit } = job.payload as { campaignId?: string; limit?: number };
+      if (!campaignId) throw new Error('regenerate_recommendations needs campaignId');
+
+      const result = await regenerateRecommendations({
+        db,
+        workspaceId: job.workspaceId,
+        campaignId,
+        ...(typeof limit === 'number' ? { limit } : {}),
+        providers: fanOutProviders,
+        ...(model ? { model } : {}),
+        emailSendingEnabled: mailer !== undefined,
+      });
+
+      console.log(
+        `regenerate ${campaignId}: ${result.replaced} replaced,` +
+          ` ${result.unchanged} unchanged of ${result.considered}`,
+      );
       return;
     }
     case 'process_deletion': {

@@ -10,7 +10,7 @@
  * enriched prospect is still inspectable in the UI.
  */
 
-import { newId, type Network, type SignalType } from '@outreachgraph/domain';
+import { isLikelyRoleAccount, newId, type Network, type SignalType } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { resolveIdentity, type EvidenceInput } from '@outreachgraph/identity';
 import {
@@ -129,6 +129,27 @@ export async function runPipelineForCandidate(
 ): Promise<PipelineResult> {
   const { db, workspaceId, campaignId } = options;
   const stamp = now();
+
+  // A mailbox is not a prospect.
+  //
+  // Crawling scrapes names out of prose and markup, and some of what comes
+  // back is page furniture: production stored `webmaster` (twice at one
+  // company) and `admin` as people, enriched and scored and queued like
+  // anyone else. They were harmless only because nothing could act on them —
+  // and giving untitled people a signal removed exactly that protection, so
+  // the next step would have been a real message addressed to "webmaster".
+  //
+  // Rejected here rather than in any one extractor: every provider funnels
+  // through this function, so this is the only place the rule cannot be
+  // bypassed by adding a new source later.
+  if (isLikelyRoleAccount(candidate.fullName)) {
+    return {
+      stage: 'stopped',
+      identitiesLinked: 0,
+      signalsStored: 0,
+      stoppedBecause: 'not a person name',
+    };
+  }
 
   const personId = await upsertPerson(db, candidate, stamp);
 
@@ -698,6 +719,25 @@ async function storeSignals(
   }
 
   return stored;
+}
+
+/**
+ * Re-decides one person from stored state alone.
+ *
+ * Exposed so the `regenerate_recommendations` job can reuse the real decision
+ * path rather than reimplementing it. A second implementation of "what should
+ * we do about this person" is exactly the thing that drifts from the first and
+ * then disagrees with it in production, and this one already reads every input
+ * from the database — no provider, no network, no model.
+ *
+ * Returns the new recommendation id, or undefined when the engine still has no
+ * permitted action, which is an answer rather than a failure.
+ */
+export async function regenerateFor(
+  options: PipelineOptions,
+  personId: string,
+): Promise<string | undefined> {
+  return createRecommendation(options.db, options, personId);
 }
 
 async function createRecommendation(

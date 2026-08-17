@@ -28,6 +28,15 @@ export const JOB_KINDS = [
   'crawl_site',
   /** Expand a keyword into real companies and queue a crawl for each. */
   'discover_domains',
+  /**
+   * Re-decide people holding a card that predates their evidence.
+   *
+   * Needed because a recommendation is decided once and never revisited, and
+   * evidence can now arrive after the person does — a backfill, or a later
+   * crawl of a different page. Re-crawling does not cover it: the chain only
+   * runs for people found on the page *this* time.
+   */
+  'regenerate_recommendations',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
