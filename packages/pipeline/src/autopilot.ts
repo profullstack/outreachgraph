@@ -309,6 +309,24 @@ export async function runAutopilot(
     //
     // Re-evaluated from live rows, never from the stored snapshot.
     const counts = await actionCounts(db, workspaceId, row.person_id, at);
+
+    // Counted against the mailbox as well as the person.
+    //
+    // Both limits are needed and neither substitutes for the other. The
+    // per-person limit answers "how often do we contact this human"; this one
+    // answers "how much mail does this mailbox get", and a prospect with no
+    // personal address falls back to their employer's shared inbox — so N
+    // colleagues are N separate people, each comfortably inside its own weekly
+    // limit, while one `support@` receives N messages.
+    //
+    // The policy engine grew these gates in #34, but only the human approval
+    // route in `app.ts` ever filled them in. They are optional inputs, so
+    // omitting them does not fail loudly — it silently disables them, and this
+    // is the unattended path that sends at volume. In production the manual
+    // route was protected and autopilot was not, which is how an address that
+    // had already been written to that afternoon was written to again hours
+    // after the fix shipped.
+    const addressUsage = await addressCounts(db, workspaceId, recipient.address, at);
     const budget = safeJson(row.budget_json);
 
     const decision = evaluatePolicy({
@@ -327,6 +345,12 @@ export async function runAutopilot(
       maxActionsPerProspectPerWeek: numberOr(budget.maxActionsPerProspectPerWeek, 1),
       ...(counts.hoursSinceLast !== undefined
         ? { hoursSinceLastActionToProspect: counts.hoursSinceLast }
+        : {}),
+      actionsToThisAddressThisWeek: addressUsage.thisWeek,
+      maxActionsPerAddressPerWeek: numberOr(budget.maxActionsPerAddressPerWeek, 1),
+      addressShared: recipient.shared,
+      ...(addressUsage.hoursSinceLast !== undefined
+        ? { hoursSinceLastActionToAddress: addressUsage.hoursSinceLast }
         : {}),
     });
 
@@ -513,6 +537,46 @@ async function actionCounts(
   if (Number.isNaN(stamp)) return { thisProspect };
 
   return { thisProspect, hoursSinceLast: (at.getTime() - stamp) / 3_600_000 };
+}
+
+/**
+ * The same two limits, counted against the mailbox rather than the person.
+ *
+ * Read from `interactions.contact_address` — the address a message actually
+ * reached — rather than from `actions`, which records who it was addressed to.
+ * For a shared inbox those are different questions, and only the first one can
+ * see fourteen colleagues arriving at one `support@`.
+ *
+ * Counting outbound interactions also means a message sent by hand from the
+ * approval queue counts against the automated path, and vice versa. A mailbox
+ * does not care which half of the product wrote to it.
+ */
+async function addressCounts(
+  db: Client,
+  workspaceId: string,
+  address: string,
+  at: Date,
+): Promise<{ thisWeek: number; hoursSinceLast?: number }> {
+  const weekAgo = new Date(at.getTime() - 7 * 24 * 3_600_000).toISOString();
+
+  const row = await queryOne<{ n: number; last_at: string | null }>(
+    db,
+    `SELECT COUNT(*) AS n,
+            (SELECT MAX(occurred_at) FROM interactions
+              WHERE workspace_id = ? AND contact_address = ? AND direction = 'outbound') AS last_at
+       FROM interactions
+      WHERE workspace_id = ? AND contact_address = ? AND direction = 'outbound'
+        AND occurred_at >= ?`,
+    [workspaceId, address, workspaceId, address, weekAgo],
+  );
+
+  const thisWeek = row?.n ?? 0;
+  if (!row?.last_at) return { thisWeek };
+
+  const stamp = Date.parse(row.last_at);
+  if (Number.isNaN(stamp)) return { thisWeek };
+
+  return { thisWeek, hoursSinceLast: (at.getTime() - stamp) / 3_600_000 };
 }
 
 function safeJson(value: string): Record<string, unknown> {
