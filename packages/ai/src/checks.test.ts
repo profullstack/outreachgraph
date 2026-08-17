@@ -124,6 +124,32 @@ describe('claim extraction', () => {
   test('ignores common words even when capitalised', () => {
     expect(extractClaims('the thing is Thanks matters')).not.toContain('Thanks');
   });
+
+  test('does not read a first-person contraction as a name', () => {
+    // "I'd" is capitalised mid-sentence but asserts nothing. Extracting it
+    // withheld every first-person draft, because normalising the apostrophe
+    // leaves "i d" and no evidence can contain that.
+    expect(extractClaims("fees are brutal, and I'd guess settlement is worse")).toEqual([]);
+    expect(extractClaims('fees are brutal, and I’d guess settlement is worse')).toEqual([]);
+    expect(extractClaims("we shipped it and I've seen the same thing since")).toEqual([]);
+  });
+
+  test('reads a possessive as the name it possesses', () => {
+    // "Stripe's" must match evidence that says "Stripe", not read as invented.
+    expect(extractClaims('the Stripe’s fees are brutal')).toContain('Stripe');
+    expect(extractClaims("the Stripe's fees are brutal")).toContain('Stripe');
+  });
+
+  test('does not treat apostrophes as quotation marks', () => {
+    // Two contractions used to bracket the prose between them into a
+    // "quotation" that nothing could support.
+    const claims = extractClaims("I've seen this. Curious what you'd try next.");
+    expect(claims).toEqual([]);
+  });
+
+  test('still picks out a genuinely quoted phrase', () => {
+    expect(extractClaims('they said “fees are brutal” last week')).toContain('fees are brutal');
+  });
 });
 
 describe('flattery (PRD §13.3)', () => {
@@ -303,5 +329,41 @@ describe('findUnsupportedClaims', () => {
     );
 
     expect(unsupported).toHaveLength(0);
+  });
+
+  test('accepts a first-person draft that only cites the evidence', () => {
+    // The shape the composer actually produces. Every one of these was
+    // rejected as an unsupported claim, so the approvals queue answered
+    // "the wording kept asserting things nothing supports — I'd".
+    const { unsupported } = findUnsupportedClaims(
+      "You said fees are brutal and settlement takes days. I'd guess the delay is the " +
+        "batching rather than Stripe's rails, but I've been wrong about that before.",
+      GROUNDING,
+    );
+
+    expect(unsupported).toHaveLength(0);
+  });
+
+  test('a first-person draft passes every gate', () => {
+    const report = runChecks(
+      input({
+        body:
+          "You said settlement takes days and fees are brutal. I'd guess the batching " +
+          "is the harder half — I've seen that pattern before.",
+      }),
+    );
+
+    expect(report.passed).toBe(true);
+    expect(report.unsupported).toHaveLength(0);
+  });
+
+  test('still catches an invented specific inside first-person prose', () => {
+    const { unsupported } = findUnsupportedClaims(
+      "I'd say Fluxwire cut our settlement time by 40%.",
+      GROUNDING,
+    );
+
+    expect(unsupported).toContain('Fluxwire');
+    expect(unsupported).toContain('40%');
   });
 });
