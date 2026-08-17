@@ -34,6 +34,12 @@ const POSITIVE: Readonly<Record<PositiveEvidenceKind, number>> = {
   same_public_email: 0.9,
   // A licensed provider returned both accounts on one record.
   provider_asserted_link: 0.8,
+  // A profile link sitting beside the person's name on their employer's own
+  // site. Deliberately landing between the candidate and auto-merge bands: a
+  // team page naming someone and linking their account is real evidence, and
+  // the association was still read off a layout rather than stated, so it
+  // earns a human's glance instead of becoming fact on its own.
+  published_beside_name: 0.75,
   same_username: 0.55,
   same_employer: 0.45,
   temporal_employment_consistency: 0.3,

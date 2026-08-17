@@ -18,7 +18,7 @@ import type {
   ProviderCapabilities,
 } from '../provider';
 import { fetchPage, type FetchOptions, type FetchOutcome, type FetchedPage } from './fetch';
-import { extractSite, type ExtractedCompany } from './extract';
+import { extractSite, withNearbyIdentities, type ExtractedCompany } from './extract';
 import { extractWithModel, visibleText, type ExtractionModel } from './model-extract';
 import { assignEmails, findEmails } from './emails';
 
@@ -169,7 +169,11 @@ export class SiteProvider implements PersonEnrichmentProvider {
         company = { ...company, description: fromModel.company.description };
       }
       if (needsPeople && fromModel.people.length > 0) {
-        people = [...fromModel.people];
+        // The model reads people out of prose and returns no profile links.
+        // The icons beside those names are still in the markup, and this is the
+        // only pass that will look for them — `extractSite` ran before these
+        // people existed.
+        people = withNearbyIdentities(page.html, fromModel.people);
       }
 
       if (fromModel.company.name || fromModel.people.length > 0) usedSignals.push('model');

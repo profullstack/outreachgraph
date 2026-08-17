@@ -537,9 +537,19 @@ async function linkIdentities(
     candidate: workspace?.candidate_threshold ?? 0.7,
   };
 
-  // Handles the person published on their own GitHub profile — these are what
-  // make a cross-link, rather than an inference.
+  // Handles the page or provider *declared* for this person — a `sameAs` entry,
+  // a `rel="me"`, an account returned on their own profile record. These are
+  // what make a cross-link, rather than an inference.
+  //
+  // Identities read off layout are deliberately absent. Every entry here is
+  // also weighed against this list, so being in it means an identity
+  // corroborates itself at full strength. That is the right answer for a link
+  // the site stated — the statement is the evidence — and the wrong one for a
+  // link we merely found near a name, which would otherwise auto-merge on the
+  // strength of our own guess. "Identity precision beats recall" is exactly
+  // this distinction.
   const declared = candidate.identities
+    .filter((i) => !i.inferred)
     .map((i) => i.handle)
     .filter((h): h is string => typeof h === 'string');
 

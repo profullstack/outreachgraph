@@ -137,6 +137,42 @@ const BLUESKY: readonly CapabilityRule[] = [
 ];
 
 /**
+ * Mastodon, and the wider Fediverse reachable over ActivityPub.
+ *
+ * Public timelines and profiles are readable without credentials, and actions
+ * run through the connected account's own instance API, so the capabilities
+ * mirror Bluesky's.
+ *
+ * One thing does not mirror Bluesky: there is no single operator. Each instance
+ * sets its own rules, and several of the large ones prohibit unsolicited
+ * commercial contact outright. A per-network rule cannot express that, so the
+ * conservative reading is applied to the whole network — engagement in public,
+ * where the instance's own moderation can see it, and nothing that arrives
+ * privately without a human having chosen to send it.
+ */
+const MASTODON: readonly CapabilityRule[] = [
+  rule('mastodon', 'observe', 'official_api', 'Public timelines are readable without auth.'),
+  rule(
+    'mastodon',
+    'refresh_research',
+    'official_api',
+    'Public timelines are readable without auth.',
+  ),
+  rule('mastodon', 'view_profile', 'official_api', 'Public profile data.'),
+  rule('mastodon', 'like', 'official_api', 'Permitted for the connected account.'),
+  rule('mastodon', 'follow', 'official_api', 'Permitted for the connected account.'),
+  rule('mastodon', 'reply', 'official_api', 'Permitted for the connected account.'),
+  rule('mastodon', 'comment', 'official_api', 'Permitted for the connected account.'),
+  rule(
+    'mastodon',
+    'send_dm',
+    'manual_only',
+    'Instances set their own rules on unsolicited contact; a human sends it or nobody does.',
+    'product_decision',
+  ),
+];
+
+/**
  * GitHub (PRD §16.6).
  *
  * GitHub is a signal source, not an outreach channel. Issues, pull requests
@@ -247,6 +283,7 @@ export const DEFAULT_CAPABILITY_RULES: readonly CapabilityRule[] = [
   ...LINKEDIN,
   ...X,
   ...BLUESKY,
+  ...MASTODON,
   ...NOSTR,
   ...GITHUB,
   ...READ_ONLY,

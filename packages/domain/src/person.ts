@@ -92,6 +92,7 @@ export const POSITIVE_EVIDENCE = [
   'bio_similarity',
   'temporal_employment_consistency',
   'profile_photo_match',
+  'published_beside_name',
 ] as const;
 
 export const NEGATIVE_EVIDENCE = [

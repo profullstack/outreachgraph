@@ -1,7 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { isAllowed, parseRobots } from './robots';
 import { fetchPage, USER_AGENT } from './fetch';
-import { extractCompany, extractPeople, extractSite, networkForUrl } from './extract';
+import {
+  extractCompany,
+  extractPeople,
+  extractSite,
+  identitiesNearNames,
+  networkForUrl,
+  withNearbyIdentities,
+} from './extract';
 import { extractWithModel, visibleText, type ExtractionModel } from './model-extract';
 import { SiteProvider, normaliseUrl } from './provider';
 
@@ -438,5 +445,87 @@ describe('SiteProvider', () => {
 
   test('it does not claim it can search', () => {
     expect(new SiteProvider().capabilities().canSearch).toBe(false);
+  });
+});
+
+describe('identities published beside a name', () => {
+  const TEAM = `
+    <div class="card">
+      <h3>Wes Todd</h3>
+      <p>Node.js Platform Team</p>
+      <a href="https://github.com/wesleytodd">GitHub</a>
+      <a href="https://defcon.social/@wes@hachyderm.io">Mastodon</a>
+    </div>
+    <div class="card">
+      <h3>Julia Evans</h3>
+      <p>Writer</p>
+      <a href="https://jvns.ca/@b0rk">Mastodon</a>
+    </div>
+  `;
+
+  test('attaches each profile to the nearest name', () => {
+    const found = identitiesNearNames(TEAM, ['Wes Todd', 'Julia Evans']);
+
+    expect(
+      found
+        .get('Wes Todd')
+        ?.map((i) => i.handle)
+        .sort(),
+    ).toEqual(['wes@hachyderm.io', 'wesleytodd']);
+
+    // The tiebreak doing its job: Julia does not inherit Wes's row.
+    expect(found.get('Julia Evans')?.map((i) => i.handle)).toEqual(['b0rk@jvns.ca']);
+  });
+
+  test('a remote view is stored as the account, not the instance showing it', () => {
+    const wes = identitiesNearNames(TEAM, ['Wes Todd']).get('Wes Todd') ?? [];
+    const mastodon = wes.find((i) => i.network === 'mastodon');
+
+    expect(mastodon?.platformUserId).toBe('wes@hachyderm.io');
+    expect(mastodon?.profileUrl).toBe('https://hachyderm.io/@wes');
+  });
+
+  test("the footer's accounts are not the last person's", () => {
+    const page = `
+      <div class="card"><h3>Wes Todd</h3></div>
+      <footer><a href="https://github.com/socketdev">Socket on GitHub</a></footer>
+    `;
+
+    expect(identitiesNearNames(page, ['Wes Todd']).get('Wes Todd')).toBeUndefined();
+  });
+
+  test('a link far from any name is left unattributed', () => {
+    const filler = '<p>filler</p>'.repeat(200);
+    const page = `<h3>Wes Todd</h3>${filler}<a href="https://github.com/acme">us</a>`;
+
+    expect(identitiesNearNames(page, ['Wes Todd']).get('Wes Todd')).toBeUndefined();
+  });
+
+  test('proximity never overwrites what the page stated', () => {
+    const stated = [
+      {
+        fullName: 'Wes Todd',
+        identities: [{ network: 'github' as const, handle: 'wesleytodd', providerConfidence: 0.9 }],
+        observedAt: '2026-08-17T00:00:00.000Z',
+      },
+    ];
+
+    const [person] = withNearbyIdentities(TEAM, stated);
+    const github = person?.identities.filter((i) => i.network === 'github') ?? [];
+
+    expect(github).toHaveLength(1);
+    expect(github[0]?.providerConfidence).toBe(0.9);
+  });
+
+  test('a team page with no structured data still yields reachable people', () => {
+    const site = extractSite(TEAM, 'https://example.com/team');
+    // extractSite finds nobody without JSON-LD, so this documents the boundary:
+    // the enrichment is there for whoever produced the people.
+    const enriched = withNearbyIdentities(TEAM, [
+      { fullName: 'Julia Evans', identities: [], observedAt: '2026-08-17T00:00:00.000Z' },
+    ]);
+
+    expect(site.people).toHaveLength(0);
+    expect(enriched[0]?.identities[0]?.network).toBe('mastodon');
   });
 });

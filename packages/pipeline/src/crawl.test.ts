@@ -359,4 +359,71 @@ describe('URL to approval card', () => {
     );
     expect(rows).toHaveLength(1);
   });
+
+  /**
+   * A team page of the shape that produced the dead-end: names and profile
+   * links in markup, no `Person` structured data anywhere.
+   */
+  const TEAM_HTML = `<!doctype html><html><head>
+  <meta property="og:site_name" content="Loopwright" />
+  <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"Organization","name":"Loopwright",
+     "description":"Reliability tooling for agent teams."}
+  </script>
+  <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"Person","name":"Alex Chen",
+     "jobTitle":"Staff Engineer"}
+  </script>
+</head><body>
+  <main>
+    <div class="card">
+      <h3>Alex Chen</h3>
+      <p>Staff Engineer</p>
+      <a href="https://defcon.social/@alex@hachyderm.io">Mastodon</a>
+    </div>
+  </main>
+</body></html>`;
+
+  test('a profile beside a name is kept, and kept out of the merged set', async () => {
+    const { db } = await setup('e2e-nearby');
+
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      payload: { url: 'https://loopwright.io/team' },
+    });
+
+    const site = new SiteProvider({ fetchImpl: stubNetwork(TEAM_HTML) });
+    await drainQueue(db, async (job: QueuedJob) => {
+      await runCrawlJob({ db, site, providers: [] }, job);
+    });
+
+    const person = await queryOne<{ id: string }>(
+      db,
+      'SELECT id FROM people WHERE display_name = ?',
+      ['Alex Chen'],
+    );
+    expect(person).toBeDefined();
+
+    const merged = await queryAll<{ network: string }>(
+      db,
+      'SELECT network FROM social_identities WHERE person_id = ?',
+      [person!.id],
+    );
+    const candidates = await queryAll<{ network: string; handle: string }>(
+      db,
+      'SELECT network, handle FROM identity_candidates WHERE person_id = ?',
+      [person!.id],
+    );
+
+    // Where it lands is the whole question. Read off layout, it is a claim about
+    // a person, not a statement by them: it has to survive as something a human
+    // can confirm, and it must not silently become fact.
+    expect(candidates.map((r) => r.network)).toContain('mastodon');
+    expect(merged.map((r) => r.network)).not.toContain('mastodon');
+
+    // And the account is recorded as its own server addresses it, not as the
+    // instance whose page happened to link it.
+    expect(candidates.map((r) => r.handle)).toContain('alex@hachyderm.io');
+  });
 });

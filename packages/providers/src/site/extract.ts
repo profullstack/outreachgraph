@@ -13,6 +13,7 @@
 
 import type { Network } from '@outreachgraph/domain';
 import type { CandidateIdentity, PersonCandidate } from '../provider';
+import { parseFediverseUrl } from './fediverse';
 
 export interface ExtractedCompany {
   readonly name?: string;
@@ -88,6 +89,179 @@ function handleFromUrl(url: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A URL to an identity, over every network we can recognise from a link.
+ *
+ * Ordering is load-bearing. The known-host map runs first so `youtube.com/@name`
+ * is a YouTube channel rather than a Fediverse account — both use `/@name`, and
+ * only the host tells them apart. Fediverse detection is the fallback precisely
+ * because its hosts cannot be enumerated.
+ *
+ * `platformUserId` is set only where the network has a stable cross-instance
+ * address. For Mastodon that is `user@host`, which is what makes the unique
+ * index on `(network, platform_user_id)` do real work: the same account found
+ * via three different instances' remote views collapses to one row instead of
+ * three.
+ */
+export function identityFromUrl(url: string): CandidateIdentity | undefined {
+  const network = networkForUrl(url);
+
+  if (network) {
+    const handle = handleFromUrl(url);
+    if (!handle) return undefined;
+    return { network, handle, profileUrl: url, providerConfidence: 0.6 };
+  }
+
+  const account = parseFediverseUrl(url);
+  if (account) {
+    return {
+      network: 'mastodon',
+      handle: account.acct,
+      platformUserId: account.acct,
+      profileUrl: account.profileUrl,
+      // Shape alone. `verifyFediverseAccount` is what raises this, and the
+      // resolver is what decides whether it clears the merge bar.
+      providerConfidence: 0.5,
+    };
+  }
+
+  const key = nostrKeyFromUrl(url);
+  if (key) {
+    return {
+      network: 'nostr',
+      handle: key,
+      platformUserId: key,
+      profileUrl: `nostr:${key}`,
+      providerConfidence: 0.6,
+    };
+  }
+
+  return undefined;
+}
+
+/** Bech32 public keys, which are the same string wherever they are published. */
+const NPUB = /\b(npub1[02-9ac-hj-np-z]{58})\b/i;
+
+/**
+ * A Nostr key from a link.
+ *
+ * Nostr has no canonical web host — keys are shared as `nostr:` URIs and via
+ * whichever viewer the author prefers — so the key itself is matched anywhere
+ * in the URL rather than at a fixed path on a known domain.
+ */
+function nostrKeyFromUrl(url: string): string | undefined {
+  return url.match(NPUB)?.[1]?.toLowerCase();
+}
+
+/**
+ * How far from a name a link may sit and still be read as that person's.
+ *
+ * Measured in raw markup, not rendered text, so it has to absorb the wrapper
+ * elements of a typical team card — a figure, a heading, a role, a short bio,
+ * then the icon row. Generous enough for that, far too small to reach the
+ * footer from the middle of a page, which is where a company's own accounts
+ * live and where mis-attribution would otherwise be systematic.
+ */
+const NEARBY_MARKUP_WINDOW = 900;
+
+/** Markup that ends the region a person's card could plausibly occupy. */
+const SECTION_BREAK = /<\/(?:main|article|section)\b|<(?:footer|nav)\b/i;
+
+/**
+ * Attaches social links to the person they were published next to.
+ *
+ * Structured data is the reliable route and most sites do not have it. A team
+ * page is usually a grid of cards — name, role, then a row of icons — with no
+ * JSON-LD anywhere, which is why people extracted from such a page arrived with
+ * an empty `identities` list and no way to be reached. That single gap is what
+ * leaves a prospect researched and unactionable: the only network on file is
+ * `website`, where the policy engine permits nothing but more research.
+ *
+ * The rule is the nearest name *before* the link, not the nearest name in
+ * either direction. Absolute distance is the obvious rule and it is wrong on
+ * the exact layout this targets: a card ends with its icon row, which puts
+ * those links physically closer to the *next* colleague's name than to their
+ * own. Every profile on a team grid would shift down by one person. Cards read
+ * name-then-links, so reading backwards from the link is what matches the
+ * markup.
+ *
+ * A link with no name before it in range is dropped rather than guessed at.
+ *
+ * These are inferences from layout, not declarations, so they are scored below
+ * a published link. The identity resolver decides what clears the merge bar;
+ * anything short of it lands in `identity_candidates` for a human, which is the
+ * behaviour "identity precision beats recall" asks for.
+ */
+export function identitiesNearNames(
+  html: string,
+  names: readonly string[],
+): Map<string, CandidateIdentity[]> {
+  const result = new Map<string, CandidateIdentity[]>();
+  if (names.length === 0) return result;
+
+  const occurrences: { name: string; at: number }[] = [];
+  for (const name of names) {
+    const pattern = new RegExp(escapeRegExp(name).replace(/\s+/g, '(?:\\s|&nbsp;|<[^>]+>)+'), 'gi');
+    for (const match of html.matchAll(pattern)) {
+      if (match.index !== undefined) occurrences.push({ name, at: match.index });
+    }
+  }
+
+  if (occurrences.length === 0) return result;
+
+  const claimed = new Map<string, Set<string>>();
+
+  for (const match of html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
+    const href = match[1];
+    if (href === undefined || match.index === undefined) continue;
+
+    const identity = identityFromUrl(href);
+    if (!identity?.handle) continue;
+
+    // The website itself is not a social account, and every person on the page
+    // already has one of those; attaching more would only add noise.
+    if (identity.network === 'website') continue;
+
+    let nearest: { name: string; at: number; distance: number } | undefined;
+    for (const occurrence of occurrences) {
+      if (occurrence.at > match.index) continue;
+      const distance = match.index - occurrence.at;
+      if (distance > NEARBY_MARKUP_WINDOW) continue;
+      if (nearest && distance >= nearest.distance) continue;
+      nearest = { name: occurrence.name, at: occurrence.at, distance };
+    }
+
+    if (!nearest) continue;
+
+    // Site furniture after the last card is still "after a name". The company's
+    // own accounts live down there, and attributing them to whoever happened to
+    // be listed last is a mistake that looks like data.
+    if (SECTION_BREAK.test(html.slice(nearest.at, match.index))) continue;
+
+    const key = `${identity.network}:${identity.handle.toLowerCase()}`;
+    const already = claimed.get(nearest.name) ?? new Set<string>();
+    if (already.has(key)) continue;
+    already.add(key);
+    claimed.set(nearest.name, already);
+
+    const list = result.get(nearest.name) ?? [];
+    list.push({
+      ...identity,
+      inferred: true,
+      // Below a link the site published about itself (0.6), because this is
+      // read off layout rather than stated. `rel="me"` still counts for more.
+      providerConfidence: /rel\s*=\s*["'][^"']*\bme\b/i.test(match[0]) ? 0.7 : 0.5,
+    });
+    result.set(nearest.name, list);
+  }
+
+  return result;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function decodeEntities(text: string): string {
@@ -180,23 +354,24 @@ function linkedProfiles(html: string): CandidateIdentity[] {
   for (const match of html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
     const href = match[1];
     if (!href) continue;
-    const network = networkForUrl(href);
-    if (!network) continue;
 
-    const handle = handleFromUrl(href);
-    if (!handle) continue;
+    const identity = identityFromUrl(href);
+    if (!identity?.handle) continue;
 
-    const key = `${network}:${handle.toLowerCase()}`;
+    const key = `${identity.network}:${identity.handle.toLowerCase()}`;
     if (found.has(key)) continue;
 
     found.set(key, {
-      network,
-      handle,
-      profileUrl: href,
+      ...identity,
       // A link the site published is a self-declared association, but the page
       // is the *company's*, so it says less about any individual than a
       // person's own profile does. The resolver weighs it accordingly.
-      providerConfidence: /rel\s*=\s*["'][^"']*\bme\b/i.test(match[0]) ? 0.9 : 0.6,
+      //
+      // `rel="me"` is the site staking an explicit ownership claim, so it lifts
+      // whatever the URL shape alone was worth rather than replacing it.
+      providerConfidence: /rel\s*=\s*["'][^"']*\bme\b/i.test(match[0])
+        ? 0.9
+        : (identity.providerConfidence ?? 0.6),
     });
   }
 
@@ -232,13 +407,10 @@ export function extractCompany(html: string, pageUrl: string): ExtractedCompany 
   // `sameAs` is schema.org's own cross-link field and is the strongest thing a
   // company page offers about its other profiles.
   for (const url of urlList(org, 'sameAs')) {
-    const network = networkForUrl(url);
-    const handle = handleFromUrl(url);
-    if (!network || !handle) continue;
-    identities.set(`${network}:${handle.toLowerCase()}`, {
-      network,
-      handle,
-      profileUrl: url,
+    const identity = identityFromUrl(url);
+    if (!identity?.handle) continue;
+    identities.set(`${identity.network}:${identity.handle.toLowerCase()}`, {
+      ...identity,
       providerConfidence: 0.9,
     });
   }
@@ -294,10 +466,9 @@ export function extractPeople(
 
     const identities: CandidateIdentity[] = [];
     for (const url of [...urlList(node, 'sameAs'), ...urlList(node, 'url')]) {
-      const network = networkForUrl(url);
-      const handle = handleFromUrl(url);
-      if (!network || !handle) continue;
-      identities.push({ network, handle, profileUrl: url, providerConfidence: 0.9 });
+      const identity = identityFromUrl(url);
+      if (!identity?.handle) continue;
+      identities.push({ ...identity, providerConfidence: 0.9 });
     }
 
     people.push({
@@ -314,14 +485,52 @@ export function extractPeople(
   return people;
 }
 
+/**
+ * Adds the profiles published beside each person's name to what we already
+ * know about them.
+ *
+ * Exported because the people it enriches do not all come from the same place:
+ * structured data produces some, the model produces the rest, and a name found
+ * by either can have icons next to it on the page. Running this once over the
+ * merged list keeps the rule in one place instead of two.
+ *
+ * Existing identities win — a `sameAs` entry is a statement, and nothing read
+ * off layout should overwrite one.
+ */
+export function withNearbyIdentities(
+  html: string,
+  people: readonly PersonCandidate[],
+): PersonCandidate[] {
+  if (people.length === 0) return [...people];
+
+  const nearby = identitiesNearNames(
+    html,
+    people.map((person) => person.fullName),
+  );
+
+  return people.map((person) => {
+    const found = nearby.get(person.fullName);
+    if (!found || found.length === 0) return person;
+
+    const held = new Set(
+      person.identities.map((i) => `${i.network}:${i.handle?.toLowerCase() ?? ''}`),
+    );
+    const added = found.filter((i) => !held.has(`${i.network}:${i.handle?.toLowerCase() ?? ''}`));
+    if (added.length === 0) return person;
+
+    return { ...person, identities: [...person.identities, ...added] };
+  });
+}
+
 export function extractSite(html: string, pageUrl: string): SiteExtraction {
   const company = extractCompany(html, pageUrl);
-  const people = extractPeople(html, pageUrl, company);
+  const people = withNearbyIdentities(html, extractPeople(html, pageUrl, company));
 
   const usedSignals: string[] = [];
   if (jsonLdBlocks(html).length > 0) usedSignals.push('json-ld');
   if (metaContent(html, 'property', 'og:site_name')) usedSignals.push('opengraph');
   if (company.identities.length > 0) usedSignals.push('links');
+  if (people.some((person) => person.identities.length > 0)) usedSignals.push('profiles');
 
   return { company, people, usedSignals };
 }

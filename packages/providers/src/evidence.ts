@@ -41,6 +41,24 @@ export function deriveEvidence(context: EvidenceContext): EvidenceInput[] {
     });
   }
 
+  // Found next to the person's name on a page about them. Not a statement by
+  // them, which is why it is its own kind rather than a weaker cross-link:
+  // without it a layout-derived identity scores on `same_employer` alone, falls
+  // under the candidate threshold, and is dropped — leaving the person
+  // reachable only on `website`, where no outreach is permitted at all.
+  //
+  // Strength is 1 because the observation is binary — the link either sits
+  // beside the name or it does not. How much that is worth is the weight's job;
+  // discounting here as well would price the same doubt twice and sink it back
+  // below the threshold.
+  if (identity.inferred) {
+    evidence.push({
+      kind: 'published_beside_name',
+      strength: 1,
+      detail: `${identity.network} profile published beside this person's name`,
+    });
+  }
+
   // The person published the link themselves — the strongest thing available.
   const handle = identity.handle?.toLowerCase();
   if (handle && context.crossLinkedHandles?.some((h) => h.toLowerCase() === handle)) {

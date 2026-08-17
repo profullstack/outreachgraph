@@ -58,6 +58,16 @@ export interface CandidateIdentity {
   readonly profileUrl?: string;
   /** The provider's own confidence, if it reports one. */
   readonly providerConfidence?: number;
+  /**
+   * True when this was read off a page's *layout* — a link sitting next to a
+   * name — rather than declared by the page or returned by a provider.
+   *
+   * It exists because the two cannot be weighed the same way. A declared link
+   * is the site stating an association; an inferred one is us reading a grid
+   * and deciding which card a link belongs to. The identity resolver uses this
+   * to refuse an inferred identity the corroboration a declared one gets.
+   */
+  readonly inferred?: boolean;
 }
 
 export interface PersonCandidate {
