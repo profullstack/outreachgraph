@@ -16,6 +16,9 @@ export const ID_PREFIXES = {
   company: 'co',
   person: 'per',
   socialIdentity: 'sid',
+  // A profile the company published about itself, not one belonging to a
+  // person — a distinct prefix so the two can never be confused in a log line.
+  companyIdentity: 'cid',
   identityEvidence: 'evd',
   identityCandidate: 'idc',
   providerRecord: 'prv',

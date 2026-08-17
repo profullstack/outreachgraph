@@ -9,6 +9,7 @@
  */
 
 import { cookies } from 'next/headers';
+import type { Channel } from '@outreachgraph/domain';
 import type {
   ApprovalCard,
   CurrentUser,
@@ -131,18 +132,27 @@ export async function fetchProducts(): Promise<ProductSummaryView[]> {
 
 export type ApprovalFilter = 'all' | 'ready' | 'needs_draft' | 'research';
 
+/** The channel axis: how the card would be acted on, not what stage it is at. */
+export type ChannelFilter = 'all' | Channel;
+
 export interface ApprovalQueue {
   readonly recommendations: ApprovalCard[];
-  readonly counts: Record<ApprovalFilter, number>;
+  readonly counts: {
+    readonly buckets: Record<ApprovalFilter, number>;
+    readonly channels: Record<ChannelFilter, number>;
+  };
   readonly filter: ApprovalFilter;
+  readonly channel: ChannelFilter;
 }
 
 export async function fetchApprovals(
   filter: ApprovalFilter = 'ready',
   limit = 50,
+  channel: ChannelFilter = 'all',
 ): Promise<ApprovalQueue> {
   return await request<ApprovalQueue>(
-    `/recommendations?limit=${limit}&filter=${encodeURIComponent(filter)}`,
+    `/recommendations?limit=${limit}&filter=${encodeURIComponent(filter)}` +
+      `&channel=${encodeURIComponent(channel)}`,
   );
 }
 

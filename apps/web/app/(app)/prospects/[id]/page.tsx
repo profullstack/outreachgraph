@@ -40,6 +40,9 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
   }
 
   const { person, identities, signals } = detail;
+  // Tolerated as possibly-absent: a browser holding a cached page from before
+  // company profiles existed would otherwise crash on `.length`.
+  const companyIdentities = detail.companyIdentities ?? [];
 
   return (
     <div className="pt-4 pb-8">
@@ -80,6 +83,52 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
           <p className="text-ink-muted mt-2 text-sm">No linked identities.</p>
         )}
       </section>
+
+      {/* Their employer's profiles, in a section of their own.
+          Separate from the list above because they are a way to reach the
+          company, not a claim that this person holds the account — and on a
+          site that names its staff but links only its own accounts, which is
+          most of them, this is the only social route there is. */}
+      {companyIdentities.length ? (
+        <section className="mt-6">
+          <h2 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">
+            Company profiles
+          </h2>
+          <p className="text-ink-muted mt-1 text-xs">
+            Published by {companyIdentities[0]?.company_name ?? 'their employer'}, not by this
+            person.
+          </p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {companyIdentities.map((identity) => (
+              <li
+                key={identity.id}
+                className="border-border bg-surface-raised flex items-center justify-between gap-3 rounded-xl border p-3"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">
+                    {identity.profile_url ? (
+                      <a
+                        href={identity.profile_url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="text-accent underline"
+                      >
+                        {identity.handle ?? identity.profile_url}
+                      </a>
+                    ) : (
+                      (identity.handle ?? '—')
+                    )}
+                  </div>
+                  <div className="text-ink-muted text-xs">{identity.network}</div>
+                </div>
+                <span className="text-good shrink-0 text-sm tabular-nums">
+                  {identity.confidence.toFixed(2)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       <section className="mt-6">
         <h2 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">

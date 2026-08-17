@@ -6,7 +6,17 @@
  * a type error (PRD §34 row-level authorization).
  */
 
-import { newId, OUTBOUND_ACTION_KINDS, type ActionKind, type Network } from '@outreachgraph/domain';
+import {
+  CHANNELS,
+  channelForNetwork,
+  isChannel,
+  isNetwork,
+  newId,
+  OUTBOUND_ACTION_KINDS,
+  type ActionKind,
+  type Channel,
+  type Network,
+} from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 
 export interface PersonRow {
@@ -181,11 +191,55 @@ export async function listPendingRecommendations(
   );
 }
 
-/** How many pending cards sit in each filter, for the counts on the tabs. */
-export async function approvalCounts(
-  db: Client,
-  workspaceId: string,
-): Promise<Record<ApprovalFilter, number>> {
+/**
+ * How many pending cards sit in each filter, for the counts on the tabs.
+ *
+ * Two independent axes, counted in one place because the tabs show both at
+ * once: the stage a card is at, and the channel it would be acted on through.
+ */
+export interface ApprovalCounts {
+  readonly buckets: Record<ApprovalFilter, number>;
+  readonly channels: Record<ChannelFilter, number>;
+}
+
+/** The channel tabs: every channel, plus the view that does not narrow. */
+export type ChannelFilter = 'all' | Channel;
+
+export function isChannelFilter(value: unknown): value is ChannelFilter {
+  return value === 'all' || (typeof value === 'string' && isChannel(value));
+}
+
+/**
+ * Folds a network histogram into channel totals.
+ *
+ * The grouping lives here rather than in a SQL `CASE` on purpose. Spelling the
+ * network lists out in SQL would be a second copy of `channelForNetwork`, and
+ * the copy that drifts is always the one nothing type-checks — a network added
+ * to the domain would silently stop being counted. SQL groups by the column it
+ * has; the meaning is applied once, in the language that knows the union.
+ *
+ * A row whose network is not one the build recognises still counts toward
+ * `all`, because it is genuinely pending, and toward no channel, because
+ * guessing which tab it belongs on would be worse than leaving it off one.
+ */
+function foldChannels(
+  rows: readonly { network: string; n: number }[],
+): Record<ChannelFilter, number> {
+  const counts = Object.fromEntries([
+    ['all', 0],
+    ...CHANNELS.map((channel) => [channel, 0]),
+  ]) as Record<ChannelFilter, number>;
+
+  for (const row of rows) {
+    const n = Number(row.n ?? 0);
+    counts.all += n;
+    if (isNetwork(row.network)) counts[channelForNetwork(row.network)] += n;
+  }
+
+  return counts;
+}
+
+export async function approvalCounts(db: Client, workspaceId: string): Promise<ApprovalCounts> {
   const outbound = OUTBOUND_ACTION_KINDS.map(() => '?').join(', ');
 
   const row = await queryOne<{
@@ -213,11 +267,27 @@ export async function approvalCounts(
     ],
   );
 
+  // The same pending set, grouped the other way. A second statement rather
+  // than more columns on the first: the bucket counts need the drafts join and
+  // these do not, and one query cannot group by network and stay a single row.
+  const byNetwork = await queryAll<{ network: string; n: number }>(
+    db,
+    `SELECT r.network AS network, count(*) AS n
+       FROM recommendations r
+      WHERE r.workspace_id = ? AND r.status = 'pending'
+        AND (r.expires_at IS NULL OR r.expires_at > ?)
+   GROUP BY r.network`,
+    [workspaceId, now()],
+  );
+
   return {
-    all: Number(row?.total ?? 0),
-    ready: Number(row?.ready ?? 0),
-    needs_draft: Number(row?.needs_draft ?? 0),
-    research: Number(row?.research ?? 0),
+    buckets: {
+      all: Number(row?.total ?? 0),
+      ready: Number(row?.ready ?? 0),
+      needs_draft: Number(row?.needs_draft ?? 0),
+      research: Number(row?.research ?? 0),
+    },
+    channels: foldChannels(byNetwork),
   };
 }
 
@@ -249,6 +319,29 @@ export async function listIdentities(db: Client, personId: string) {
   return queryAll(
     db,
     'SELECT * FROM social_identities WHERE person_id = ? ORDER BY confidence DESC',
+    [personId],
+  );
+}
+
+/**
+ * The social profiles their employer published, kept separate from their own.
+ *
+ * Two lists rather than one merged list on purpose. A company's LinkedIn is a
+ * real way to reach the company and is worth showing next to a prospect who
+ * has no profile of their own — which, on a site that names its staff and
+ * links only its own accounts, is nearly all of them. What it is not is
+ * *their* profile, and folding it into `listIdentities` would make the page
+ * assert exactly that.
+ */
+export async function listCompanyIdentities(db: Client, personId: string) {
+  return queryAll(
+    db,
+    `SELECT ci.*, co.name AS company_name
+       FROM company_identities ci
+       JOIN companies co ON co.id = ci.company_id
+       JOIN people p ON p.current_company_id = co.id
+      WHERE p.id = ?
+   ORDER BY ci.confidence DESC, ci.network`,
     [personId],
   );
 }

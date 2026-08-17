@@ -31,9 +31,13 @@ afterEach(() => {
 });
 
 interface Queue {
-  recommendations: { id: string; action: string; bucket: string }[];
-  counts: { all: number; ready: number; needs_draft: number; research: number };
+  recommendations: { id: string; action: string; network: string; bucket: string }[];
+  counts: {
+    buckets: { all: number; ready: number; needs_draft: number; research: number };
+    channels: { all: number; email: number; social: number; web: number };
+  };
   filter: string;
+  channel: string;
 }
 
 async function harness(label: string): Promise<{ app: Hono<AppEnv>; db: Client }> {
@@ -80,9 +84,10 @@ async function add(
   }
 }
 
-async function queue(app: Hono<AppEnv>, filter?: string): Promise<Queue> {
+async function queue(app: Hono<AppEnv>, filter?: string, channel?: string): Promise<Queue> {
   const suffix = filter ? `&filter=${filter}` : '';
-  const response = await app.request(`/api/v1/recommendations?limit=50${suffix}`);
+  const channelSuffix = channel ? `&channel=${channel}` : '';
+  const response = await app.request(`/api/v1/recommendations?limit=50${suffix}${channelSuffix}`);
   expect(response.status).toBe(200);
   return (await response.json()) as Queue;
 }
@@ -136,9 +141,11 @@ describe('filtering the approval queue', () => {
     const { counts } = await queue(app, 'all');
 
     // The seeded fixture contributes one drafted outbound card of its own.
-    expect(counts.research).toBe(2);
-    expect(counts.ready).toBeGreaterThanOrEqual(1);
-    expect(counts.all).toBe(counts.ready + counts.needs_draft + counts.research);
+    expect(counts.buckets.research).toBe(2);
+    expect(counts.buckets.ready).toBeGreaterThanOrEqual(1);
+    expect(counts.buckets.all).toBe(
+      counts.buckets.ready + counts.buckets.needs_draft + counts.buckets.research,
+    );
   });
 
   /**
@@ -164,7 +171,9 @@ describe('filtering the approval queue', () => {
     // What the client-side tabs do, done here: filtering by bucket has to
     // land on the same number the badge shows.
     for (const bucket of ['ready', 'needs_draft', 'research'] as const) {
-      expect(recommendations.filter((r) => r.bucket === bucket)).toHaveLength(counts[bucket]);
+      expect(recommendations.filter((r) => r.bucket === bucket)).toHaveLength(
+        counts.buckets[bucket],
+      );
     }
   });
 
@@ -192,5 +201,107 @@ describe('filtering the approval queue', () => {
     // A stale bookmark should not be a 400.
     const body = await queue(app, 'nonsense');
     expect(body.filter).toBe('all');
+  });
+});
+
+/**
+ * The second axis: what acting on a card would actually mean.
+ *
+ * Stage answers "is this ready", which is not the question someone with an
+ * hour is asking. Email is the only channel that sends by itself, so "show me
+ * the email ones" is the difference between clearing the queue and scrolling
+ * past cards that were only ever going to be a link to open somewhere else.
+ */
+describe('filtering the approval queue by channel', () => {
+  test('email narrows to the cards that can actually send', async () => {
+    const { app, db } = await harness('channel-email');
+    await add(db, 'rec_research_1', 'refresh_research', 'website', false);
+    await add(db, 'rec_follow', 'follow', 'github', false);
+    await add(db, 'rec_email_drafted', 'send_email', 'email', true);
+
+    const email = await queue(app, 'all', 'email');
+    const ids = email.recommendations.map((r) => r.id);
+
+    expect(ids).toContain('rec_email_drafted');
+    expect(ids).not.toContain('rec_research_1');
+    expect(ids).not.toContain('rec_follow');
+    expect(email.recommendations.every((r) => r.network === 'email')).toBe(true);
+  });
+
+  test('social groups the networks you act on by hand', async () => {
+    const { app, db } = await harness('channel-social');
+    await add(db, 'rec_follow', 'follow', 'github', false);
+    await add(db, 'rec_comment', 'comment', 'bluesky', false);
+    await add(db, 'rec_research_1', 'refresh_research', 'website', false);
+
+    const social = await queue(app, 'all', 'social');
+    const ids = social.recommendations.map((r) => r.id);
+
+    // GitHub is a profile with a person behind it, so it belongs with the
+    // networks you open in another tab — not with reading a website.
+    expect(ids).toContain('rec_follow');
+    expect(ids).toContain('rec_comment');
+    expect(ids).not.toContain('rec_research_1');
+  });
+
+  test('web is where the research cards land', async () => {
+    const { app, db } = await harness('channel-web');
+    await add(db, 'rec_research_1', 'refresh_research', 'website', false);
+    await add(db, 'rec_email_drafted', 'send_email', 'email', true);
+
+    const web = await queue(app, 'all', 'web');
+    const ids = web.recommendations.map((r) => r.id);
+
+    expect(ids).toContain('rec_research_1');
+    expect(ids).not.toContain('rec_email_drafted');
+  });
+
+  /**
+   * The counts are the whole point: a queue of 73 research cards and no email
+   * should say so on the tab, so "I cannot find anything to send" is answered
+   * by a zero rather than by scrolling.
+   */
+  test('the channel counts cover every pending row exactly once', async () => {
+    const { app, db } = await harness('channel-counts');
+    await add(db, 'rec_research_1', 'refresh_research', 'website', false);
+    await add(db, 'rec_research_2', 'refresh_research', 'website', false);
+    await add(db, 'rec_follow', 'follow', 'github', false);
+    await add(db, 'rec_email_drafted', 'send_email', 'email', true);
+
+    const { counts } = await queue(app, 'all');
+
+    expect(counts.channels.web).toBe(2);
+    // The seeded fixture contributes a `reply` on X, which is social too.
+    expect(counts.channels.social).toBe(2);
+    expect(counts.channels.email).toBeGreaterThanOrEqual(1);
+    expect(counts.channels.all).toBe(
+      counts.channels.email + counts.channels.social + counts.channels.web,
+    );
+
+    // Both axes describe the same set, counted two ways.
+    expect(counts.channels.all).toBe(counts.buckets.all);
+  });
+
+  test('the two axes narrow independently', async () => {
+    const { app, db } = await harness('channel-and-bucket');
+    await add(db, 'rec_email_undrafted', 'send_email', 'email', false);
+    await add(db, 'rec_email_drafted', 'send_email', 'email', true);
+    await add(db, 'rec_research_1', 'refresh_research', 'website', false);
+
+    const readyEmail = await queue(app, 'ready', 'email');
+    const ids = readyEmail.recommendations.map((r) => r.id);
+
+    expect(ids).toContain('rec_email_drafted');
+    expect(ids).not.toContain('rec_email_undrafted');
+    expect(ids).not.toContain('rec_research_1');
+  });
+
+  test('an unknown channel shows the queue rather than failing', async () => {
+    const { app, db } = await harness('channel-unknown');
+    await add(db, 'rec_research_1', 'refresh_research', 'website', false);
+
+    const body = await queue(app, 'all', 'carrier-pigeon');
+    expect(body.channel).toBe('all');
+    expect(body.recommendations.map((r) => r.id)).toContain('rec_research_1');
   });
 });
