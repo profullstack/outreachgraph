@@ -8,6 +8,11 @@
  */
 
 export { runCrawlJob, type CrawlJobDeps, type CrawlJobResult } from './crawl';
+export {
+  regenerateRecommendations,
+  type RegenerateInput,
+  type RegenerateResult,
+} from './regenerate';
 export { runDiscoveryJob, type DiscoveryJobDeps, type DiscoveryJobResult } from './discovery';
 export {
   runAutopilot,

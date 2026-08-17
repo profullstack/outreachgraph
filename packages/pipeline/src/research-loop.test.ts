@@ -272,6 +272,52 @@ describe('following the pages that name people', () => {
   });
 });
 
+/**
+ * `webmaster` is a mailbox, not a lead.
+ *
+ * Production stored `webmaster` (twice at one company) and `admin` as people.
+ * They were inert only because an untitled person had no signal and so could
+ * never reach outreach — protection this change removed. Without the guard the
+ * next regeneration pass would propose emailing them.
+ */
+describe('role accounts never become prospects', () => {
+  const HOME_WEBMASTER = `<!doctype html><html><head>
+    <title>Brightsmile Dental</title>
+    <meta property="og:site_name" content="Brightsmile Dental" />
+  </head><body>
+    <script type="application/ld+json">
+      {"@context":"https://schema.org","@type":"Person","name":"webmaster"}
+    </script>
+    <a href="mailto:hello@brightsmile.test">hello@brightsmile.test</a>
+  </body></html>`;
+
+  test('a page naming "webmaster" creates no person and no card', async () => {
+    const { db } = await seedDatabase('loop-role-account').then((s) => ((seeded = s), s));
+
+    await crawlOnce(db, new SiteProvider({ fetchImpl: network({ '/': HOME_WEBMASTER }) }));
+
+    const person = await personNamed(db, 'webmaster');
+    expect(person).toBeFalsy();
+
+    // The company is still recorded — the page was read fine, it just named
+    // nobody worth calling a person.
+    const company = await queryOne<{ contact_email: string | null }>(
+      db,
+      `SELECT contact_email FROM companies WHERE domain = ?`,
+      ['brightsmile.test'],
+    );
+    expect(company?.contact_email).toBe('hello@brightsmile.test');
+  });
+
+  test('a real person on the same kind of page is still created', async () => {
+    const { db } = await seedDatabase('loop-role-account-control').then((s) => ((seeded = s), s));
+
+    await crawlOnce(db, new SiteProvider({ fetchImpl: network({ '/': HOME_UNTITLED_INBOX }) }));
+
+    expect(await personNamed(db, 'Dana Whitfield')).toBeTruthy();
+  });
+});
+
 describe('a second crawl replaces the card it supersedes', () => {
   test('re-crawling does not leave two pending cards for one person', async () => {
     const { db } = await seedDatabase('loop-supersede').then((s) => ((seeded = s), s));
