@@ -101,6 +101,8 @@ export function ApprovalQueue({
   counts: {
     buckets: Record<ApprovalFilter, number>;
     channels: Record<ChannelFilter, number>;
+    held?: number;
+    approvable?: number;
   };
   initialFilter: ApprovalFilter;
   initialChannel: ChannelFilter;
@@ -163,6 +165,8 @@ export function ApprovalQueue({
 
       {guide}
 
+      <HeldSummary counts={counts} filter={filter} />
+
       <nav className="mb-2 flex flex-wrap gap-2" aria-label="Filter the queue by stage">
         {TABS.map((tab) => (
           <FilterChip
@@ -208,6 +212,44 @@ export function ApprovalQueue({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * How much of "Ready" is actually approvable.
+ *
+ * "Ready" only ever meant "a message is written", and that reads as a promise
+ * the queue could not keep: with every card behind a handful of shared inboxes
+ * on cooldown, the tab said twenty-eight and every single approval was
+ * refused. One line at the top is enough to turn that from a broken-looking
+ * product into a rule the reviewer can see working.
+ *
+ * Shown only on the tab it describes, and only when something is actually
+ * held — a queue with nothing on hold should say nothing at all.
+ */
+function HeldSummary({
+  counts,
+  filter,
+}: {
+  counts: { held?: number; approvable?: number };
+  filter: ApprovalFilter;
+}) {
+  const held = counts.held ?? 0;
+  if (filter !== 'ready' || held === 0) return null;
+
+  const approvable = counts.approvable ?? 0;
+
+  return (
+    <p className="border-border text-ink-muted mb-3 rounded-xl border border-dashed p-3 text-xs">
+      <span className="text-ink font-medium">
+        {approvable === 0
+          ? 'None of these can be sent right now.'
+          : `${approvable} of these can be sent right now.`}
+      </span>{' '}
+      {held} {held === 1 ? 'is' : 'are'} held because the mailbox behind{' '}
+      {held === 1 ? 'it' : 'them'} was contacted recently — often one shared company inbox standing
+      in for several people. Each card says which address, and when it clears.
+    </p>
   );
 }
 
