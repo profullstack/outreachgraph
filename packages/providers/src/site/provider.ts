@@ -17,9 +17,15 @@ import type {
   PersonSearchResult,
   ProviderCapabilities,
 } from '../provider';
-import { fetchPage, type FetchOptions, type FetchOutcome, type FetchedPage } from './fetch';
+import {
+  fetchPage,
+  loadRobots,
+  type FetchOptions,
+  type FetchOutcome,
+  type FetchedPage,
+} from './fetch';
 import { extractSite, handleFromUrl, type ExtractedCompany } from './extract';
-import { attributeToPeople } from './attribute';
+import { attributeToPeople, mergeAttribution } from './attribute';
 import { extractWithModel, visibleText, type ExtractionModel } from './model-extract';
 import { assignEmails, findEmails } from './emails';
 
@@ -119,10 +125,33 @@ export class SiteProvider implements PersonEnrichmentProvider {
   }
 
   /**
-   * Fetches one page and reads it.
+   * Reads a site: the page asked for, plus the few pages that name people.
+   *
+   * A homepage is the wrong place to look for staff. It describes the company,
+   * links to `/team` or `/about`, and names nobody — so a one-page crawl found
+   * a company and no humans, or found humans with no job titles, which in
+   * production was the same thing as finding nothing at all. (An untitled
+   * person produced no signal, and no signal meant a card that could never
+   * become outreach.) The pages that carry names and roles are exactly the
+   * ones a homepage links to and a one-page crawl never opened.
+   *
+   * Bounded deliberately, because breadth is where a crawler turns into a
+   * nuisance:
+   *
+   *   - Same origin only, and only paths that look like a team, about or
+   *     contact page. Not a spider — a fixed shortlist.
+   *   - At most `MAX_FOLLOWED` extra pages.
+   *   - `robots.txt` is fetched once and passed to every page, so following
+   *     four links costs one robots round trip rather than four, and a
+   *     disallowed path is still refused.
+   *   - The model runs at most once for the whole site, after the cheap
+   *     deterministic reads of every page have been merged. Parsing four pages
+   *     costs four fetches and nothing else; the expensive pass happens only
+   *     if all four together still named nobody.
    *
    * A refusal — robots, a 404, a PDF — is a result, not an exception. One bad
-   * URL in a batch of a hundred must not take the other ninety-nine with it.
+   * URL in a batch of a hundred must not take the other ninety-nine with it,
+   * and one unreadable sub-page must not discard the homepage that led to it.
    */
   async crawl(url: string): Promise<CrawlResult> {
     const page: FetchedPage = await fetchPage(url, this.#options);
@@ -141,23 +170,48 @@ export class SiteProvider implements PersonEnrichmentProvider {
     }
 
     const deterministic = extractSite(page.html, page.finalUrl);
-    const usedSignals = [...deterministic.usedSignals];
+    const usedSignals = new Set(deterministic.usedSignals);
 
     let company = deterministic.company;
     let people = [...deterministic.people];
 
-    // The hybrid's hinge. The model is asked only for what parsing missed, so a
-    // page with JSON-LD people never pays for it — and a page whose only claim
-    // to a company name was its <title> can still get a better one.
+    // Every page read, entry first, so addresses and prose can be re-read
+    // below without fetching anything twice.
+    const pages: FetchedPage[] = [page];
+
+    // Robots once for the whole origin, reused by every follow.
+    const robots =
+      this.#options.robots ?? (await loadRobotsFor(page.finalUrl, this.#options)) ?? undefined;
+
+    for (const href of peoplePageLinks(page.html, page.finalUrl)) {
+      const sub = await fetchPage(href, { ...this.#options, ...(robots ? { robots } : {}) });
+      if (sub.outcome !== 'ok' || !sub.html) continue;
+
+      pages.push(sub);
+
+      const readSub = extractSite(sub.html, sub.finalUrl);
+      for (const signal of readSub.usedSignals) usedSignals.add(signal);
+
+      company = mergeCompany(company, readSub.company);
+      people = mergePeople(people, readSub.people);
+    }
+
+    // The hybrid's hinge, now asked about the site rather than a page. A site
+    // whose team page carries JSON-LD never pays for the model; one whose
+    // pages are all bespoke marketing still gets one call, not four.
     const needsPeople = people.length === 0;
     const needsName = !company.name;
     let extractionUnavailable: string | undefined;
 
     if (this.#options.model && (needsPeople || needsName)) {
+      // Ask about the most likely page rather than always the homepage: if a
+      // team page was followed, that is where the names are.
+      const target = needsPeople ? (pages[pages.length - 1] ?? page) : page;
+
       const fromModel = await extractWithModel(
         this.#options.model,
-        page.html,
-        page.finalUrl,
+        target.html ?? '',
+        target.finalUrl,
         company,
       );
 
@@ -173,7 +227,7 @@ export class SiteProvider implements PersonEnrichmentProvider {
         people = [...fromModel.people];
       }
 
-      if (fromModel.company.name || fromModel.people.length > 0) usedSignals.push('model');
+      if (fromModel.company.name || fromModel.people.length > 0) usedSignals.add('model');
     }
 
     // ------------------------------------------------------- attribution
@@ -188,11 +242,19 @@ export class SiteProvider implements PersonEnrichmentProvider {
     const attributedEmails = new Set<string>();
 
     if (people.length > 0) {
-      const attributed = attributeToPeople({
-        html: page.html,
-        people: people.map((person) => person.fullName),
-        handleOf: handleFromUrl,
-      });
+      const names = people.map((person) => person.fullName);
+
+      // Every page read, not just the entry one. The crawl follows `/team` and
+      // `/about`, and that is exactly where the cards are — attributing only
+      // the page the crawl was pointed at would leave the feature reading a
+      // homepage that names nobody.
+      const attributed = mergeAttribution(
+        pages
+          .filter((read) => Boolean(read.html))
+          .map((read) =>
+            attributeToPeople({ html: read.html ?? '', people: names, handleOf: handleFromUrl }),
+          ),
+      );
 
       for (const address of attributed.emailsByPerson.values()) attributedEmails.add(address);
 
@@ -217,7 +279,7 @@ export class SiteProvider implements PersonEnrichmentProvider {
           return { ...person, identities: [...byKey.values()] };
         });
 
-        usedSignals.push('attribution');
+        usedSignals.add('attribution');
       }
 
       // The company keeps what nobody claimed — and gives up what somebody did.
@@ -255,14 +317,15 @@ export class SiteProvider implements PersonEnrichmentProvider {
           const email = attributed.emailsByPerson.get(person.fullName);
           return email && !person.email ? { ...person, email } : person;
         });
-        if (!usedSignals.includes('email')) usedSignals.push('email');
+        usedSignals.add('email');
       }
     }
 
     // Addresses are read last, once the people are known: matching
     // `jane@acme.com` to a person needs the person, and the model pass is
-    // often what produced them.
-    const found = findEmails(page.html);
+    // often what produced them. Read across every page, because the address
+    // is usually on `/contact` and the people are usually on `/team`.
+    const found = pages.flatMap((read) => (read.html ? findEmails(read.html) : []));
     let contactEmail: string | undefined;
 
     if (found.length > 0) {
@@ -277,7 +340,7 @@ export class SiteProvider implements PersonEnrichmentProvider {
           const email = assigned.byPerson.get(person.fullName);
           return email ? { ...person, email } : person;
         });
-        usedSignals.push('email');
+        usedSignals.add('email');
       }
 
       contactEmail = assigned.companyEmail;
@@ -291,7 +354,7 @@ export class SiteProvider implements PersonEnrichmentProvider {
       // at a mailbox belonging to one employee.
       if (contactEmail && attributedEmails.has(contactEmail)) contactEmail = undefined;
 
-      if (contactEmail && !usedSignals.includes('email')) usedSignals.push('email');
+      if (contactEmail) usedSignals.add('email');
     }
 
     return {
@@ -300,14 +363,182 @@ export class SiteProvider implements PersonEnrichmentProvider {
       outcome: 'ok',
       company,
       people,
-      usedSignals,
+      usedSignals: [...usedSignals],
       ...(contactEmail ? { contactEmail } : {}),
       ...(page.contentHash ? { contentHash: page.contentHash } : {}),
       fetchedAt: page.fetchedAt,
       ...(extractionUnavailable ? { extractionUnavailable } : {}),
+      // The entry page's prose, not the whole site's. A caller reading its own
+      // site to draft a profile means the page it named.
       pageText: visibleText(page.html),
     };
   }
+}
+
+/** How many pages beyond the entry one a single crawl may open. */
+const MAX_FOLLOWED = 3;
+
+/**
+ * Paths worth opening for names and roles.
+ *
+ * A shortlist rather than a heuristic: these are the conventional names, and
+ * anything cleverer starts spidering. Matched against the path and the link
+ * text both, because plenty of sites route `/company` to a staff page and
+ * label it "Meet the team".
+ */
+const PEOPLE_PAGE =
+  /\b(team|about|about-us|contact|staff|people|leadership|our-team|who-we-are)\b/i;
+
+/**
+ * Same-origin links that look like they name people, in page order.
+ *
+ * Deduped by resolved URL, capped, and never the page we are already on.
+ * Fragments and query strings are dropped so `/about#top` and `/about` are one
+ * page rather than two fetches of the same HTML.
+ */
+export function peoplePageLinks(html: string, pageUrl: string): string[] {
+  let base: URL;
+  try {
+    base = new URL(pageUrl);
+  } catch {
+    return [];
+  }
+
+  const seen = new Set<string>([canonical(base)]);
+  const found: string[] = [];
+
+  for (const match of html.matchAll(
+    /<a\b[^>]*href\s*=\s*["']([^"']+)["']([^>]*)>([\s\S]{0,200}?)<\/a>/gi,
+  )) {
+    const href = match[1];
+    if (!href || /^(mailto:|tel:|javascript:|#)/i.test(href)) continue;
+
+    let target: URL;
+    try {
+      target = new URL(href, base);
+    } catch {
+      continue;
+    }
+
+    if (target.origin !== base.origin) continue;
+    if (!PEOPLE_PAGE.test(target.pathname) && !PEOPLE_PAGE.test(stripTags(match[3] ?? '')))
+      continue;
+
+    const key = canonical(target);
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    found.push(key);
+
+    if (found.length >= MAX_FOLLOWED) break;
+  }
+
+  return found;
+}
+
+/** Without the fragment or query, which never change which page was served. */
+function canonical(url: URL): string {
+  return `${url.origin}${url.pathname.replace(/\/+$/, '') || '/'}`;
+}
+
+function stripTags(html: string): string {
+  return html.replace(/<[^>]*>/g, ' ');
+}
+
+/** Robots for a page's origin, or undefined if the URL will not parse. */
+async function loadRobotsFor(pageUrl: string, options: SiteProviderOptions) {
+  try {
+    return await loadRobots(new URL(pageUrl).origin, options);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Two reads of the same company, combined.
+ *
+ * First non-empty wins for the scalar fields — the entry page is read first
+ * and is the more authoritative description of the company — while identities
+ * union, because the profile links a contact page publishes are usually not
+ * the ones the homepage does.
+ */
+function mergeCompany(base: ExtractedCompany, next: ExtractedCompany): ExtractedCompany {
+  const identities = new Map(
+    base.identities.map((identity) => [
+      `${identity.network}:${identity.handle?.toLowerCase()}`,
+      identity,
+    ]),
+  );
+
+  for (const identity of next.identities) {
+    const key = `${identity.network}:${identity.handle?.toLowerCase()}`;
+    if (!identities.has(key)) identities.set(key, identity);
+  }
+
+  return {
+    ...base,
+    ...(base.name ? {} : next.name ? { name: next.name } : {}),
+    ...(base.description ? {} : next.description ? { description: next.description } : {}),
+    ...(base.domain ? {} : next.domain ? { domain: next.domain } : {}),
+    identities: [...identities.values()],
+  };
+}
+
+/**
+ * People from several pages, deduped by name.
+ *
+ * The titled record wins. This is the whole point of following links: a
+ * homepage that says "Jane Doe" and a team page that says "Jane Doe, Clinic
+ * Director" are the same person, and the second one is the one that produces a
+ * signal worth acting on. Merging field-by-field rather than replacing keeps
+ * an email found on `/contact` when the title came from `/team`.
+ */
+function mergePeople(
+  base: readonly PersonCandidate[],
+  next: readonly PersonCandidate[],
+): PersonCandidate[] {
+  const byName = new Map<string, PersonCandidate>();
+
+  for (const person of [...base, ...next]) {
+    const key = person.fullName.trim().toLowerCase();
+    if (!key) continue;
+
+    const existing = byName.get(key);
+    if (!existing) {
+      byName.set(key, person);
+      continue;
+    }
+
+    byName.set(key, {
+      ...existing,
+      ...(existing.title ? {} : person.title ? { title: person.title } : {}),
+      ...(existing.email ? {} : person.email ? { email: person.email } : {}),
+      ...(existing.companyName
+        ? {}
+        : person.companyName
+          ? { companyName: person.companyName }
+          : {}),
+      identities: mergeIdentities(existing, person),
+    });
+  }
+
+  return [...byName.values()];
+}
+
+function mergeIdentities(a: PersonCandidate, b: PersonCandidate): PersonCandidate['identities'] {
+  const merged = new Map(
+    a.identities.map((identity) => [
+      `${identity.network}:${identity.handle?.toLowerCase()}`,
+      identity,
+    ]),
+  );
+
+  for (const identity of b.identities) {
+    const key = `${identity.network}:${identity.handle?.toLowerCase()}`;
+    if (!merged.has(key)) merged.set(key, identity);
+  }
+
+  return [...merged.values()];
 }
 
 /** The host a page was finally served from, for matching addresses against. */

@@ -475,3 +475,99 @@ export function attributeToPeople(options: AttributeOptions): AttributionResult 
     companyIdentities: [...companyIdentities.values()],
   };
 }
+
+/**
+ * Folds several pages' attributions into one, under the same rules.
+ *
+ * A crawl reads a site rather than a page, and the page whose layout says whose
+ * profile is whose is usually not the page the crawl was pointed at: the cards
+ * are on `/team`, while the footer carrying the company's own accounts is on
+ * every page. Deciding per page and concatenating the answers would throw away
+ * the guard that matters most here — a handle inside Jane's card on the team
+ * page and in the homepage footer is the company's, not Jane's — because
+ * neither page sees the other's copy of it.
+ *
+ * So the cross-page view re-applies the same two tests. A handle claimed by two
+ * different people, or claimed by one and filed against the company by any
+ * page, goes to the company.
+ */
+export function mergeAttribution(results: readonly AttributionResult[]): AttributionResult {
+  const keyOf = (identity: CandidateIdentity) =>
+    `${identity.network}:${identity.handle?.toLowerCase()}`;
+
+  const claimants = new Map<string, Set<string>>();
+  const personBest = new Map<string, CandidateIdentity>();
+  const companySeen = new Map<string, CandidateIdentity>();
+
+  for (const result of results) {
+    for (const [person, identities] of result.identitiesByPerson) {
+      for (const identity of identities) {
+        const key = keyOf(identity);
+        const previous = personBest.get(key);
+
+        // The same identity read twice keeps its strongest reading: a page that
+        // could match the handle to the name saw more than one that could not.
+        if (!previous || (identity.providerConfidence ?? 0) > (previous.providerConfidence ?? 0)) {
+          personBest.set(key, identity);
+        }
+
+        claimants.set(key, (claimants.get(key) ?? new Set<string>()).add(person));
+      }
+    }
+
+    for (const identity of result.companyIdentities) {
+      const key = keyOf(identity);
+      if (!companySeen.has(key)) companySeen.set(key, identity);
+    }
+  }
+
+  const identitiesByPerson = new Map<string, CandidateIdentity[]>();
+  const companyIdentities = new Map<string, CandidateIdentity>(companySeen);
+
+  for (const [key, owners] of claimants) {
+    const identity = personBest.get(key);
+    if (!identity) continue;
+
+    if (owners.size === 1 && !companySeen.has(key)) {
+      const owner = [...owners][0];
+      if (owner)
+        identitiesByPerson.set(owner, [...(identitiesByPerson.get(owner) ?? []), identity]);
+      continue;
+    }
+
+    // Demoted. A handle two people both appeared to own was never seen as the
+    // company's on any page, so there is no company-shaped reading of it to
+    // fall back on — rebuild one at the confidence an unattributed link gets.
+    if (!companyIdentities.has(key)) {
+      companyIdentities.set(key, { ...identity, providerConfidence: 0.6 });
+    }
+  }
+
+  // Addresses go the same way, and one person still keeps one address: an
+  // address two people appear to own is nobody's, and the first page to place
+  // an address with somebody is the one that counts.
+  const addressClaimants = new Map<string, Set<string>>();
+  const placements: Array<readonly [string, string]> = [];
+
+  for (const result of results) {
+    for (const [person, address] of result.emailsByPerson) {
+      addressClaimants.set(
+        address,
+        (addressClaimants.get(address) ?? new Set<string>()).add(person),
+      );
+      placements.push([person, address]);
+    }
+  }
+
+  const emailsByPerson = new Map<string, string>();
+  for (const [person, address] of placements) {
+    if (addressClaimants.get(address)?.size !== 1) continue;
+    if (!emailsByPerson.has(person)) emailsByPerson.set(person, address);
+  }
+
+  return {
+    identitiesByPerson,
+    emailsByPerson,
+    companyIdentities: [...companyIdentities.values()],
+  };
+}

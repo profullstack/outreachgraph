@@ -220,6 +220,20 @@ const STOPWORDS = new Set([
 ]);
 
 /**
+ * Contraction and possessive endings, removed before a capitalised word is
+ * read as a name.
+ *
+ * "I'd" is not a proper noun, but it is capitalised mid-sentence and so was
+ * extracted as one — and nothing could ever support it, because `normalize`
+ * turns the apostrophe into a space and leaves the untraceable token "i d".
+ * Any draft written in the first person failed its own grounding gate, twice,
+ * and was withheld. Stripping the ending also fixes the opposite error:
+ * "Stripe's" normalised to "stripe s" and did not match stored evidence
+ * reading "Stripe", so a correctly grounded name was rejected as invented.
+ */
+const CONTRACTION_SUFFIX = /['’](?:s|d|m|t|ll|ve|re)$/i;
+
+/**
  * Distinct content words a draft must share with the evidence to count as
  * grounded. Two is enough to rule out generic outreach ("would you be open to
  * a chat?") without demanding the draft quote verbatim.
@@ -377,8 +391,13 @@ export function findUnsupportedClaims(
 export function extractClaims(body: string): string[] {
   const claims: string[] = [];
 
-  // Quoted phrases: an explicit claim about what someone said.
-  for (const match of body.matchAll(/[""']([^""']{4,120})[""']/g)) {
+  // Quoted phrases: an explicit claim about what someone said. Only double
+  // quotes delimit one. An apostrophe is not a quote mark, and treating it as
+  // one made every pair of contractions in a draft look like a quotation: "I've
+  // seen this. Curious what you'd try" yielded the claim "ve seen this. Curious
+  // what you", which no evidence can support. Single quotes are left out for
+  // the same reason — they are indistinguishable from the apostrophe in "I'd".
+  for (const match of body.matchAll(/["“”]([^"“”]{4,120})["“”]/g)) {
     if (match[1]) claims.push(match[1]);
   }
 
@@ -396,7 +415,8 @@ export function extractClaims(body: string): string[] {
   for (const sentence of sentences) {
     const words = sentence.trim().split(/\s+/);
     for (let i = 1; i < words.length; i += 1) {
-      const word = words[i]!.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+      const trimmed = words[i]!.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+      const word = trimmed.replace(CONTRACTION_SUFFIX, '');
       if (word.length < 3) continue;
       if (!/^\p{Lu}/u.test(word)) continue;
       if (STOPWORDS.has(word.toLowerCase())) continue;
