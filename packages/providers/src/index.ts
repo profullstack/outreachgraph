@@ -100,6 +100,16 @@ export {
 } from './site/emails';
 
 export {
+  applyPattern,
+  candidateAddresses,
+  EMAIL_PATTERNS,
+  inferPatterns,
+  type AddressCandidate,
+  type EmailPattern,
+  type NameParts,
+} from './email/patterns';
+
+export {
   BlueskyProvider,
   BlueskyRateLimitError,
   BLUESKY_API,

@@ -181,6 +181,26 @@ export interface ProspectDetail {
   identities: IdentityRow[];
   companyIdentities: CompanyIdentityRow[];
   signals: SignalRow[];
+  /** Optional: a cached page from before addresses were proposed has none. */
+  emailCandidates?: EmailCandidateRow[];
+}
+
+/**
+ * A proposed personal address, which is a question rather than a fact.
+ *
+ * Nothing here can be sent to. Confirming one writes the email identity the
+ * sender actually reads, and that is the only way a prospect stops resolving
+ * to their company's shared inbox.
+ */
+export interface EmailCandidateRow {
+  id: string;
+  address: string;
+  pattern: string;
+  /** 1 when the shape was learned from a confirmed address at this company. */
+  derived: number;
+  confidence: number;
+  status: string;
+  basis: string | null;
 }
 
 export interface CurrentUser {

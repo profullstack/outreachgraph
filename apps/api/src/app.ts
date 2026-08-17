@@ -15,6 +15,7 @@ import {
   approveRecommendationSchema,
   connectEmailAccountSchema,
   createSuppressionSchema,
+  decideEmailCandidateSchema,
   executeActionSchema,
   backfillDraftsSchema,
   recordReplySchema,
@@ -77,7 +78,14 @@ import {
   setCampaignStatus,
 } from './campaigns';
 import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
-import { readEvents, workflowStatus } from '@outreachgraph/pipeline';
+import {
+  candidatesForPerson,
+  confirmCandidate,
+  proposeAddresses,
+  readEvents,
+  rejectCandidate,
+  workflowStatus,
+} from '@outreachgraph/pipeline';
 import { SHARE_TARGETS, type ShareNetwork } from '@outreachgraph/domain';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
@@ -1048,14 +1056,26 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const person = await repo.getPerson(db, personId);
     if (!person || person.status === 'deleted') throw ApiError.notFound('person');
 
-    const [identities, companyIdentities, signals, provenance] = await Promise.all([
-      repo.listIdentities(db, personId),
-      repo.listCompanyIdentities(db, personId),
-      repo.listPersonSignals(db, actor.workspaceId, personId),
-      repo.listProvenance(db, personId),
-    ]);
+    const [identities, companyIdentities, signals, provenance, emailCandidates] = await Promise.all(
+      [
+        repo.listIdentities(db, personId),
+        repo.listCompanyIdentities(db, personId),
+        repo.listPersonSignals(db, actor.workspaceId, personId),
+        repo.listProvenance(db, personId),
+        // Served here rather than behind its own fetch: deciding on an address
+        // is a judgement about this person, made with their evidence on screen.
+        candidatesForPerson(db, actor.workspaceId, personId),
+      ],
+    );
 
-    return c.json({ person, identities, companyIdentities, signals, provenance });
+    return c.json({
+      person,
+      identities,
+      companyIdentities,
+      signals,
+      provenance,
+      emailCandidates,
+    });
   });
 
   api.get('/people/:id/identities', async (c) => {
@@ -1121,6 +1141,117 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ recorded: true, personId, conversationOpen: true });
+  });
+
+  // ------------------------------------------------- reaching people at all
+  /**
+   * Candidate personal addresses for one prospect.
+   *
+   * Every prospect in production resolves to their company's shared inbox
+   * because none of them has a personal address, which is why the address
+   * limits refuse almost everything. These are proposals for a human to decide
+   * on — nothing here is reachable until one is confirmed.
+   */
+  api.get('/people/:id/email-candidates', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const personId = c.req.param('id');
+
+    const person = await repo.getPerson(db, personId);
+    if (!person) throw ApiError.notFound('person');
+
+    return c.json({
+      personId,
+      candidates: await candidatesForPerson(db, actor.workspaceId, personId),
+    });
+  });
+
+  /**
+   * Accepts an address, which is the only path from a proposal to a send.
+   *
+   * Writes the `social_identities` row the sender reads, so the prospect stops
+   * resolving to a shared inbox — and, because the address is now personal,
+   * stops being rate-limited alongside every colleague behind that mailbox.
+   */
+  api.post('/people/:id/email-candidates/confirm', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const personId = c.req.param('id');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('this role cannot confirm an address');
+
+    const body = await parseBody(c.req.raw, decideEmailCandidateSchema);
+    const person = await repo.getPerson(db, personId);
+    if (!person) throw ApiError.notFound('person');
+
+    const result = await confirmCandidate(db, {
+      workspaceId: actor.workspaceId,
+      personId,
+      address: body.address,
+      actorId: actor.userId,
+    });
+
+    if (!result.confirmed) throw ApiError.badRequest('that address could not be confirmed');
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'person.address_confirmed',
+      entityKind: 'person',
+      entityId: personId,
+      detail: { address: body.address.trim().toLowerCase() },
+    });
+
+    return c.json({ confirmed: true, personId, address: body.address.trim().toLowerCase() });
+  });
+
+  /** Records that a proposed address is wrong, so it is not offered again. */
+  api.post('/people/:id/email-candidates/reject', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const personId = c.req.param('id');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('this role cannot reject an address');
+
+    const body = await parseBody(c.req.raw, decideEmailCandidateSchema);
+
+    const rejected = await rejectCandidate(db, {
+      workspaceId: actor.workspaceId,
+      personId,
+      address: body.address,
+      actorId: actor.userId,
+    });
+
+    return c.json({ rejected, personId });
+  });
+
+  /**
+   * Proposes addresses across the workspace.
+   *
+   * Safe to re-run, and meant to be: each pass applies whatever has been
+   * learned from confirmations since the last one, so a company's colleagues
+   * sharpen from guesses into derivations as the operator works through them.
+   */
+  api.post('/enrichment/propose', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('this role cannot run enrichment');
+
+    const result = await proposeAddresses(db, actor.workspaceId);
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'enrichment.proposed',
+      entityKind: 'workspace',
+      entityId: actor.workspaceId,
+      detail: { ...result },
+    });
+
+    return c.json(result);
   });
 
   /**

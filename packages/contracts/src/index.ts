@@ -286,6 +286,18 @@ export const recordReplySchema = z.object({
 });
 
 /**
+ * Deciding on a proposed personal address.
+ *
+ * The address is required rather than a candidate id so the operator can
+ * confirm one they simply know, which nothing derived. That is the input that
+ * teaches a company's address shape to every colleague, so refusing it because
+ * it was not on the list would throw away the most valuable answer available.
+ */
+export const decideEmailCandidateSchema = z.object({
+  address: z.string().email(),
+});
+
+/**
  * Connecting the mailbox outreach is sent from.
  *
  * The password is write-only: it is accepted here, verified against the real

@@ -20,6 +20,9 @@ export const ID_PREFIXES = {
   // person — a distinct prefix so the two can never be confused in a log line.
   companyIdentity: 'cid',
   identityEvidence: 'evd',
+  // A proposed personal address, which is a claim awaiting a decision rather
+  // than an identity. It only becomes a `sid` once a human confirms it.
+  emailCandidate: 'emc',
   identityCandidate: 'idc',
   providerRecord: 'prv',
   fieldProvenance: 'fpv',
