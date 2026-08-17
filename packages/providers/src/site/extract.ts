@@ -68,7 +68,7 @@ const NESTED_ROOTS = /^(company|school|showcase|in|pub|c|channel|user|r|profile)
 const NOT_HANDLES =
   /^(watch|playlist|embed|shorts|results|feed|hashtag|search|explore|about|legal|terms|privacy|help|login|signup|share|intent|home|posts|status|p|reel|stories|tv|jobs|pricing|blog|docs|features|events|groups|topics|orgs|sponsors|marketplace|pulse|learning|today|new|trending)$/i;
 
-function handleFromUrl(url: string): string | undefined {
+export function handleFromUrl(url: string): string | undefined {
   try {
     const parsed = new URL(url);
     const segments = parsed.pathname.split('/').filter(Boolean);
@@ -173,12 +173,95 @@ function metaContent(html: string, attr: 'property' | 'name', key: string): stri
   return found && found.trim() ? collapse(found) : undefined;
 }
 
+/**
+ * Every anchor on the page, with its href and where it starts.
+ *
+ * The alternation exists because HTML minifiers drop the quotes around any
+ * attribute value that needs none, and a URL usually needs none — so a minified
+ * page ships `href=https://twitter.com/someone`. A quotes-only pattern reads
+ * that as no link at all.
+ *
+ * This is not a rare edge. Smashing Magazine's about page carries thirteen
+ * distinct social links and the crawler reported the company as having none,
+ * because every one of them is unquoted. Any site behind an HTML minifier had
+ * its entire social graph invisible to us.
+ */
+export interface Anchor {
+  readonly href: string;
+  /** The opening tag alone, for attribute tests like `rel="me"`. */
+  readonly tag: string;
+  /**
+   * The whole element, opening tag through `</a>`.
+   *
+   * Carried because the label that says whose link this is usually lives in the
+   * *content* rather than the tag — an avatar's `alt` text, most often. Without
+   * it, a linked portrait is an anonymous URL sitting near somebody's name.
+   */
+  readonly element: string;
+  readonly index: number;
+}
+
+/** How much of an anchor's content to keep. Long enough for a label, no more. */
+const MAX_ANCHOR_CONTENT = 400;
+
+export function anchors(html: string): Anchor[] {
+  const found: Anchor[] = [];
+  const pattern = /<a\b[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))[^>]*>/gi;
+
+  for (const match of html.matchAll(pattern)) {
+    const href = match[1] ?? match[2] ?? match[3];
+    if (!href || match.index === undefined) continue;
+
+    // The closing tag is searched for rather than matched, so an anchor that
+    // was never closed still yields its opening tag instead of nothing.
+    const from = match.index + match[0].length;
+    const closing = html.indexOf('</a', from);
+    const end =
+      closing === -1 || closing - from > MAX_ANCHOR_CONTENT ? from + MAX_ANCHOR_CONTENT : closing;
+
+    found.push({
+      href,
+      tag: match[0],
+      element: html.slice(match.index, Math.min(end, html.length)),
+      index: match.index,
+    });
+  }
+
+  return found;
+}
+
+/**
+ * A person's name used as an element's own label, if it carries one.
+ *
+ * `alt` and `title` on a linked portrait are the page stating who the link is
+ * for. That statement outranks any neighbouring heading, and — more importantly
+ * — a label naming somebody we have *not* heard of is proof the link is not the
+ * nearest known person's.
+ */
+export function labelName(element: string): string | undefined {
+  for (const match of element.matchAll(
+    /\b(?:alt|title)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi,
+  )) {
+    const raw = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+    // Two to four capitalised words: the shape of a person's name, and not of
+    // "Read more", "LinkedIn", or a file name.
+    if (/^[A-Z][\p{L}'’-]+(?:\s+[A-Z][\p{L}'’.-]+){1,3}$/u.test(raw)) return raw;
+  }
+
+  return undefined;
+}
+
+/** True when an anchor tag carries `rel="me"`, quoted or not. */
+export function isRelMe(tag: string): boolean {
+  return /rel\s*=\s*(?:["'][^"']*\bme\b[^"']*["']|me\b)/i.test(tag);
+}
+
 /** Outbound links, plus anything the page marked `rel="me"`. */
 function linkedProfiles(html: string): CandidateIdentity[] {
   const found = new Map<string, CandidateIdentity>();
 
-  for (const match of html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
-    const href = match[1];
+  for (const match of anchors(html)) {
+    const href = match.href;
     if (!href) continue;
     const network = networkForUrl(href);
     if (!network) continue;
@@ -196,7 +279,7 @@ function linkedProfiles(html: string): CandidateIdentity[] {
       // A link the site published is a self-declared association, but the page
       // is the *company's*, so it says less about any individual than a
       // person's own profile does. The resolver weighs it accordingly.
-      providerConfidence: /rel\s*=\s*["'][^"']*\bme\b/i.test(match[0]) ? 0.9 : 0.6,
+      providerConfidence: isRelMe(match.tag) ? 0.9 : 0.6,
     });
   }
 

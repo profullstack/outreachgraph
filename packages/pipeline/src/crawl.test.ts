@@ -360,3 +360,125 @@ describe('URL to approval card', () => {
     expect(rows).toHaveLength(1);
   });
 });
+
+/**
+ * A team page of the shape small businesses actually publish: no JSON-LD
+ * `Person`, just cards with a name, a couple of profile links and an address.
+ * This is the layout the product exists to read, and until attribution landed
+ * every one of these links was filed against the company instead.
+ */
+const TEAM_HTML = `<!doctype html><html><head>
+  <title>Northwind Dental</title>
+  <meta property="og:site_name" content="Northwind Dental" />
+  <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"Person","name":"Priya Raghunathan",
+     "jobTitle":"Practice Principal"}
+  </script>
+</head><body>
+  <main>
+    <div class="member">
+      <h3>Priya Raghunathan</h3><p>Practice Principal</p>
+      <a href="https://x.com/priyarague">X</a>
+      <a href="mailto:p.raghunathan@northwind.example">Email</a>
+    </div>
+  </main>
+  <footer>
+    <a href="https://x.com/northwinddental">the practice</a>
+    <a href="mailto:info@northwind.example">enquiries</a>
+  </footer>
+</body></html>`;
+
+describe('social handles and addresses reach the person', () => {
+  test('a card’s links are stored against that person, not the company', async () => {
+    const { db } = await setup('e2e-attribution');
+
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      payload: { url: 'https://northwind.example' },
+    });
+
+    const site = new SiteProvider({ fetchImpl: stubNetwork(TEAM_HTML) });
+
+    const summary = await drainQueue(db, async (job: QueuedJob) => {
+      await runCrawlJob({ db, site, providers: [] }, job);
+    });
+
+    // The job must actually succeed. Storing a personal address used to throw
+    // `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint`
+    // — the conflict target omitted the partial index's WHERE clause — and
+    // nothing had ever reached that line before, because no personal address
+    // was ever recognised.
+    expect(summary.succeeded).toBe(1);
+    expect(summary.dead).toBe(0);
+
+    const person = await queryOne<{ id: string }>(
+      db,
+      'SELECT id FROM people WHERE display_name = ?',
+      ['Priya Raghunathan'],
+    );
+    expect(person).toBeDefined();
+
+    const identities = await queryAll<{ network: string; handle: string; confidence: number }>(
+      db,
+      'SELECT network, handle, confidence FROM social_identities WHERE person_id = ? ORDER BY network',
+      [person!.id],
+    );
+
+    const byNetwork = new Map(identities.map((row) => [row.network, row]));
+
+    // Hers, from her own card.
+    expect(byNetwork.get('x')?.handle).toBe('priyarague');
+    expect(byNetwork.get('email')?.handle).toBe('p.raghunathan@northwind.example');
+
+    // The practice's own account stays the practice's.
+    expect(identities.map((row) => row.handle)).not.toContain('northwinddental');
+
+    // And she is still contactable: `identity_confidence` is the minimum across
+    // a person's identities, so a weakly-scored handle would push her under the
+    // outreach floor and finding more about her would make her unreachable.
+    const confidence = await queryOne<{ identity_confidence: number }>(
+      db,
+      'SELECT identity_confidence FROM people WHERE id = ?',
+      [person!.id],
+    );
+    expect(confidence?.identity_confidence).toBeGreaterThanOrEqual(0.85);
+  });
+});
+
+describe('re-crawling the same page', () => {
+  test('refreshes an identity instead of storing it again', async () => {
+    // Re-crawling is routine. A handle-only identity matches no unique index —
+    // the one on social_identities is partial and needs a platform id, which a
+    // web page never supplies — so without an explicit check one Bluesky handle
+    // becomes a new row on every pass.
+    const { db } = await setup('e2e-recrawl');
+    const site = new SiteProvider({ fetchImpl: stubNetwork(TEAM_HTML) });
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      await enqueue(db, {
+        workspaceId: SEED.workspaceId,
+        kind: 'crawl_site',
+        payload: { url: 'https://northwind.example' },
+        dedupeKey: `pass-${pass}`,
+      });
+      await drainQueue(db, async (job: QueuedJob) => {
+        await runCrawlJob({ db, site, providers: [] }, job);
+      });
+    }
+
+    const person = await queryOne<{ id: string }>(
+      db,
+      'SELECT id FROM people WHERE display_name = ?',
+      ['Priya Raghunathan'],
+    );
+
+    const handles = await queryAll<{ network: string }>(
+      db,
+      `SELECT network FROM social_identities WHERE person_id = ? AND network = 'x'`,
+      [person!.id],
+    );
+
+    expect(handles).toHaveLength(1);
+  });
+});
