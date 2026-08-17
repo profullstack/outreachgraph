@@ -37,6 +37,27 @@ export interface ApprovalCard {
    * of a rule that already exists in SQL, free to drift from it.
    */
   bucket: ApprovalBucket;
+
+  /**
+   * Present when the address limits will refuse this card if it is approved.
+   *
+   * The card renders it instead of letting the reviewer find out by clicking.
+   * It is advisory: the API re-runs the whole policy engine on approval, so a
+   * card without a hold can still be refused for some other reason, and the
+   * refusal is always the authority.
+   */
+  hold?: ApprovalHold;
+}
+
+/** Why a card cannot be approved yet, and when that changes. */
+export interface ApprovalHold {
+  gate: string;
+  reason: string;
+  /** The mailbox the message would reach — the thing the limit is counted on. */
+  address: string;
+  /** True when that mailbox is the company's, shared with colleagues. */
+  shared: boolean;
+  clears_at?: string;
 }
 
 /** One thing the workspace sells. A workspace may sell several. */

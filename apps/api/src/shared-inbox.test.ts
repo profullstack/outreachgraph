@@ -235,6 +235,113 @@ describe('a shared company inbox', () => {
   });
 });
 
+/**
+ * The complaint the address limits produced once they worked.
+ *
+ * `ready` meant "an outbound action with a draft" and nothing more, so a queue
+ * whose cards all sat behind one shared inbox on cooldown showed every one of
+ * them as approvable. Clicking any of them answered "this address was last
+ * contacted 12h ago", which reads as a broken queue when the prospect on the
+ * card has never been written to. The queue now says it first.
+ */
+describe('the queue, before anything is clicked', () => {
+  async function queue(app: Hono<AppEnv>): Promise<{
+    recommendations: { id: string; hold?: Record<string, unknown> }[];
+    counts: { held?: number; approvable?: number; buckets: Record<string, number> };
+  }> {
+    const response = await app.request('/api/v1/recommendations?filter=all&limit=200');
+    expect(response.status).toBe(200);
+    return (await response.json()) as never;
+  }
+
+  test('marks the colleague behind a used inbox as held, and names it', async () => {
+    const { mailer } = recordingMailer();
+    const { app, db } = await harness('queue-marks-held', mailer);
+    await giveCompanySharedInbox(db);
+    const colleague = await addColleague(db, 'frank');
+
+    // Before anything is sent, nothing is held: the inbox is untouched.
+    const before = await queue(app);
+    expect(before.recommendations.every((card) => card.hold === undefined)).toBe(true);
+    expect(before.counts.held).toBe(0);
+
+    await approve(app, SEED.recommendationId);
+
+    const after = await queue(app);
+    const card = after.recommendations.find((row) => row.id === colleague.recommendationId);
+
+    expect(card?.hold).toBeDefined();
+    // The address is the whole explanation: Frank is a stranger to us, and
+    // only the mailbox he shares makes the refusal make sense.
+    expect(card?.hold?.address).toBe(SHARED_INBOX);
+    expect(card?.hold?.shared).toBe(true);
+  });
+
+  test('the hold says exactly what approving would have said', async () => {
+    const { mailer } = recordingMailer();
+    const { app, db } = await harness('queue-hold-matches', mailer);
+    await giveCompanySharedInbox(db);
+    const colleague = await addColleague(db, 'gina');
+
+    await approve(app, SEED.recommendationId);
+
+    const listed = await queue(app);
+    const hold = listed.recommendations.find((row) => row.id === colleague.recommendationId)?.hold;
+
+    const refused = await approve(app, colleague.recommendationId);
+    expect(refused.status).toBe(409);
+    const payload = (await refused.json()) as {
+      error?: { message?: string; details?: { gate?: string } };
+    };
+
+    // A preview that disagrees with the refusal is worse than no preview:
+    // it teaches the reviewer to distrust the badge.
+    expect(hold?.reason).toBe(payload.error?.message);
+    expect(hold?.gate).toBe(payload.error?.details?.gate);
+  });
+
+  test('counts how many ready cards can actually be sent', async () => {
+    const { mailer } = recordingMailer();
+    const { app, db } = await harness('queue-counts-held', mailer);
+    await giveCompanySharedInbox(db);
+    await addColleague(db, 'hana');
+    await addColleague(db, 'iris');
+
+    await approve(app, SEED.recommendationId);
+
+    const listed = await queue(app);
+
+    // Jane's card is gone — approved. Both colleagues are drafted and both are
+    // behind the one inbox she used, so the tab must not claim two are ready.
+    expect(listed.counts.buckets.ready).toBe(2);
+    expect(listed.counts.held).toBe(2);
+    expect(listed.counts.approvable).toBe(0);
+  });
+
+  test('a prospect with their own address is never held', async () => {
+    const { mailer } = recordingMailer();
+    const { app, db } = await harness('queue-personal-not-held', mailer);
+    await giveCompanySharedInbox(db);
+    const colleague = await addColleague(db, 'jack');
+
+    await db.execute({
+      sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
+            confidence, source_type, verified_by, first_seen_at)
+            VALUES ('sid_jack_email', ?, 'email', 'jack@acme.com', 'jack@acme.com',
+            0.9, 'public_web', '[]', ?)`,
+      args: [colleague.personId, now()],
+    });
+
+    await approve(app, SEED.recommendationId);
+
+    const listed = await queue(app);
+    const card = listed.recommendations.find((row) => row.id === colleague.recommendationId);
+
+    expect(card?.hold).toBeUndefined();
+    expect(listed.counts.approvable).toBe(1);
+  });
+});
+
 describe('a contact who has replied', () => {
   test('is not written to again', async () => {
     const { sent, mailer } = recordingMailer();

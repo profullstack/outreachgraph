@@ -47,7 +47,12 @@ import {
   verifyEmailToken,
   workspacesForUser,
 } from './auth';
-import { evaluatePolicy, isExecutable, POLICY_VERSION } from '@outreachgraph/policy';
+import {
+  evaluateAddressLimits,
+  evaluatePolicy,
+  isExecutable,
+  POLICY_VERSION,
+} from '@outreachgraph/policy';
 import {
   campaignFunnel,
   campaignTerms,
@@ -1199,20 +1204,40 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const requestedChannel = c.req.query('channel');
     const channel = repo.isChannelFilter(requestedChannel) ? requestedChannel : 'all';
 
-    const [rows, counts] = await Promise.all([
+    const [rows, counts, usage, budgets] = await Promise.all([
       repo.listPendingRecommendations(db, actor.workspaceId, limit, filter),
       repo.approvalCounts(db, actor.workspaceId),
+      repo.pendingAddressUsage(db, actor.workspaceId),
+      repo.campaignBudgets(db, actor.workspaceId),
     ]);
+
+    const holds = addressHolds(usage, budgets);
+
+    const decorated = rows.map((row) => {
+      const entry = holds.get(String((row as { id?: unknown }).id));
+      return entry ? { ...row, hold: entry.hold } : row;
+    });
 
     const recommendations =
       channel === 'all'
-        ? rows
-        : rows.filter((row) => {
+        ? decorated
+        : decorated.filter((row) => {
             const network = (row as { network?: unknown }).network;
             return isNetwork(network) && channelForNetwork(network) === channel;
           });
 
-    return c.json({ recommendations, counts, filter, channel });
+    // `ready` counted drafts and nothing else, so a queue where every card was
+    // behind a shared inbox on cooldown reported twenty-eight ready and
+    // approved none of them. The tab now says how many of those are actually
+    // approvable right now, and the held ones say why on the card.
+    const held = [...holds.values()].filter((entry) => entry.hasDraft).length;
+
+    return c.json({
+      recommendations,
+      counts: { ...counts, held, approvable: Math.max(0, counts.buckets.ready - held) },
+      filter,
+      channel,
+    });
   });
 
   /**
@@ -2397,6 +2422,76 @@ function safeJson(text: string): Record<string, unknown> {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** What the queue tells the reviewer about a card it knows will be refused. */
+export interface ApprovalHold {
+  readonly gate: string;
+  readonly reason: string;
+  /** The mailbox the message would reach, which is the thing being limited. */
+  readonly address: string;
+  /** True when that mailbox belongs to the company rather than the person. */
+  readonly shared: boolean;
+  /** When the hold lifts. Absent for the weekly cap, which has no fixed date. */
+  readonly clears_at?: string;
+}
+
+/**
+ * Works out, ahead of any click, which pending cards the address gates will
+ * refuse.
+ *
+ * This is a *preview*, never a decision: approving still re-runs the whole
+ * engine against current state, as it must (PRD §20.9). It exists because the
+ * queue was silent about it — a reviewer looking at twenty-eight ready cards
+ * behind four shared inboxes had no way to learn that none of them could be
+ * approved except by clicking all twenty-eight.
+ *
+ * Only the address gates are previewed. They are the ones a reviewer cannot
+ * infer from the card, because the limit is on a mailbox the card does not
+ * name and is shared with colleagues the card does not list. Suppression,
+ * confidence and per-prospect limits are all facts about the person in front
+ * of them.
+ */
+function addressHolds(
+  usage: readonly repo.PendingAddressUsage[],
+  budgets: ReadonlyMap<string, string>,
+): ReadonlyMap<string, { readonly hold: ApprovalHold; readonly hasDraft: boolean }> {
+  const holds = new Map<string, { hold: ApprovalHold; hasDraft: boolean }>();
+
+  for (const row of usage) {
+    const budget = safeJson(budgets.get(row.campaignId) ?? '{}');
+
+    const breaches = evaluateAddressLimits({
+      actionsThisWeek: row.thisWeek,
+      maxPerWeek: numberOr(budget.maxActionsPerAddressPerWeek, 1),
+      shared: row.shared,
+      ...(row.hoursSinceLast === undefined ? {} : { hoursSinceLast: row.hoursSinceLast }),
+      ...(typeof budget.minHoursBetweenActions === 'number'
+        ? { cooldownHours: budget.minHoursBetweenActions }
+        : {}),
+    });
+
+    // The engine reports the last restriction when several fire, so the
+    // preview shows the last one too — otherwise the badge and the refusal
+    // would name different gates for the same card.
+    const breach = breaches.at(-1);
+    if (!breach) continue;
+
+    holds.set(row.recommendationId, {
+      hasDraft: row.hasDraft,
+      hold: {
+        gate: breach.gate,
+        reason: breach.reason,
+        address: row.address,
+        shared: row.shared,
+        ...(breach.clearsInHours === undefined
+          ? {}
+          : { clears_at: new Date(Date.now() + breach.clearsInHours * 3_600_000).toISOString() }),
+      },
+    });
+  }
+
+  return holds;
 }
 
 /** Accepts a JSON array of strings, or a comma-separated string. */

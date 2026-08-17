@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { ACTION_KINDS, NETWORKS, type ActionKind, type Network } from '@outreachgraph/domain';
-import { allowedActions, evaluatePolicy, isExecutable, type PolicyRequest } from './engine';
+import {
+  allowedActions,
+  evaluateAddressLimits,
+  evaluatePolicy,
+  isExecutable,
+  type PolicyRequest,
+} from './engine';
 import { DEFAULT_CAPABILITY_RULES } from './capability-matrix';
 
 /** A permissive baseline; each test tightens only the field under examination. */
@@ -288,6 +294,60 @@ describe('rate limits and budget (PRD §7.7, §18)', () => {
       request({ actionsToThisAddressThisWeek: 1, maxActionsPerAddressPerWeek: 3 }),
     );
     expect(result.decision).toBe('allow_with_approval');
+  });
+});
+
+/**
+ * The approval queue previews these two gates so a card that will be refused
+ * says so before it is clicked. That is only safe while the preview and the
+ * refusal are the same code — the point of these tests is that they cannot
+ * drift into disagreeing, not that the strings are any particular shape.
+ */
+describe('the address limits, previewed on their own', () => {
+  test('no breach when nothing has been sent to the address', () => {
+    expect(evaluateAddressLimits({ actionsThisWeek: 0, shared: true })).toEqual([]);
+  });
+
+  test('an uncounted address does not breach — undefined is not zero', () => {
+    expect(evaluateAddressLimits({})).toEqual([]);
+  });
+
+  test('says how long the cooldown has left to run', () => {
+    const [breach] = evaluateAddressLimits({ hoursSinceLast: 12, cooldownHours: 72 });
+
+    expect(breach?.gate).toBe('cooldown');
+    expect(breach?.clearsInHours).toBe(60);
+  });
+
+  test('the weekly cap has no clearing time, because its window is not one', () => {
+    const [breach] = evaluateAddressLimits({ actionsThisWeek: 1, shared: true });
+
+    expect(breach?.gate).toBe('rate_limit_address');
+    expect(breach?.clearsInHours).toBeUndefined();
+  });
+
+  test('the preview agrees with the refusal whenever the refusal fires', () => {
+    // Both gates fire together on a fresh duplicate to a shared inbox, and the
+    // engine reports the last one. A preview that named the first would put a
+    // different reason on the card than the one approving it produces.
+    const shape = {
+      actionsToThisAddressThisWeek: 1,
+      addressShared: true,
+      hoursSinceLastActionToAddress: 12,
+      minHoursBetweenActions: 72,
+    };
+
+    const refusal = evaluatePolicy(request(shape));
+    const preview = evaluateAddressLimits({
+      actionsThisWeek: shape.actionsToThisAddressThisWeek,
+      shared: shape.addressShared,
+      hoursSinceLast: shape.hoursSinceLastActionToAddress,
+      cooldownHours: shape.minHoursBetweenActions,
+    });
+
+    expect(refusal.decision).toBe('deny');
+    expect(preview.at(-1)?.gate).toBe(refusal.gate);
+    expect(preview.at(-1)?.reason).toBe(refusal.reason);
   });
 });
 

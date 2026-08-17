@@ -154,7 +154,7 @@ export interface PolicyTraceEntry {
   readonly reason: string;
 }
 
-const DEFAULT_COOLDOWN_HOURS = 72;
+export const DEFAULT_COOLDOWN_HOURS = 72;
 
 /**
  * How many messages one delivery address may receive in a week.
@@ -163,7 +163,77 @@ const DEFAULT_COOLDOWN_HOURS = 72;
  * human who does not care that the fourteen messages were addressed to
  * fourteen different colleagues.
  */
-const DEFAULT_ADDRESS_CAP_PER_WEEK = 1;
+export const DEFAULT_ADDRESS_CAP_PER_WEEK = 1;
+
+/** What the address gates were given, and what they concluded. */
+export interface AddressLimitInput {
+  /** Messages already delivered to this address in the last seven days. */
+  readonly actionsThisWeek?: number;
+  readonly maxPerWeek?: number;
+  /** True when the address is a company inbox rather than a personal one. */
+  readonly shared?: boolean;
+  readonly hoursSinceLast?: number;
+  readonly cooldownHours?: number;
+}
+
+export interface AddressLimitBreach {
+  readonly gate: PolicyGate;
+  readonly reason: string;
+  /**
+   * When the breach stops applying, in hours from now. Undefined for the
+   * weekly cap, whose window is not a fixed offset from the last message.
+   */
+  readonly clearsInHours?: number;
+}
+
+/**
+ * The address-keyed gates, on their own.
+ *
+ * Extracted so the approval queue can say *in advance* that a card cannot be
+ * approved, using the same arithmetic that will refuse it. The queue used to
+ * have no idea: `ready` meant "an outbound action with a draft", so twenty-odd
+ * cards behind one inbox on cooldown all rendered as approvable and every one
+ * of them failed on click. A second implementation of these two rules for
+ * display would drift from this one on the first change to either; there is
+ * only ever one.
+ *
+ * Returns every breach, in gate order. `evaluatePolicy` reports the last one,
+ * which is how it has always behaved when both fire together.
+ */
+export function evaluateAddressLimits(input: AddressLimitInput): readonly AddressLimitBreach[] {
+  const breaches: AddressLimitBreach[] = [];
+
+  const count = input.actionsThisWeek;
+  const cap = input.maxPerWeek ?? DEFAULT_ADDRESS_CAP_PER_WEEK;
+
+  // Undefined means "not counted", not "counted zero" — no address resolved,
+  // so there is nothing to protect and nothing to refuse.
+  if (count !== undefined && count >= cap) {
+    breaches.push({
+      gate: 'rate_limit_address',
+      reason:
+        input.shared === true
+          ? `This prospect shares a company inbox that has already had ` +
+            `${count} message(s) this week; the limit is ${cap}.`
+          : `Weekly limit for this address reached (${count}/${cap}).`,
+    });
+  }
+
+  const cooldown = input.cooldownHours ?? DEFAULT_COOLDOWN_HOURS;
+  const elapsed = input.hoursSinceLast;
+
+  if (elapsed !== undefined && elapsed < cooldown) {
+    breaches.push({
+      gate: 'cooldown',
+      reason:
+        `Only ${round(elapsed)}h since this address was last contacted; ` +
+        `the cooldown is ${cooldown}h.`,
+      clearsInHours: cooldown - elapsed,
+    });
+  }
+
+  return breaches;
+}
 
 /**
  * Evaluates a single (network, action) request.
@@ -279,27 +349,23 @@ export function evaluatePolicy(request: PolicyRequest): PolicyResult {
     // inbox is the case they exist for, so it is named in the refusal —
     // "weekly limit reached" is baffling for a prospect who has never been
     // contacted, until you know fourteen colleagues share their mailbox.
-    const addressCount = request.actionsToThisAddressThisWeek;
-    const addressCap = request.maxActionsPerAddressPerWeek ?? DEFAULT_ADDRESS_CAP_PER_WEEK;
-    if (addressCount !== undefined && addressCount >= addressCap) {
-      restrict(
-        'rate_limit_address',
-        'deny',
-        request.addressShared === true
-          ? `This prospect shares a company inbox that has already had ` +
-              `${addressCount} message(s) this week; the limit is ${addressCap}.`
-          : `Weekly limit for this address reached (${addressCount}/${addressCap}).`,
-      );
-    }
-
-    const addressElapsed = request.hoursSinceLastActionToAddress;
-    if (addressElapsed !== undefined && addressElapsed < cooldown) {
-      restrict(
-        'cooldown',
-        'deny',
-        `Only ${round(addressElapsed)}h since this address was last contacted; ` +
-          `the cooldown is ${cooldown}h.`,
-      );
+    //
+    // Shared with the approval queue, which runs the same two rules ahead of
+    // time so a card that would be refused here says so before it is clicked.
+    for (const breach of evaluateAddressLimits({
+      ...(request.actionsToThisAddressThisWeek === undefined
+        ? {}
+        : { actionsThisWeek: request.actionsToThisAddressThisWeek }),
+      ...(request.maxActionsPerAddressPerWeek === undefined
+        ? {}
+        : { maxPerWeek: request.maxActionsPerAddressPerWeek }),
+      ...(request.addressShared === undefined ? {} : { shared: request.addressShared }),
+      ...(request.hoursSinceLastActionToAddress === undefined
+        ? {}
+        : { hoursSinceLast: request.hoursSinceLastActionToAddress }),
+      cooldownHours: cooldown,
+    })) {
+      restrict(breach.gate, 'deny', breach.reason);
     }
   }
 

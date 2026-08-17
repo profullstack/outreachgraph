@@ -44,6 +44,33 @@ function explainWithholding(reason: string, unsupported?: string[]): string {
   }
 }
 
+/**
+ * Why this card cannot be approved yet.
+ *
+ * The reason the API gives is precise but not self-explanatory: "this address
+ * was last contacted 12h ago" is baffling next to a prospect who has never
+ * been written to, and that is exactly the case it fires on — the limit is on
+ * the mailbox, and with no personal address the mailbox is the company's, read
+ * by one person on behalf of everybody in it. So the address is named, and
+ * whether it is shared is said out loud. Without both, the refusal reads as a
+ * bug in the queue rather than the protection it is.
+ */
+function HoldNotice({ hold }: { hold: NonNullable<Card['hold']> }) {
+  return (
+    <section className="border-border bg-surface mt-4 rounded-xl border p-3">
+      <h3 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">
+        Held — cannot approve yet
+      </h3>
+      <p className="mt-1 text-sm">{hold.reason}</p>
+      <p className="text-ink-muted mt-1 text-xs">
+        Goes to <span className="text-ink font-medium">{hold.address}</span>
+        {hold.shared ? ', a shared company inbox — not a personal address' : ''}.
+        {hold.clears_at ? ` Clears ${relativeTime(hold.clears_at)}.` : ''}
+      </p>
+    </section>
+  );
+}
+
 export function ApprovalCard({ card }: { card: Card }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | undefined>();
@@ -164,6 +191,8 @@ export function ApprovalCard({ card }: { card: Card }) {
         </div>
       </dl>
 
+      {card.hold ? <HoldNotice hold={card.hold} /> : null}
+
       {card.signal_summary ? (
         <section className="border-hot/40 bg-hot/5 mt-4 rounded-xl border-l-2 p-3">
           <h3 className="text-hot text-[11px] font-semibold tracking-wide uppercase">Why now</h3>
@@ -249,19 +278,26 @@ export function ApprovalCard({ card }: { card: Card }) {
       <div className="mt-4 grid grid-cols-2 gap-2">
         <button
           type="button"
-          disabled={Boolean(busy)}
+          // A held card's approval is already known to fail, so the button
+          // does not offer it. Every other control stays live: skipping,
+          // editing and suppressing a held card are all still reasonable, and
+          // are in fact what a reviewer most often wants to do with one.
+          disabled={Boolean(busy) || Boolean(card.hold)}
           onClick={() => act('approve', body && body !== original ? { editedBody: body } : {})}
+          {...(card.hold ? { title: card.hold.reason } : {})}
           className="bg-accent rounded-xl py-2 text-sm font-medium text-white disabled:opacity-60"
         >
-          {busy === 'approve'
-            ? card.network === 'email'
-              ? 'Sending…'
-              : 'Approving…'
-            : // Say what the button does. On email it is not a filing action:
-              // pressing it puts the message in someone's inbox.
-              card.network === 'email'
-              ? 'Approve & send'
-              : 'Approve'}
+          {card.hold
+            ? 'Held'
+            : busy === 'approve'
+              ? card.network === 'email'
+                ? 'Sending…'
+                : 'Approving…'
+              : // Say what the button does. On email it is not a filing action:
+                // pressing it puts the message in someone's inbox.
+                card.network === 'email'
+                ? 'Approve & send'
+                : 'Approve'}
         </button>
 
         <button

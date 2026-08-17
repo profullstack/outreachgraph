@@ -8,10 +8,15 @@
 
 export {
   allowedActions,
+  DEFAULT_ADDRESS_CAP_PER_WEEK,
+  DEFAULT_COOLDOWN_HOURS,
+  evaluateAddressLimits,
   evaluatePolicy,
   isExecutable,
   POLICY_DECISIONS,
   POLICY_GATES,
+  type AddressLimitBreach,
+  type AddressLimitInput,
   type PolicyDecision,
   type PolicyGate,
   type PolicyRequest,

@@ -25,6 +25,7 @@ import type {
 export type {
   ApprovalBucket,
   ApprovalCard,
+  ApprovalHold,
   CurrentUser,
   IdentityRow,
   ListeningView,
@@ -152,6 +153,10 @@ export interface ApprovalQueue {
   readonly counts: {
     readonly buckets: Record<ApprovalFilter, number>;
     readonly channels: Record<ChannelFilter, number>;
+    /** Ready cards the address limits will refuse right now. */
+    readonly held?: number;
+    /** Ready cards that would actually go out: `buckets.ready` minus `held`. */
+    readonly approvable?: number;
   };
   readonly filter: ApprovalFilter;
   readonly channel: ChannelFilter;

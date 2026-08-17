@@ -106,6 +106,24 @@ export async function getCampaign(db: Client, workspaceId: string, campaignId: s
   }>(db, 'SELECT * FROM campaigns WHERE id = ? AND workspace_id = ?', [campaignId, workspaceId]);
 }
 
+/**
+ * Every campaign's budget in the workspace, for callers deciding about many
+ * cards at once. `getCampaign` per recommendation would be one query per card
+ * to read a column that a dozen cards share.
+ */
+export async function campaignBudgets(
+  db: Client,
+  workspaceId: string,
+): Promise<ReadonlyMap<string, string>> {
+  const rows = await queryAll<{ id: string; budget_json: string }>(
+    db,
+    'SELECT id, budget_json FROM campaigns WHERE workspace_id = ?',
+    [workspaceId],
+  );
+
+  return new Map(rows.map((row) => [row.id, row.budget_json]));
+}
+
 export async function getRecommendation(
   db: Client,
   workspaceId: string,
@@ -500,6 +518,99 @@ export async function addressCounts(
     thisWeek: Number(week?.n ?? 0),
     ...(hoursSinceLast === undefined ? {} : { hoursSinceLast }),
   };
+}
+
+/** Address usage for one pending card, keyed by the recommendation it belongs to. */
+export interface PendingAddressUsage {
+  readonly recommendationId: string;
+  readonly campaignId: string;
+  readonly address: string;
+  readonly shared: boolean;
+  readonly thisWeek: number;
+  readonly hoursSinceLast?: number;
+  /** Whether a message is already written, i.e. whether this card is `ready`. */
+  readonly hasDraft: boolean;
+}
+
+/**
+ * The address gates' inputs for every pending email card, in one statement.
+ *
+ * `resolveContactAddress` plus `addressCounts` is four queries per card. The
+ * approval queue returns up to two hundred, and a Turso round trip is not
+ * free, so the per-card version would be eight hundred sequential HTTP calls
+ * to render one page. This asks the same questions set-at-a-time.
+ *
+ * The resolution order is `resolveContactAddress`'s, spelled again in SQL
+ * because a correlated subquery cannot call a TypeScript function: personal
+ * address first, the company inbox only as a fallback, and `shared` is exactly
+ * "we fell back". Cards with no address at all are absent from the result —
+ * they are blocked for a different reason, which the send path already
+ * reports, and inventing an address gate for them would be a lie.
+ */
+export async function pendingAddressUsage(
+  db: Client,
+  workspaceId: string,
+): Promise<readonly PendingAddressUsage[]> {
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+
+  const rows = await queryAll<{
+    recommendation_id: string;
+    campaign_id: string;
+    address: string;
+    shared: number;
+    this_week: number;
+    last_at: string | null;
+    has_draft: number;
+  }>(
+    db,
+    `WITH candidate AS (
+        SELECT r.id AS recommendation_id, r.campaign_id AS campaign_id,
+               EXISTS (SELECT 1 FROM drafts d WHERE d.recommendation_id = r.id) AS has_draft,
+               (SELECT lower(trim(si.handle)) FROM social_identities si
+                 WHERE si.person_id = r.person_id AND si.network = 'email'
+                   AND si.handle IS NOT NULL AND trim(si.handle) <> ''
+              ORDER BY si.confidence DESC LIMIT 1) AS personal,
+               (SELECT lower(trim(co.contact_email)) FROM people p
+                  JOIN companies co ON co.id = p.current_company_id
+                 WHERE p.id = r.person_id AND co.contact_email IS NOT NULL
+                   AND trim(co.contact_email) <> '') AS company
+          FROM recommendations r
+         WHERE r.workspace_id = ? AND r.status = 'pending' AND r.network = 'email'
+      ),
+      resolved AS (
+        SELECT recommendation_id, campaign_id, has_draft,
+               COALESCE(personal, company) AS address,
+               CASE WHEN personal IS NULL THEN 1 ELSE 0 END AS shared
+          FROM candidate
+         WHERE COALESCE(personal, company) IS NOT NULL
+      )
+      SELECT resolved.recommendation_id, resolved.campaign_id, resolved.address,
+             resolved.shared, resolved.has_draft,
+             (SELECT count(*) FROM interactions i
+               WHERE i.workspace_id = ? AND i.contact_address = resolved.address
+                 AND i.direction = 'outbound' AND i.occurred_at >= ?) AS this_week,
+             (SELECT max(i.occurred_at) FROM interactions i
+               WHERE i.workspace_id = ? AND i.contact_address = resolved.address
+                 AND i.direction = 'outbound') AS last_at
+        FROM resolved`,
+    [workspaceId, workspaceId, weekAgo, workspaceId],
+  );
+
+  return rows.map((row) => {
+    const hoursSinceLast = row.last_at
+      ? (Date.now() - Date.parse(row.last_at)) / 3_600_000
+      : undefined;
+
+    return {
+      recommendationId: row.recommendation_id,
+      campaignId: row.campaign_id,
+      address: row.address,
+      shared: Number(row.shared) === 1,
+      thisWeek: Number(row.this_week ?? 0),
+      hasDraft: Number(row.has_draft) === 1,
+      ...(hoursSinceLast === undefined ? {} : { hoursSinceLast }),
+    };
+  });
 }
 
 /**
