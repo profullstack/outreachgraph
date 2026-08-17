@@ -53,6 +53,7 @@ import type { Network } from '@outreachgraph/domain';
 import type { CandidateIdentity } from '../provider';
 import { matchesName, parseEmail, type FoundEmail } from './emails';
 import { anchors, isRelMe, labelName, networkForUrl } from './extract';
+import { parseFediverseUrl } from './fediverse';
 
 /**
  * How far from a name a link may sit and still be that person's.
@@ -284,10 +285,17 @@ function scanLinks(html: string, handleOf: (url: string) => string | undefined):
     const handle = handleOf(anchor.href);
     if (!handle) continue;
 
+    // A Fediverse link is often one instance's *view* of an account that lives
+    // somewhere else, so the URL as written points at a server that does not
+    // own it. The account's own profile is the durable address, and it is what
+    // a reply or a follow has to be sent to.
+    const canonical =
+      network === 'mastodon' ? parseFediverseUrl(anchor.href)?.profileUrl : undefined;
+
     hits.push({
       network,
       handle,
-      profileUrl: anchor.href,
+      profileUrl: canonical ?? anchor.href,
       index: anchor.index,
       span: anchor.element.length,
       ...(labelName(anchor.element) ? { label: labelName(anchor.element) } : {}),
