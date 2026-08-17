@@ -307,6 +307,21 @@ if (!appUrl && ENVIRONMENT === 'production') {
   console.log(`APP_URL unset; email links will use ${appUrl}`);
 }
 
+/**
+ * Which commit is actually serving.
+ *
+ * `/` and `/health/live` have always been able to report this, and in
+ * production they never did: `COMMIT_HASH` is not a variable anything sets, so
+ * the field was simply absent and there was no way to tell what a deploy was
+ * running without opening the dashboard. That is the one question worth asking
+ * of a deployment you have just pushed to.
+ *
+ * Railway stamps the deployed SHA into every service it builds from a repo, so
+ * taking it from there needs no configuration and cannot drift from what is
+ * running. `COMMIT_HASH` stays the override for anything deployed another way.
+ */
+const commitHash = process.env.COMMIT_HASH ?? process.env.RAILWAY_GIT_COMMIT_SHA;
+
 // ---------------------------------------------------------------------- api
 const api = createApp({
   db,
@@ -319,7 +334,7 @@ const api = createApp({
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
   version: process.env.APP_VERSION ?? '0.1.0',
-  ...(process.env.COMMIT_HASH ? { commitHash: process.env.COMMIT_HASH } : {}),
+  ...(commitHash ? { commitHash } : {}),
 });
 
 // ---------------------------------------------------------------------- web
