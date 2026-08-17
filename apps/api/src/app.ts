@@ -1329,12 +1329,57 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         ? await sendEmailAction(db, options, actor, actionId, decision.policyVersion)
         : undefined;
 
+    // Approving research is the instruction to go and research.
+    //
+    // Until now it was not. `refresh_research` had no executor anywhere — the
+    // job runner knows four kinds and this was not one of them — so approving
+    // one of these cards wrote an approval row, an action row and an audit row
+    // and then stopped. Nothing re-read the site, so the card that existed
+    // *because* we had nothing to say produced nothing to say, and the next
+    // tick proposed the same card again. Production held 73 of them.
+    //
+    // Re-crawling the company's own site is the whole of "research" for a
+    // prospect found by crawling: it is where a name gains a job title, where
+    // a shared inbox is published, and now where the social profiles come
+    // from. `crawl_site` already does all of that and dedupes people, so this
+    // queues the existing job rather than inventing a second path.
+    let research: { queued: boolean; url?: string; reason?: string } | undefined;
+
+    if (recommendation.action === 'refresh_research') {
+      const site = await queryOne<{ domain: string }>(
+        db,
+        `SELECT co.domain
+           FROM people p
+           JOIN companies co ON co.id = p.current_company_id
+          WHERE p.id = ? AND co.domain IS NOT NULL AND trim(co.domain) <> ''`,
+        [recommendation.person_id],
+      );
+
+      // No domain is a real answer, not a failure: a person with no company on
+      // file has no site to re-read, and saying so beats a job that cannot run.
+      if (site?.domain) {
+        const target = normaliseUrl(site.domain);
+        const queued = await enqueue(db, {
+          workspaceId: actor.workspaceId,
+          kind: 'crawl_site',
+          payload: {
+            url: target,
+            ...(recommendation.campaign_id ? { campaignId: recommendation.campaign_id } : {}),
+          },
+        });
+        research = { queued: queued.queued, url: target };
+      } else {
+        research = { queued: false, reason: 'no company domain on file' };
+      }
+    }
+
     return c.json({
       approved: true,
       approvalId,
       actionId,
       policy: { decision: decision.decision, policyVersion: decision.policyVersion },
       ...(delivery ? { delivery } : {}),
+      ...(research ? { research } : {}),
     });
   });
 
