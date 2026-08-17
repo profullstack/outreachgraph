@@ -457,8 +457,15 @@ async function storeEmailIdentity(
     sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
           profile_url, confidence, source_type, verified_by, first_seen_at, last_verified_at)
           VALUES (?, ?, 'email', ?, ?, ?, 0.88, ?, '["published_on_company_site"]', ?, ?)
-          ON CONFLICT(network, platform_user_id) DO UPDATE
-            SET last_verified_at = excluded.last_verified_at`,
+          -- The uniqueness index is partial, so the conflict target has to
+          -- repeat its WHERE clause or SQLite refuses to match it and the whole
+          -- statement fails. It went unnoticed because nothing ever reached
+          -- here: a personal address was only recognised when its local part
+          -- resembled the person's name, which in production found exactly
+          -- zero. The first address this did find took the crawl job down with
+          -- it — twice, then a third time, until the queue gave up.
+          ON CONFLICT(network, platform_user_id) WHERE platform_user_id IS NOT NULL
+          DO UPDATE SET last_verified_at = excluded.last_verified_at`,
     args: [
       newId('socialIdentity'),
       personId,
@@ -614,6 +621,29 @@ async function linkIdentities(
         : resolveIdentity(evidence, { thresholds });
 
     if (resolution.decision === 'merge') {
+      // The `ON CONFLICT` below only fires when there is a platform id, because
+      // the unique index is partial. A handle-only identity — which is every
+      // one a website crawl produces, since a page gives a handle and never an
+      // internal id — matches no index and so inserts again on every re-crawl.
+      // Re-crawling is routine, so left alone one Bluesky handle becomes a
+      // fresh row every week.
+      const already = await queryOne<{ id: string }>(
+        db,
+        `SELECT id FROM social_identities
+          WHERE person_id = ? AND network = ? AND handle IS ?`,
+        [personId, identity.network, identity.handle ?? null],
+      );
+
+      if (already) {
+        await db.execute({
+          sql: `UPDATE social_identities SET last_verified_at = ?, confidence = max(confidence, ?)
+                 WHERE id = ?`,
+          args: [stamp, resolution.score, already.id],
+        });
+        linked += 1;
+        continue;
+      }
+
       await db.execute({
         sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
               profile_url, confidence, source_type, verified_by, first_seen_at, last_verified_at)

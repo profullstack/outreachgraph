@@ -24,7 +24,8 @@ import {
   type FetchOutcome,
   type FetchedPage,
 } from './fetch';
-import { extractSite, type ExtractedCompany } from './extract';
+import { extractSite, handleFromUrl, type ExtractedCompany } from './extract';
+import { attributeToPeople, mergeAttribution } from './attribute';
 import { extractWithModel, visibleText, type ExtractionModel } from './model-extract';
 import { assignEmails, findEmails } from './emails';
 
@@ -229,6 +230,97 @@ export class SiteProvider implements PersonEnrichmentProvider {
       if (fromModel.company.name || fromModel.people.length > 0) usedSignals.add('model');
     }
 
+    // ------------------------------------------------------- attribution
+    //
+    // Whose profile is whose, decided from where the page puts each link.
+    //
+    // This runs after the model pass because it needs the people, and the model
+    // is usually what produced them: an ordinary team page publishes no JSON-LD
+    // `Person`, which is why `PersonCandidate.identities` sat empty in
+    // production for 208 people while their handles were on the page the whole
+    // time. Links that belong to nobody in particular stay with the company.
+    const attributedEmails = new Set<string>();
+
+    if (people.length > 0) {
+      const names = people.map((person) => person.fullName);
+
+      // Every page read, not just the entry one. The crawl follows `/team` and
+      // `/about`, and that is exactly where the cards are — attributing only
+      // the page the crawl was pointed at would leave the feature reading a
+      // homepage that names nobody.
+      const attributed = mergeAttribution(
+        pages
+          .filter((read) => Boolean(read.html))
+          .map((read) =>
+            attributeToPeople({ html: read.html ?? '', people: names, handleOf: handleFromUrl }),
+          ),
+      );
+
+      for (const address of attributed.emailsByPerson.values()) attributedEmails.add(address);
+
+      if (attributed.identitiesByPerson.size > 0) {
+        people = people.map((person) => {
+          const extra = attributed.identitiesByPerson.get(person.fullName);
+          if (!extra || extra.length === 0) return person;
+
+          // Merged rather than replaced: a JSON-LD `sameAs` is a stronger
+          // statement than anything inferred from layout, so it wins on a
+          // collision.
+          const byKey = new Map(
+            extra.map((identity) => [
+              `${identity.network}:${identity.handle?.toLowerCase()}`,
+              identity,
+            ]),
+          );
+          for (const identity of person.identities) {
+            byKey.set(`${identity.network}:${identity.handle?.toLowerCase()}`, identity);
+          }
+
+          return { ...person, identities: [...byKey.values()] };
+        });
+
+        usedSignals.add('attribution');
+      }
+
+      // The company keeps what nobody claimed — and gives up what somebody did.
+      //
+      // `extractSite` files every link on the page against the company, which
+      // was the only sensible answer before anything could tell whose was
+      // whose. Left alone, the practice principal's personal X account stays
+      // listed as the practice's own, and a later "post to the company's
+      // account" would be posting to hers.
+      const claimed = new Set<string>();
+      for (const identities of attributed.identitiesByPerson.values()) {
+        for (const identity of identities) {
+          claimed.add(`${identity.network}:${identity.handle?.toLowerCase()}`);
+        }
+      }
+
+      const byKey = new Map(
+        company.identities
+          .filter(
+            (identity) => !claimed.has(`${identity.network}:${identity.handle?.toLowerCase()}`),
+          )
+          .map((identity) => [`${identity.network}:${identity.handle?.toLowerCase()}`, identity]),
+      );
+
+      for (const identity of attributed.companyIdentities) {
+        const key = `${identity.network}:${identity.handle?.toLowerCase()}`;
+        if (!byKey.has(key) && !claimed.has(key)) byKey.set(key, identity);
+      }
+
+      company = { ...company, identities: [...byKey.values()] };
+
+      // An address inside somebody's own card is theirs, whatever it is called.
+      if (attributed.emailsByPerson.size > 0) {
+        people = people.map((person) => {
+          const email = attributed.emailsByPerson.get(person.fullName);
+          return email && !person.email ? { ...person, email } : person;
+        });
+        usedSignals.add('email');
+      }
+    }
+
     // Addresses are read last, once the people are known: matching
     // `jane@acme.com` to a person needs the person, and the model pass is
     // often what produced them. Read across every page, because the address
@@ -252,6 +344,16 @@ export class SiteProvider implements PersonEnrichmentProvider {
       }
 
       contactEmail = assigned.companyEmail;
+
+      // An address already claimed by a named person is not the house inbox.
+      //
+      // `assignEmails` only recognises an address as somebody's when the local
+      // part resembles their name, so `j.okafor@acme.com` sitting in Jane's own
+      // card looks unclaimed to it — and on a page with no `info@` it would be
+      // promoted to the company address. The company would then be written to
+      // at a mailbox belonging to one employee.
+      if (contactEmail && attributedEmails.has(contactEmail)) contactEmail = undefined;
+
       if (contactEmail) usedSignals.add('email');
     }
 
