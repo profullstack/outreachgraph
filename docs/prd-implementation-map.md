@@ -46,6 +46,15 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 | §8 Pipeline, end to end            | `packages/pipeline/src/pipeline.ts`, `POST /prospects`                   | 11 + 8 tests, live GitHub run      |
 | §25.2 Prospect list and detail     | `apps/web/app/prospects/`, `GET /people`                                 | 2 API tests + build                |
 | §34 Email verification             | `packages/email/`, `apps/api/src/auth.ts`, migration `0006`              | 7 + 11 tests                       |
+| §12.5 Relationship score           | `packages/pipeline/src/engagement.ts`, migration `0018`                  | 17 tests                           |
+| §13 Cadences                       | `packages/domain/src/cadence.ts`, `pipeline/src/cadence*.ts`, `0019`     | 19 + 21 + 6 tests                  |
+| §16.4 Bluesky writes               | `providers/src/bluesky/agent.ts`, `pipeline/src/outreach-bluesky.ts`     | 21 + 7 tests                       |
+| §26 Term expansion                 | `packages/ai/src/synonyms.ts`, `pipeline/src/term-expansion.ts`, `0020`  | 11 + 8 tests                       |
+| §20 Research grid                  | `packages/ai/src/grid.ts`, `pipeline/src/research-grid.ts`               | 8 + 15 tests                       |
+| §7 Playbooks                       | `packages/domain/src/playbooks.ts`                                       | 8 tests                            |
+| §30 Metering                       | `packages/domain/src/plans.ts`, `pipeline/src/metering.ts`               | 17 tests                           |
+| §28 Rules                          | `packages/domain/src/rules.ts`, `pipeline/src/rules.ts`, `0021`          | 22 tests                           |
+| §23 MCP and CLI                    | `apps/mcp/`, `apps/cli/`                                                 | 13 + 17 tests                      |
 
 ## Partially implemented
 
@@ -62,11 +71,32 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 ## Not started
 
 - §7 Campaign wizard UI.
-- §20 agent suite beyond the Strategy Agent and the composer (ICP, discovery, research, intent).
-- §10 Remaining provider adapters — Apollo, PDL, Bluesky, X.
-- §26 Natural-language search.
-- §28 CRM and Slack integrations.
+- §20 agent suite beyond the Strategy Agent, the composer and the research grid
+  (ICP, discovery, intent).
+- §10 Remaining provider adapters — Apollo, PDL, X.
+- §26 Natural-language search over the whole graph. Term expansion covers the
+  campaign-matching half.
+- §28 CRM and Slack integrations. The rules engine covers the trigger half.
 - §36 Admin surface.
+- Scheduling links. Blocked on a Google OAuth client this repository does not
+  have; the rest of the work (availability, timezones, a booking page) is real
+  and unstarted.
+- A desktop app. Deliberately unbuilt: the only justification is holding a
+  logged-in browser session so a manual social step is one keystroke, and there
+  is no usage data yet saying anyone wants that.
+
+## The build order these came in
+
+Each phase shipped on its own and made the next cheaper, which is why the
+dependency order is worth recording:
+
+1. Engagement tracking, because scoring was blind to what actually happened
+   and everything downstream reads a score.
+2. The cadence engine, which needs somewhere for a plan to send.
+3. Bluesky writes, which proves a cadence can run unattended somewhere.
+4. The research grid and playbooks, which need prospects worth asking about.
+5. MCP and CLI, which are wrappers over an API that had to exist first.
+6. Rules and metering, which need tracking to trigger on and sending to count.
 
 ## Deliberate deviations
 

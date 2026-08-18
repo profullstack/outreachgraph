@@ -32,6 +32,9 @@ import {
 } from '@outreachgraph/providers';
 import { recordDiscovered } from './stages';
 import { loadListeningTargets, type ListeningTargets } from './listening-targets';
+import { expandCampaignTerms } from './term-expansion';
+import { runRules, signalEvent } from './rules';
+import type { TextModel } from '@outreachgraph/ai';
 
 export interface ListenDeps {
   readonly db: Client;
@@ -45,6 +48,16 @@ export interface ListenDeps {
    * which communities and feeds they are pointed at.
    */
   readonly resolveSources: (targets: ListeningTargets) => readonly FeedSource[];
+  /**
+   * Expands the campaign's terms into the phrasing prospects actually use.
+   *
+   * Optional, and its absence is the literal-matching behaviour the product
+   * had before: a campaign listening for "payments provider" matches only that
+   * string, and misses "our Stripe fees are killing us" — which is the post
+   * that indicates intent, because someone stating your category by name is
+   * usually already talking to your competitor.
+   */
+  readonly model?: TextModel | undefined;
   readonly now?: Date;
 }
 
@@ -89,7 +102,12 @@ export async function runListening(deps: ListenDeps, input: ListenInput): Promis
   const { db } = deps;
   const at = deps.now ?? new Date();
 
-  const terms = await campaignTerms(db, input.workspaceId, input.campaignId);
+  const literal = await campaignTerms(db, input.workspaceId, input.campaignId);
+  const terms = await expandCampaignTerms(
+    { db, ...(deps.model ? { model: deps.model } : {}), ...(deps.now ? { now: deps.now } : {}) },
+    input.workspaceId,
+    literal,
+  );
   const targets = await loadListeningTargets(db, input.workspaceId, input.campaignId);
   const bySource: Record<string, number> = {};
   const failures: { slug: string; reason: string }[] = [];
@@ -159,18 +177,22 @@ export async function runListening(deps: ListenDeps, input: ListenInput): Promis
       const person = await findOrCreatePerson(db, post, at);
       if (person.created) peopleCreated += 1;
 
-      await writeSignal(db, {
-        workspaceId: input.workspaceId,
-        personId: person.id,
-        post,
-        at,
-      });
-
+      // Campaign membership first, then the signal. Writing the signal fires
+      // any matching rules, and a rule that moves a lead through the funnel
+      // silently does nothing for somebody who is not yet in the campaign.
       await linkToCampaign(db, {
         workspaceId: input.workspaceId,
         campaignId: input.campaignId,
         personId: person.id,
         created: person.created,
+        at,
+      });
+
+      await writeSignal(db, {
+        workspaceId: input.workspaceId,
+        personId: person.id,
+        campaignId: input.campaignId,
+        post,
         at,
       });
 
@@ -291,11 +313,18 @@ async function findOrCreatePerson(
 
 async function writeSignal(
   db: Client,
-  input: { workspaceId: string; personId: string; post: FeedPost; at: Date },
+  input: {
+    workspaceId: string;
+    personId: string;
+    campaignId: string;
+    post: FeedPost;
+    at: Date;
+  },
 ): Promise<void> {
   const { post } = input;
   const classification = classifyPost(post.text);
   const stamp = input.at.toISOString();
+  const signalId = newId('signal');
 
   await db.execute({
     sql: `INSERT INTO signals (id, workspace_id, person_id, network, signal_type, subtype,
@@ -303,7 +332,7 @@ async function writeSignal(
           relevance, sentiment)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
-      newId('signal'),
+      signalId,
       input.workspaceId,
       input.personId,
       post.network,
@@ -323,6 +352,32 @@ async function writeSignal(
       sentimentFor(classification.type),
     ],
   });
+
+  // Rules fire from the signal that caused them, here, rather than from a
+  // sweep that later notices new rows. A sweep would have to decide what
+  // "new" means and would re-fire everything the first time that definition
+  // changed; firing at the point of ingestion makes the trigger exactly the
+  // event it claims to be.
+  //
+  // Failure is contained: a badly configured rule must not cost the crawl the
+  // signal it just found.
+  try {
+    await runRules(
+      db,
+      input.workspaceId,
+      signalEvent({
+        personId: input.personId,
+        campaignId: input.campaignId,
+        signalId,
+        signalType: classification.type,
+        summary: summarise(post),
+        relevance: 0.5,
+        confidence: classification.confidence,
+      }),
+    );
+  } catch {
+    // Recorded by `runRules` itself where it can be; never fatal here.
+  }
 }
 
 function summarise(post: FeedPost): string {

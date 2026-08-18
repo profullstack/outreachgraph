@@ -58,7 +58,24 @@ import {
   campaignFunnel,
   campaignTerms,
   connectEmailAccount,
+  agentForWorkspace,
+  blueskyAccountSummary,
+  BlueskyAccountError,
+  connectBlueskyAccount,
+  budgetStatus,
+  createCadence,
+  createRule,
+  createResearchGrid,
+  disconnectBlueskyAccount,
+  deliverBlueskyAction,
   deliverEmailAction,
+  enrollInCadence,
+  readResearchGrid,
+  recordLinkClick,
+  runResearchGrid,
+  setCadenceStatus,
+  setRuleEnabled,
+  stopEnrollment,
   disconnectEmailAccount,
   emailAccountSummary,
   leadTimeline,
@@ -91,7 +108,15 @@ import {
   rejectCandidate,
   workflowStatus,
 } from '@outreachgraph/pipeline';
-import { SHARE_TARGETS, type ShareNetwork } from '@outreachgraph/domain';
+import {
+  CADENCE_STATUSES,
+  PLAYBOOKS,
+  validateRule,
+  playbookBySlug,
+  playbookDurationHours,
+  SHARE_TARGETS,
+  type ShareNetwork,
+} from '@outreachgraph/domain';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
 import {
@@ -189,6 +214,45 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       },
     }),
   );
+
+  // ------------------------------------------------------- tracked links
+  /**
+   * Where a link in an outbound email actually goes.
+   *
+   * Deliberately mounted on `app` rather than under the authenticated
+   * `/api/v1`: the person following it is a prospect reading their mail, and
+   * they have no session and never will.
+   *
+   * The destination is read from the row and never from the request. A
+   * redirect that took its target from a query parameter would be an open
+   * redirect on our own sending domain, which is a phishing primitive — and
+   * one we would be handing to anyone who noticed, on a domain whose whole
+   * value is that mail from it gets delivered.
+   *
+   * Recording never blocks the redirect. Somebody clicked a link in an email
+   * they were sent, and a database problem on our side is not a reason to
+   * leave them looking at an error page.
+   */
+  app.get('/t/:token', async (c) => {
+    const token = c.req.param('token');
+
+    let click: Awaited<ReturnType<typeof recordLinkClick>>;
+    try {
+      click = await recordLinkClick(options.db, {
+        token,
+        userAgent: c.req.header('user-agent'),
+      });
+    } catch {
+      return c.text('This link could not be opened.', 404);
+    }
+
+    if (!click) return c.text('This link has expired or does not exist.', 404);
+
+    // 302 rather than 301: a permanent redirect would be cached by the
+    // browser and every later click would never reach us, so a prospect who
+    // returns to the message next week would be invisible.
+    return c.redirect(click.targetUrl, 302);
+  });
 
   // ---------------------------------------------------------------- health
   // Two endpoints: liveness never touches the database so a database blip
@@ -1793,6 +1857,57 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       return c.json({ executed: true, actionId: action.id, sent: true, to: delivery.to });
     }
 
+    // A public reply the product may actually post. Bluesky is currently the
+    // only network where this branch is reachable: every other social action
+    // in the capability matrix is `manual_only`, and falls through to the
+    // hand-recorded path below.
+    if (action.network === 'bluesky' && body.mode === 'customer_managed') {
+      const recommendation = await repo.getRecommendation(
+        db,
+        actor.workspaceId,
+        action.recommendation_id,
+      );
+      if (!recommendation) throw ApiError.notFound('recommendation');
+
+      const decision = await recheckPolicy(db, actor, recommendation, false, action.id);
+
+      if (!isExecutable(decision.decision, true)) {
+        throw ApiError.policyDenied(decision.reason, {
+          decision: decision.decision,
+          gate: decision.gate,
+          policyVersion: decision.policyVersion,
+        });
+      }
+
+      const agent = await agentForWorkspace(db, actor.workspaceId, options.encryptionKey);
+      if (!agent) {
+        return c.json(
+          {
+            executed: false,
+            actionId: action.id,
+            reason: 'no Bluesky account is connected, so nothing can be posted',
+          },
+          502,
+        );
+      }
+
+      const posted = await deliverBlueskyAction(
+        { db, agent },
+        {
+          workspaceId: actor.workspaceId,
+          actionId: action.id,
+          actor: { actorKind: 'user', actorId: actor.userId },
+          policyVersion: decision.policyVersion,
+        },
+      );
+
+      if (!posted.sent) {
+        return c.json({ executed: false, actionId: action.id, reason: posted.reason }, 502);
+      }
+
+      return c.json({ executed: true, actionId: action.id, sent: true, url: posted.url });
+    }
+
     const stamp = now();
 
     // A message a human sent by hand still landed in someone's mailbox, so it
@@ -1883,6 +1998,492 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json({ leads });
   });
 
+  // ------------------------------------------------------------------ rules
+  //
+  // If this happens, do that. What a rule may *do* is the design decision: it
+  // can enrol somebody on a plan, tell a human, suppress, or move a lead — and
+  // nothing else. There is no send action, because an action that reaches the
+  // wire would carry its own opinion about whether it is allowed, and then the
+  // product has two policy engines and the quieter one wins.
+
+  api.get('/rules', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT r.id, r.name, r.trigger, r.action, r.enabled, r.campaign_id, r.created_at,
+              (SELECT count(*) FROM rule_runs rr WHERE rr.rule_id = r.id) AS fired,
+              (SELECT count(*) FROM rule_runs rr
+                WHERE rr.rule_id = r.id AND rr.outcome = 'applied') AS applied
+         FROM automation_rules r
+        WHERE r.workspace_id = ?
+     ORDER BY r.created_at DESC`,
+      [actor.workspaceId],
+    );
+
+    return c.json({ rules: rows });
+  });
+
+  api.post('/rules', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('creating a rule');
+
+    const body = safeJson(await c.req.raw.text());
+    const config = (
+      typeof body.config === 'object' && body.config !== null ? body.config : {}
+    ) as Record<string, unknown>;
+
+    const problems = validateRule({
+      name: typeof body.name === 'string' ? body.name : '',
+      trigger: String(body.trigger ?? ''),
+      action: String(body.action ?? ''),
+      config: config as never,
+    });
+
+    if (problems.length > 0) {
+      throw ApiError.badRequest('That rule cannot run.', {
+        rule: problems.map((p) => p.message),
+      });
+    }
+
+    const id = await createRule(db, {
+      workspaceId: actor.workspaceId,
+      ...(typeof body.campaignId === 'string' ? { campaignId: body.campaignId } : {}),
+      name: String(body.name),
+      trigger: String(body.trigger) as never,
+      condition: (typeof body.condition === 'object' && body.condition !== null
+        ? body.condition
+        : {}) as never,
+      action: String(body.action) as never,
+      config: config as never,
+      enabled: body.enabled !== false,
+    });
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'rule.created',
+      entityKind: 'campaign',
+      entityId: id,
+      detail: { trigger: body.trigger, action: body.action },
+    });
+
+    return c.json({ ruleId: id }, 201);
+  });
+
+  api.patch('/rules/:id', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('changing a rule');
+
+    const body = safeJson(await c.req.raw.text());
+    const changed = await setRuleEnabled(
+      c.get('db'),
+      actor.workspaceId,
+      c.req.param('id'),
+      body.enabled !== false,
+    );
+
+    if (!changed) throw ApiError.notFound('rule');
+    return c.json({ enabled: body.enabled !== false });
+  });
+
+  /**
+   * What a rule actually did, which is not the same as how often it fired.
+   *
+   * A rule that matches constantly and is refused every time looks identical
+   * to a working one from a counter, and is the most common way an automation
+   * quietly stops mattering.
+   */
+  api.get('/rules/:id/runs', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT person_id, outcome, detail, occurred_at
+         FROM rule_runs WHERE rule_id = ? AND workspace_id = ?
+     ORDER BY occurred_at DESC LIMIT 100`,
+      [c.req.param('id'), actor.workspaceId],
+    );
+
+    return c.json({ runs: rows });
+  });
+
+  // ------------------------------------------------------- research grids
+  //
+  // N questions across M prospects, answered into a table. A batch rather than
+  // a chat box: the cost is knowable before it runs and the progress is a
+  // fraction, both of which matter when model spend is the real COGS.
+
+  api.get('/grids', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT id, name, status, cells_total, cells_done, campaign_id, created_at, completed_at
+         FROM research_grids WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 100`,
+      [actor.workspaceId],
+    );
+
+    return c.json({ grids: rows });
+  });
+
+  api.get('/grids/:id', async (c) => {
+    const actor = c.get('actor');
+    const grid = await readResearchGrid(c.get('db'), actor.workspaceId, c.req.param('id'));
+    if (!grid) throw ApiError.notFound('grid');
+
+    return c.json(grid);
+  });
+
+  api.post('/grids', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('running research');
+
+    const body = safeJson(await c.req.raw.text());
+    const questions = Array.isArray(body.questions) ? body.questions.map(String) : [];
+    const personIds = Array.isArray(body.personIds) ? body.personIds.map(String) : [];
+
+    const created = await createResearchGrid(db, {
+      workspaceId: actor.workspaceId,
+      ...(typeof body.campaignId === 'string' ? { campaignId: body.campaignId } : {}),
+      name: typeof body.name === 'string' ? body.name : '',
+      questions,
+      personIds,
+    });
+
+    if (!created.created) throw ApiError.badRequest(created.reason);
+
+    return c.json(
+      { gridId: created.gridId, questions: created.questions, cells: created.cells },
+      201,
+    );
+  });
+
+  /**
+   * Answers as many outstanding cells as one call allows.
+   *
+   * Explicitly driven rather than run on a timer. A grid is the one place in
+   * the product where a user can spend a lot of model budget in one action, so
+   * it advances when somebody asks it to and reports how far it got.
+   */
+  api.post('/grids/:id/run', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('running research');
+    if (!options.model) {
+      throw ApiError.badRequest('This deployment has no model configured, so a grid cannot run.');
+    }
+
+    const body = safeJson(await c.req.raw.text());
+    const limit =
+      typeof body.limit === 'number' ? Math.min(Math.max(body.limit, 1), 200) : undefined;
+
+    try {
+      const result = await runResearchGrid(
+        { db, model: options.model, ...(limit === undefined ? {} : { limit }) },
+        actor.workspaceId,
+        c.req.param('id'),
+      );
+
+      return c.json(result);
+    } catch {
+      throw ApiError.notFound('grid');
+    }
+  });
+
+  // ----------------------------------------------------------- playbooks
+  //
+  // Worked examples that happen to be executable. The empty campaign form is
+  // this product's hardest screen, and everything downstream works well only
+  // once a campaign describes a real market and a real trigger.
+
+  api.get('/playbooks', (c) =>
+    c.json({
+      playbooks: PLAYBOOKS.map((playbook) => ({
+        slug: playbook.slug,
+        name: playbook.name,
+        summary: playbook.summary,
+        audience: playbook.audience,
+        steps: playbook.steps.length,
+        durationHours: playbookDurationHours(playbook),
+        gridQuestions: playbook.gridQuestions,
+      })),
+    }),
+  );
+
+  api.get('/playbooks/:slug', (c) => {
+    const playbook = playbookBySlug(c.req.param('slug'));
+    if (!playbook) throw ApiError.notFound('playbook');
+    return c.json({ playbook });
+  });
+
+  /**
+   * Turns a play into a real cadence this workspace owns.
+   *
+   * A copy, not a reference. Once instantiated the steps belong to the
+   * workspace and can be edited freely — a play that kept editing itself when
+   * the library changed would rewrite a campaign somebody is already running.
+   */
+  api.post('/playbooks/:slug/use', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('creating a cadence');
+
+    const playbook = playbookBySlug(c.req.param('slug'));
+    if (!playbook) throw ApiError.notFound('playbook');
+
+    const body = safeJson(await c.req.raw.text());
+
+    const created = await createCadence(db, {
+      workspaceId: actor.workspaceId,
+      ...(typeof body.campaignId === 'string' ? { campaignId: body.campaignId } : {}),
+      name: playbook.name,
+      status: 'draft',
+      steps: playbook.steps.map((step, index) => ({
+        position: index,
+        network: step.network,
+        action: step.action,
+        delayHours: step.delayHours,
+        stopOnReply: true,
+        intent: step.intent,
+      })),
+    });
+
+    if (!created.created) {
+      throw ApiError.badRequest('That playbook is not runnable.', {
+        steps: created.problems.map((p) => p.message),
+      });
+    }
+
+    return c.json(
+      { cadenceId: created.cadenceId, intake: playbook.intake, keywords: playbook.keywords },
+      201,
+    );
+  });
+
+  // -------------------------------------------------------------- cadences
+  //
+  // A plan of touches over time. The steps say what to do and where; whether
+  // any given step may be automated is decided by the policy engine when it
+  // falls due, not here and not when the plan was written.
+
+  api.get('/cadences', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll<{
+      id: string;
+      name: string;
+      status: string;
+      campaign_id: string | null;
+      steps: number;
+      active_enrollments: number;
+    }>(
+      c.get('db'),
+      `SELECT c.id, c.name, c.status, c.campaign_id,
+              (SELECT count(*) FROM cadence_steps s WHERE s.cadence_id = c.id) AS steps,
+              (SELECT count(*) FROM cadence_enrollments e
+                WHERE e.cadence_id = c.id AND e.status = 'active') AS active_enrollments
+         FROM cadences c
+        WHERE c.workspace_id = ?
+     ORDER BY c.created_at DESC`,
+      [actor.workspaceId],
+    );
+
+    return c.json({ cadences: rows });
+  });
+
+  api.get('/cadences/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const id = c.req.param('id');
+
+    const cadence = await queryOne<{
+      id: string;
+      name: string;
+      status: string;
+      campaign_id: string | null;
+    }>(db, 'SELECT id, name, status, campaign_id FROM cadences WHERE id = ? AND workspace_id = ?', [
+      id,
+      actor.workspaceId,
+    ]);
+    if (!cadence) throw ApiError.notFound('cadence');
+
+    const steps = await queryAll(
+      db,
+      `SELECT position, network, action, delay_hours, stop_on_reply, intent
+         FROM cadence_steps WHERE cadence_id = ? ORDER BY position`,
+      [id],
+    );
+
+    return c.json({ cadence, steps });
+  });
+
+  api.post('/cadences', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('creating a cadence');
+
+    const body = safeJson(await c.req.raw.text());
+    const steps = Array.isArray(body.steps) ? body.steps : [];
+
+    const result = await createCadence(db, {
+      workspaceId: actor.workspaceId,
+      ...(typeof body.campaignId === 'string' ? { campaignId: body.campaignId } : {}),
+      name: typeof body.name === 'string' ? body.name : '',
+      status: body.status === 'active' ? 'active' : 'draft',
+      steps: steps.map((raw: Record<string, unknown>, index: number) => ({
+        position: typeof raw.position === 'number' ? raw.position : index,
+        network: String(raw.network ?? ''),
+        action: String(raw.action ?? ''),
+        delayHours: typeof raw.delayHours === 'number' ? raw.delayHours : 0,
+        // Defaults on. Continuing to send a planned sequence at somebody who
+        // has answered is the most bot-like thing this product could do.
+        stopOnReply: raw.stopOnReply !== false,
+        ...(typeof raw.intent === 'string' ? { intent: raw.intent } : {}),
+      })) as never,
+    });
+
+    if (!result.created) {
+      throw ApiError.badRequest('That is not a runnable plan.', {
+        steps: result.problems.map((p) => p.message),
+      });
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'cadence.created',
+      entityKind: 'campaign',
+      entityId: result.cadenceId,
+      detail: { steps: steps.length },
+    });
+
+    return c.json({ cadenceId: result.cadenceId }, 201);
+  });
+
+  api.patch('/cadences/:id', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('changing a cadence');
+
+    const body = safeJson(await c.req.raw.text());
+    const status = String(body.status ?? '');
+    if (!CADENCE_STATUSES.includes(status as never)) {
+      throw ApiError.badRequest('Unknown cadence status.', { status: [status] });
+    }
+
+    const changed = await setCadenceStatus(
+      c.get('db'),
+      actor.workspaceId,
+      c.req.param('id'),
+      status as never,
+    );
+    if (!changed) throw ApiError.notFound('cadence');
+
+    return c.json({ status });
+  });
+
+  /**
+   * Puts one prospect on a cadence.
+   *
+   * Refusals come back as 409 rather than 400: "they are already on this
+   * cadence" is a fact about the world rather than a malformed request, and a
+   * client retrying a double-tap should be able to tell the two apart.
+   */
+  api.post('/cadences/:id/enroll', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('enrolling a prospect');
+    await requireVerifiedEmail(db, actor);
+
+    const body = safeJson(await c.req.raw.text());
+    const personId = String(body.personId ?? '');
+    const campaignId = String(body.campaignId ?? '');
+
+    if (!personId || !campaignId) {
+      throw ApiError.badRequest('A person and a campaign are both required.');
+    }
+
+    const person = await repo.getPerson(db, personId);
+    if (!person) throw ApiError.notFound('person');
+
+    const result = await enrollInCadence(db, {
+      cadenceId: c.req.param('id'),
+      workspaceId: actor.workspaceId,
+      campaignId,
+      personId,
+    });
+
+    if (!result.enrolled) return c.json({ enrolled: false, reason: result.reason }, 409);
+
+    return c.json({
+      enrolled: true,
+      enrollmentId: result.enrollmentId,
+      firstDueAt: result.firstDueAt,
+    });
+  });
+
+  api.get('/cadences/:id/enrollments', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT e.id, e.person_id, p.display_name, e.status, e.current_step,
+              e.next_due_at, e.stopped_reason, e.enrolled_at
+         FROM cadence_enrollments e
+         JOIN people p ON p.id = e.person_id
+        WHERE e.cadence_id = ? AND e.workspace_id = ?
+     ORDER BY e.enrolled_at DESC
+        LIMIT 200`,
+      [c.req.param('id'), actor.workspaceId],
+    );
+
+    return c.json({ enrollments: rows });
+  });
+
+  /**
+   * What each step actually did, per enrollment.
+   *
+   * The `outcome` column is the answer to the question this product exists to
+   * answer honestly: a plan whose social steps are all `manual` is working as
+   * designed, and one whose steps are all `skipped` is not, and those look
+   * identical from a progress bar.
+   */
+  api.get('/enrollments/:id/runs', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT step_position, network, action, outcome, policy_decision, policy_gate,
+              recommendation_id, detail, occurred_at
+         FROM cadence_step_runs
+        WHERE enrollment_id = ? AND workspace_id = ?
+     ORDER BY occurred_at`,
+      [c.req.param('id'), actor.workspaceId],
+    );
+
+    return c.json({ runs: rows });
+  });
+
+  api.post('/enrollments/:id/stop', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('stopping an enrollment');
+
+    const body = safeJson(await c.req.raw.text());
+    const stopped = await stopEnrollment(
+      c.get('db'),
+      actor.workspaceId,
+      c.req.param('id'),
+      typeof body.reason === 'string' ? body.reason : 'stopped by hand',
+    );
+
+    if (!stopped) throw ApiError.notFound('enrollment');
+    return c.json({ stopped: true });
+  });
+
   // -------------------------------------------------------------- settings
   api.get('/settings', async (c) => {
     const actor = c.get('actor');
@@ -1890,9 +2491,15 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const settings = await loadNotifySettings(db, actor.workspaceId);
     const address = await notifyAddress(db, actor.workspaceId, settings);
 
-    const cap = await queryOne<{ autopilot_daily_cap: number; reply_to_email: string | null }>(
+    const cap = await queryOne<{
+      autopilot_daily_cap: number;
+      reply_to_email: string | null;
+      track_links: number | null;
+      tracking_origin: string | null;
+    }>(
       db,
-      `SELECT autopilot_daily_cap, reply_to_email FROM workspace_settings WHERE workspace_id = ?`,
+      `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin
+         FROM workspace_settings WHERE workspace_id = ?`,
       [actor.workspaceId],
     );
 
@@ -1908,6 +2515,12 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       alertMinOpportunity: settings.alert_min_opportunity,
       autopilotDailyCap: cap?.autopilot_daily_cap ?? 25,
       replyToEmail: cap?.reply_to_email ?? null,
+      trackLinks: (cap?.track_links ?? 0) === 1,
+      trackingOrigin: cap?.tracking_origin ?? null,
+      // Where tracked links would actually point if switched on. The setting
+      // alone is not enough to tell a user whether tracking will work, since
+      // an unset origin falls back to the service's own APP_URL.
+      effectiveTrackingOrigin: cap?.tracking_origin ?? options.appUrl ?? null,
       lastDigestSentOn: settings.last_digest_sent_on,
     });
   });
@@ -1936,6 +2549,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       ...(body.autopilotDailyCap === undefined
         ? {}
         : { autopilotDailyCap: Number(body.autopilotDailyCap) }),
+      // PUT replaces the whole settings document, so an absent `trackLinks`
+      // means off — the same full-state rule the alert toggles above follow.
+      // For an opt-in that is also the safe direction to be wrong in.
+      trackLinks: body.trackLinks === true,
+      ...(body.trackingOrigin === undefined
+        ? {}
+        : { trackingOrigin: body.trackingOrigin === null ? null : String(body.trackingOrigin) }),
     });
 
     return c.json({ saved: true });
@@ -1960,6 +2580,82 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       platformFallback: options.mailer !== undefined,
       presets: SMTP_PRESETS,
     });
+  });
+
+  /**
+   * The workspace's Bluesky account.
+   *
+   * The only social network the product can currently act on, so the only one
+   * with a credential worth holding. Everything else in the capability matrix
+   * is `manual_only`, where a stored password would buy nothing except risk.
+   */
+  api.get('/integrations/bluesky', async (c) => {
+    const actor = c.get('actor');
+    return c.json({
+      account: await blueskyAccountSummary(c.get('db'), actor.workspaceId),
+      canConnect: options.encryptionKey !== undefined,
+    });
+  });
+
+  api.put('/integrations/bluesky', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting a Bluesky account');
+    await requireVerifiedEmail(db, actor);
+
+    if (!options.encryptionKey) {
+      throw ApiError.badRequest(
+        'This deployment has no encryption key, so a credential cannot be stored.',
+      );
+    }
+
+    const body = safeJson(await c.req.raw.text());
+    const identifier = String(body.identifier ?? '').trim();
+    const appPassword = String(body.appPassword ?? '').trim();
+
+    if (!identifier || !appPassword) {
+      throw ApiError.badRequest('A handle and an app password are both required.');
+    }
+
+    try {
+      const account = await connectBlueskyAccount(db, {
+        workspaceId: actor.workspaceId,
+        identifier,
+        appPassword,
+        encryptionKey: options.encryptionKey,
+        verify: body.skipVerification !== true,
+      });
+
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'integration.connected',
+        entityKind: 'workspace',
+        entityId: actor.workspaceId,
+        // The handle is recorded; the app password is not, here or anywhere.
+        detail: { network: 'bluesky', handle: account.handle },
+      });
+
+      return c.json({ account });
+    } catch (error) {
+      if (error instanceof BlueskyAccountError) {
+        throw ApiError.badRequest(
+          'Bluesky refused those credentials. An app password is not the account password.',
+          { appPassword: [error.message] },
+        );
+      }
+      throw error;
+    }
+  });
+
+  api.delete('/integrations/bluesky', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('disconnecting a Bluesky account');
+
+    const removed = await disconnectBlueskyAccount(c.get('db'), actor.workspaceId);
+    return c.json({ disconnected: removed });
   });
 
   api.put('/integrations/email', async (c) => {
@@ -2342,12 +3038,39 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // ------------------------------------------------------------------ usage
   api.get('/usage', async (c) => {
     const actor = c.get('actor');
-    const rows = await c.get('db').execute({
-      sql: `SELECT unit, sum(quantity) AS quantity, sum(cost_usd) AS cost_usd
-              FROM usage_events WHERE workspace_id = ? GROUP BY unit`,
-      args: [actor.workspaceId],
+    const db = c.get('db');
+
+    // The plan and what is left of it, not only a pile of raw events. "How
+    // much have I used" is the question; a per-unit sum is the arithmetic
+    // behind it and answers nobody on its own.
+    const [status, rows] = await Promise.all([
+      budgetStatus(db, actor.workspaceId),
+      db.execute({
+        sql: `SELECT unit, sum(quantity) AS quantity, sum(cost_usd) AS cost_usd
+                FROM usage_events WHERE workspace_id = ? GROUP BY unit`,
+        args: [actor.workspaceId],
+      }),
+    ]);
+
+    return c.json({
+      plan: {
+        id: status.plan.id,
+        name: status.plan.name,
+        prospectsPerMonth: status.plan.prospectsPerMonth,
+        gridCellsPerMonth: status.plan.gridCellsPerMonth,
+      },
+      thisMonth: {
+        prospectsContacted: status.usage.prospectsContacted,
+        prospectsRemaining: Math.max(
+          0,
+          status.plan.prospectsPerMonth - status.usage.prospectsContacted,
+        ),
+        gridCells: status.usage.gridCells,
+        gridCellsRemaining: Math.max(0, status.plan.gridCellsPerMonth - status.usage.gridCells),
+        exhausted: status.exhausted,
+      },
+      usage: rows.rows,
     });
-    return c.json({ usage: rows.rows });
   });
 
   app.route(`/api/v1`, api);
@@ -2433,6 +3156,12 @@ async function recheckPolicy(
 
   const budget = safeJson(campaign.budget_json);
 
+  // The month's allowance, as an input to the engine rather than a check
+  // beside it. A limit enforced outside the policy engine is one the approval
+  // queue, autopilot and the cadence runner each have to remember separately,
+  // and one of them eventually will not.
+  const budgetState = await budgetStatus(db, actor.workspaceId);
+
   return evaluatePolicy({
     network: recommendation.network as Network,
     action: recommendation.action as ActionKind,
@@ -2461,6 +3190,7 @@ async function recheckPolicy(
             : { hoursSinceLastActionToAddress: addressUsage.hoursSinceLast }),
         }),
     conversationOpen: replied,
+    budgetExhausted: budgetState.exhausted,
     featureFlags: flags,
   });
 }
@@ -2498,6 +3228,7 @@ async function sendEmailAction(
       db,
       mailer: sender.mailer,
       ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
+      ...(options.appUrl ? { appUrl: options.appUrl } : {}),
     },
     {
       workspaceId: actor.workspaceId,

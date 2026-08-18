@@ -52,6 +52,79 @@ export {
   type EmailAccountInput,
   type EmailAccountSummary,
 } from './email-account';
+export { runCadences, type RunCadencesDeps } from './cadence-runner';
+export {
+  createRule,
+  runRules,
+  setRuleEnabled,
+  signalEvent,
+  type CreateRuleInput,
+  type RunRulesResult,
+} from './rules';
+export {
+  budgetStatus,
+  planFor,
+  recordResearchUsage,
+  usageFor,
+  type BudgetStatus,
+} from './metering';
+export {
+  createResearchGrid,
+  runResearchGrid,
+  readResearchGrid,
+  MAX_GRID_CELLS,
+  type CreateGridInput,
+  type CreateGridResult,
+  type GridRow,
+  type RunGridDeps,
+  type RunGridResult,
+} from './research-grid';
+export { expandCampaignTerms, EXPANSION_TTL_DAYS, type ExpandTermsDeps } from './term-expansion';
+export {
+  agentForWorkspace,
+  blueskyAccountSummary,
+  connectBlueskyAccount,
+  disconnectBlueskyAccount,
+  loadBlueskyCredentials,
+  BlueskyAccountError,
+  type BlueskyAccountSummary,
+  type BlueskyCredentials,
+  type ConnectBlueskyInput,
+} from './bluesky-account';
+export {
+  deliverBlueskyAction,
+  recordBlueskySent,
+  type DeliverBlueskyDeps,
+  type DeliverBlueskyInput,
+  type DeliverBlueskyResult,
+} from './outreach-bluesky';
+export {
+  advanceCadences,
+  createCadence,
+  setCadenceStatus,
+  enrollInCadence,
+  modeForDecision,
+  stopEnrollment,
+  type AdvanceCadencesDeps,
+  type AdvanceResult,
+  type DueEnrollment,
+  type EnrollInput,
+  type EnrollResult,
+  type StepResolution,
+  type CreateCadenceInput,
+  type CreateCadenceResult,
+} from './cadence';
+export {
+  trackLinksInBody,
+  recordLinkClick,
+  engagementFor,
+  relationshipInputFrom,
+  type TrackLinksInput,
+  type TrackLinksResult,
+  type RecordClickInput,
+  type RecordClickResult,
+  type EngagementFacts,
+} from './engagement';
 export {
   receiveReplies,
   workspacesWithReadableMailbox,

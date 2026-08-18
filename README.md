@@ -9,10 +9,13 @@ platform, the prospect, or your own rate limits say it should not.
 
 ## Status
 
-Foundation. The deterministic core, the API, the PWA, one live provider and the
-outreach composer are built and tested; a prospect can go from a GitHub handle
-to a drafted, checked card in the approval queue today. The rest of the §20
-agent suite is not built. See
+The deterministic core, the API, the PWA, the outreach composer and the
+execution layer are built and tested. A prospect can go from a GitHub handle to
+a drafted, policy-checked card in the approval queue, be enrolled on a
+multi-step cadence, be contacted by email or by a public Bluesky reply, and
+have the reply move their score — today.
+
+The rest of the §20 agent suite is not built. See
 [`docs/prd-implementation-map.md`](docs/prd-implementation-map.md) for exactly
 what exists.
 
@@ -21,7 +24,7 @@ what exists.
 ```bash
 bun install
 bun run db:migrate          # applies migrations to ./local.db
-bun test                    # 395 tests
+bun test                    # 1231 tests
 bun run check               # format, typecheck, test
 ```
 
@@ -31,6 +34,30 @@ Run the API and the PWA:
 bun run --filter '@outreachgraph/api' dev     # :8080
 bun run --filter '@outreachgraph/web' dev     # :3000
 ```
+
+### The machine surfaces
+
+`og` and the MCP server are clients of `/api/v1` and nothing else. That is not
+a convenience: the policy engine runs server-side, so a surface that could
+reach past it would be a surface where the gates are optional.
+
+```bash
+export OUTREACHGRAPH_API_URL=http://localhost:8080
+export OUTREACHGRAPH_API_TOKEN=$API_TOKEN
+export OUTREACHGRAPH_WORKSPACE_ID=wsp_...
+export OUTREACHGRAPH_ORGANIZATION_ID=org_...
+
+bun apps/cli/src/index.ts today          # the approval queue
+bun apps/cli/src/index.ts prospects      # ranked prospects
+bun apps/mcp/src/index.ts                # MCP over stdio
+```
+
+The MCP server's claim is that an agent driving it **cannot be talked into
+breaking a platform's terms**. That holds because the refusal is a pure
+function on the server rather than an instruction in a prompt: every mutation
+is an HTTP call that re-runs the deterministic policy engine, the engine fails
+closed, and the process holds no database handle — so there is no faster path a
+persuasive caller can be pointed at.
 
 No API keys are needed. The pipeline runs end to end on a deterministic
 fixture provider, so a fresh checkout works with an empty `.env`.

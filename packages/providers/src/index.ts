@@ -115,6 +115,20 @@ export {
   BLUESKY_API,
   type BlueskyProviderOptions,
 } from './bluesky/provider';
+export {
+  BlueskyAgent,
+  BlueskyAuthError,
+  BlueskyWriteError,
+  detectFacets,
+  fitPost,
+  postUriFromUrl,
+  BLUESKY_PDS,
+  POST_GRAPHEME_LIMIT,
+  type BlueskyAgentOptions,
+  type BlueskySession,
+  type Facet,
+  type PostRef,
+} from './bluesky/agent';
 
 export { findIdentities, type FanOutAttempt, type FanOutResult } from './fan-out';
 

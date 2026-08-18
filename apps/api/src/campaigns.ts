@@ -359,6 +359,8 @@ export interface WorkspaceSettingsInput {
   readonly alertMinOpportunity?: number;
   readonly autopilotDailyCap?: number;
   readonly replyToEmail?: string | null;
+  readonly trackLinks?: boolean;
+  readonly trackingOrigin?: string | null;
 }
 
 /**
@@ -378,8 +380,8 @@ export async function saveWorkspaceSettings(
   await db.execute({
     sql: `INSERT INTO workspace_settings (workspace_id, notify_email, instant_alerts,
             daily_digest, digest_hour_utc, alert_min_opportunity, autopilot_daily_cap,
-            reply_to_email, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            reply_to_email, track_links, tracking_origin, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(workspace_id) DO UPDATE SET
             notify_email = COALESCE(excluded.notify_email, workspace_settings.notify_email),
             instant_alerts = excluded.instant_alerts,
@@ -388,6 +390,8 @@ export async function saveWorkspaceSettings(
             alert_min_opportunity = excluded.alert_min_opportunity,
             autopilot_daily_cap = excluded.autopilot_daily_cap,
             reply_to_email = COALESCE(excluded.reply_to_email, workspace_settings.reply_to_email),
+            track_links = excluded.track_links,
+            tracking_origin = COALESCE(excluded.tracking_origin, workspace_settings.tracking_origin),
             updated_at = excluded.updated_at`,
     args: [
       workspaceId,
@@ -398,6 +402,10 @@ export async function saveWorkspaceSettings(
       clampInt(input.alertMinOpportunity, 0, 100, 60),
       clampInt(input.autopilotDailyCap, 0, 500, 25),
       input.replyToEmail ?? null,
+      // Opt-in, and it stays opt-in: a caller that omits the field is saying
+      // nothing about tracking, and "nothing" must not turn it on.
+      input.trackLinks === true ? 1 : 0,
+      input.trackingOrigin ?? null,
       stamp,
       stamp,
     ],

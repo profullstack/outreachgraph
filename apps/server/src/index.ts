@@ -41,6 +41,7 @@ import {
   regenerateRecommendations,
   rescoreProspect,
   runAutopilot,
+  runCadences,
   runCrawlJob,
   runDiscoveryJob,
   loadImapCredentials,
@@ -715,6 +716,27 @@ async function tick(): Promise<void> {
   // others from being processed, and a failed digest must not prevent the
   // outreach sweep that follows it.
   for (const workspace of workspaces) {
+    // Cadences run before autopilot, not after. A step that falls due this
+    // tick writes a recommendation, and running the sweep first means that
+    // card waits a whole cycle before anything looks at it — which for an
+    // hourly loop turns "follow up in 3 days" into "follow up in 3 days and
+    // an hour", every step, compounding down the plan.
+    try {
+      const cadence = await runCadences(
+        { db, platformEmailEnabled: mailer !== undefined },
+        workspace.id,
+      );
+
+      if (cadence.considered > 0) {
+        console.log(
+          `cadences ${workspace.id}: ${cadence.automated} queued, ${cadence.manual} for a human, ` +
+            `${cadence.skipped} skipped, ${cadence.completed} finished, ${cadence.stopped} stopped`,
+        );
+      }
+    } catch (error) {
+      console.error(`cadences failed for ${workspace.id}`, error);
+    }
+
     try {
       // The customer's own mail server when they have connected one, the
       // platform mailer otherwise. `runAutopilot` resolves which, once per
@@ -726,6 +748,7 @@ async function tick(): Promise<void> {
           db,
           ...(mailer ? { mailer } : {}),
           ...(encryptionKey ? { encryptionKey } : {}),
+          ...(appUrl ? { appUrl } : {}),
           // So a lead whose draft was never written can be rescued rather than
           // reported. Without this the sweep only ever says "no drafted
           // message", once per tick, forever.
