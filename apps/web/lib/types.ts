@@ -199,6 +199,14 @@ export interface ProspectDetail {
     identity_confidence: number;
     status: string;
   };
+  /**
+   * The campaign this person belongs to, when they belong to one.
+   *
+   * Anything acting on a prospect has to act within a campaign — that is what
+   * decides the brief a draft is written against — so it travels with them
+   * rather than being guessed at by each caller.
+   */
+  campaignId?: string | null;
   identities: IdentityRow[];
   companyIdentities: CompanyIdentityRow[];
   signals: SignalRow[];

@@ -13,17 +13,28 @@ const LINKS = [
   {
     href: '/settings',
     label: 'Settings',
-    hint: 'Your sending mailbox, alerts, the daily digest, autopilot limits',
+    hint: 'Your sending mailbox, Bluesky, alerts, link tracking, autopilot limits',
   },
+  {
+    href: '/cadences',
+    label: 'Plans',
+    hint: 'A sequence of touches over days, not one message and silence',
+  },
+  {
+    href: '/research',
+    label: 'Research',
+    hint: 'Ask the same questions of a whole list, answered into a table',
+  },
+  { href: '/rules', label: 'Rules', hint: 'When this happens do that — and what it has cost' },
   { href: '/signals', label: 'Signals', hint: 'The raw observations behind every score' },
   { href: '/setup', label: 'Setup', hint: 'What you sell, and who buys it' },
   { href: '/funnel', label: 'Funnel', hint: 'Stages, conversion and each lead over time' },
 ] as const;
 
 const SECTIONS = [
-  { label: 'Conversations', hint: 'Interaction tracking only' },
+  { label: 'Conversations', hint: 'Replies are read and scored; no threaded view yet' },
   { label: 'CRM integrations', hint: 'Website and GitHub are sources; the mailbox is in Settings' },
-  { label: 'Usage', hint: 'Metering recorded, not enforced' },
+  { label: 'Scheduling links', hint: 'Needs a calendar connection we do not have yet' },
 ] as const;
 
 /** Desktop expands the bottom nav into the full §25 navigation. */

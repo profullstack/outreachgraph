@@ -1125,8 +1125,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const person = await repo.getPerson(db, personId);
     if (!person || person.status === 'deleted') throw ApiError.notFound('person');
 
-    const [identities, companyIdentities, signals, provenance, emailCandidates] = await Promise.all(
-      [
+    const [identities, companyIdentities, signals, provenance, emailCandidates, membership] =
+      await Promise.all([
         repo.listIdentities(db, personId),
         repo.listCompanyIdentities(db, personId),
         repo.listPersonSignals(db, actor.workspaceId, personId),
@@ -1134,11 +1134,25 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         // Served here rather than behind its own fetch: deciding on an address
         // is a judgement about this person, made with their evidence on screen.
         candidatesForPerson(db, actor.workspaceId, personId),
-      ],
-    );
+        // Which campaign this person belongs to, so anything acting on them
+        // acts within it. Without this a caller has to guess, and a wrong
+        // guess enrols somebody into a campaign they were never part of —
+        // which then scores and drafts for them against the wrong brief.
+        queryOne<{ campaign_id: string }>(
+          db,
+          `SELECT cp.campaign_id
+             FROM campaign_people cp
+             JOIN campaigns c ON c.id = cp.campaign_id
+            WHERE cp.person_id = ? AND c.workspace_id = ? AND c.status != 'archived'
+         ORDER BY cp.updated_at DESC
+            LIMIT 1`,
+          [personId, actor.workspaceId],
+        ),
+      ]);
 
     return c.json({
       person,
+      campaignId: membership?.campaign_id ?? null,
       identities,
       companyIdentities,
       signals,
