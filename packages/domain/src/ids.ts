@@ -48,6 +48,12 @@ export const ID_PREFIXES = {
   notification: 'ntf',
   socialPost: 'spo',
   workflowEvent: 'wfe',
+  // A tracked link's id is the token in the URL a prospect clicks, so it is
+  // public by construction. The 26 characters of base32 randomness are what
+  // keep it unguessable — a short or sequential token would let anyone
+  // enumerate who a workspace has written to.
+  trackedLink: 'tlk',
+  linkClick: 'clk',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

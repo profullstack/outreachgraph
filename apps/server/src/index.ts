@@ -726,6 +726,7 @@ async function tick(): Promise<void> {
           db,
           ...(mailer ? { mailer } : {}),
           ...(encryptionKey ? { encryptionKey } : {}),
+          ...(appUrl ? { appUrl } : {}),
           // So a lead whose draft was never written can be rescued rather than
           // reported. Without this the sweep only ever says "no drafted
           // message", once per tick, forever.

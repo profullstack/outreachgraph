@@ -27,6 +27,7 @@ import { newId, type ProspectStatus } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer } from '@outreachgraph/email';
 import { recordStatus } from './stages';
+import { trackLinksInBody } from './engagement';
 
 export interface EmailRecipient {
   readonly address: string;
@@ -59,15 +60,25 @@ export function defaultEmailSubject(companyName: string | null | undefined): str
 export interface OutreachSettings {
   readonly autopilot_daily_cap: number;
   readonly reply_to_email: string | null;
+  /** Whether links in outbound bodies are rewritten to tracked ones. */
+  readonly track_links: boolean;
+  /** Origin tracked links point at. NULL falls back to the service's APP_URL. */
+  readonly tracking_origin: string | null;
 }
 
 export async function loadOutreachSettings(
   db: Client,
   workspaceId: string,
 ): Promise<OutreachSettings> {
-  const row = await queryOne<{ autopilot_daily_cap: number; reply_to_email: string | null }>(
+  const row = await queryOne<{
+    autopilot_daily_cap: number;
+    reply_to_email: string | null;
+    track_links: number | null;
+    tracking_origin: string | null;
+  }>(
     db,
-    `SELECT autopilot_daily_cap, reply_to_email FROM workspace_settings WHERE workspace_id = ?`,
+    `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin
+       FROM workspace_settings WHERE workspace_id = ?`,
     [workspaceId],
   );
 
@@ -76,6 +87,8 @@ export async function loadOutreachSettings(
   return {
     autopilot_daily_cap: row?.autopilot_daily_cap ?? 25,
     reply_to_email: row?.reply_to_email ?? null,
+    track_links: (row?.track_links ?? 0) === 1,
+    tracking_origin: row?.tracking_origin ?? null,
   };
 }
 
@@ -230,6 +243,14 @@ export interface DeliverEmailDeps {
   readonly mailer: Mailer;
   /** Reply-to override. Falls back to the workspace's configured address. */
   readonly replyTo?: string | undefined;
+  /**
+   * Origin tracked links resolve from, when the workspace has opted in.
+   *
+   * Absent means no tracking, whatever the setting says — a rewritten link
+   * with no origin to point at would send the prospect nowhere, and a dead
+   * link in an outbound message is worse than an unmeasured one.
+   */
+  readonly appUrl?: string | undefined;
 }
 
 export interface DeliverEmailInput {
@@ -321,11 +342,30 @@ export async function deliverEmailAction(
   const replyTo = deps.replyTo ?? settings.reply_to_email ?? undefined;
   const subject = row.draft_subject?.trim() || defaultEmailSubject(row.company_name);
 
+  // Link tracking happens here and nowhere earlier: `body` has already passed
+  // the §14.2 grounding gates, and rewriting before them would mean the checks
+  // ran against words we do not send. What goes on the wire differs from what
+  // was approved only in where a link points.
+  const trackingOrigin = settings.track_links
+    ? (settings.tracking_origin ?? deps.appUrl ?? undefined)
+    : undefined;
+
+  const outgoing = trackingOrigin
+    ? await trackLinksInBody(db, {
+        workspaceId: input.workspaceId,
+        personId: row.person_id,
+        campaignId: row.campaign_id,
+        actionId: row.action_id,
+        body,
+        origin: trackingOrigin,
+      })
+    : { body, tracked: 0 };
+
   try {
     const result = await deps.mailer.send({
       to: recipient.address,
       subject,
-      text: body,
+      text: outgoing.body,
       ...(replyTo ? { replyTo } : {}),
     });
 
@@ -337,6 +377,10 @@ export async function deliverEmailAction(
       recommendationId: row.recommendation_id,
       to: recipient.address,
       sharedInbox: recipient.shared,
+      // The approved wording, not the rewritten one. `tracked_links` already
+      // records where each link was pointed, and a reviewer reading back what
+      // was sent wants the sentence they signed off on rather than a body full
+      // of opaque redirect tokens.
       body,
       externalId: result.id,
       actor: input.actor,

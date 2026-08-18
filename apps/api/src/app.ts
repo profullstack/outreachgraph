@@ -59,6 +59,7 @@ import {
   campaignTerms,
   connectEmailAccount,
   deliverEmailAction,
+  recordLinkClick,
   disconnectEmailAccount,
   emailAccountSummary,
   leadTimeline,
@@ -189,6 +190,45 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       },
     }),
   );
+
+  // ------------------------------------------------------- tracked links
+  /**
+   * Where a link in an outbound email actually goes.
+   *
+   * Deliberately mounted on `app` rather than under the authenticated
+   * `/api/v1`: the person following it is a prospect reading their mail, and
+   * they have no session and never will.
+   *
+   * The destination is read from the row and never from the request. A
+   * redirect that took its target from a query parameter would be an open
+   * redirect on our own sending domain, which is a phishing primitive — and
+   * one we would be handing to anyone who noticed, on a domain whose whole
+   * value is that mail from it gets delivered.
+   *
+   * Recording never blocks the redirect. Somebody clicked a link in an email
+   * they were sent, and a database problem on our side is not a reason to
+   * leave them looking at an error page.
+   */
+  app.get('/t/:token', async (c) => {
+    const token = c.req.param('token');
+
+    let click: Awaited<ReturnType<typeof recordLinkClick>>;
+    try {
+      click = await recordLinkClick(options.db, {
+        token,
+        userAgent: c.req.header('user-agent'),
+      });
+    } catch {
+      return c.text('This link could not be opened.', 404);
+    }
+
+    if (!click) return c.text('This link has expired or does not exist.', 404);
+
+    // 302 rather than 301: a permanent redirect would be cached by the
+    // browser and every later click would never reach us, so a prospect who
+    // returns to the message next week would be invisible.
+    return c.redirect(click.targetUrl, 302);
+  });
 
   // ---------------------------------------------------------------- health
   // Two endpoints: liveness never touches the database so a database blip
@@ -1890,9 +1930,15 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const settings = await loadNotifySettings(db, actor.workspaceId);
     const address = await notifyAddress(db, actor.workspaceId, settings);
 
-    const cap = await queryOne<{ autopilot_daily_cap: number; reply_to_email: string | null }>(
+    const cap = await queryOne<{
+      autopilot_daily_cap: number;
+      reply_to_email: string | null;
+      track_links: number | null;
+      tracking_origin: string | null;
+    }>(
       db,
-      `SELECT autopilot_daily_cap, reply_to_email FROM workspace_settings WHERE workspace_id = ?`,
+      `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin
+         FROM workspace_settings WHERE workspace_id = ?`,
       [actor.workspaceId],
     );
 
@@ -1908,6 +1954,12 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       alertMinOpportunity: settings.alert_min_opportunity,
       autopilotDailyCap: cap?.autopilot_daily_cap ?? 25,
       replyToEmail: cap?.reply_to_email ?? null,
+      trackLinks: (cap?.track_links ?? 0) === 1,
+      trackingOrigin: cap?.tracking_origin ?? null,
+      // Where tracked links would actually point if switched on. The setting
+      // alone is not enough to tell a user whether tracking will work, since
+      // an unset origin falls back to the service's own APP_URL.
+      effectiveTrackingOrigin: cap?.tracking_origin ?? options.appUrl ?? null,
       lastDigestSentOn: settings.last_digest_sent_on,
     });
   });
@@ -1936,6 +1988,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       ...(body.autopilotDailyCap === undefined
         ? {}
         : { autopilotDailyCap: Number(body.autopilotDailyCap) }),
+      // PUT replaces the whole settings document, so an absent `trackLinks`
+      // means off — the same full-state rule the alert toggles above follow.
+      // For an opt-in that is also the safe direction to be wrong in.
+      trackLinks: body.trackLinks === true,
+      ...(body.trackingOrigin === undefined
+        ? {}
+        : { trackingOrigin: body.trackingOrigin === null ? null : String(body.trackingOrigin) }),
     });
 
     return c.json({ saved: true });
@@ -2498,6 +2557,7 @@ async function sendEmailAction(
       db,
       mailer: sender.mailer,
       ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
+      ...(options.appUrl ? { appUrl: options.appUrl } : {}),
     },
     {
       workspaceId: actor.workspaceId,

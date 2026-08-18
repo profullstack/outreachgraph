@@ -44,6 +44,7 @@ import {
   recordEmailSent,
   AUTOPILOT_ACTOR,
 } from './outreach-email';
+import { trackLinksInBody } from './engagement';
 
 export interface AutopilotDeps {
   readonly db: Client;
@@ -58,6 +59,15 @@ export interface AutopilotDeps {
    * mailboxes are unreadable and every workspace falls back to `mailer`.
    */
   readonly encryptionKey?: Buffer | undefined;
+  /**
+   * Origin tracked links resolve from, for workspaces that opted in.
+   *
+   * Absent means links are sent untouched however the setting is configured.
+   * Autopilot sends unattended, so a rewritten link pointing at an origin that
+   * does not serve `/t/:token` would break every message in a run before
+   * anyone noticed.
+   */
+  readonly appUrl?: string | undefined;
   /** Reply-to for outbound mail. Falls back to the workspace owner. */
   readonly replyTo?: string;
   /**
@@ -389,11 +399,29 @@ export async function runAutopilot(
     // customer who connected their own mailbox meant replies to reach it.
     const replyTo = deps.replyTo ?? sender.replyTo ?? settings.reply_to_email ?? undefined;
 
+    // Same rule as the approval path: rewrite after the body is settled, so
+    // what the gates checked and what the reviewer would read back is the
+    // approved wording, and only the link destinations differ on the wire.
+    const trackingOrigin = settings.track_links
+      ? (settings.tracking_origin ?? deps.appUrl ?? undefined)
+      : undefined;
+
+    const outgoing = trackingOrigin
+      ? await trackLinksInBody(db, {
+          workspaceId,
+          personId: row.person_id,
+          campaignId: row.campaign_id,
+          actionId,
+          body,
+          origin: trackingOrigin,
+        })
+      : { body, tracked: 0 };
+
     try {
       const result = await sender.mailer.send({
         to: recipient.address,
         subject,
-        text: body,
+        text: outgoing.body,
         ...(replyTo ? { replyTo } : {}),
       });
 

@@ -207,6 +207,16 @@ export interface RelationshipInput {
   readonly existingCustomerContact?: boolean;
   readonly sharedPublicEvent?: boolean;
   readonly optedIn?: boolean;
+  /**
+   * They followed a tracked link we sent (PRD §12.5).
+   *
+   * Weighted well below a reply on purpose. A click says the subject line was
+   * interesting enough to open something; a reply says a person decided to
+   * spend their own time on us. Treating the two as comparable would let a
+   * campaign that generates curiosity outrank one that generates conversations,
+   * which is the opposite of what the North Star metric rewards.
+   */
+  readonly clickedLink?: boolean;
 }
 
 /** Relationship (PRD §12.5). Warmer context earns a higher score. */
@@ -218,6 +228,10 @@ export function scoreRelationship(input: RelationshipInput): Score {
   if (input.mutualPublicInteraction === true) total += 0.15;
   if (input.followsYou === true) total += 0.15;
   if (input.followsYourCompany === true) total += 0.1;
+  // Subsumed by a reply rather than added to it: someone who answered has
+  // already demonstrated everything the click was evidence for, and stacking
+  // both would make one conversation look like two relationships.
+  if (input.clickedLink === true && input.previouslyReplied !== true) total += 0.1;
   if (input.sharedPublicEvent === true) total += 0.05;
   return toScore(total);
 }

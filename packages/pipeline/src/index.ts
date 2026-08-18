@@ -53,6 +53,17 @@ export {
   type EmailAccountSummary,
 } from './email-account';
 export {
+  trackLinksInBody,
+  recordLinkClick,
+  engagementFor,
+  relationshipInputFrom,
+  type TrackLinksInput,
+  type TrackLinksResult,
+  type RecordClickInput,
+  type RecordClickResult,
+  type EngagementFacts,
+} from './engagement';
+export {
   receiveReplies,
   workspacesWithReadableMailbox,
   type ReceiveRepliesInput,

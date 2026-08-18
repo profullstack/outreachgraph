@@ -13,8 +13,10 @@ import {
   scoreIntent,
   scoreOpportunity,
   scoreReachability,
+  scoreRelationship,
 } from '@outreachgraph/scoring';
 import type { DecayableSignal } from '@outreachgraph/signals';
+import { engagementFor, relationshipInputFrom } from './engagement';
 
 export const JOB_KINDS = [
   'enrich_person',
@@ -164,9 +166,16 @@ export async function rescoreProspect(
 
   const intent = scoreIntent({ signals, signalWeights });
 
+  // What we have actually heard back from this person. Until this existed both
+  // scores below were computed from constants: `relationship` was a literal 0
+  // and `hasConnectedAccount` a literal false, so a prospect who replied and
+  // one who has never been contacted ranked identically.
+  const engagement = await engagementFor(db, campaign.workspace_id, personId);
+
   const reachability = scoreReachability({
     reachableNetworkCount: Number(identityCount?.n ?? 0),
-    hasConnectedAccount: false,
+    hasConnectedAccount: engagement.hasConnectedAccount,
+    hasRespondedBefore: engagement.previouslyReplied,
     ...(signals.length > 0 ? { daysSinceLastActivity: freshestAgeDays(signals) } : {}),
   });
 
@@ -178,7 +187,7 @@ export async function rescoreProspect(
     icpFit: icp.score,
     intent: intent.score,
     reachability,
-    relationship: 0,
+    relationship: scoreRelationship(relationshipInputFrom(engagement)),
     identity: Math.round(person.identity_confidence * 100),
     ...(weights ? { weights } : {}),
   });
