@@ -1,4 +1,4 @@
--- 0012_engagement.sql
+-- 0018_engagement.sql
 -- Noticing that somebody engaged, so the scoring engine stops guessing.
 --
 -- `packages/scoring` has implemented `scoreRelationship` since the first
