@@ -32,6 +32,8 @@ import {
 } from '@outreachgraph/providers';
 import { recordDiscovered } from './stages';
 import { loadListeningTargets, type ListeningTargets } from './listening-targets';
+import { expandCampaignTerms } from './term-expansion';
+import type { TextModel } from '@outreachgraph/ai';
 
 export interface ListenDeps {
   readonly db: Client;
@@ -45,6 +47,16 @@ export interface ListenDeps {
    * which communities and feeds they are pointed at.
    */
   readonly resolveSources: (targets: ListeningTargets) => readonly FeedSource[];
+  /**
+   * Expands the campaign's terms into the phrasing prospects actually use.
+   *
+   * Optional, and its absence is the literal-matching behaviour the product
+   * had before: a campaign listening for "payments provider" matches only that
+   * string, and misses "our Stripe fees are killing us" — which is the post
+   * that indicates intent, because someone stating your category by name is
+   * usually already talking to your competitor.
+   */
+  readonly model?: TextModel | undefined;
   readonly now?: Date;
 }
 
@@ -89,7 +101,12 @@ export async function runListening(deps: ListenDeps, input: ListenInput): Promis
   const { db } = deps;
   const at = deps.now ?? new Date();
 
-  const terms = await campaignTerms(db, input.workspaceId, input.campaignId);
+  const literal = await campaignTerms(db, input.workspaceId, input.campaignId);
+  const terms = await expandCampaignTerms(
+    { db, ...(deps.model ? { model: deps.model } : {}), ...(deps.now ? { now: deps.now } : {}) },
+    input.workspaceId,
+    literal,
+  );
   const targets = await loadListeningTargets(db, input.workspaceId, input.campaignId);
   const bySource: Record<string, number> = {};
   const failures: { slug: string; reason: string }[] = [];

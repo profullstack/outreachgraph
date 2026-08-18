@@ -63,11 +63,14 @@ import {
   BlueskyAccountError,
   connectBlueskyAccount,
   createCadence,
+  createResearchGrid,
   disconnectBlueskyAccount,
   deliverBlueskyAction,
   deliverEmailAction,
   enrollInCadence,
+  readResearchGrid,
   recordLinkClick,
+  runResearchGrid,
   setCadenceStatus,
   stopEnrollment,
   disconnectEmailAccount,
@@ -102,7 +105,14 @@ import {
   rejectCandidate,
   workflowStatus,
 } from '@outreachgraph/pipeline';
-import { CADENCE_STATUSES, SHARE_TARGETS, type ShareNetwork } from '@outreachgraph/domain';
+import {
+  CADENCE_STATUSES,
+  PLAYBOOKS,
+  playbookBySlug,
+  playbookDurationHours,
+  SHARE_TARGETS,
+  type ShareNetwork,
+} from '@outreachgraph/domain';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
 import {
@@ -1982,6 +1992,162 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ leads });
+  });
+
+  // ------------------------------------------------------- research grids
+  //
+  // N questions across M prospects, answered into a table. A batch rather than
+  // a chat box: the cost is knowable before it runs and the progress is a
+  // fraction, both of which matter when model spend is the real COGS.
+
+  api.get('/grids', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT id, name, status, cells_total, cells_done, campaign_id, created_at, completed_at
+         FROM research_grids WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 100`,
+      [actor.workspaceId],
+    );
+
+    return c.json({ grids: rows });
+  });
+
+  api.get('/grids/:id', async (c) => {
+    const actor = c.get('actor');
+    const grid = await readResearchGrid(c.get('db'), actor.workspaceId, c.req.param('id'));
+    if (!grid) throw ApiError.notFound('grid');
+
+    return c.json(grid);
+  });
+
+  api.post('/grids', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('running research');
+
+    const body = safeJson(await c.req.raw.text());
+    const questions = Array.isArray(body.questions) ? body.questions.map(String) : [];
+    const personIds = Array.isArray(body.personIds) ? body.personIds.map(String) : [];
+
+    const created = await createResearchGrid(db, {
+      workspaceId: actor.workspaceId,
+      ...(typeof body.campaignId === 'string' ? { campaignId: body.campaignId } : {}),
+      name: typeof body.name === 'string' ? body.name : '',
+      questions,
+      personIds,
+    });
+
+    if (!created.created) throw ApiError.badRequest(created.reason);
+
+    return c.json(
+      { gridId: created.gridId, questions: created.questions, cells: created.cells },
+      201,
+    );
+  });
+
+  /**
+   * Answers as many outstanding cells as one call allows.
+   *
+   * Explicitly driven rather than run on a timer. A grid is the one place in
+   * the product where a user can spend a lot of model budget in one action, so
+   * it advances when somebody asks it to and reports how far it got.
+   */
+  api.post('/grids/:id/run', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('running research');
+    if (!options.model) {
+      throw ApiError.badRequest('This deployment has no model configured, so a grid cannot run.');
+    }
+
+    const body = safeJson(await c.req.raw.text());
+    const limit =
+      typeof body.limit === 'number' ? Math.min(Math.max(body.limit, 1), 200) : undefined;
+
+    try {
+      const result = await runResearchGrid(
+        { db, model: options.model, ...(limit === undefined ? {} : { limit }) },
+        actor.workspaceId,
+        c.req.param('id'),
+      );
+
+      return c.json(result);
+    } catch {
+      throw ApiError.notFound('grid');
+    }
+  });
+
+  // ----------------------------------------------------------- playbooks
+  //
+  // Worked examples that happen to be executable. The empty campaign form is
+  // this product's hardest screen, and everything downstream works well only
+  // once a campaign describes a real market and a real trigger.
+
+  api.get('/playbooks', (c) =>
+    c.json({
+      playbooks: PLAYBOOKS.map((playbook) => ({
+        slug: playbook.slug,
+        name: playbook.name,
+        summary: playbook.summary,
+        audience: playbook.audience,
+        steps: playbook.steps.length,
+        durationHours: playbookDurationHours(playbook),
+        gridQuestions: playbook.gridQuestions,
+      })),
+    }),
+  );
+
+  api.get('/playbooks/:slug', (c) => {
+    const playbook = playbookBySlug(c.req.param('slug'));
+    if (!playbook) throw ApiError.notFound('playbook');
+    return c.json({ playbook });
+  });
+
+  /**
+   * Turns a play into a real cadence this workspace owns.
+   *
+   * A copy, not a reference. Once instantiated the steps belong to the
+   * workspace and can be edited freely — a play that kept editing itself when
+   * the library changed would rewrite a campaign somebody is already running.
+   */
+  api.post('/playbooks/:slug/use', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('creating a cadence');
+
+    const playbook = playbookBySlug(c.req.param('slug'));
+    if (!playbook) throw ApiError.notFound('playbook');
+
+    const body = safeJson(await c.req.raw.text());
+
+    const created = await createCadence(db, {
+      workspaceId: actor.workspaceId,
+      ...(typeof body.campaignId === 'string' ? { campaignId: body.campaignId } : {}),
+      name: playbook.name,
+      status: 'draft',
+      steps: playbook.steps.map((step, index) => ({
+        position: index,
+        network: step.network,
+        action: step.action,
+        delayHours: step.delayHours,
+        stopOnReply: true,
+        intent: step.intent,
+      })),
+    });
+
+    if (!created.created) {
+      throw ApiError.badRequest('That playbook is not runnable.', {
+        steps: created.problems.map((p) => p.message),
+      });
+    }
+
+    return c.json(
+      { cadenceId: created.cadenceId, intake: playbook.intake, keywords: playbook.keywords },
+      201,
+    );
   });
 
   // -------------------------------------------------------------- cadences

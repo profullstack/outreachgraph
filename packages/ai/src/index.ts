@@ -73,3 +73,14 @@ export {
   type FallbackEntry,
   type FallbackModelOptions,
 } from './fallback';
+
+export {
+  answerGridCell,
+  type GridAnswer,
+  type GridAnswerInput,
+  type GridAnswerStatus,
+  type GridEvidence,
+  type GridQuestion,
+} from './grid';
+
+export { expandTerm, mergeTerms, MAX_EXPANSIONS_PER_TERM, type ExpansionResult } from './synonyms';

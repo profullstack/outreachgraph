@@ -19,6 +19,7 @@ export * from './funnel';
 export * from './share-links';
 export * from './engagement';
 export * from './cadence';
+export * from './playbooks';
 export * from './pipeline';
 export * from './outreach';
 export * from './video';

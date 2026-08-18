@@ -54,6 +54,18 @@ export {
 } from './email-account';
 export { runCadences, type RunCadencesDeps } from './cadence-runner';
 export {
+  createResearchGrid,
+  runResearchGrid,
+  readResearchGrid,
+  MAX_GRID_CELLS,
+  type CreateGridInput,
+  type CreateGridResult,
+  type GridRow,
+  type RunGridDeps,
+  type RunGridResult,
+} from './research-grid';
+export { expandCampaignTerms, EXPANSION_TTL_DAYS, type ExpandTermsDeps } from './term-expansion';
+export {
   agentForWorkspace,
   blueskyAccountSummary,
   connectBlueskyAccount,

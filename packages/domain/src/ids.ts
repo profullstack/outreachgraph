@@ -58,6 +58,10 @@ export const ID_PREFIXES = {
   cadenceStep: 'cst',
   enrollment: 'enr',
   cadenceRun: 'crn',
+  researchGrid: 'grd',
+  gridQuestion: 'gqn',
+  gridCell: 'gcl',
+  termExpansion: 'tex',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;
