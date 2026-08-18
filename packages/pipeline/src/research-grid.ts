@@ -18,7 +18,7 @@
  * expensive to use.
  */
 
-import { newId } from '@outreachgraph/domain';
+import { checkGridQuota, newId } from '@outreachgraph/domain';
 import {
   answerGridCell,
   type GridEvidence,
@@ -26,6 +26,7 @@ import {
   type TextModel,
 } from '@outreachgraph/ai';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { planFor, recordResearchUsage, usageFor } from './metering';
 
 /** How much evidence one cell may reason over. */
 const EVIDENCE_PER_CELL = 12;
@@ -182,6 +183,30 @@ export async function runResearchGrid(
 
   if (!grid) throw new Error('no such grid');
 
+  // Checked before any cell runs. A grid is the one action where a single
+  // click can spend a lot of model budget, so the refusal has to arrive before
+  // the spend rather than partway through it.
+  const [plan, usage] = await Promise.all([planFor(db, workspaceId), usageFor(db, workspaceId)]);
+  const outstanding = await queryOne<{ n: number }>(
+    db,
+    `SELECT count(*) AS n FROM research_grid_cells WHERE grid_id = ? AND status = 'unanswered'`,
+    [gridId],
+  );
+
+  const wanted = Math.min(Number(outstanding?.n ?? 0), deps.limit ?? DEFAULT_CELL_LIMIT);
+  const quota = checkGridQuota(plan, usage, wanted);
+
+  if (quota.exhausted) {
+    return {
+      gridId,
+      answered: 0,
+      noEvidence: 0,
+      failed: 0,
+      remaining: Number(outstanding?.n ?? 0),
+      status: quota.reason ?? 'research allowance exhausted',
+    };
+  }
+
   const questions = parseQuestions(grid.questions_json);
   const byId = new Map(questions.map((q) => [q.id, q]));
 
@@ -246,6 +271,15 @@ export async function runResearchGrid(
       await markCell(db, cell.id, 'failed', undefined, [], undefined);
       failed += 1;
     }
+  }
+
+  // Metered on cells actually answered, so a grid abandoned halfway is
+  // charged for what it consumed rather than for what it planned. Failed
+  // cells count too: the model call was made and paid for whether or not the
+  // answer was usable.
+  const spent = answered + noEvidence + failed;
+  if (spent > 0) {
+    await recordResearchUsage(db, { workspaceId, cells: spent });
   }
 
   const done = answered + noEvidence + failed;

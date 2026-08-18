@@ -17,6 +17,7 @@ import { newId, type CadenceStep, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { PolicyDecision, PolicyRequest } from '@outreachgraph/policy';
 import { advanceCadences, type AdvanceResult, type DueEnrollment } from './cadence';
+import { budgetStatus } from './metering';
 
 export interface RunCadencesDeps {
   readonly db: Client;
@@ -89,11 +90,12 @@ async function policyInputsFor(
 
   const budget = parseJson(campaign?.budget_json);
 
-  const [counts, flags, connected, replied] = await Promise.all([
+  const [counts, flags, connected, replied, budgetState] = await Promise.all([
     actionCounts(db, enrollment.workspace_id, enrollment.person_id),
     featureFlags(db, enrollment.workspace_id),
     hasConnectedAccount(db, enrollment.workspace_id, step.network),
     conversationOpen(db, enrollment.workspace_id, enrollment.person_id),
+    budgetStatus(db, enrollment.workspace_id),
   ]);
 
   const suppressed =
@@ -116,6 +118,7 @@ async function policyInputsFor(
       ? {}
       : { hoursSinceLastActionToProspect: counts.hoursSinceLast }),
     conversationOpen: replied,
+    budgetExhausted: budgetState.exhausted,
     featureFlags: flags,
   };
 }

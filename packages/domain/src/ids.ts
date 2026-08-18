@@ -62,6 +62,8 @@ export const ID_PREFIXES = {
   gridQuestion: 'gqn',
   gridCell: 'gcl',
   termExpansion: 'tex',
+  rule: 'rul',
+  ruleRun: 'rrn',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

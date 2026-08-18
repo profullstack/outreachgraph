@@ -45,6 +45,7 @@ import {
   AUTOPILOT_ACTOR,
 } from './outreach-email';
 import { trackLinksInBody } from './engagement';
+import { budgetStatus } from './metering';
 
 export interface AutopilotDeps {
   readonly db: Client;
@@ -339,6 +340,11 @@ export async function runAutopilot(
     const addressUsage = await addressCounts(db, workspaceId, recipient.address, at);
     const budget = safeJson(row.budget_json);
 
+    // Read inside the loop rather than once per run: a workspace can cross its
+    // monthly allowance partway through a sweep, and a snapshot taken before
+    // the first send would let the rest of the batch through on a stale count.
+    const budgetState = await budgetStatus(db, workspaceId, at);
+
     const decision = evaluatePolicy({
       network: row.network as Network,
       action: row.action as ActionKind,
@@ -362,6 +368,7 @@ export async function runAutopilot(
       ...(addressUsage.hoursSinceLast !== undefined
         ? { hoursSinceLastActionToAddress: addressUsage.hoursSinceLast }
         : {}),
+      budgetExhausted: budgetState.exhausted,
     });
 
     // `approved: false` is the whole point. Autopilot holds no approval, so

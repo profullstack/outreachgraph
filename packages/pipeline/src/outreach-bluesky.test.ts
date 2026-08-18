@@ -94,7 +94,7 @@ async function seedAction(
     await db.execute({
       sql: `INSERT INTO signals (id, workspace_id, person_id, network, signal_type, summary,
             source_url, confidence, relevance, observed_at)
-            VALUES (?, ?, ?, 'bluesky', 'pain_point', 'complained about fees', ?, 0.9, 0.9, ?)`,
+            VALUES (?, ?, ?, 'bluesky', 'pain', 'complained about fees', ?, 0.9, 0.9, ?)`,
       args: [signalId, SEED.workspaceId, SEED.personId, POST_URL, now()],
     });
   }

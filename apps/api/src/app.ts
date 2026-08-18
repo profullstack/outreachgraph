@@ -62,7 +62,9 @@ import {
   blueskyAccountSummary,
   BlueskyAccountError,
   connectBlueskyAccount,
+  budgetStatus,
   createCadence,
+  createRule,
   createResearchGrid,
   disconnectBlueskyAccount,
   deliverBlueskyAction,
@@ -72,6 +74,7 @@ import {
   recordLinkClick,
   runResearchGrid,
   setCadenceStatus,
+  setRuleEnabled,
   stopEnrollment,
   disconnectEmailAccount,
   emailAccountSummary,
@@ -108,6 +111,7 @@ import {
 import {
   CADENCE_STATUSES,
   PLAYBOOKS,
+  validateRule,
   playbookBySlug,
   playbookDurationHours,
   SHARE_TARGETS,
@@ -1994,6 +1998,117 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json({ leads });
   });
 
+  // ------------------------------------------------------------------ rules
+  //
+  // If this happens, do that. What a rule may *do* is the design decision: it
+  // can enrol somebody on a plan, tell a human, suppress, or move a lead — and
+  // nothing else. There is no send action, because an action that reaches the
+  // wire would carry its own opinion about whether it is allowed, and then the
+  // product has two policy engines and the quieter one wins.
+
+  api.get('/rules', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT r.id, r.name, r.trigger, r.action, r.enabled, r.campaign_id, r.created_at,
+              (SELECT count(*) FROM rule_runs rr WHERE rr.rule_id = r.id) AS fired,
+              (SELECT count(*) FROM rule_runs rr
+                WHERE rr.rule_id = r.id AND rr.outcome = 'applied') AS applied
+         FROM automation_rules r
+        WHERE r.workspace_id = ?
+     ORDER BY r.created_at DESC`,
+      [actor.workspaceId],
+    );
+
+    return c.json({ rules: rows });
+  });
+
+  api.post('/rules', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('creating a rule');
+
+    const body = safeJson(await c.req.raw.text());
+    const config = (
+      typeof body.config === 'object' && body.config !== null ? body.config : {}
+    ) as Record<string, unknown>;
+
+    const problems = validateRule({
+      name: typeof body.name === 'string' ? body.name : '',
+      trigger: String(body.trigger ?? ''),
+      action: String(body.action ?? ''),
+      config: config as never,
+    });
+
+    if (problems.length > 0) {
+      throw ApiError.badRequest('That rule cannot run.', {
+        rule: problems.map((p) => p.message),
+      });
+    }
+
+    const id = await createRule(db, {
+      workspaceId: actor.workspaceId,
+      ...(typeof body.campaignId === 'string' ? { campaignId: body.campaignId } : {}),
+      name: String(body.name),
+      trigger: String(body.trigger) as never,
+      condition: (typeof body.condition === 'object' && body.condition !== null
+        ? body.condition
+        : {}) as never,
+      action: String(body.action) as never,
+      config: config as never,
+      enabled: body.enabled !== false,
+    });
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'rule.created',
+      entityKind: 'campaign',
+      entityId: id,
+      detail: { trigger: body.trigger, action: body.action },
+    });
+
+    return c.json({ ruleId: id }, 201);
+  });
+
+  api.patch('/rules/:id', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('changing a rule');
+
+    const body = safeJson(await c.req.raw.text());
+    const changed = await setRuleEnabled(
+      c.get('db'),
+      actor.workspaceId,
+      c.req.param('id'),
+      body.enabled !== false,
+    );
+
+    if (!changed) throw ApiError.notFound('rule');
+    return c.json({ enabled: body.enabled !== false });
+  });
+
+  /**
+   * What a rule actually did, which is not the same as how often it fired.
+   *
+   * A rule that matches constantly and is refused every time looks identical
+   * to a working one from a counter, and is the most common way an automation
+   * quietly stops mattering.
+   */
+  api.get('/rules/:id/runs', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT person_id, outcome, detail, occurred_at
+         FROM rule_runs WHERE rule_id = ? AND workspace_id = ?
+     ORDER BY occurred_at DESC LIMIT 100`,
+      [c.req.param('id'), actor.workspaceId],
+    );
+
+    return c.json({ runs: rows });
+  });
+
   // ------------------------------------------------------- research grids
   //
   // N questions across M prospects, answered into a table. A batch rather than
@@ -2923,12 +3038,39 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // ------------------------------------------------------------------ usage
   api.get('/usage', async (c) => {
     const actor = c.get('actor');
-    const rows = await c.get('db').execute({
-      sql: `SELECT unit, sum(quantity) AS quantity, sum(cost_usd) AS cost_usd
-              FROM usage_events WHERE workspace_id = ? GROUP BY unit`,
-      args: [actor.workspaceId],
+    const db = c.get('db');
+
+    // The plan and what is left of it, not only a pile of raw events. "How
+    // much have I used" is the question; a per-unit sum is the arithmetic
+    // behind it and answers nobody on its own.
+    const [status, rows] = await Promise.all([
+      budgetStatus(db, actor.workspaceId),
+      db.execute({
+        sql: `SELECT unit, sum(quantity) AS quantity, sum(cost_usd) AS cost_usd
+                FROM usage_events WHERE workspace_id = ? GROUP BY unit`,
+        args: [actor.workspaceId],
+      }),
+    ]);
+
+    return c.json({
+      plan: {
+        id: status.plan.id,
+        name: status.plan.name,
+        prospectsPerMonth: status.plan.prospectsPerMonth,
+        gridCellsPerMonth: status.plan.gridCellsPerMonth,
+      },
+      thisMonth: {
+        prospectsContacted: status.usage.prospectsContacted,
+        prospectsRemaining: Math.max(
+          0,
+          status.plan.prospectsPerMonth - status.usage.prospectsContacted,
+        ),
+        gridCells: status.usage.gridCells,
+        gridCellsRemaining: Math.max(0, status.plan.gridCellsPerMonth - status.usage.gridCells),
+        exhausted: status.exhausted,
+      },
+      usage: rows.rows,
     });
-    return c.json({ usage: rows.rows });
   });
 
   app.route(`/api/v1`, api);
@@ -3014,6 +3156,12 @@ async function recheckPolicy(
 
   const budget = safeJson(campaign.budget_json);
 
+  // The month's allowance, as an input to the engine rather than a check
+  // beside it. A limit enforced outside the policy engine is one the approval
+  // queue, autopilot and the cadence runner each have to remember separately,
+  // and one of them eventually will not.
+  const budgetState = await budgetStatus(db, actor.workspaceId);
+
   return evaluatePolicy({
     network: recommendation.network as Network,
     action: recommendation.action as ActionKind,
@@ -3042,6 +3190,7 @@ async function recheckPolicy(
             : { hoursSinceLastActionToAddress: addressUsage.hoursSinceLast }),
         }),
     conversationOpen: replied,
+    budgetExhausted: budgetState.exhausted,
     featureFlags: flags,
   });
 }

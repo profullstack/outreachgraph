@@ -54,6 +54,21 @@ export {
 } from './email-account';
 export { runCadences, type RunCadencesDeps } from './cadence-runner';
 export {
+  createRule,
+  runRules,
+  setRuleEnabled,
+  signalEvent,
+  type CreateRuleInput,
+  type RunRulesResult,
+} from './rules';
+export {
+  budgetStatus,
+  planFor,
+  recordResearchUsage,
+  usageFor,
+  type BudgetStatus,
+} from './metering';
+export {
   createResearchGrid,
   runResearchGrid,
   readResearchGrid,
