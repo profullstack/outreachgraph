@@ -54,6 +54,10 @@ export const ID_PREFIXES = {
   // enumerate who a workspace has written to.
   trackedLink: 'tlk',
   linkClick: 'clk',
+  cadence: 'cad',
+  cadenceStep: 'cst',
+  enrollment: 'enr',
+  cadenceRun: 'crn',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

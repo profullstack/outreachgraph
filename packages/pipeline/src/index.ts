@@ -52,6 +52,23 @@ export {
   type EmailAccountInput,
   type EmailAccountSummary,
 } from './email-account';
+export { runCadences, type RunCadencesDeps } from './cadence-runner';
+export {
+  advanceCadences,
+  createCadence,
+  setCadenceStatus,
+  enrollInCadence,
+  modeForDecision,
+  stopEnrollment,
+  type AdvanceCadencesDeps,
+  type AdvanceResult,
+  type DueEnrollment,
+  type EnrollInput,
+  type EnrollResult,
+  type StepResolution,
+  type CreateCadenceInput,
+  type CreateCadenceResult,
+} from './cadence';
 export {
   trackLinksInBody,
   recordLinkClick,

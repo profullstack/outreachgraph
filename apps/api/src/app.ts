@@ -58,8 +58,12 @@ import {
   campaignFunnel,
   campaignTerms,
   connectEmailAccount,
+  createCadence,
   deliverEmailAction,
+  enrollInCadence,
   recordLinkClick,
+  setCadenceStatus,
+  stopEnrollment,
   disconnectEmailAccount,
   emailAccountSummary,
   leadTimeline,
@@ -92,7 +96,7 @@ import {
   rejectCandidate,
   workflowStatus,
 } from '@outreachgraph/pipeline';
-import { SHARE_TARGETS, type ShareNetwork } from '@outreachgraph/domain';
+import { CADENCE_STATUSES, SHARE_TARGETS, type ShareNetwork } from '@outreachgraph/domain';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
 import {
@@ -1921,6 +1925,225 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ leads });
+  });
+
+  // -------------------------------------------------------------- cadences
+  //
+  // A plan of touches over time. The steps say what to do and where; whether
+  // any given step may be automated is decided by the policy engine when it
+  // falls due, not here and not when the plan was written.
+
+  api.get('/cadences', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll<{
+      id: string;
+      name: string;
+      status: string;
+      campaign_id: string | null;
+      steps: number;
+      active_enrollments: number;
+    }>(
+      c.get('db'),
+      `SELECT c.id, c.name, c.status, c.campaign_id,
+              (SELECT count(*) FROM cadence_steps s WHERE s.cadence_id = c.id) AS steps,
+              (SELECT count(*) FROM cadence_enrollments e
+                WHERE e.cadence_id = c.id AND e.status = 'active') AS active_enrollments
+         FROM cadences c
+        WHERE c.workspace_id = ?
+     ORDER BY c.created_at DESC`,
+      [actor.workspaceId],
+    );
+
+    return c.json({ cadences: rows });
+  });
+
+  api.get('/cadences/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const id = c.req.param('id');
+
+    const cadence = await queryOne<{
+      id: string;
+      name: string;
+      status: string;
+      campaign_id: string | null;
+    }>(db, 'SELECT id, name, status, campaign_id FROM cadences WHERE id = ? AND workspace_id = ?', [
+      id,
+      actor.workspaceId,
+    ]);
+    if (!cadence) throw ApiError.notFound('cadence');
+
+    const steps = await queryAll(
+      db,
+      `SELECT position, network, action, delay_hours, stop_on_reply, intent
+         FROM cadence_steps WHERE cadence_id = ? ORDER BY position`,
+      [id],
+    );
+
+    return c.json({ cadence, steps });
+  });
+
+  api.post('/cadences', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('creating a cadence');
+
+    const body = safeJson(await c.req.raw.text());
+    const steps = Array.isArray(body.steps) ? body.steps : [];
+
+    const result = await createCadence(db, {
+      workspaceId: actor.workspaceId,
+      ...(typeof body.campaignId === 'string' ? { campaignId: body.campaignId } : {}),
+      name: typeof body.name === 'string' ? body.name : '',
+      status: body.status === 'active' ? 'active' : 'draft',
+      steps: steps.map((raw: Record<string, unknown>, index: number) => ({
+        position: typeof raw.position === 'number' ? raw.position : index,
+        network: String(raw.network ?? ''),
+        action: String(raw.action ?? ''),
+        delayHours: typeof raw.delayHours === 'number' ? raw.delayHours : 0,
+        // Defaults on. Continuing to send a planned sequence at somebody who
+        // has answered is the most bot-like thing this product could do.
+        stopOnReply: raw.stopOnReply !== false,
+        ...(typeof raw.intent === 'string' ? { intent: raw.intent } : {}),
+      })) as never,
+    });
+
+    if (!result.created) {
+      throw ApiError.badRequest('That is not a runnable plan.', {
+        steps: result.problems.map((p) => p.message),
+      });
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'cadence.created',
+      entityKind: 'campaign',
+      entityId: result.cadenceId,
+      detail: { steps: steps.length },
+    });
+
+    return c.json({ cadenceId: result.cadenceId }, 201);
+  });
+
+  api.patch('/cadences/:id', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('changing a cadence');
+
+    const body = safeJson(await c.req.raw.text());
+    const status = String(body.status ?? '');
+    if (!CADENCE_STATUSES.includes(status as never)) {
+      throw ApiError.badRequest('Unknown cadence status.', { status: [status] });
+    }
+
+    const changed = await setCadenceStatus(
+      c.get('db'),
+      actor.workspaceId,
+      c.req.param('id'),
+      status as never,
+    );
+    if (!changed) throw ApiError.notFound('cadence');
+
+    return c.json({ status });
+  });
+
+  /**
+   * Puts one prospect on a cadence.
+   *
+   * Refusals come back as 409 rather than 400: "they are already on this
+   * cadence" is a fact about the world rather than a malformed request, and a
+   * client retrying a double-tap should be able to tell the two apart.
+   */
+  api.post('/cadences/:id/enroll', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('enrolling a prospect');
+    await requireVerifiedEmail(db, actor);
+
+    const body = safeJson(await c.req.raw.text());
+    const personId = String(body.personId ?? '');
+    const campaignId = String(body.campaignId ?? '');
+
+    if (!personId || !campaignId) {
+      throw ApiError.badRequest('A person and a campaign are both required.');
+    }
+
+    const person = await repo.getPerson(db, personId);
+    if (!person) throw ApiError.notFound('person');
+
+    const result = await enrollInCadence(db, {
+      cadenceId: c.req.param('id'),
+      workspaceId: actor.workspaceId,
+      campaignId,
+      personId,
+    });
+
+    if (!result.enrolled) return c.json({ enrolled: false, reason: result.reason }, 409);
+
+    return c.json({
+      enrolled: true,
+      enrollmentId: result.enrollmentId,
+      firstDueAt: result.firstDueAt,
+    });
+  });
+
+  api.get('/cadences/:id/enrollments', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT e.id, e.person_id, p.display_name, e.status, e.current_step,
+              e.next_due_at, e.stopped_reason, e.enrolled_at
+         FROM cadence_enrollments e
+         JOIN people p ON p.id = e.person_id
+        WHERE e.cadence_id = ? AND e.workspace_id = ?
+     ORDER BY e.enrolled_at DESC
+        LIMIT 200`,
+      [c.req.param('id'), actor.workspaceId],
+    );
+
+    return c.json({ enrollments: rows });
+  });
+
+  /**
+   * What each step actually did, per enrollment.
+   *
+   * The `outcome` column is the answer to the question this product exists to
+   * answer honestly: a plan whose social steps are all `manual` is working as
+   * designed, and one whose steps are all `skipped` is not, and those look
+   * identical from a progress bar.
+   */
+  api.get('/enrollments/:id/runs', async (c) => {
+    const actor = c.get('actor');
+    const rows = await queryAll(
+      c.get('db'),
+      `SELECT step_position, network, action, outcome, policy_decision, policy_gate,
+              recommendation_id, detail, occurred_at
+         FROM cadence_step_runs
+        WHERE enrollment_id = ? AND workspace_id = ?
+     ORDER BY occurred_at`,
+      [c.req.param('id'), actor.workspaceId],
+    );
+
+    return c.json({ runs: rows });
+  });
+
+  api.post('/enrollments/:id/stop', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('stopping an enrollment');
+
+    const body = safeJson(await c.req.raw.text());
+    const stopped = await stopEnrollment(
+      c.get('db'),
+      actor.workspaceId,
+      c.req.param('id'),
+      typeof body.reason === 'string' ? body.reason : 'stopped by hand',
+    );
+
+    if (!stopped) throw ApiError.notFound('enrollment');
+    return c.json({ stopped: true });
   });
 
   // -------------------------------------------------------------- settings
