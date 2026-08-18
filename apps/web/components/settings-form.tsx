@@ -37,6 +37,11 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
           digestHourUtc: form.digestHourUtc,
           alertMinOpportunity: form.alertMinOpportunity,
           autopilotDailyCap: form.autopilotDailyCap,
+          // PUT replaces the whole document, so every field this form owns has
+          // to be sent every time. Omitting `trackLinks` would silently turn
+          // tracking off whenever anybody saved an unrelated preference.
+          trackLinks: form.trackLinks,
+          trackingOrigin: form.trackingOrigin || null,
         }),
       });
 
@@ -178,6 +183,53 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
         <p className="text-ink-muted mt-1 text-xs">
           Across every campaign. Set to 0 to stop all unattended sending without switching campaigns
           off one at a time.
+        </p>
+      </section>
+
+      <section className="border-border bg-surface-raised rounded-2xl border p-4">
+        <h2 className="text-sm font-semibold">Link tracking</h2>
+
+        <label className="mt-3 flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.trackLinks}
+            onChange={(e) => update('trackLinks', e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-medium">Rewrite links so clicks are counted</span>
+            <span className="text-ink-muted block text-[13px] leading-relaxed">
+              Off by default, and worth thinking about: outreach here is plain text meant to read as
+              though a person typed it, and a rewritten link is visible in plain text — the
+              recipient sees our address rather than the destination.
+            </span>
+          </span>
+        </label>
+
+        {form.trackLinks ? (
+          <>
+            <label htmlFor="tracking-origin" className="text-ink-muted mt-4 block text-xs">
+              Tracking domain
+            </label>
+            <input
+              id="tracking-origin"
+              value={form.trackingOrigin ?? ''}
+              onChange={(e) => update('trackingOrigin', e.target.value)}
+              placeholder={form.effectiveTrackingOrigin ?? 'https://app.outreachgraph.com'}
+              className="border-border bg-surface mt-1 w-full rounded-xl border px-3 py-2.5"
+            />
+            <p className="text-ink-muted mt-1 text-xs">
+              {form.trackingOrigin
+                ? 'Links will point here.'
+                : `Leave blank to use ${form.effectiveTrackingOrigin ?? 'this deployment’s own address'}.`}
+            </p>
+          </>
+        ) : null}
+
+        <p className="text-ink-muted mt-4 text-xs">
+          We never track opens. A tracking pixel measures Apple Mail Privacy Protection and the
+          Gmail image proxy rather than people, and a number that is wrong in a direction nobody can
+          correct is worse than not having one.
         </p>
       </section>
 

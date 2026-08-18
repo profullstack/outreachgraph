@@ -261,6 +261,10 @@ export interface SettingsView {
   readonly alertMinOpportunity: number;
   readonly autopilotDailyCap: number;
   readonly replyToEmail: string | null;
+  readonly trackLinks: boolean;
+  readonly trackingOrigin: string | null;
+  /** Where tracked links would point if switched on. */
+  readonly effectiveTrackingOrigin: string | null;
   readonly lastDigestSentOn: string | null;
 }
 
@@ -340,4 +344,188 @@ export async function fetchStatus(campaignId?: string): Promise<{
 }> {
   const query = campaignId ? `?campaignId=${encodeURIComponent(campaignId)}&limit=40` : '?limit=40';
   return request<{ status: WorkflowStatusView; events: WorkflowEventView[] }>(`/status${query}`);
+}
+
+// ------------------------------------------------------------------ cadences
+
+export interface CadenceRowView {
+  readonly id: string;
+  readonly name: string;
+  readonly status: string;
+  readonly campaign_id: string | null;
+  readonly steps: number;
+  readonly active_enrollments: number;
+}
+
+export interface CadenceStepView {
+  readonly position: number;
+  readonly network: string;
+  readonly action: string;
+  readonly delay_hours: number;
+  readonly stop_on_reply: number;
+  readonly intent: string | null;
+}
+
+export interface CadenceDetailView {
+  readonly cadence: {
+    readonly id: string;
+    readonly name: string;
+    readonly status: string;
+    readonly campaign_id: string | null;
+  };
+  readonly steps: CadenceStepView[];
+}
+
+export interface EnrollmentRowView {
+  readonly id: string;
+  readonly person_id: string;
+  readonly display_name: string;
+  readonly status: string;
+  readonly current_step: number;
+  readonly next_due_at: string | null;
+  readonly stopped_reason: string | null;
+  readonly enrolled_at: string;
+}
+
+export interface StepRunView {
+  readonly step_position: number;
+  readonly network: string;
+  readonly action: string;
+  readonly outcome: string;
+  readonly policy_decision: string | null;
+  readonly policy_gate: string | null;
+  readonly recommendation_id: string | null;
+  readonly detail: string | null;
+  readonly occurred_at: string;
+}
+
+export async function fetchCadences(): Promise<CadenceRowView[]> {
+  const body = await request<{ cadences: CadenceRowView[] }>('/cadences');
+  return body.cadences;
+}
+
+export async function fetchCadence(id: string): Promise<CadenceDetailView> {
+  return request<CadenceDetailView>(`/cadences/${encodeURIComponent(id)}`);
+}
+
+export async function fetchEnrollments(cadenceId: string): Promise<EnrollmentRowView[]> {
+  const body = await request<{ enrollments: EnrollmentRowView[] }>(
+    `/cadences/${encodeURIComponent(cadenceId)}/enrollments`,
+  );
+  return body.enrollments;
+}
+
+export async function fetchStepRuns(enrollmentId: string): Promise<StepRunView[]> {
+  const body = await request<{ runs: StepRunView[] }>(
+    `/enrollments/${encodeURIComponent(enrollmentId)}/runs`,
+  );
+  return body.runs;
+}
+
+// ----------------------------------------------------------------- playbooks
+
+export interface PlaybookRowView {
+  readonly slug: string;
+  readonly name: string;
+  readonly summary: string;
+  readonly audience: string;
+  readonly steps: number;
+  readonly durationHours: number;
+  readonly gridQuestions: string[];
+}
+
+export async function fetchPlaybooks(): Promise<PlaybookRowView[]> {
+  const body = await request<{ playbooks: PlaybookRowView[] }>('/playbooks');
+  return body.playbooks;
+}
+
+// --------------------------------------------------------------- research
+
+export interface GridRowView {
+  readonly id: string;
+  readonly name: string;
+  readonly status: string;
+  readonly cells_total: number;
+  readonly cells_done: number;
+  readonly campaign_id: string | null;
+  readonly created_at: string;
+  readonly completed_at: string | null;
+}
+
+export interface GridTableView {
+  readonly questions: { readonly id: string; readonly prompt: string }[];
+  readonly rows: {
+    readonly personId: string;
+    readonly displayName: string;
+    readonly answers: Record<string, { readonly answer: string | null; readonly status: string }>;
+  }[];
+  readonly status: string;
+  readonly cellsTotal: number;
+  readonly cellsDone: number;
+}
+
+export async function fetchGrids(): Promise<GridRowView[]> {
+  const body = await request<{ grids: GridRowView[] }>('/grids');
+  return body.grids;
+}
+
+export async function fetchGrid(id: string): Promise<GridTableView> {
+  return request<GridTableView>(`/grids/${encodeURIComponent(id)}`);
+}
+
+// -------------------------------------------------------------------- rules
+
+export interface RuleRowView {
+  readonly id: string;
+  readonly name: string;
+  readonly trigger: string;
+  readonly action: string;
+  readonly enabled: number;
+  readonly campaign_id: string | null;
+  readonly created_at: string;
+  readonly fired: number;
+  readonly applied: number;
+}
+
+export async function fetchRules(): Promise<RuleRowView[]> {
+  const body = await request<{ rules: RuleRowView[] }>('/rules');
+  return body.rules;
+}
+
+// -------------------------------------------------------------------- usage
+
+export interface UsageView {
+  readonly plan: {
+    readonly id: string;
+    readonly name: string;
+    readonly prospectsPerMonth: number;
+    readonly gridCellsPerMonth: number;
+  };
+  readonly thisMonth: {
+    readonly prospectsContacted: number;
+    readonly prospectsRemaining: number;
+    readonly gridCells: number;
+    readonly gridCellsRemaining: number;
+    readonly exhausted: boolean;
+  };
+}
+
+export async function fetchUsage(): Promise<UsageView> {
+  return request<UsageView>('/usage');
+}
+
+// ------------------------------------------------------- bluesky integration
+
+export interface BlueskyIntegrationView {
+  readonly account: {
+    readonly connected: boolean;
+    readonly handle?: string;
+    readonly did?: string;
+    readonly connectedAt?: string;
+  };
+  readonly canConnect: boolean;
+}
+
+export async function fetchBlueskyIntegration(): Promise<BlueskyIntegrationView> {
+  return request<BlueskyIntegrationView>('/integrations/bluesky');
 }

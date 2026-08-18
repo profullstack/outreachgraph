@@ -1,12 +1,15 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { EmailCandidates } from '../../../../components/email-candidates';
+import { EnrolButton } from '../../../../components/enrol-button';
 import { PageGuide } from '../../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
+  fetchCadences,
   fetchProspect,
   relativeTime,
+  type CadenceRowView,
 } from '../../../../lib/api';
 import type { ProspectDetail } from '../../../../lib/types';
 
@@ -41,6 +44,16 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
     notFound();
   }
 
+  // Fetched separately and tolerantly: a prospect's evidence is the point of
+  // this page, and a plan list that fails to load must not take it down with
+  // it. No plans simply means the enrol control does not render.
+  let cadences: CadenceRowView[] = [];
+  try {
+    cadences = await fetchCadences();
+  } catch {
+    cadences = [];
+  }
+
   const { person, identities, signals } = detail;
   // Tolerated as possibly-absent: a browser holding a cached page from before
   // company profiles existed would otherwise crash on `.length`.
@@ -63,6 +76,14 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
       <div className="mt-4">
         <PageGuide page="prospect" />
       </div>
+
+      {/* Below the guidance and above the evidence: deciding to work somebody
+          is a decision made with their signals in view, not before them. */}
+      <EnrolButton
+        personId={person.id}
+        campaignId={detail.campaignId ?? null}
+        cadences={cadences}
+      />
 
       {/* Above the identity list on purpose: "can we reach this person at all"
           is the question blocking every other decision about them. */}
