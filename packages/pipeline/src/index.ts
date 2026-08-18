@@ -54,6 +54,24 @@ export {
 } from './email-account';
 export { runCadences, type RunCadencesDeps } from './cadence-runner';
 export {
+  agentForWorkspace,
+  blueskyAccountSummary,
+  connectBlueskyAccount,
+  disconnectBlueskyAccount,
+  loadBlueskyCredentials,
+  BlueskyAccountError,
+  type BlueskyAccountSummary,
+  type BlueskyCredentials,
+  type ConnectBlueskyInput,
+} from './bluesky-account';
+export {
+  deliverBlueskyAction,
+  recordBlueskySent,
+  type DeliverBlueskyDeps,
+  type DeliverBlueskyInput,
+  type DeliverBlueskyResult,
+} from './outreach-bluesky';
+export {
   advanceCadences,
   createCadence,
   setCadenceStatus,

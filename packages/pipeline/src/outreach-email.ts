@@ -214,7 +214,7 @@ export interface AuditActor {
 
 export const AUTOPILOT_ACTOR: AuditActor = { actorKind: 'system', actorId: 'autopilot' };
 
-async function auditAction(
+export async function auditAction(
   db: Client,
   workspaceId: string,
   actionId: string,

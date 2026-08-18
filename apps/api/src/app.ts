@@ -58,7 +58,13 @@ import {
   campaignFunnel,
   campaignTerms,
   connectEmailAccount,
+  agentForWorkspace,
+  blueskyAccountSummary,
+  BlueskyAccountError,
+  connectBlueskyAccount,
   createCadence,
+  disconnectBlueskyAccount,
+  deliverBlueskyAction,
   deliverEmailAction,
   enrollInCadence,
   recordLinkClick,
@@ -1837,6 +1843,57 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       return c.json({ executed: true, actionId: action.id, sent: true, to: delivery.to });
     }
 
+    // A public reply the product may actually post. Bluesky is currently the
+    // only network where this branch is reachable: every other social action
+    // in the capability matrix is `manual_only`, and falls through to the
+    // hand-recorded path below.
+    if (action.network === 'bluesky' && body.mode === 'customer_managed') {
+      const recommendation = await repo.getRecommendation(
+        db,
+        actor.workspaceId,
+        action.recommendation_id,
+      );
+      if (!recommendation) throw ApiError.notFound('recommendation');
+
+      const decision = await recheckPolicy(db, actor, recommendation, false, action.id);
+
+      if (!isExecutable(decision.decision, true)) {
+        throw ApiError.policyDenied(decision.reason, {
+          decision: decision.decision,
+          gate: decision.gate,
+          policyVersion: decision.policyVersion,
+        });
+      }
+
+      const agent = await agentForWorkspace(db, actor.workspaceId, options.encryptionKey);
+      if (!agent) {
+        return c.json(
+          {
+            executed: false,
+            actionId: action.id,
+            reason: 'no Bluesky account is connected, so nothing can be posted',
+          },
+          502,
+        );
+      }
+
+      const posted = await deliverBlueskyAction(
+        { db, agent },
+        {
+          workspaceId: actor.workspaceId,
+          actionId: action.id,
+          actor: { actorKind: 'user', actorId: actor.userId },
+          policyVersion: decision.policyVersion,
+        },
+      );
+
+      if (!posted.sent) {
+        return c.json({ executed: false, actionId: action.id, reason: posted.reason }, 502);
+      }
+
+      return c.json({ executed: true, actionId: action.id, sent: true, url: posted.url });
+    }
+
     const stamp = now();
 
     // A message a human sent by hand still landed in someone's mailbox, so it
@@ -2242,6 +2299,82 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       platformFallback: options.mailer !== undefined,
       presets: SMTP_PRESETS,
     });
+  });
+
+  /**
+   * The workspace's Bluesky account.
+   *
+   * The only social network the product can currently act on, so the only one
+   * with a credential worth holding. Everything else in the capability matrix
+   * is `manual_only`, where a stored password would buy nothing except risk.
+   */
+  api.get('/integrations/bluesky', async (c) => {
+    const actor = c.get('actor');
+    return c.json({
+      account: await blueskyAccountSummary(c.get('db'), actor.workspaceId),
+      canConnect: options.encryptionKey !== undefined,
+    });
+  });
+
+  api.put('/integrations/bluesky', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting a Bluesky account');
+    await requireVerifiedEmail(db, actor);
+
+    if (!options.encryptionKey) {
+      throw ApiError.badRequest(
+        'This deployment has no encryption key, so a credential cannot be stored.',
+      );
+    }
+
+    const body = safeJson(await c.req.raw.text());
+    const identifier = String(body.identifier ?? '').trim();
+    const appPassword = String(body.appPassword ?? '').trim();
+
+    if (!identifier || !appPassword) {
+      throw ApiError.badRequest('A handle and an app password are both required.');
+    }
+
+    try {
+      const account = await connectBlueskyAccount(db, {
+        workspaceId: actor.workspaceId,
+        identifier,
+        appPassword,
+        encryptionKey: options.encryptionKey,
+        verify: body.skipVerification !== true,
+      });
+
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'integration.connected',
+        entityKind: 'workspace',
+        entityId: actor.workspaceId,
+        // The handle is recorded; the app password is not, here or anywhere.
+        detail: { network: 'bluesky', handle: account.handle },
+      });
+
+      return c.json({ account });
+    } catch (error) {
+      if (error instanceof BlueskyAccountError) {
+        throw ApiError.badRequest(
+          'Bluesky refused those credentials. An app password is not the account password.',
+          { appPassword: [error.message] },
+        );
+      }
+      throw error;
+    }
+  });
+
+  api.delete('/integrations/bluesky', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('disconnecting a Bluesky account');
+
+    const removed = await disconnectBlueskyAccount(c.get('db'), actor.workspaceId);
+    return c.json({ disconnected: removed });
   });
 
   api.put('/integrations/email', async (c) => {
