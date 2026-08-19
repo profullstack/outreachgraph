@@ -206,6 +206,31 @@ export interface AppOptions {
 
 const STARTED_AT = Date.now();
 
+/**
+ * How many cards one bulk approval will attempt.
+ *
+ * Bounded because the work is sequential and an email approval puts a message
+ * on the wire through somebody's SMTP server — an unbounded loop over a queue
+ * of thousands is a request that runs for an hour and a client that gave up on
+ * it long ago. The response says whether more remain, so clearing a large queue
+ * is several presses rather than one that times out halfway and leaves nobody
+ * sure what was sent.
+ */
+const BULK_APPROVE_MAX = 200;
+
+/** Groups refusals by gate, keeping the first reason as the example. */
+function tallyHold(
+  holds: Map<string, { reason: string; count: number }>,
+  gate: string | undefined,
+  reason: string,
+): void {
+  const key = gate ?? 'unknown';
+  const existing = holds.get(key);
+
+  if (existing) existing.count += 1;
+  else holds.set(key, { reason, count: 1 });
+}
+
 export function createApp(options: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
@@ -1518,6 +1543,133 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   /**
+   * Approves every card the policy engine still permits.
+   *
+   * A queue of two hundred cards is not reviewable one button at a time, and
+   * most of what fills it is not a judgement call: `refresh_research` is an
+   * internal action that costs nothing and that no prospect ever sees, yet it
+   * took a human click each. This clears the queue in one request and reports
+   * what it could not clear.
+   *
+   * Three properties this deliberately keeps:
+   *
+   *   - **The engine runs per card, unchanged.** Bulk approval is a loop over
+   *     the same function the single-card route calls, not a faster path with
+   *     the checks taken out. Everything the shared-inbox work established
+   *     still holds — this cannot be used to mail thirty colleagues at one
+   *     `support@`.
+   *   - **Sequentially, never in parallel.** The address caps are counted from
+   *     rows the previous approval wrote. Running these concurrently would let
+   *     thirty cards all read a count of zero and all pass, which is precisely
+   *     the spam the caps exist to stop. Slower is the point.
+   *   - **A refusal is a result, not an error.** Held cards are counted and
+   *     grouped by reason so the answer explains itself, rather than the first
+   *     hold aborting the other hundred and ninety-nine.
+   */
+  api.post('/recommendations/approve-all', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('this role cannot approve outbound actions');
+    await requireVerifiedEmail(db, actor);
+
+    const body = await parseBody(
+      c.req.raw,
+      z.object({
+        filter: z.string().optional(),
+        channel: z.string().optional(),
+        /**
+         * Report what would happen and change nothing. Worth having on a
+         * control that can send mail: the honest preview of "approve all" is
+         * the thing a reviewer actually wants before pressing it.
+         */
+        dryRun: z.boolean().optional(),
+        limit: z.number().int().positive().max(BULK_APPROVE_MAX).optional(),
+        note: z.string().optional(),
+      }),
+    );
+
+    const filter = repo.isApprovalFilter(body.filter) ? body.filter : 'all';
+    const channel = repo.isChannelFilter(body.channel) ? body.channel : 'all';
+    const limit = body.limit ?? BULK_APPROVE_MAX;
+
+    const rows = await repo.listPendingRecommendations(db, actor.workspaceId, limit, filter);
+
+    const selected = rows.filter((row) => {
+      if (channel === 'all') return true;
+      const network = (row as { network?: unknown }).network;
+      return isNetwork(network) && channelForNetwork(network) === channel;
+    });
+
+    let approved = 0;
+    let sent = 0;
+    let researchQueued = 0;
+    const holds = new Map<string, { reason: string; count: number }>();
+
+    for (const row of selected) {
+      const recommendation = row as unknown as repo.RecommendationRow;
+
+      if (body.dryRun) {
+        const decision = await recheckPolicy(
+          db,
+          actor,
+          recommendation,
+          options.mailer !== undefined,
+        );
+
+        if (isExecutable(decision.decision, true)) approved += 1;
+        else tallyHold(holds, decision.gate, decision.reason);
+
+        continue;
+      }
+
+      const outcome = await approveRecommendation(db, options, actor, recommendation, {
+        ...(body.note ? { note: body.note } : {}),
+      });
+
+      if (!outcome.ok) {
+        tallyHold(holds, outcome.gate, outcome.reason);
+        continue;
+      }
+
+      approved += 1;
+      if (outcome.delivery?.sent) sent += 1;
+      if (outcome.research?.queued) researchQueued += 1;
+    }
+
+    const held = [...holds.values()].reduce((total, entry) => total + entry.count, 0);
+
+    if (!body.dryRun) {
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'recommendation.bulk_approved',
+        entityKind: 'workspace',
+        entityId: actor.workspaceId,
+        detail: { attempted: selected.length, approved, held, sent, filter, channel },
+      });
+    }
+
+    return c.json({
+      dryRun: body.dryRun === true,
+      attempted: selected.length,
+      approved,
+      held,
+      sent,
+      researchQueued,
+      // Grouped rather than one row per card: two hundred cards behind four
+      // shared inboxes is four facts, not two hundred.
+      holds: [...holds.entries()]
+        .map(([gate, entry]) => ({ gate, reason: entry.reason, count: entry.count }))
+        .sort((a, b) => b.count - a.count),
+      // The queue is read a page at a time, so a full queue may need more than
+      // one press. Saying so beats a button that looks like it did nothing.
+      more: selected.length === limit,
+    });
+  });
+
+  /**
    * Approving is where policy is enforced for real.
    *
    * The decision stored on the recommendation is a snapshot from generation
@@ -1540,148 +1692,26 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       throw ApiError.badRequest(`recommendation is already ${recommendation.status}`);
     }
 
-    const decision = await recheckPolicy(db, actor, recommendation, options.mailer !== undefined);
+    const outcome = await approveRecommendation(db, options, actor, recommendation, {
+      editedBody: body.editedBody,
+      note: body.note,
+    });
 
-    if (!isExecutable(decision.decision, true)) {
-      await repo.audit(db, {
-        workspaceId: actor.workspaceId,
-        actorKind: 'user',
-        actorId: actor.userId,
-        eventType: 'recommendation.approval_blocked',
-        entityKind: 'recommendation',
-        entityId: recommendation.id,
-        detail: { decision: decision.decision, gate: decision.gate, reason: decision.reason },
+    if (!outcome.ok) {
+      throw ApiError.policyDenied(outcome.reason, {
+        decision: outcome.decision,
+        gate: outcome.gate,
+        policyVersion: outcome.policyVersion,
       });
-
-      throw ApiError.policyDenied(decision.reason, {
-        decision: decision.decision,
-        gate: decision.gate,
-        policyVersion: decision.policyVersion,
-      });
-    }
-
-    const draft = await db.execute({
-      sql: 'SELECT body FROM drafts WHERE recommendation_id = ? LIMIT 1',
-      args: [recommendation.id],
-    });
-
-    const finalBody = body.editedBody ?? (draft.rows[0]?.body as string | undefined) ?? undefined;
-
-    const approvalId = newId('approval');
-    const stamp = now();
-
-    await db.batch([
-      {
-        sql: `INSERT INTO approvals (id, workspace_id, recommendation_id, decision, decided_by,
-              decided_at, note, edited_body)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          approvalId,
-          actor.workspaceId,
-          recommendation.id,
-          body.editedBody ? 'edit_and_approve' : 'approve',
-          actor.userId,
-          stamp,
-          body.note ?? null,
-          body.editedBody ?? null,
-        ],
-      },
-      {
-        sql: `UPDATE recommendations SET status = 'approved' WHERE id = ?`,
-        args: [recommendation.id],
-      },
-    ]);
-
-    // Manual-only actions are recorded for the user to carry out themselves.
-    const mode =
-      decision.decision === 'manual_only'
-        ? 'manual'
-        : modeForNetwork(recommendation.network as Network);
-
-    const actionId = await repo.recordAction(db, {
-      workspaceId: actor.workspaceId,
-      recommendationId: recommendation.id,
-      personId: recommendation.person_id,
-      kind: recommendation.action as ActionKind,
-      network: recommendation.network as Network,
-      mode,
-      ...(finalBody ? { body: finalBody } : {}),
-    });
-
-    await repo.audit(db, {
-      workspaceId: actor.workspaceId,
-      actorKind: 'user',
-      actorId: actor.userId,
-      eventType: 'recommendation.approved',
-      entityKind: 'recommendation',
-      entityId: recommendation.id,
-      detail: { actionId, decision: decision.decision, edited: Boolean(body.editedBody) },
-    });
-
-    // Approving an email is the instruction to send it.
-    //
-    // Splitting approval from delivery is what left the product telling people
-    // to go and paste the message into their own mail client. There is nothing
-    // for a reviewer to do between the two steps: they have already read the
-    // evidence, read the words and said yes. So the send happens here, inline,
-    // and its outcome is part of the same answer — a failure the reviewer can
-    // see beats an approved action sitting in a queue nobody is watching.
-    const delivery =
-      mode === 'customer_managed' && recommendation.network === 'email'
-        ? await sendEmailAction(db, options, actor, actionId, decision.policyVersion)
-        : undefined;
-
-    // Approving research is the instruction to go and research.
-    //
-    // Until now it was not. `refresh_research` had no executor anywhere — the
-    // job runner knows four kinds and this was not one of them — so approving
-    // one of these cards wrote an approval row, an action row and an audit row
-    // and then stopped. Nothing re-read the site, so the card that existed
-    // *because* we had nothing to say produced nothing to say, and the next
-    // tick proposed the same card again. Production held 73 of them.
-    //
-    // Re-crawling the company's own site is the whole of "research" for a
-    // prospect found by crawling: it is where a name gains a job title, where
-    // a shared inbox is published, and now where the social profiles come
-    // from. `crawl_site` already does all of that and dedupes people, so this
-    // queues the existing job rather than inventing a second path.
-    let research: { queued: boolean; url?: string; reason?: string } | undefined;
-
-    if (recommendation.action === 'refresh_research') {
-      const site = await queryOne<{ domain: string }>(
-        db,
-        `SELECT co.domain
-           FROM people p
-           JOIN companies co ON co.id = p.current_company_id
-          WHERE p.id = ? AND co.domain IS NOT NULL AND trim(co.domain) <> ''`,
-        [recommendation.person_id],
-      );
-
-      // No domain is a real answer, not a failure: a person with no company on
-      // file has no site to re-read, and saying so beats a job that cannot run.
-      if (site?.domain) {
-        const target = normaliseUrl(site.domain);
-        const queued = await enqueue(db, {
-          workspaceId: actor.workspaceId,
-          kind: 'crawl_site',
-          payload: {
-            url: target,
-            ...(recommendation.campaign_id ? { campaignId: recommendation.campaign_id } : {}),
-          },
-        });
-        research = { queued: queued.queued, url: target };
-      } else {
-        research = { queued: false, reason: 'no company domain on file' };
-      }
     }
 
     return c.json({
       approved: true,
-      approvalId,
-      actionId,
-      policy: { decision: decision.decision, policyVersion: decision.policyVersion },
-      ...(delivery ? { delivery } : {}),
-      ...(research ? { research } : {}),
+      approvalId: outcome.approvalId,
+      actionId: outcome.actionId,
+      policy: { decision: outcome.decision, policyVersion: outcome.policyVersion },
+      ...(outcome.delivery ? { delivery: outcome.delivery } : {}),
+      ...(outcome.research ? { research: outcome.research } : {}),
     });
   });
 
@@ -3274,6 +3304,187 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   app.notFound((c) => c.json({ error: { code: 'not_found', message: 'route not found' } }, 404));
 
   return app;
+}
+
+/** What approving one card did, or why it could not be done. */
+export type ApproveOutcome =
+  | {
+      readonly ok: false;
+      /** Which gate refused. Absent when the engine declined without naming one. */
+      readonly gate: string | undefined;
+      readonly reason: string;
+      readonly decision: string;
+      readonly policyVersion: string;
+    }
+  | {
+      readonly ok: true;
+      readonly approvalId: string;
+      readonly actionId: string;
+      readonly decision: string;
+      readonly policyVersion: string;
+      readonly delivery?: { sent: boolean; to?: string; reason?: string };
+      readonly research?: { queued: boolean; url?: string; reason?: string };
+    };
+
+/**
+ * Approving one recommendation: the policy recheck, the rows, the send.
+ *
+ * Extracted so that approving one card and approving two hundred are the same
+ * code rather than two implementations that agree until they don't. A bulk
+ * path that reimplemented this would be a second place to forget the policy
+ * recheck, the audit row, or the fact that approving an email is the
+ * instruction to send it — and the divergence would be invisible, because the
+ * bulk path is the one nobody watches.
+ *
+ * A refusal is returned rather than thrown. Callers approving one card turn it
+ * into a 409; callers approving many need to keep going and count it.
+ */
+async function approveRecommendation(
+  db: Client,
+  options: AppOptions,
+  actor: RequestActor,
+  recommendation: repo.RecommendationRow,
+  input: { readonly editedBody?: string | undefined; readonly note?: string | undefined },
+): Promise<ApproveOutcome> {
+  const decision = await recheckPolicy(db, actor, recommendation, options.mailer !== undefined);
+
+  if (!isExecutable(decision.decision, true)) {
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'recommendation.approval_blocked',
+      entityKind: 'recommendation',
+      entityId: recommendation.id,
+      detail: { decision: decision.decision, gate: decision.gate, reason: decision.reason },
+    });
+
+    return {
+      ok: false,
+      gate: decision.gate,
+      reason: decision.reason,
+      decision: decision.decision,
+      policyVersion: decision.policyVersion,
+    };
+  }
+
+  const draft = await db.execute({
+    sql: 'SELECT body FROM drafts WHERE recommendation_id = ? LIMIT 1',
+    args: [recommendation.id],
+  });
+
+  const finalBody = input.editedBody ?? (draft.rows[0]?.body as string | undefined) ?? undefined;
+
+  const approvalId = newId('approval');
+  const stamp = now();
+
+  await db.batch([
+    {
+      sql: `INSERT INTO approvals (id, workspace_id, recommendation_id, decision, decided_by,
+            decided_at, note, edited_body)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        approvalId,
+        actor.workspaceId,
+        recommendation.id,
+        input.editedBody ? 'edit_and_approve' : 'approve',
+        actor.userId,
+        stamp,
+        input.note ?? null,
+        input.editedBody ?? null,
+      ],
+    },
+    {
+      sql: `UPDATE recommendations SET status = 'approved' WHERE id = ?`,
+      args: [recommendation.id],
+    },
+  ]);
+
+  // Manual-only actions are recorded for the user to carry out themselves.
+  const mode =
+    decision.decision === 'manual_only'
+      ? 'manual'
+      : modeForNetwork(recommendation.network as Network);
+
+  const actionId = await repo.recordAction(db, {
+    workspaceId: actor.workspaceId,
+    recommendationId: recommendation.id,
+    personId: recommendation.person_id,
+    kind: recommendation.action as ActionKind,
+    network: recommendation.network as Network,
+    mode,
+    ...(finalBody ? { body: finalBody } : {}),
+  });
+
+  await repo.audit(db, {
+    workspaceId: actor.workspaceId,
+    actorKind: 'user',
+    actorId: actor.userId,
+    eventType: 'recommendation.approved',
+    entityKind: 'recommendation',
+    entityId: recommendation.id,
+    detail: { actionId, decision: decision.decision, edited: Boolean(input.editedBody) },
+  });
+
+  // Approving an email is the instruction to send it.
+  //
+  // Splitting approval from delivery is what left the product telling people
+  // to go and paste the message into their own mail client. There is nothing
+  // for a reviewer to do between the two steps: they have already read the
+  // evidence, read the words and said yes. So the send happens here, inline,
+  // and its outcome is part of the same answer — a failure the reviewer can
+  // see beats an approved action sitting in a queue nobody is watching.
+  const delivery =
+    mode === 'customer_managed' && recommendation.network === 'email'
+      ? await sendEmailAction(db, options, actor, actionId, decision.policyVersion)
+      : undefined;
+
+  // Approving research is the instruction to go and research.
+  //
+  // `refresh_research` had no executor anywhere — the job runner knows four
+  // kinds and this was not one of them — so approving one of these cards wrote
+  // three rows and then stopped. Nothing re-read the site, so the card that
+  // existed *because* we had nothing to say produced nothing to say, and the
+  // next tick proposed the same card again. Production held 73 of them.
+  let research: { queued: boolean; url?: string; reason?: string } | undefined;
+
+  if (recommendation.action === 'refresh_research') {
+    const site = await queryOne<{ domain: string }>(
+      db,
+      `SELECT co.domain
+         FROM people p
+         JOIN companies co ON co.id = p.current_company_id
+        WHERE p.id = ? AND co.domain IS NOT NULL AND trim(co.domain) <> ''`,
+      [recommendation.person_id],
+    );
+
+    // No domain is a real answer, not a failure: a person with no company on
+    // file has no site to re-read, and saying so beats a job that cannot run.
+    if (site?.domain) {
+      const target = normaliseUrl(site.domain);
+      const queued = await enqueue(db, {
+        workspaceId: actor.workspaceId,
+        kind: 'crawl_site',
+        payload: {
+          url: target,
+          ...(recommendation.campaign_id ? { campaignId: recommendation.campaign_id } : {}),
+        },
+      });
+      research = { queued: queued.queued, url: target };
+    } else {
+      research = { queued: false, reason: 'no company domain on file' };
+    }
+  }
+
+  return {
+    ok: true,
+    approvalId,
+    actionId,
+    decision: decision.decision,
+    policyVersion: decision.policyVersion,
+    ...(delivery ? { delivery } : {}),
+    ...(research ? { research } : {}),
+  };
 }
 
 /**
