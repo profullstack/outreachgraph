@@ -225,38 +225,62 @@ describe('contact import', () => {
     expect((await post(app, '/contacts/imports', {})).status).toBe(403);
   });
 
-  test('finishing queues one enrichment job per imported person', async () => {
+  test('finishing writes no job rows and reports what is waiting', async () => {
+    // It used to enqueue one job per person. Seventeen thousand inserts inside
+    // one request is why finishing an import never returned; the worker sweeps
+    // a derived set instead, so nothing has to be written for it to start.
     const { app, seeded } = await harness('import-finish');
     const importId = await startImport(app);
 
     await post(app, `/contacts/imports/${importId}/rows`, { rows: GOOD_ROWS });
     const response = await post(app, `/contacts/imports/${importId}/finish`, {});
-    const body = (await response.json()) as { enrichmentQueued: number };
+    const body = (await response.json()) as { awaitingEnrichment: number };
 
-    expect(body.enrichmentQueued).toBe(3);
+    expect(body.awaitingEnrichment).toBe(3);
 
     const jobs = await seeded.db.execute({
       sql: `SELECT count(*) AS n FROM jobs WHERE kind = 'enrich_contact'`,
       args: [],
     });
-
-    expect(Number(jobs.rows[0]?.n)).toBe(3);
+    expect(Number(jobs.rows[0]?.n)).toBe(0);
 
     const batch = await seeded.db.execute({
       sql: 'SELECT status FROM contact_imports WHERE id = ?',
       args: [importId],
     });
-
     expect(batch.rows[0]?.status).toBe('complete');
   });
 
-  test('enrichment can be skipped', async () => {
+  test('enrichment can be skipped, and then nothing is waiting', async () => {
     const { app } = await harness('import-noenrich');
     const importId = await startImport(app);
 
     await post(app, `/contacts/imports/${importId}/rows`, { rows: GOOD_ROWS });
     const response = await post(app, `/contacts/imports/${importId}/finish`, { enrich: false });
 
-    expect(((await response.json()) as { enrichmentQueued: number }).enrichmentQueued).toBe(0);
+    expect(((await response.json()) as { awaitingEnrichment: number }).awaitingEnrichment).toBe(0);
+  });
+
+  test('a large chunk is one round trip, not one per row', async () => {
+    // The measured failure: 4 sequential Turso round trips per row gave ~200
+    // rows a minute, so 17,000 rows was ~85 minutes and the browser gave up.
+    // This asserts the shape rather than the wall clock — a batched chunk is
+    // a handful of statements regardless of size.
+    const { app } = await harness('import-large-chunk');
+    const importId = await startImport(app);
+
+    const rows = Array.from({ length: 400 }, (_, index) => ({
+      email: `person${index}@corp${index % 20}.com`,
+      name: `Person ${index}`,
+    }));
+
+    const started = Date.now();
+    const response = await post(app, `/contacts/imports/${importId}/rows`, { rows });
+    const body = (await response.json()) as { imported: number };
+
+    expect(body.imported).toBe(400);
+    // Generous, because CI is shared. The old path could not do 400 rows in
+    // anything like this against a local file, let alone a remote database.
+    expect(Date.now() - started).toBeLessThan(20_000);
   });
 });

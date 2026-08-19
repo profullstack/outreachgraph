@@ -23,7 +23,7 @@
 
 import { newId, isFreemailDomain } from '@outreachgraph/domain';
 import { GRAVATAR_NETWORKS, lookupGravatar, type GravatarOptions } from '@outreachgraph/providers';
-import { now, queryOne, type Client } from '@outreachgraph/db';
+import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 
 /**
  * How much to believe a Gravatar-published account.
@@ -34,6 +34,118 @@ import { now, queryOne, type Client } from '@outreachgraph/db';
  * account, which is what the remaining headroom is for.
  */
 const GRAVATAR_CONFIDENCE = 0.8;
+
+/**
+ * How many people one sweep looks up, and how many at once.
+ *
+ * Gravatar is a network round trip and nothing else: the work is entirely
+ * waiting, so running it one at a time wastes the whole interval. Ten at once
+ * against a public API that asks callers to identify themselves is polite
+ * rather than aggressive, and two hundred a tick clears seventeen thousand in
+ * roughly an hour and a half without a queue row per person.
+ */
+const SWEEP_SIZE = 200;
+const SWEEP_CONCURRENCY = 10;
+
+export interface SweepResult {
+  readonly looked: number;
+  readonly found: number;
+  readonly identities: number;
+  readonly remaining: number;
+}
+
+/**
+ * Looks up the next batch of imported people who have never been looked up.
+ *
+ * The set is derived — everyone with an imported address and no
+ * `contact_enriched_at` — rather than materialised as jobs. Seventeen thousand
+ * queue rows written inside one request is what made `finish` never return,
+ * and a derived set cannot drift from the people who actually exist.
+ *
+ * A miss still stamps the timestamp. Most addresses have no published profile,
+ * and a sweep that only recorded successes would retry those forever.
+ */
+export async function sweepContactEnrichment(
+  db: Client,
+  input: { readonly workspaceId: string; readonly limit?: number },
+  options: GravatarOptions = {},
+): Promise<SweepResult> {
+  const limit = input.limit ?? SWEEP_SIZE;
+
+  const rows = await queryAll<{ person_id: string }>(
+    db,
+    `SELECT pe.person_id
+       FROM person_emails pe
+       JOIN people p ON p.id = pe.person_id
+      WHERE pe.workspace_id = ? AND p.contact_enriched_at IS NULL AND p.status = 'active'
+      GROUP BY pe.person_id
+      ORDER BY pe.created_at
+      LIMIT ?`,
+    [input.workspaceId, limit],
+  );
+
+  let found = 0;
+  let identities = 0;
+
+  // Fixed-size waves rather than one promise per person: seventeen thousand
+  // concurrent fetches would be a denial of service on somebody else's free
+  // API, and on our own event loop.
+  for (let offset = 0; offset < rows.length; offset += SWEEP_CONCURRENCY) {
+    const wave = rows.slice(offset, offset + SWEEP_CONCURRENCY);
+
+    const results = await Promise.all(
+      wave.map(async (row) => {
+        try {
+          return await enrichContact(
+            db,
+            { workspaceId: input.workspaceId, personId: row.person_id },
+            options,
+          );
+        } catch {
+          // One bad lookup costs that person, not the sweep. The timestamp is
+          // still stamped below so it is not retried forever.
+          return undefined;
+        }
+      }),
+    );
+
+    for (const result of results) {
+      if (result?.found) found += 1;
+      identities += result?.identities ?? 0;
+    }
+
+    await db.batch(
+      wave.map((row) => ({
+        sql: 'UPDATE people SET contact_enriched_at = ? WHERE id = ?',
+        args: [now(), row.person_id] as (string | number | null)[],
+      })),
+    );
+  }
+
+  const left = await queryOne<{ n: number }>(
+    db,
+    `SELECT count(DISTINCT pe.person_id) AS n
+       FROM person_emails pe
+       JOIN people p ON p.id = pe.person_id
+      WHERE pe.workspace_id = ? AND p.contact_enriched_at IS NULL AND p.status = 'active'`,
+    [input.workspaceId],
+  );
+
+  return { looked: rows.length, found, identities, remaining: Number(left?.n ?? 0) };
+}
+
+/** Workspaces with imported people still waiting to be looked up. */
+export async function workspacesAwaitingEnrichment(db: Client): Promise<string[]> {
+  const rows = await queryAll<{ workspace_id: string }>(
+    db,
+    `SELECT DISTINCT pe.workspace_id
+       FROM person_emails pe
+       JOIN people p ON p.id = pe.person_id
+      WHERE p.contact_enriched_at IS NULL AND p.status = 'active'`,
+  );
+
+  return rows.map((row) => row.workspace_id);
+}
 
 export interface EnrichContactResult {
   readonly personId: string;

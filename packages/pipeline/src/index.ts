@@ -82,7 +82,13 @@ export {
   type ChunkResult,
   type StartImportInput,
 } from './contact-import';
-export { enrichContact, type EnrichContactResult } from './enrich-contact';
+export {
+  enrichContact,
+  sweepContactEnrichment,
+  workspacesAwaitingEnrichment,
+  type EnrichContactResult,
+  type SweepResult,
+} from './enrich-contact';
 export {
   autoApproveInternal,
   workspacesWithInternalBacklog,
