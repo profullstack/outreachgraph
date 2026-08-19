@@ -39,6 +39,8 @@ import {
   listeningCampaigns,
   autoApproveInternal,
   enrichContact,
+  sweepContactEnrichment,
+  workspacesAwaitingEnrichment,
   processDeletion,
   workspacesWithInternalBacklog,
   pruneWorkflowEvents,
@@ -653,6 +655,22 @@ async function tick(): Promise<void> {
           `${cleared.queuedCrawls > 0 ? `, queued ${cleared.queuedCrawls} crawl(s)` : ''}` +
           `${cleared.cooledDown > 0 ? `, ${cleared.cooledDown} already researched today` : ''}` +
           `${cleared.refused > 0 ? `, ${cleared.refused} refused by policy` : ''}`,
+      );
+    }
+  }
+
+  // Imported contacts are looked up from a derived set rather than a queue —
+  // seventeen thousand job rows written inside one request is what made
+  // finishing an import never return. Concurrent inside the sweep, because the
+  // work is a network round trip and nothing else.
+  for (const workspaceId of await workspacesAwaitingEnrichment(db)) {
+    const swept = await sweepContactEnrichment(db, { workspaceId });
+
+    if (swept.looked > 0) {
+      console.log(
+        `enrichment: looked up ${swept.looked} in ${workspaceId}, ` +
+          `${swept.found} had a profile, ${swept.identities} identities, ` +
+          `${swept.remaining} left`,
       );
     }
   }

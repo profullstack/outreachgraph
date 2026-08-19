@@ -1680,30 +1680,36 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     const body = await parseBody(c.req.raw, z.object({ enrich: z.boolean().optional() }));
 
-    let queued = 0;
-
-    if (body.enrich !== false) {
-      const people = await queryAll<{ person_id: string }>(
-        db,
-        `SELECT p.person_id FROM person_emails p
-           JOIN person_consent pc ON pc.person_id = p.person_id
-          WHERE pc.import_id = ?`,
-        [importId],
-      );
-
-      for (const person of people) {
-        const job = await enqueue(db, {
-          workspaceId: actor.workspaceId,
-          kind: 'enrich_contact',
-          payload: { personId: person.person_id },
-        });
-        if (job.queued) queued += 1;
-      }
+    // Enrichment is *not* enqueued here, and that is the fix rather than an
+    // omission. This used to write one job row per imported person: for a list
+    // of seventeen thousand that is seventeen thousand inserts inside one HTTP
+    // request, which is why finishing never returned.
+    //
+    // The set of people to look up is derivable — everyone with an imported
+    // address and no `contact_enriched_at` — so the worker sweeps it instead.
+    // Nothing needs to be written for that to start, and it resumes by itself
+    // if this request never completes at all.
+    if (body.enrich === false) {
+      await db.execute({
+        sql: `UPDATE people SET contact_enriched_at = ?
+               WHERE contact_enriched_at IS NULL
+                 AND id IN (SELECT person_id FROM person_consent WHERE import_id = ?)`,
+        args: [now(), importId],
+      });
     }
 
     await finishContactImport(db, importId);
 
-    return c.json({ finished: true, enrichmentQueued: queued });
+    const waiting = await queryOne<{ n: number }>(
+      db,
+      `SELECT count(DISTINCT pe.person_id) AS n
+         FROM person_emails pe
+         JOIN people p ON p.id = pe.person_id
+        WHERE pe.workspace_id = ? AND p.contact_enriched_at IS NULL AND p.status = 'active'`,
+      [actor.workspaceId],
+    );
+
+    return c.json({ finished: true, awaitingEnrichment: Number(waiting?.n ?? 0) });
   });
 
   /** The batch, and what it could not use. */
