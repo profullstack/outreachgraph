@@ -61,89 +61,112 @@ async function setup(label: string): Promise<SeededDatabase> {
   return seeded;
 }
 
+/**
+ * How long the full-chain tests are allowed.
+ *
+ * Two tests in this file drive a whole crawl through extraction, identity
+ * resolution, scoring and a recommendation against a real SQLite file. That is
+ * comfortably under a second on a developer machine and intermittently over
+ * bun's 5000ms default on a loaded CI runner, which is how `main` came to be
+ * red on a commit that had passed the same suite minutes earlier.
+ *
+ * Raised rather than diagnosed further because the timeout is measuring the
+ * runner, not the code: the assertions are unchanged and a genuine hang still
+ * fails, thirty seconds later.
+ */
+const SLOW_CHAIN_MS = 30_000;
+
 describe('URL to approval card', () => {
-  test('a queued URL becomes a person, a score and a recommendation', async () => {
-    const { db } = await setup('e2e-happy');
+  test(
+    'a queued URL becomes a person, a score and a recommendation',
+    async () => {
+      const { db } = await setup('e2e-happy');
 
-    const added = await enqueue(db, {
-      workspaceId: SEED.workspaceId,
-      kind: 'crawl_site',
-      payload: { url: 'https://loopwright.io' },
-    });
-    expect(added.queued).toBe(true);
+      const added = await enqueue(db, {
+        workspaceId: SEED.workspaceId,
+        kind: 'crawl_site',
+        payload: { url: 'https://loopwright.io' },
+      });
+      expect(added.queued).toBe(true);
 
-    const site = new SiteProvider({ fetchImpl: stubNetwork() });
+      const site = new SiteProvider({ fetchImpl: stubNetwork() });
 
-    // The real drain, claiming the real row and calling the real handler.
-    const summary = await drainQueue(db, async (job: QueuedJob) => {
-      await runCrawlJob({ db, site, providers: [] }, job);
-    });
+      // The real drain, claiming the real row and calling the real handler.
+      const summary = await drainQueue(db, async (job: QueuedJob) => {
+        await runCrawlJob({ db, site, providers: [] }, job);
+      });
 
-    expect(summary.processed).toBe(1);
-    expect(summary.succeeded).toBe(1);
+      expect(summary.processed).toBe(1);
+      expect(summary.succeeded).toBe(1);
 
-    const person = await queryOne<{ id: string; display_name: string; current_title: string }>(
-      db,
-      'SELECT id, display_name, current_title FROM people WHERE display_name = ?',
-      ['Alex Chen'],
-    );
-    expect(person?.display_name).toBe('Alex Chen');
-    expect(person?.current_title).toBe('Staff Engineer');
+      const person = await queryOne<{ id: string; display_name: string; current_title: string }>(
+        db,
+        'SELECT id, display_name, current_title FROM people WHERE display_name = ?',
+        ['Alex Chen'],
+      );
+      expect(person?.display_name).toBe('Alex Chen');
+      expect(person?.current_title).toBe('Staff Engineer');
 
-    // Filed into the workspace's campaign, or the card has nowhere to appear.
-    const membership = await queryOne<{ status: string }>(
-      db,
-      'SELECT status FROM campaign_people WHERE person_id = ?',
-      [person!.id],
-    );
-    expect(membership).toBeDefined();
+      // Filed into the workspace's campaign, or the card has nowhere to appear.
+      const membership = await queryOne<{ status: string }>(
+        db,
+        'SELECT status FROM campaign_people WHERE person_id = ?',
+        [person!.id],
+      );
+      expect(membership).toBeDefined();
 
-    const scores = await queryAll(db, 'SELECT id FROM scores WHERE person_id = ?', [person!.id]);
-    expect(scores.length).toBeGreaterThan(0);
+      const scores = await queryAll(db, 'SELECT id FROM scores WHERE person_id = ?', [person!.id]);
+      expect(scores.length).toBeGreaterThan(0);
 
-    const recommendation = await queryOne<{ id: string; action: string; network: string }>(
-      db,
-      'SELECT id, action, network FROM recommendations WHERE person_id = ?',
-      [person!.id],
-    );
-    expect(recommendation).toBeDefined();
+      const recommendation = await queryOne<{ id: string; action: string; network: string }>(
+        db,
+        'SELECT id, action, network FROM recommendations WHERE person_id = ?',
+        [person!.id],
+      );
+      expect(recommendation).toBeDefined();
 
-    const job = await queryOne<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', [
-      added.id!,
-    ]);
-    expect(job?.status).toBe('done');
-  });
+      const job = await queryOne<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', [
+        added.id!,
+      ]);
+      expect(job?.status).toBe('done');
+    },
+    SLOW_CHAIN_MS,
+  );
 
-  test('provenance records the crawler, not GitHub', async () => {
-    const { db } = await setup('e2e-provenance');
+  test(
+    'provenance records the crawler, not GitHub',
+    async () => {
+      const { db } = await setup('e2e-provenance');
 
-    await enqueue(db, {
-      workspaceId: SEED.workspaceId,
-      kind: 'crawl_site',
-      payload: { url: 'https://loopwright.io' },
-    });
+      await enqueue(db, {
+        workspaceId: SEED.workspaceId,
+        kind: 'crawl_site',
+        payload: { url: 'https://loopwright.io' },
+      });
 
-    const site = new SiteProvider({ fetchImpl: stubNetwork() });
-    await drainQueue(db, async (job) => {
-      await runCrawlJob({ db, site, providers: [] }, job);
-    });
+      const site = new SiteProvider({ fetchImpl: stubNetwork() });
+      await drainQueue(db, async (job) => {
+        await runCrawlJob({ db, site, providers: [] }, job);
+      });
 
-    const provenance = await queryOne<{
-      provider: string;
-      source_type: string;
-      license_class: string;
-    }>(
-      db,
-      `SELECT provider, source_type, license_class FROM field_provenance
+      const provenance = await queryOne<{
+        provider: string;
+        source_type: string;
+        license_class: string;
+      }>(
+        db,
+        `SELECT provider, source_type, license_class FROM field_provenance
          WHERE field = 'fullName' LIMIT 1`,
-    );
+      );
 
-    // Attribution decides what may be retained and exported (PRD §35). A
-    // scraped name labelled as an API fact would misclassify it.
-    expect(provenance?.provider).toBe('site');
-    expect(provenance?.source_type).toBe('public_web');
-    expect(provenance?.license_class).toBe('public_web');
-  });
+      // Attribution decides what may be retained and exported (PRD §35). A
+      // scraped name labelled as an API fact would misclassify it.
+      expect(provenance?.provider).toBe('site');
+      expect(provenance?.source_type).toBe('public_web');
+      expect(provenance?.license_class).toBe('public_web');
+    },
+    SLOW_CHAIN_MS,
+  );
 
   test('a page naming nobody completes the job rather than retrying it', async () => {
     const { db } = await setup('e2e-nobody');
