@@ -83,7 +83,7 @@ export async function startCreditPurchase(
       organization_id: input.organizationId,
       pack_id: pack.id,
     },
-    ...(input.apiUrl ? { webhookUrl: `${input.apiUrl}/api/v1/webhooks/coinpay` } : {}),
+    ...(input.apiUrl ? { webhookUrl: `${input.apiUrl}/api/v1/coinpay/callback` } : {}),
     // Back to the page they left from, which is where the new balance and the
     // purchase's status are shown.
     redirectUrl: `${input.appUrl}/billing?purchase=${purchaseId}`,
