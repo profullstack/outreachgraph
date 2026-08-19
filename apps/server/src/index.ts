@@ -647,10 +647,11 @@ async function tick(): Promise<void> {
   for (const workspaceId of await workspacesWithInternalBacklog(db)) {
     const cleared = await autoApproveInternal(db, { workspaceId });
 
-    if (cleared.approved > 0) {
+    if (cleared.approved > 0 || cleared.cooledDown > 0) {
       console.log(
         `auto-approved ${cleared.approved} internal card(s) in ${workspaceId}` +
           `${cleared.queuedCrawls > 0 ? `, queued ${cleared.queuedCrawls} crawl(s)` : ''}` +
+          `${cleared.cooledDown > 0 ? `, ${cleared.cooledDown} already researched today` : ''}` +
           `${cleared.refused > 0 ? `, ${cleared.refused} refused by policy` : ''}`,
       );
     }
