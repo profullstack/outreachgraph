@@ -21,9 +21,11 @@
  * people who never published them.
  */
 
-import { newId, isFreemailDomain } from '@outreachgraph/domain';
+import { newId, isFreemailDomain, webPresenceFor } from '@outreachgraph/domain';
 import { GRAVATAR_NETWORKS, lookupGravatar, type GravatarOptions } from '@outreachgraph/providers';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { enqueue } from './queue';
+import { crawlDedupeKey } from './auto-approve';
 
 /**
  * How much to believe a Gravatar-published account.
@@ -52,6 +54,10 @@ export interface SweepResult {
   readonly found: number;
   readonly identities: number;
   readonly remaining: number;
+  /** Pages queued to read, deduplicated by host. */
+  readonly pagesQueued: number;
+  /** Addresses that point at no page at all — mailbox providers. */
+  readonly noPresence: number;
 }
 
 /**
@@ -72,20 +78,22 @@ export async function sweepContactEnrichment(
 ): Promise<SweepResult> {
   const limit = input.limit ?? SWEEP_SIZE;
 
-  const rows = await queryAll<{ person_id: string }>(
+  const rows = await queryAll<{ person_id: string; address: string }>(
     db,
-    `SELECT pe.person_id
+    `SELECT pe.person_id, min(pe.address) AS address
        FROM person_emails pe
        JOIN people p ON p.id = pe.person_id
       WHERE pe.workspace_id = ? AND p.contact_enriched_at IS NULL AND p.status = 'active'
       GROUP BY pe.person_id
-      ORDER BY pe.created_at
+      ORDER BY min(pe.created_at)
       LIMIT ?`,
     [input.workspaceId, limit],
   );
 
   let found = 0;
   let identities = 0;
+  let pagesQueued = 0;
+  let noPresence = 0;
 
   // Fixed-size waves rather than one promise per person: seventeen thousand
   // concurrent fetches would be a denial of service on somebody else's free
@@ -114,6 +122,32 @@ export async function sweepContactEnrichment(
       identities += result?.identities ?? 0;
     }
 
+    // Reading the page the address points at is where the rest comes from.
+    // Gravatar answers for about one person in a hundred; a Substack handle or
+    // a company domain is a page that exists by construction, and the crawler
+    // already knows how to pull a bio, a title and published social links out
+    // of one.
+    for (const row of wave) {
+      const presence = webPresenceFor(row.address);
+
+      if (!presence) {
+        noPresence += 1;
+        continue;
+      }
+
+      const queued = await enqueue(db, {
+        workspaceId: input.workspaceId,
+        kind: 'crawl_site',
+        payload: { url: presence.url },
+        // The same key everything else uses, so four hundred people at one
+        // company read that company's site once — the lesson from #63, which
+        // cost 226 identical crawls of accenture.com to learn.
+        dedupeKey: crawlDedupeKey(presence.url),
+      });
+
+      if (queued.queued) pagesQueued += 1;
+    }
+
     await db.batch(
       wave.map((row) => ({
         sql: 'UPDATE people SET contact_enriched_at = ? WHERE id = ?',
@@ -131,7 +165,14 @@ export async function sweepContactEnrichment(
     [input.workspaceId],
   );
 
-  return { looked: rows.length, found, identities, remaining: Number(left?.n ?? 0) };
+  return {
+    looked: rows.length,
+    found,
+    identities,
+    pagesQueued,
+    noPresence,
+    remaining: Number(left?.n ?? 0),
+  };
 }
 
 /** Workspaces with imported people still waiting to be looked up. */

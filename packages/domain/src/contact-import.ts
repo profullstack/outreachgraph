@@ -212,6 +212,40 @@ const FREEMAIL_DOMAINS = new Set([
   'fastmail.com',
   'hey.com',
   'tutanota.com',
+  // Consumer mailboxes outside the English-speaking web. Their absence was a
+  // real gap rather than an oversight of scale: a 16,268-row list carried 127
+  // `qq.com` addresses, every one of which would have been treated as a
+  // company domain and sent the crawler to Tencent's homepage.
+  'qq.com',
+  '163.com',
+  '126.com',
+  'sina.com',
+  'sina.cn',
+  'foxmail.com',
+  'naver.com',
+  'daum.net',
+  'hanmail.net',
+  'rediffmail.com',
+  'seznam.cz',
+  'libero.it',
+  'orange.fr',
+  'free.fr',
+  'laposte.net',
+  't-online.de',
+  'web.de',
+  'bluewin.ch',
+  'telenet.be',
+  'bigpond.com',
+  'ymail.com',
+  'rocketmail.com',
+  'live.co.uk',
+  'btinternet.com',
+  'comcast.net',
+  'verizon.net',
+  'sbcglobal.net',
+  'att.net',
+  'cox.net',
+  'charter.net',
 ]);
 
 /**

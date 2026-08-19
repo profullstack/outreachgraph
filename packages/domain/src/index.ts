@@ -23,6 +23,7 @@ export * from './playbooks';
 export * from './plans';
 export * from './credits';
 export * from './contact-import';
+export * from './web-presence';
 export * from './rules';
 export * from './pipeline';
 export * from './outreach';

@@ -669,6 +669,7 @@ async function tick(): Promise<void> {
     if (swept.looked > 0) {
       console.log(
         `enrichment: looked up ${swept.looked} in ${workspaceId}, ` +
+          `${swept.pagesQueued} page(s) queued, ${swept.noPresence} point nowhere, ` +
           `${swept.found} had a profile, ${swept.identities} identities, ` +
           `${swept.remaining} left`,
       );
