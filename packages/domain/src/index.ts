@@ -21,6 +21,7 @@ export * from './engagement';
 export * from './cadence';
 export * from './playbooks';
 export * from './plans';
+export * from './credits';
 export * from './rules';
 export * from './pipeline';
 export * from './outreach';

@@ -25,8 +25,15 @@
 export const PLAN_IDS = ['free', 'solo', 'pro', 'team'] as const;
 export type PlanId = (typeof PLAN_IDS)[number];
 
+/**
+ * Every plan a workspace can actually be on, including the one that cannot be
+ * bought. Kept separate from `PlanId` so that the purchasable list — pricing
+ * pages, plan pickers, anything a customer chooses from — stays exactly four.
+ */
+export type EffectivePlanId = PlanId | 'admin';
+
 export interface Plan {
-  readonly id: PlanId;
+  readonly id: EffectivePlanId;
   readonly name: string;
   /** Monthly price in whole US dollars. `null` means "talk to us". */
   readonly priceUsd: number | null;
@@ -85,6 +92,31 @@ export const PLANS: Readonly<Record<PlanId, Plan>> = {
     api: true,
     seats: 3,
   },
+};
+
+/**
+ * What a platform administrator's own organization runs on.
+ *
+ * Deliberately absent from `PLANS` and from `PLAN_IDS`, so `planById` can
+ * never resolve into it: a customer row whose `plan` column read 'admin' —
+ * whether by a typo, a bad import or someone reaching the database — would
+ * otherwise be silently unlimited. The only way here is the staff check in
+ * `planFor`.
+ *
+ * The ceilings are large finite numbers rather than `Infinity` because the
+ * same values are serialised to JSON by `GET /usage`, and `Infinity` is not
+ * representable there — it becomes `null`, which reads as "no data" rather
+ * than "no limit".
+ */
+export const ADMIN_PLAN: Plan = {
+  id: 'admin',
+  name: 'Admin',
+  priceUsd: 0,
+  prospectsPerMonth: Number.MAX_SAFE_INTEGER,
+  gridCellsPerMonth: Number.MAX_SAFE_INTEGER,
+  autopilot: true,
+  api: true,
+  seats: Number.MAX_SAFE_INTEGER,
 };
 
 export function planById(id: string): Plan {

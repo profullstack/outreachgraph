@@ -276,6 +276,43 @@ export async function fetchEmailIntegration(): Promise<EmailIntegrationView> {
   return request<EmailIntegrationView>('/integrations/email');
 }
 
+export interface CreditPackView {
+  readonly id: string;
+  readonly name: string;
+  readonly credits: number;
+  readonly priceUsd: number;
+}
+
+export interface CreditPurchaseView {
+  readonly id: string;
+  readonly pack_id: string;
+  readonly credits: number;
+  readonly amount_usd: number;
+  readonly blockchain: string;
+  readonly payment_url: string | null;
+  readonly status: string;
+  readonly created_at: string;
+}
+
+export interface BillingView {
+  readonly plan: { readonly id: string; readonly name: string; readonly prospectsPerMonth: number };
+  readonly usage: { readonly prospectsContacted: number; readonly gridCells: number };
+  readonly credits: {
+    readonly granted: number;
+    readonly spent: number;
+    readonly remaining: number;
+  };
+  readonly onCredits: boolean;
+  readonly exhausted: boolean;
+  readonly packs: readonly CreditPackView[];
+  readonly purchases: readonly CreditPurchaseView[];
+  readonly canPurchase: boolean;
+}
+
+export async function fetchBilling(): Promise<BillingView> {
+  return request<BillingView>('/billing');
+}
+
 export async function fetchListening(campaignId: string): Promise<ListeningView> {
   return request<ListeningView>(`/campaigns/${encodeURIComponent(campaignId)}/listening`);
 }

@@ -16,6 +16,11 @@ const LINKS = [
     hint: 'Your sending mailbox, Bluesky, alerts, link tracking, autopilot limits',
   },
   {
+    href: '/billing',
+    label: 'Billing',
+    hint: 'Your plan, what is left of it this month, and prospect credits',
+  },
+  {
     href: '/cadences',
     label: 'Plans',
     hint: 'A sequence of touches over days, not one message and silence',

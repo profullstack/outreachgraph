@@ -13,8 +13,17 @@
  * recount is a query rather than a migration.
  */
 
-import { newId, periodStart, planById, type Plan, type UsageSnapshot } from '@outreachgraph/domain';
+import {
+  ADMIN_PLAN,
+  newId,
+  periodStart,
+  planById,
+  type CreditBalance,
+  type Plan,
+  type UsageSnapshot,
+} from '@outreachgraph/domain';
 import { queryOne, type Client } from '@outreachgraph/db';
+import { creditsFor, organizationFor, settleProspectCredits } from './credits';
 
 /**
  * What this workspace has used in the calendar month containing `at`.
@@ -51,6 +60,29 @@ export async function usageFor(
 }
 
 /**
+ * Whether this workspace belongs to an organization that platform staff own.
+ *
+ * Keyed on the **owner**, not on membership. A staff account added to a
+ * customer's organization to look at a problem is a `member` or a `viewer`
+ * there, and that must not silently lift the customer's ceiling — the
+ * exemption is meant to stop us metering ourselves, not to leak onto whoever
+ * we last helped.
+ */
+async function isStaffOrganization(db: Client, workspaceId: string): Promise<boolean> {
+  const row = await queryOne<{ n: number }>(
+    db,
+    `SELECT count(*) AS n
+       FROM workspaces w
+       JOIN organization_members m ON m.organization_id = w.organization_id
+       JOIN users u ON u.id = m.user_id
+      WHERE w.id = ? AND m.role = 'owner' AND u.is_admin = 1`,
+    [workspaceId],
+  );
+
+  return Number(row?.n ?? 0) > 0;
+}
+
+/**
  * The plan this workspace is on.
  *
  * Billing lives on the organization rather than the workspace, so two
@@ -58,6 +90,13 @@ export async function usageFor(
  * alternative is a customer creating workspaces to reset a meter.
  */
 export async function planFor(db: Client, workspaceId: string): Promise<Plan> {
+  // Staff first, because it is the one answer a billing row must not be able
+  // to override. Doing it here rather than at each call site is what makes it
+  // cover the approval queue, autopilot, the cadence runner and the research
+  // grid at once — `planFor` is the only road to a limit, so an exemption
+  // placed anywhere else is one that some fourth caller has to remember.
+  if (await isStaffOrganization(db, workspaceId)) return ADMIN_PLAN;
+
   const row = await queryOne<{ plan: string; status: string }>(
     db,
     `SELECT b.plan, b.status
@@ -83,6 +122,10 @@ export interface BudgetStatus {
   readonly exhausted: boolean;
   readonly plan: Plan;
   readonly usage: UsageSnapshot;
+  /** Prepaid credits behind the plan's allowance. */
+  readonly credits: CreditBalance;
+  /** True while the month's allowance is spent and credits are covering it. */
+  readonly onCredits: boolean;
   readonly reason?: string;
 }
 
@@ -100,20 +143,51 @@ export async function budgetStatus(
   workspaceId: string,
   at: Date = new Date(),
 ): Promise<BudgetStatus> {
-  const [plan, usage] = await Promise.all([
+  const [organizationId, plan, usage] = await Promise.all([
+    organizationFor(db, workspaceId),
     planFor(db, workspaceId),
     usageFor(db, workspaceId, at),
   ]);
 
-  const exhausted = usage.prospectsContacted >= plan.prospectsPerMonth;
+  // Two allowances, checked in the order they are consumed: the monthly one
+  // first because it refills and costs nothing to use, then prepaid credits.
+  // Spending credits while the plan still has room would be charging a
+  // customer for something they had already paid for.
+  const overPlan = usage.prospectsContacted >= plan.prospectsPerMonth;
+
+  // Settle before reading the balance, or the balance is the one from before
+  // this month's overage and the gate opens on credits that are already owed.
+  // Only when there is genuinely an overage: the common path does no writes.
+  if (organizationId && usage.prospectsContacted > plan.prospectsPerMonth) {
+    await settleProspectCredits(db, {
+      organizationId,
+      workspaceId,
+      allowance: plan.prospectsPerMonth,
+      periodStartIso: periodStart(at).toISOString(),
+      at,
+    });
+  }
+
+  const credits = organizationId
+    ? await creditsFor(db, organizationId)
+    : { granted: 0, spent: 0, remaining: 0 };
+  const onCredits = overPlan && credits.remaining > 0;
+  const exhausted = overPlan && credits.remaining <= 0;
 
   return {
     exhausted,
     plan,
     usage,
+    credits,
+    onCredits,
     ...(exhausted
       ? {
-          reason: `The ${plan.name} plan covers ${plan.prospectsPerMonth} prospects a month and ${usage.prospectsContacted} have been contacted.`,
+          reason:
+            `The ${plan.name} plan covers ${plan.prospectsPerMonth} prospects a month and ` +
+            `${usage.prospectsContacted} have been contacted. ` +
+            (credits.granted > 0
+              ? 'The prepaid credits behind it are spent too.'
+              : 'Buy prospect credits or move up a plan to continue.'),
         }
       : {}),
   };

@@ -100,6 +100,13 @@ import {
   setCampaignStatus,
 } from './campaigns';
 import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
+import { CoinPayClient } from '@outreachgraph/payments';
+import {
+  billingOverview,
+  handleCoinPayWebhook,
+  startCreditPurchase,
+  BillingError,
+} from './billing';
 import {
   candidatesForPerson,
   confirmCandidate,
@@ -185,6 +192,14 @@ export interface AppOptions {
   readonly suggestSubreddits?: typeof suggestSubreddits;
   /** Public origin, used to build links that land in someone's inbox. */
   readonly appUrl?: string;
+  /**
+   * Sells credit packs over CoinPayPortal. Omit and the billing routes answer
+   * 503 rather than 500 — a deployment without payment credentials is a
+   * perfectly good deployment, it just cannot take money.
+   */
+  readonly coinpay?: CoinPayClient;
+  /** Public origin of *this* API, so CoinPayPortal knows where to call back. */
+  readonly apiUrl?: string;
   readonly version?: string;
   readonly commitHash?: string;
 }
@@ -436,6 +451,59 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   api.route('/auth', auth);
+
+  /**
+   * CoinPayPortal telling us a payment moved.
+   *
+   * Unauthenticated by necessity — the caller is a payment processor, not a
+   * user — and therefore authenticated by signature instead. It sits above the
+   * session guard for that reason, and reads the **raw** body: the HMAC is
+   * over the bytes that arrived, and `c.req.json()` would hand back an object
+   * whose re-serialisation has different whitespace and key order.
+   *
+   * Answers 200 to anything it understood, including a duplicate delivery and
+   * a payment belonging to somebody else's product on the same business
+   * account. A webhook that 500s on "already handled" earns a retry storm.
+   */
+  api.post('/webhooks/coinpay', async (c) => {
+    if (!options.coinpay) {
+      throw new ApiError(503, 'payments_unconfigured', 'This deployment cannot take payments.');
+    }
+
+    const rawBody = await c.req.raw.text();
+
+    try {
+      const result = await handleCoinPayWebhook(options.db, options.coinpay, {
+        rawBody,
+        signature:
+          c.req.header('x-webhook-signature') ?? c.req.header('x-coinpay-signature') ?? null,
+      });
+
+      await repo.audit(options.db, {
+        actorKind: 'system',
+        eventType: 'billing.webhook',
+        entityKind: 'credit_purchase',
+        detail: { handled: result.handled, credited: result.credited, detail: result.detail },
+      });
+
+      return c.json(result);
+    } catch (error) {
+      if (error instanceof BillingError) {
+        // A bad signature is audited rather than only refused. It is the one
+        // event here that might be somebody probing for free credits.
+        await repo.audit(options.db, {
+          actorKind: 'system',
+          eventType: 'billing.webhook_rejected',
+          entityKind: 'credit_purchase',
+          detail: { message: error.message },
+        });
+
+        throw new ApiError(error.status, 'webhook_rejected', error.message);
+      }
+
+      throw error;
+    }
+  });
 
   // Everything else under /api/v1 is authenticated and workspace-scoped.
   api.use('*', async (c, next) => {
@@ -3083,8 +3151,103 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         gridCellsRemaining: Math.max(0, status.plan.gridCellsPerMonth - status.usage.gridCells),
         exhausted: status.exhausted,
       },
+      credits: status.credits,
+      onCredits: status.onCredits,
       usage: rows.rows,
     });
+  });
+
+  // ---------------------------------------------------------------- billing
+  api.get('/billing', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    const [status, overview] = await Promise.all([
+      budgetStatus(db, actor.workspaceId),
+      billingOverview(db, { organizationId: actor.organizationId }),
+    ]);
+
+    return c.json({
+      plan: {
+        id: status.plan.id,
+        name: status.plan.name,
+        prospectsPerMonth: status.plan.prospectsPerMonth,
+      },
+      usage: status.usage,
+      credits: overview.credits,
+      onCredits: status.onCredits,
+      exhausted: status.exhausted,
+      packs: overview.packs,
+      purchases: overview.purchases,
+      // The UI cannot offer a chain the deployment has no credentials for, and
+      // an empty list is a clearer "not for sale here" than a button that 503s.
+      canPurchase: options.coinpay !== undefined,
+    });
+  });
+
+  /**
+   * Starts a credit purchase and hands back the hosted checkout URL.
+   *
+   * Owners and admins only. Buying credits spends the organization's money,
+   * which is a narrower permission than approving outreach — `canApprove`
+   * deliberately includes `member`, and a member should not be able to commit
+   * their employer to a payment.
+   */
+  api.post('/billing/checkout', async (c) => {
+    const actor = c.get('actor');
+
+    if (actor.role !== 'owner' && actor.role !== 'admin') {
+      throw ApiError.forbidden('Only an owner or admin can buy credits.');
+    }
+
+    if (!options.coinpay) {
+      throw new ApiError(503, 'payments_unconfigured', 'This deployment cannot take payments.');
+    }
+
+    const body = await parseBody(
+      c.req.raw,
+      z.object({
+        packId: z.string().min(1),
+        blockchain: z.string().min(1),
+      }),
+    );
+
+    try {
+      const result = await startCreditPurchase(c.get('db'), options.coinpay, {
+        organizationId: actor.organizationId,
+        workspaceId: actor.workspaceId,
+        userId: actor.userId,
+        packId: body.packId,
+        blockchain: body.blockchain,
+        appUrl: options.appUrl ?? 'https://outreachgraph.com',
+        ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
+      });
+
+      await repo.audit(c.get('db'), {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'billing.checkout_started',
+        entityKind: 'credit_purchase',
+        entityId: result.purchaseId,
+        detail: { packId: result.pack.id, credits: result.pack.credits },
+      });
+
+      return c.json(
+        {
+          purchaseId: result.purchaseId,
+          paymentUrl: result.paymentUrl,
+          pack: result.pack,
+        },
+        201,
+      );
+    } catch (error) {
+      if (error instanceof BillingError) {
+        throw new ApiError(error.status, 'checkout_failed', error.message);
+      }
+
+      throw error;
+    }
   });
 
   app.route(`/api/v1`, api);

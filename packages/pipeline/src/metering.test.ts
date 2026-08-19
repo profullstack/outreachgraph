@@ -18,6 +18,7 @@ import {
 import { now, type Client } from '@outreachgraph/db';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { budgetStatus, planFor, recordResearchUsage, usageFor } from './metering';
+import { grantCredits } from './credits';
 
 let seeded: SeededDatabase | undefined;
 
@@ -55,6 +56,10 @@ async function onPlan(db: Client, plan: string, status = 'active'): Promise<void
           VALUES (?, ?, ?, ?, ?, ?)`,
     args: [newId('usageEvent'), SEED.organizationId, plan, status, now(), now()],
   });
+}
+
+async function staff(db: Client, userId: string): Promise<void> {
+  await db.execute({ sql: `UPDATE users SET is_admin = 1 WHERE id = ?`, args: [userId] });
 }
 
 describe('periodStart', () => {
@@ -176,6 +181,52 @@ describe('planFor', () => {
 
     expect((await planFor(seeded.db, SEED.workspaceId)).id).toBe('free');
   });
+
+  test('never resolves a billing row into the admin plan', async () => {
+    // The reason 'admin' is not in PLAN_IDS. A customer row whose plan column
+    // said 'admin' — a typo, a bad import, someone reaching the database —
+    // must be free rather than unlimited.
+    seeded = await seedDatabase('meter-plan-admin');
+    await onPlan(seeded.db, 'admin');
+
+    expect((await planFor(seeded.db, SEED.workspaceId)).id).toBe('free');
+  });
+
+  test('exempts an organization owned by platform staff', async () => {
+    seeded = await seedDatabase('meter-staff');
+    await staff(seeded.db, SEED.userId);
+
+    expect((await planFor(seeded.db, SEED.workspaceId)).id).toBe('admin');
+  });
+
+  test('staff ownership outranks the billing row', async () => {
+    // Our own organizations do carry a billing row; the flag has to win, or
+    // the exemption depends on us remembering not to bill ourselves.
+    seeded = await seedDatabase('meter-staff-billed');
+    await onPlan(seeded.db, 'free');
+    await staff(seeded.db, SEED.userId);
+
+    expect((await planFor(seeded.db, SEED.workspaceId)).id).toBe('admin');
+  });
+
+  test('a staff account merely invited to a customer org exempts nothing', async () => {
+    // The exemption exists so we do not meter ourselves. It must not leak onto
+    // whichever customer we last helped debug something.
+    seeded = await seedDatabase('meter-staff-guest');
+    const guest = newId('user');
+    await seeded.db.execute({
+      sql: `INSERT INTO users (id, email, name, is_admin, created_at, updated_at)
+            VALUES (?, 'staff@outreachgraph.com', 'Support', 1, ?, ?)`,
+      args: [guest, now(), now()],
+    });
+    await seeded.db.execute({
+      sql: `INSERT INTO organization_members (organization_id, user_id, role, created_at)
+            VALUES (?, ?, 'member', ?)`,
+      args: [SEED.organizationId, guest, now()],
+    });
+
+    expect((await planFor(seeded.db, SEED.workspaceId)).id).toBe('free');
+  });
 });
 
 describe('budgetStatus', () => {
@@ -201,6 +252,125 @@ describe('budgetStatus', () => {
 
     expect(status.exhausted).toBe(true);
     expect(status.reason).toContain('25');
+  });
+
+  test('is never exhausted for platform staff, past any ceiling', async () => {
+    // The reported symptom: an owner watching their own approvals queue refuse
+    // every card with "The campaign budget is exhausted."
+    seeded = await seedDatabase('meter-staff-budget');
+    const { db } = seeded;
+
+    const free = planById('free');
+    for (let index = 0; index < free.prospectsPerMonth + 5; index += 1) {
+      const id = `per_staff_${index}`;
+      await person(db, id);
+      await contacted(db, id);
+    }
+
+    expect((await budgetStatus(db, SEED.workspaceId, AT)).exhausted).toBe(true);
+
+    await staff(db, SEED.userId);
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.exhausted).toBe(false);
+    expect(status.reason).toBeUndefined();
+    // The usage is still counted. An exempt account is one that is not
+    // refused, not one that stops being measured.
+    expect(status.usage.prospectsContacted).toBe(free.prospectsPerMonth + 5);
+  });
+
+  test('prepaid credits cover the overage, and are charged for it', async () => {
+    seeded = await seedDatabase('meter-credits');
+    const { db } = seeded;
+
+    const free = planById('free');
+    await grantCredits(db, {
+      organizationId: SEED.organizationId,
+      credits: 100,
+      paymentId: 'pay_meter',
+    });
+
+    // Three past the monthly allowance.
+    for (let index = 0; index < free.prospectsPerMonth + 3; index += 1) {
+      const id = `per_cr_${index}`;
+      await person(db, id);
+      await contacted(db, id, new Date(AT.getTime() + index * 60_000).toISOString());
+    }
+
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.exhausted).toBe(false);
+    expect(status.onCredits).toBe(true);
+    // Charged for exactly the three the plan did not cover.
+    expect(status.credits.spent).toBe(3);
+    expect(status.credits.remaining).toBe(97);
+  });
+
+  test('refuses again once the credits are gone, and says so', async () => {
+    seeded = await seedDatabase('meter-credits-out');
+    const { db } = seeded;
+
+    const free = planById('free');
+    await grantCredits(db, {
+      organizationId: SEED.organizationId,
+      credits: 2,
+      paymentId: 'pay_small',
+    });
+
+    for (let index = 0; index < free.prospectsPerMonth + 2; index += 1) {
+      const id = `per_out_${index}`;
+      await person(db, id);
+      await contacted(db, id, new Date(AT.getTime() + index * 60_000).toISOString());
+    }
+
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.credits.remaining).toBe(0);
+    expect(status.exhausted).toBe(true);
+    expect(status.onCredits).toBe(false);
+    expect(status.reason).toContain('prepaid credits behind it are spent');
+  });
+
+  test('tells an account with no credits how to continue', async () => {
+    seeded = await seedDatabase('meter-credits-none');
+    const { db } = seeded;
+
+    const free = planById('free');
+    for (let index = 0; index < free.prospectsPerMonth; index += 1) {
+      const id = `per_none_${index}`;
+      await person(db, id);
+      await contacted(db, id);
+    }
+
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.exhausted).toBe(true);
+    expect(status.reason).toContain('Buy prospect credits');
+  });
+
+  test('does not spend credits while the plan still has room', async () => {
+    // Charging here would bill a customer for prospects they had already paid
+    // for with their subscription.
+    seeded = await seedDatabase('meter-credits-unused');
+    const { db } = seeded;
+
+    await grantCredits(db, {
+      organizationId: SEED.organizationId,
+      credits: 100,
+      paymentId: 'pay_unused',
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      const id = `per_room_${index}`;
+      await person(db, id);
+      await contacted(db, id);
+    }
+
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.onCredits).toBe(false);
+    expect(status.credits.spent).toBe(0);
+    expect(status.credits.remaining).toBe(100);
   });
 });
 
