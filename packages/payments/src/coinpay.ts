@@ -15,22 +15,101 @@
  * and wait to be told it confirmed.
  */
 
-export type Blockchain = 'bitcoin' | 'ethereum' | 'solana' | 'base' | 'polygon';
+/**
+ * Chain identifiers, in the vocabulary CoinPayPortal actually speaks.
+ *
+ * These are ticker codes, not chain names, and the difference is not cosmetic:
+ * `/api/payments/create` does `blockchain.toUpperCase()` and matches the result
+ * against this exact set, so `"bitcoin"` becomes `"BITCOIN"`, matches nothing,
+ * and the request is refused with "Invalid or missing cryptocurrency type" —
+ * *after* a valid API key has been accepted. The failure therefore looks like
+ * a credentials problem and is not one.
+ *
+ * Stablecoins carry their settlement chain because the same dollar exists on
+ * three of them and they are separate wallets: `USDC_SOL` and `USDC_ETH` are
+ * not interchangeable, and a payment quoted against the wrong one is
+ * unspendable.
+ */
+export type Blockchain =
+  | 'BTC'
+  | 'BCH'
+  | 'ETH'
+  | 'POL'
+  | 'SOL'
+  | 'DOGE'
+  | 'XRP'
+  | 'ADA'
+  | 'BNB'
+  | 'USDC_ETH'
+  | 'USDC_POL'
+  | 'USDC_SOL'
+  | 'USDT_ETH'
+  | 'USDT_POL'
+  | 'USDT_SOL';
 
-/** What CoinPayPortal will take. Kept explicit so the UI cannot offer a chain
- *  the API would reject at checkout, which reads to the customer as us being
- *  broken rather than as a chain being unsupported. */
+/**
+ * What this deployment will offer.
+ *
+ * Deliberately not every chain CoinPayPortal can parse. A payment only
+ * completes if a wallet exists for that currency — business, merchant-global,
+ * or a linked web wallet — and a chain with none fails with "No wallet
+ * configured for this business", which the customer reads as the product being
+ * broken. `USDC_BASE` is a valid code on the portal and is absent here for
+ * exactly that reason.
+ */
 export const BLOCKCHAINS: readonly Blockchain[] = [
-  'bitcoin',
-  'ethereum',
-  'solana',
-  'base',
-  'polygon',
+  'BTC',
+  'ETH',
+  'SOL',
+  'POL',
+  'USDC_ETH',
+  'USDC_POL',
+  'USDC_SOL',
+  'USDT_ETH',
+  'USDT_POL',
+  'USDT_SOL',
+  'BCH',
+  'DOGE',
+  'XRP',
+  'ADA',
+  'BNB',
 ];
 
+/**
+ * Accepts a chain code case-insensitively.
+ *
+ * The portal upper-cases before matching, so a UI sending `usdc_sol` is not
+ * wrong — it is the same request. Normalising here keeps that from being a
+ * 400 that nobody can explain.
+ */
 export function isBlockchain(value: string): value is Blockchain {
-  return (BLOCKCHAINS as readonly string[]).includes(value);
+  return (BLOCKCHAINS as readonly string[]).includes(value.toUpperCase());
 }
+
+/** The canonical form to send. */
+export function normaliseBlockchain(value: string): Blockchain | undefined {
+  const upper = value.toUpperCase();
+  return (BLOCKCHAINS as readonly string[]).includes(upper) ? (upper as Blockchain) : undefined;
+}
+
+/** Human labels, so the picker does not read as a list of ticker symbols. */
+export const BLOCKCHAIN_LABELS: Readonly<Record<Blockchain, string>> = {
+  BTC: 'Bitcoin',
+  ETH: 'Ethereum',
+  SOL: 'Solana',
+  POL: 'Polygon',
+  USDC_ETH: 'USDC on Ethereum',
+  USDC_POL: 'USDC on Polygon',
+  USDC_SOL: 'USDC on Solana',
+  USDT_ETH: 'USDT on Ethereum',
+  USDT_POL: 'USDT on Polygon',
+  USDT_SOL: 'USDT on Solana',
+  BCH: 'Bitcoin Cash',
+  DOGE: 'Dogecoin',
+  XRP: 'XRP',
+  ADA: 'Cardano',
+  BNB: 'BNB',
+};
 
 export interface CoinPayConfig {
   readonly apiKey: string;
