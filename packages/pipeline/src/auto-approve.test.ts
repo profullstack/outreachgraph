@@ -292,6 +292,76 @@ describe('autoApproveInternal', () => {
     expect(result.queuedCrawls).toBe(0);
   });
 
+  test('reads one company site once, however many people it names', async () => {
+    // The failure that got past the per-person cooldown and into production.
+    // A crawl of accenture.com returns 57 people; each becomes a research
+    // card; each card queued another crawl of the same page, which returned
+    // the same 57. Prod reached 226 pending crawls of one URL and 81 of
+    // another before it was stopped. The cooldown could not catch it because
+    // every one of those people was new.
+    seeded = await seedDatabase('auto-one-crawl');
+    await withDomain(seeded.db);
+
+    for (let index = 0; index < 8; index += 1) {
+      const personId = `per_same_co_${index}`;
+      await seeded.db.execute({
+        sql: `INSERT INTO people (id, display_name, status, identity_confidence,
+              current_company_id, created_at, updated_at)
+              VALUES (?, ?, 'qualified', 0.9, 'co_auto', ?, ?)`,
+        args: [personId, `Colleague ${index}`, now(), now()],
+      });
+      await seeded.db.execute({
+        sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action,
+              network, priority, reason, policy_status, policy_version, expected_goal, status,
+              created_at)
+              VALUES (?, ?, ?, ?, 'refresh_research', 'website', 50, 'because',
+              'allow_with_approval', '2026-08-11', 'qualify', 'pending', ?)`,
+        args: [newId('recommendation'), SEED.workspaceId, SEED.campaignId, personId, now()],
+      });
+    }
+
+    const result = await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId });
+
+    // Every card clears — the queue is the point.
+    expect(result.approved).toBeGreaterThanOrEqual(8);
+
+    // But the site is read once. This is the assertion that matters.
+    const jobs = await queryOne<{ n: number }>(
+      seeded.db,
+      `SELECT count(*) AS n FROM jobs WHERE kind = 'crawl_site' AND status = 'pending'`,
+    );
+    expect(Number(jobs?.n)).toBe(1);
+    expect(result.queuedCrawls).toBe(1);
+  });
+
+  test('the key frees itself once the crawl finishes', async () => {
+    // Suppressing duplicates must not suppress future work: the index covers
+    // only pending and running jobs for exactly this reason.
+    seeded = await seedDatabase('auto-crawl-key-frees');
+    await withDomain(seeded.db);
+    await card(seeded.db, 'refresh_research');
+
+    expect(
+      (await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId })).queuedCrawls,
+    ).toBe(1);
+
+    await seeded.db.execute({
+      sql: `UPDATE jobs SET status = 'done' WHERE kind = 'crawl_site'`,
+      args: [],
+    });
+    // Age the research so the per-person cooldown does not mask the result.
+    await seeded.db.execute({
+      sql: `UPDATE actions SET created_at = ? WHERE kind = 'refresh_research'`,
+      args: [new Date(Date.now() - 48 * 3_600_000).toISOString()],
+    });
+
+    await card(seeded.db, 'refresh_research');
+
+    expect(
+      (await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId })).queuedCrawls,
+    ).toBe(1);
+  });
+
   test('honours the limit so one workspace cannot hold the tick', async () => {
     seeded = await seedDatabase('auto-limit');
 

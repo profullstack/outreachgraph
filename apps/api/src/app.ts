@@ -63,6 +63,7 @@ import {
   BlueskyAccountError,
   connectBlueskyAccount,
   budgetStatus,
+  crawlDedupeKey,
   startContactImport,
   importContactChunk,
   finishContactImport,
@@ -3668,6 +3669,11 @@ async function approveRecommendation(
           url: target,
           ...(recommendation.campaign_id ? { campaignId: recommendation.campaign_id } : {}),
         },
+        // The same key `POST /prospects/by-url` uses, so approving research
+        // for twenty people at one company reads that company's site once.
+        // Without it a page naming fifty-seven people asks for that page
+        // fifty-seven times, and every read finds the same fifty-seven.
+        dedupeKey: crawlDedupeKey(target),
       });
       research = { queued: queued.queued, url: target };
     } else {

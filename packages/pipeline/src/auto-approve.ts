@@ -226,13 +226,25 @@ export async function autoApproveInternal(
       );
 
       if (site?.domain) {
+        const url = normaliseDomain(site.domain);
+
         const queued = await enqueue(db, {
           workspaceId: input.workspaceId,
           kind: 'crawl_site',
           payload: {
-            url: normaliseDomain(site.domain),
+            url,
             ...(row.campaign_id ? { campaignId: row.campaign_id } : {}),
           },
+          // One crawl per site at a time. Without this a research card is a
+          // crawl *per person*, and a page that names many people asks for the
+          // same page many times: production queued accenture.com 226 times,
+          // toptal.com 81, from a single pass. The site is read once and every
+          // person on it is served by that read.
+          //
+          // The index behind this covers only pending and running jobs, so the
+          // key frees itself the moment the crawl finishes — this suppresses
+          // duplicates, never future work.
+          dedupeKey: crawlDedupeKey(url),
         });
 
         if (queued.queued) queuedCrawls += 1;
@@ -307,6 +319,29 @@ export const AUTO_APPROVE_ACTOR = 'usr_auto_approve';
 function normaliseDomain(domain: string): string {
   const trimmed = domain.trim();
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+/**
+ * The key that collapses many requests for one site into a single crawl.
+ *
+ * Deliberately the same string `POST /prospects/by-url` has always used —
+ * `crawl:<host>`, without `www.` — because two paths deduping under different
+ * keys do not deduplicate against each other, which is the entire point. That
+ * route had this from the start; the approval paths never passed a key at all,
+ * which is why one of them could queue accenture.com 226 times while the other
+ * could not queue it twice.
+ *
+ * Keyed on the host rather than the full URL so that `example.com` and
+ * `https://www.example.com/` are one crawl, which is what they fetch.
+ */
+export function crawlDedupeKey(url: string): string {
+  try {
+    return `crawl:${new URL(url).hostname.replace(/^www\./, '')}`;
+  } catch {
+    // Unparseable is still deduplicable against itself, and the crawl job will
+    // fail on its own terms rather than here.
+    return `crawl:${url.toLowerCase()}`;
+  }
 }
 
 /** Every workspace with internal cards waiting, for the worker to sweep. */
