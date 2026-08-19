@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { CoinPayClient } from '@outreachgraph/payments';
+import { BLOCKCHAINS, CoinPayClient } from '@outreachgraph/payments';
 import { creditsFor } from '@outreachgraph/pipeline';
 import { queryOne } from '@outreachgraph/db';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
@@ -88,7 +88,7 @@ async function purchase(db: SeededDatabase['db'], paymentId = 'pay_stub'): Promi
     workspaceId: SEED.workspaceId,
     userId: SEED.userId,
     packId: 'pack_500',
-    blockchain: 'bitcoin',
+    blockchain: 'BTC',
     appUrl: 'https://outreachgraph.com',
   });
 
@@ -104,7 +104,7 @@ describe('startCreditPurchase', () => {
       workspaceId: SEED.workspaceId,
       userId: SEED.userId,
       packId: 'pack_500',
-      blockchain: 'bitcoin',
+      blockchain: 'BTC',
       appUrl: 'https://outreachgraph.com',
     });
 
@@ -132,7 +132,7 @@ describe('startCreditPurchase', () => {
         workspaceId: SEED.workspaceId,
         userId: SEED.userId,
         packId: 'pack_free_please',
-        blockchain: 'bitcoin',
+        blockchain: 'BTC',
         appUrl: 'https://outreachgraph.com',
       }),
     ).rejects.toThrow(BillingError);
@@ -147,10 +147,64 @@ describe('startCreditPurchase', () => {
         workspaceId: SEED.workspaceId,
         userId: SEED.userId,
         packId: 'pack_500',
-        blockchain: 'dogecoin',
+        blockchain: 'NOT_A_CHAIN',
         appUrl: 'https://outreachgraph.com',
       }),
     ).rejects.toThrow(BillingError);
+  });
+
+  test('refuses a chain name where a ticker code is required', async () => {
+    // The bug this pins. CoinPayPortal upper-cases and matches, so "bitcoin"
+    // becomes "BITCOIN", matches nothing, and is refused *after* the API key
+    // has been accepted — a 400 that looks exactly like a credentials fault.
+    seeded = await seedDatabase('billing-chainname');
+
+    await expect(
+      startCreditPurchase(seeded.db, stubbedClient(), {
+        organizationId: SEED.organizationId,
+        workspaceId: SEED.workspaceId,
+        userId: SEED.userId,
+        packId: 'pack_500',
+        blockchain: 'bitcoin',
+        appUrl: 'https://outreachgraph.com',
+      }),
+    ).rejects.toThrow(BillingError);
+  });
+
+  test('accepts a ticker in either case and sends the canonical form', async () => {
+    seeded = await seedDatabase('billing-chaincase');
+    let sent: string | undefined;
+
+    const stub = stubbedClient();
+    stub.createPayment = async (input) => {
+      sent = input.blockchain;
+      return {
+        paymentId: 'pay_case',
+        paymentUrl: 'https://coinpayportal.com/pay/pay_case',
+        paymentAddress: 'addr',
+        cryptoAmount: '1',
+        expiresAt: new Date().toISOString(),
+        status: 'pending',
+      };
+    };
+
+    await startCreditPurchase(seeded.db, stub, {
+      organizationId: SEED.organizationId,
+      workspaceId: SEED.workspaceId,
+      userId: SEED.userId,
+      packId: 'pack_500',
+      blockchain: 'usdc_sol',
+      appUrl: 'https://outreachgraph.com',
+    });
+
+    expect(sent).toBe('USDC_SOL');
+  });
+
+  test('does not offer a chain with no wallet behind it', () => {
+    // USDC_BASE is a valid code on the portal side. Offering it would produce
+    // "No wallet configured for this business" at the worst moment.
+    expect(BLOCKCHAINS).not.toContain('USDC_BASE' as never);
+    expect(BLOCKCHAINS).toContain('USDC_SOL');
   });
 });
 

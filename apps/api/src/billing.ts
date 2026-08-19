@@ -12,7 +12,7 @@
 import { CREDIT_PACKS, creditPackById, newId, type CreditPack } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import { creditsFor, grantCredits } from '@outreachgraph/pipeline';
-import { CoinPayClient, isBlockchain, type Blockchain } from '@outreachgraph/payments';
+import { CoinPayClient, normaliseBlockchain } from '@outreachgraph/payments';
 
 export class BillingError extends Error {
   readonly status: number;
@@ -65,11 +65,14 @@ export async function startCreditPurchase(
   const pack = creditPackById(input.packId);
   if (!pack) throw new BillingError(`No such credit pack: ${input.packId}`);
 
-  if (!isBlockchain(input.blockchain)) {
+  // Normalised rather than merely validated, because the portal upper-cases
+  // before matching: a UI sending `usdc_sol` means the same request, and
+  // refusing it would be a 400 nobody could explain.
+  const blockchain = normaliseBlockchain(input.blockchain);
+
+  if (!blockchain) {
     throw new BillingError(`Unsupported blockchain: ${input.blockchain}`);
   }
-
-  const blockchain: Blockchain = input.blockchain;
   const purchaseId = newId('creditPurchase');
 
   const payment = await coinpay.createPayment({

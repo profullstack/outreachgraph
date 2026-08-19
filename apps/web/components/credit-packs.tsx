@@ -18,16 +18,36 @@ import type { BillingView, CreditPackView } from '../lib/api';
  * webhook lands, which is the truth and is also resumable.
  */
 
+/**
+ * The chains on offer, as CoinPayPortal names them.
+ *
+ * Ticker codes rather than chain names because that is what the API matches
+ * on — it upper-cases the value and looks it up, so "bitcoin" is refused after
+ * the credentials have already been accepted, which reads as a broken account.
+ *
+ * Stablecoins first: this is a $15–$199 purchase, and quoting it in a currency
+ * that does not move between the quote and the confirmation is the difference
+ * between paying $59 and paying whatever BTC did in the next ten minutes.
+ */
 const CHAINS = [
-  { id: 'bitcoin', label: 'Bitcoin' },
-  { id: 'ethereum', label: 'Ethereum' },
-  { id: 'base', label: 'Base' },
-  { id: 'polygon', label: 'Polygon' },
-  { id: 'solana', label: 'Solana' },
+  { id: 'USDC_SOL', label: 'USDC on Solana' },
+  { id: 'USDC_POL', label: 'USDC on Polygon' },
+  { id: 'USDC_ETH', label: 'USDC on Ethereum' },
+  { id: 'USDT_SOL', label: 'USDT on Solana' },
+  { id: 'USDT_POL', label: 'USDT on Polygon' },
+  { id: 'BTC', label: 'Bitcoin' },
+  { id: 'ETH', label: 'Ethereum' },
+  { id: 'SOL', label: 'Solana' },
+  { id: 'POL', label: 'Polygon' },
+  { id: 'BCH', label: 'Bitcoin Cash' },
+  { id: 'DOGE', label: 'Dogecoin' },
+  { id: 'XRP', label: 'XRP' },
+  { id: 'ADA', label: 'Cardano' },
+  { id: 'BNB', label: 'BNB' },
 ] as const;
 
 export function CreditPacks({ initial }: { initial: BillingView }) {
-  const [chain, setChain] = useState<string>('bitcoin');
+  const [chain, setChain] = useState<string>('USDC_SOL');
   const [busy, setBusy] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
