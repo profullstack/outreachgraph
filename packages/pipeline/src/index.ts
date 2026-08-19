@@ -84,6 +84,12 @@ export {
 } from './contact-import';
 export { enrichContact, type EnrichContactResult } from './enrich-contact';
 export {
+  autoApproveInternal,
+  workspacesWithInternalBacklog,
+  AUTO_APPROVE_ACTOR,
+  type AutoApproveResult,
+} from './auto-approve';
+export {
   createResearchGrid,
   runResearchGrid,
   readResearchGrid,

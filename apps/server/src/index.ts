@@ -37,8 +37,10 @@ import {
   emitEvent,
   expireSignals,
   listeningCampaigns,
+  autoApproveInternal,
   enrichContact,
   processDeletion,
+  workspacesWithInternalBacklog,
   pruneWorkflowEvents,
   regenerateRecommendations,
   rescoreProspect,
@@ -639,6 +641,20 @@ async function tick(): Promise<void> {
   // a separate table precisely so this can be aggressive.
   const prunedEvents = await pruneWorkflowEvents(db);
   if (prunedEvents > 0) console.log(`pruned ${prunedEvents} workflow events`);
+
+  // Cards that reach nobody are cleared before the queue drains, so the crawls
+  // they enqueue run on this tick rather than waiting for the next one.
+  for (const workspaceId of await workspacesWithInternalBacklog(db)) {
+    const cleared = await autoApproveInternal(db, { workspaceId });
+
+    if (cleared.approved > 0) {
+      console.log(
+        `auto-approved ${cleared.approved} internal card(s) in ${workspaceId}` +
+          `${cleared.queuedCrawls > 0 ? `, queued ${cleared.queuedCrawls} crawl(s)` : ''}` +
+          `${cleared.refused > 0 ? `, ${cleared.refused} refused by policy` : ''}`,
+      );
+    }
+  }
 
   // The queue drains before the send sweep, so anything discovered this tick
   // can go out on the same tick rather than waiting for the next one.
