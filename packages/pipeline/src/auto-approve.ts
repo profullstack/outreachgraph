@@ -42,11 +42,32 @@ import { enqueue } from './queue';
  */
 const AUTO_APPROVED: readonly ActionKind[] = ['refresh_research', 'observe', 'wait'];
 
+/**
+ * How long a person is left alone after their research has been run.
+ *
+ * This exists because automating the approval turned a visible backlog into
+ * an invisible loop. A `refresh_research` card is proposed *because* we have
+ * nothing to say about someone; approving it re-reads their company's site;
+ * if that still yields nothing, the next pass proposes the same card again.
+ * While a human had to click, the cards simply piled up — production held 179
+ * — and the waste was at least in plain sight. Approving them automatically
+ * closed the loop and turned it into crawl traffic nobody was watching:
+ * within minutes of shipping, one person had three cards and 195 crawls were
+ * queued.
+ *
+ * A day is chosen because that is the shortest interval over which a company
+ * website plausibly changes. Shorter re-reads the same bytes; much longer
+ * would delay picking up a genuine change.
+ */
+const RESEARCH_COOLDOWN_HOURS = 24;
+
 export interface AutoApproveResult {
   readonly considered: number;
   readonly approved: number;
   readonly refused: number;
   readonly queuedCrawls: number;
+  /** Closed without re-crawling, because the answer would not have changed. */
+  readonly cooledDown: number;
 }
 
 interface PendingRow {
@@ -82,7 +103,7 @@ export async function autoApproveInternal(
   // Absent workspace or the setting turned off. Not an error: a workspace that
   // wants to watch its own research go by is entitled to.
   if (!workspace || workspace.auto_approve_internal !== 1) {
-    return { considered: 0, approved: 0, refused: 0, queuedCrawls: 0 };
+    return { considered: 0, approved: 0, refused: 0, queuedCrawls: 0, cooledDown: 0 };
   }
 
   const placeholders = AUTO_APPROVED.map(() => '?').join(', ');
@@ -105,8 +126,18 @@ export async function autoApproveInternal(
   let approved = 0;
   let refused = 0;
   let queuedCrawls = 0;
+  let cooledDown = 0;
 
   for (const row of rows) {
+    // Research we have already done for this person, recently enough that
+    // doing it again would read the same page. Closed rather than approved:
+    // approving it would enqueue the crawl that creates the next card.
+    if (row.action === 'refresh_research' && (await researchedRecently(db, row.person_id))) {
+      await closeWithoutCrawling(db, input.workspaceId, row.id, row.action);
+      cooledDown += 1;
+      continue;
+    }
+
     const decision = evaluatePolicy({
       network: row.network as Network,
       action: row.action as ActionKind,
@@ -209,7 +240,64 @@ export async function autoApproveInternal(
     }
   }
 
-  return { considered: rows.length, approved, refused, queuedCrawls };
+  return { considered: rows.length, approved, refused, queuedCrawls, cooledDown };
+}
+
+/**
+ * Whether this person's research has already run inside the cooldown.
+ *
+ * Counted from `actions`, which is written on every approval — automatic or
+ * clicked — so a human who approved the card an hour ago also suppresses the
+ * automatic re-run. The alternative, looking at crawl jobs, would miss a
+ * person whose company has no domain and whose card therefore never produced
+ * one.
+ */
+async function researchedRecently(db: Client, personId: string): Promise<boolean> {
+  const since = new Date(Date.now() - RESEARCH_COOLDOWN_HOURS * 3_600_000).toISOString();
+
+  const row = await queryOne<{ n: number }>(
+    db,
+    `SELECT count(*) AS n FROM actions
+      WHERE person_id = ? AND kind = 'refresh_research' AND created_at >= ?`,
+    [personId, since],
+  );
+
+  return Number(row?.n ?? 0) > 0;
+}
+
+/**
+ * Retires a card whose answer is already known, without spending a crawl.
+ *
+ * `skipped` rather than `approved`, because approving would claim we went and
+ * looked. The status already exists for exactly this — a card that is over
+ * without having been acted on — and it keeps the card out of the queue
+ * without inventing a fourth outcome.
+ */
+async function closeWithoutCrawling(
+  db: Client,
+  workspaceId: string,
+  recommendationId: string,
+  action: string,
+): Promise<void> {
+  await db.batch([
+    {
+      sql: `UPDATE recommendations SET status = 'skipped' WHERE id = ?`,
+      args: [recommendationId],
+    },
+    {
+      sql: `INSERT INTO audit_events (id, workspace_id, actor_kind, actor_id, event_type,
+            entity_kind, entity_id, detail_json, occurred_at)
+            VALUES (?, ?, 'system', ?, 'recommendation.research_cooldown', 'recommendation', ?, ?, ?)`,
+      args: [
+        newId('auditEvent'),
+        workspaceId,
+        AUTO_APPROVE_ACTOR,
+        recommendationId,
+        JSON.stringify({ action, cooldownHours: RESEARCH_COOLDOWN_HOURS }),
+        now(),
+      ],
+    },
+  ]);
 }
 
 /** Who the audit trail credits for an unattended approval. */

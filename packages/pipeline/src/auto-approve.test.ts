@@ -194,9 +194,126 @@ describe('autoApproveInternal', () => {
     );
   });
 
+  test('does not re-research somebody researched today', async () => {
+    // The loop this closes. A research card exists because we had nothing to
+    // say; approving it re-crawls; if that yields nothing the card returns.
+    // Automating the click turned a visible backlog into invisible crawl
+    // traffic — one person reached three cards within minutes.
+    seeded = await seedDatabase('auto-cooldown');
+    await withDomain(seeded.db);
+    await card(seeded.db, 'refresh_research');
+
+    const first = await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId });
+    expect(first.approved).toBe(1);
+    expect(first.queuedCrawls).toBe(1);
+
+    // The next pass proposes it again, as the pipeline does.
+    const again = await card(seeded.db, 'refresh_research');
+    const second = await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId });
+
+    expect(second.approved).toBe(0);
+    expect(second.cooledDown).toBe(1);
+    // Crucially: no second crawl. That is what stops the loop.
+    expect(second.queuedCrawls).toBe(0);
+
+    const rec = await queryOne<{ status: string }>(
+      seeded.db,
+      'SELECT status FROM recommendations WHERE id = ?',
+      [again],
+    );
+    // Closed, not approved — approving would claim we went and looked.
+    expect(rec?.status).toBe('skipped');
+  });
+
+  test('a cooled-down card leaves an auditable reason', async () => {
+    seeded = await seedDatabase('auto-cooldown-audit');
+    await withDomain(seeded.db);
+    await card(seeded.db, 'refresh_research');
+    await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId });
+
+    const id = await card(seeded.db, 'refresh_research');
+    await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId });
+
+    const audit = await queryOne<{ event_type: string }>(
+      seeded.db,
+      `SELECT event_type FROM audit_events WHERE entity_id = ?
+        AND event_type = 'recommendation.research_cooldown'`,
+      [id],
+    );
+
+    expect(audit?.event_type).toBe('recommendation.research_cooldown');
+  });
+
+  test('research outside the cooldown runs again', async () => {
+    // The cooldown must expire, or a company that genuinely changed is never
+    // re-read.
+    seeded = await seedDatabase('auto-cooldown-expired');
+    await withDomain(seeded.db);
+    await card(seeded.db, 'refresh_research');
+    await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId });
+
+    // Age the recorded research past the window.
+    await seeded.db.execute({
+      sql: `UPDATE actions SET created_at = ? WHERE kind = 'refresh_research'`,
+      args: [new Date(Date.now() - 48 * 3_600_000).toISOString()],
+    });
+
+    await card(seeded.db, 'refresh_research');
+    const result = await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId });
+
+    expect(result.approved).toBe(1);
+    expect(result.cooledDown).toBe(0);
+  });
+
+  test('a human approval also suppresses the automatic re-run', async () => {
+    // The cooldown counts actions, not crawl jobs, so it does not matter who
+    // approved the card an hour ago.
+    seeded = await seedDatabase('auto-cooldown-human');
+    await withDomain(seeded.db);
+
+    // Stands in for a card a person clicked an hour ago: the action row is
+    // what both paths write, and is what the cooldown counts.
+    const clicked = await card(seeded.db, 'refresh_research');
+    await seeded.db.execute({
+      sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
+            mode, status, created_at)
+            VALUES (?, ?, ?, ?, 'refresh_research', 'website', 'manual', 'queued', ?)`,
+      args: [newId('action'), SEED.workspaceId, clicked, SEED.personId, now()],
+    });
+    await seeded.db.execute({
+      sql: `UPDATE recommendations SET status = 'approved' WHERE id = ?`,
+      args: [clicked],
+    });
+
+    await card(seeded.db, 'refresh_research');
+    const result = await autoApproveInternal(seeded.db, { workspaceId: SEED.workspaceId });
+
+    expect(result.cooledDown).toBe(1);
+    expect(result.queuedCrawls).toBe(0);
+  });
+
   test('honours the limit so one workspace cannot hold the tick', async () => {
     seeded = await seedDatabase('auto-limit');
-    for (let index = 0; index < 5; index += 1) await card(seeded.db, 'refresh_research');
+
+    // Distinct people, because the cooldown is per person: five cards for one
+    // person is one approval and four cooldowns, which is correct and is not
+    // what this test is about.
+    for (let index = 0; index < 5; index += 1) {
+      const personId = `per_limit_${index}`;
+      await seeded.db.execute({
+        sql: `INSERT INTO people (id, display_name, status, identity_confidence, created_at,
+              updated_at) VALUES (?, ?, 'qualified', 0.9, ?, ?)`,
+        args: [personId, `Limit ${index}`, now(), now()],
+      });
+      await seeded.db.execute({
+        sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action,
+              network, priority, reason, policy_status, policy_version, expected_goal, status,
+              created_at)
+              VALUES (?, ?, ?, ?, 'refresh_research', 'website', 50, 'because',
+              'allow_with_approval', '2026-08-11', 'qualify', 'pending', ?)`,
+        args: [newId('recommendation'), SEED.workspaceId, SEED.campaignId, personId, now()],
+      });
+    }
 
     const result = await autoApproveInternal(seeded.db, {
       workspaceId: SEED.workspaceId,
