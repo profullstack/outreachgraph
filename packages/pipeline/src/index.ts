@@ -87,6 +87,7 @@ export {
   autoApproveInternal,
   workspacesWithInternalBacklog,
   AUTO_APPROVE_ACTOR,
+  crawlDedupeKey,
   type AutoApproveResult,
 } from './auto-approve';
 export {
