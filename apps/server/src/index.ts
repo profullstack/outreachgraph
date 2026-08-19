@@ -37,6 +37,7 @@ import {
   emitEvent,
   expireSignals,
   listeningCampaigns,
+  enrichContact,
   processDeletion,
   pruneWorkflowEvents,
   regenerateRecommendations,
@@ -585,6 +586,22 @@ async function runJob(job: QueuedJob): Promise<void> {
       const { deletionJobId } = job.payload as { deletionJobId?: string };
       if (!deletionJobId) throw new Error('process_deletion needs deletionJobId');
       await processDeletion(db, deletionJobId);
+      return;
+    }
+    case 'enrich_contact': {
+      const { personId } = job.payload as { personId?: string };
+      if (!personId) throw new Error('enrich_contact needs personId');
+
+      const result = await enrichContact(db, { workspaceId: job.workspaceId, personId });
+
+      // A miss is the majority answer and must not read as a failure: most
+      // addresses have no published profile, and logging seventeen thousand
+      // "failed" lines would bury the ones that actually broke.
+      if (result.found) {
+        console.log(
+          `enriched ${personId}: ${result.identities} identit${result.identities === 1 ? 'y' : 'ies'}`,
+        );
+      }
       return;
     }
     default:

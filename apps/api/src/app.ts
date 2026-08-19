@@ -63,6 +63,9 @@ import {
   BlueskyAccountError,
   connectBlueskyAccount,
   budgetStatus,
+  startContactImport,
+  importContactChunk,
+  finishContactImport,
   createCadence,
   createRule,
   createResearchGrid,
@@ -217,6 +220,16 @@ const STARTED_AT = Date.now();
  * sure what was sent.
  */
 const BULK_APPROVE_MAX = 200;
+
+/**
+ * Rows accepted in one import chunk.
+ *
+ * Small enough that a chunk is a fast request and a retry is cheap, large
+ * enough that seventeen thousand rows is thirty-four calls rather than a
+ * thousand. Each row does its own inserts, so this is the ceiling on how long
+ * one request can hold a connection.
+ */
+const IMPORT_CHUNK_MAX = 500;
 
 /** Groups refusals by gate, keeping the first reason as the example. */
 function tallyHold(
@@ -1540,6 +1553,187 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       filter,
       channel,
     });
+  });
+
+  // ------------------------------------------------------- contact imports
+  //
+  // Three calls rather than one upload, because seventeen thousand rows is not
+  // a request. The browser reads the file it already has, posts batches, and
+  // finishes. Cleaning happens server-side on every row regardless: a client
+  // that decides which rows are real is a client that can be told to lie.
+
+  api.post('/contacts/imports', async (c) => {
+    const actor = c.get('actor');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('importing contacts');
+
+    const body = await parseBody(
+      c.req.raw,
+      z.object({
+        filename: z.string().optional(),
+        campaignId: z.string().optional(),
+        /**
+         * How these people came to be on the list. Required in practice
+         * because it is the only moment the answer is cheap to capture, and
+         * the thing a deliverability complaint actually asks for.
+         */
+        consentBasis: z.string().optional(),
+        consentSource: z.string().optional(),
+      }),
+    );
+
+    const importId = await startContactImport(c.get('db'), {
+      workspaceId: actor.workspaceId,
+      userId: actor.userId,
+      ...(body.filename ? { filename: body.filename } : {}),
+      ...(body.campaignId ? { campaignId: body.campaignId } : {}),
+      ...(body.consentBasis ? { consentBasis: body.consentBasis } : {}),
+      ...(body.consentSource ? { consentSource: body.consentSource } : {}),
+    });
+
+    await repo.audit(c.get('db'), {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'contacts.import_started',
+      entityKind: 'contact_import',
+      entityId: importId,
+      detail: { filename: body.filename, consentBasis: body.consentBasis ?? 'opt_in' },
+    });
+
+    return c.json({ importId }, 201);
+  });
+
+  api.post('/contacts/imports/:id/rows', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('importing contacts');
+
+    const body = await parseBody(
+      c.req.raw,
+      z.object({
+        startRow: z.number().int().nonnegative().optional(),
+        rows: z
+          .array(
+            z.object({
+              email: z.string().optional(),
+              name: z.string().optional(),
+              firstName: z.string().optional(),
+              lastName: z.string().optional(),
+              company: z.string().optional(),
+              title: z.string().optional(),
+              location: z.string().optional(),
+            }),
+          )
+          .max(IMPORT_CHUNK_MAX),
+      }),
+    );
+
+    const batch = await queryOne<{ workspace_id: string }>(
+      db,
+      'SELECT workspace_id FROM contact_imports WHERE id = ?',
+      [c.req.param('id')],
+    );
+
+    // Scoped like every other read: an import id from another workspace is a
+    // 404, not somebody else's list being appended to.
+    if (!batch || batch.workspace_id !== actor.workspaceId) {
+      throw ApiError.notFound('import');
+    }
+
+    const result = await importContactChunk(db, c.req.param('id'), body.rows, {
+      ...(body.startRow === undefined ? {} : { startRow: body.startRow }),
+    });
+
+    return c.json(result);
+  });
+
+  /**
+   * Closes the import and queues the enrichment.
+   *
+   * One job per person rather than one for the batch: seventeen thousand
+   * lookups cannot happen inside a request, a single failure should cost one
+   * person, and the worker already paces itself.
+   */
+  api.post('/contacts/imports/:id/finish', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('importing contacts');
+
+    const importId = c.req.param('id');
+
+    const batch = await queryOne<{ workspace_id: string; imported: number }>(
+      db,
+      'SELECT workspace_id, imported FROM contact_imports WHERE id = ?',
+      [importId],
+    );
+
+    if (!batch || batch.workspace_id !== actor.workspaceId) throw ApiError.notFound('import');
+
+    const body = await parseBody(c.req.raw, z.object({ enrich: z.boolean().optional() }));
+
+    let queued = 0;
+
+    if (body.enrich !== false) {
+      const people = await queryAll<{ person_id: string }>(
+        db,
+        `SELECT p.person_id FROM person_emails p
+           JOIN person_consent pc ON pc.person_id = p.person_id
+          WHERE pc.import_id = ?`,
+        [importId],
+      );
+
+      for (const person of people) {
+        const job = await enqueue(db, {
+          workspaceId: actor.workspaceId,
+          kind: 'enrich_contact',
+          payload: { personId: person.person_id },
+        });
+        if (job.queued) queued += 1;
+      }
+    }
+
+    await finishContactImport(db, importId);
+
+    return c.json({ finished: true, enrichmentQueued: queued });
+  });
+
+  /** The batch, and what it could not use. */
+  api.get('/contacts/imports/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const importId = c.req.param('id');
+
+    const batch = await queryOne<Record<string, unknown>>(
+      db,
+      `SELECT id, filename, consent_basis, consent_source, total_rows, imported, merged,
+              rejected, status, created_at
+         FROM contact_imports WHERE id = ? AND workspace_id = ?`,
+      [importId, actor.workspaceId],
+    );
+
+    if (!batch) throw ApiError.notFound('import');
+
+    // Grouped, plus a sample. "We dropped 900 rows" is not actionable; "412 of
+    // them were placeholders, here are twenty" lets somebody fix the export.
+    const [summary, sample] = await Promise.all([
+      queryAll<{ reason: string; n: number }>(
+        db,
+        `SELECT reason, count(*) AS n FROM contact_import_rejects
+          WHERE import_id = ? GROUP BY reason ORDER BY n DESC`,
+        [importId],
+      ),
+      queryAll<{ row_number: number; email: string; reason: string; detail: string }>(
+        db,
+        `SELECT row_number, email, reason, detail FROM contact_import_rejects
+          WHERE import_id = ? ORDER BY row_number LIMIT 50`,
+        [importId],
+      ),
+    ]);
+
+    return c.json({ import: batch, rejectsByReason: summary, rejectSample: sample });
   });
 
   /**

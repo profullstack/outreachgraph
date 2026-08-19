@@ -155,3 +155,11 @@ export {
   type SubredditSuggestion,
   type SuggestSubredditsOptions,
 } from './feeds';
+export {
+  GRAVATAR_NETWORKS,
+  gravatarHash,
+  lookupGravatar,
+  type GravatarAccount,
+  type GravatarOptions,
+  type GravatarProfile,
+} from './gravatar';

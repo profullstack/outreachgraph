@@ -31,6 +31,14 @@ export const JOB_KINDS = [
   /** Expand a keyword into real companies and queue a crawl for each. */
   'discover_domains',
   /**
+   * Find the rest of an imported contact from their address alone.
+   *
+   * One job per person rather than one per import, so seventeen thousand
+   * lookups drain at the worker's pace instead of as one request that cannot
+   * finish, and so a single failure costs one person.
+   */
+  'enrich_contact',
+  /**
    * Re-decide people holding a card that predates their evidence.
    *
    * Needed because a recommendation is decided once and never revisited, and

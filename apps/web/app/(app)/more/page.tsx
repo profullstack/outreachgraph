@@ -16,6 +16,11 @@ const LINKS = [
     hint: 'Your sending mailbox, Bluesky, alerts, link tracking, autopilot limits',
   },
   {
+    href: '/import',
+    label: 'Import contacts',
+    hint: 'A CSV of people who already know you — cleaned and checked on the way in',
+  },
+  {
     href: '/billing',
     label: 'Billing',
     hint: 'Your plan, what is left of it this month, and prospect credits',

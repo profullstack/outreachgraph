@@ -13,5 +13,6 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "//": "Tests are excluded because they import `bun:test`, which the Next type environment has no types for. They are still typechecked by the root config, which does.",
+  "exclude": ["node_modules", "**/*.test.ts", "**/*.test.tsx"]
 }
