@@ -28,6 +28,7 @@ import {
   type FallbackEntry,
 } from '@outreachgraph/ai';
 import { ImapReader, ResendMailer } from '@outreachgraph/email';
+import { CoinPayClient } from '@outreachgraph/payments';
 import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { pruneSessions } from '../../api/src/auth';
@@ -323,9 +324,40 @@ if (!appUrl && ENVIRONMENT === 'production') {
  */
 const commitHash = process.env.COMMIT_HASH ?? process.env.RAILWAY_GIT_COMMIT_SHA;
 
+/**
+ * Selling credits, if this deployment has been given the means to.
+ *
+ * All three variables or none. A client holding two of them fails at the
+ * moment a customer clicks Buy, which is the worst possible time to discover
+ * a missing environment variable; refusing to construct it means `/billing`
+ * reports honestly that it cannot take payments, and the checkout button is
+ * never offered in the first place.
+ */
+const coinpay =
+  process.env.COINPAY_API_KEY &&
+  process.env.COINPAY_BUSINESS_ID &&
+  process.env.COINPAY_WEBHOOK_SECRET
+    ? new CoinPayClient({
+        apiKey: process.env.COINPAY_API_KEY,
+        businessId: process.env.COINPAY_BUSINESS_ID,
+        webhookSecret: process.env.COINPAY_WEBHOOK_SECRET,
+        ...(process.env.COINPAY_BASE_URL ? { baseUrl: process.env.COINPAY_BASE_URL } : {}),
+      })
+    : undefined;
+
+if (!coinpay) {
+  console.log('CoinPayPortal credentials absent: credit packs are not for sale on this deployment');
+}
+
+// Where CoinPayPortal should send webhooks. The API and the PWA share a
+// hostname in production, so this is the same origin the browser uses.
+const apiUrl = process.env.API_URL ?? appUrl;
+
 // ---------------------------------------------------------------------- api
 const api = createApp({
   db,
+  ...(coinpay ? { coinpay } : {}),
+  ...(apiUrl ? { apiUrl } : {}),
   ...(model ? { model } : {}),
   ...(mailer ? { mailer } : {}),
   ...(encryptionKey ? { encryptionKey } : {}),

@@ -69,6 +69,13 @@ export {
   type BudgetStatus,
 } from './metering';
 export {
+  creditsFor,
+  grantCredits,
+  organizationFor,
+  settleProspectCredits,
+  spendProspectCredit,
+} from './credits';
+export {
   createResearchGrid,
   runResearchGrid,
   readResearchGrid,

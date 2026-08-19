@@ -18,6 +18,7 @@ import {
 import { now, type Client } from '@outreachgraph/db';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { budgetStatus, planFor, recordResearchUsage, usageFor } from './metering';
+import { grantCredits } from './credits';
 
 let seeded: SeededDatabase | undefined;
 
@@ -276,6 +277,100 @@ describe('budgetStatus', () => {
     // The usage is still counted. An exempt account is one that is not
     // refused, not one that stops being measured.
     expect(status.usage.prospectsContacted).toBe(free.prospectsPerMonth + 5);
+  });
+
+  test('prepaid credits cover the overage, and are charged for it', async () => {
+    seeded = await seedDatabase('meter-credits');
+    const { db } = seeded;
+
+    const free = planById('free');
+    await grantCredits(db, {
+      organizationId: SEED.organizationId,
+      credits: 100,
+      paymentId: 'pay_meter',
+    });
+
+    // Three past the monthly allowance.
+    for (let index = 0; index < free.prospectsPerMonth + 3; index += 1) {
+      const id = `per_cr_${index}`;
+      await person(db, id);
+      await contacted(db, id, new Date(AT.getTime() + index * 60_000).toISOString());
+    }
+
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.exhausted).toBe(false);
+    expect(status.onCredits).toBe(true);
+    // Charged for exactly the three the plan did not cover.
+    expect(status.credits.spent).toBe(3);
+    expect(status.credits.remaining).toBe(97);
+  });
+
+  test('refuses again once the credits are gone, and says so', async () => {
+    seeded = await seedDatabase('meter-credits-out');
+    const { db } = seeded;
+
+    const free = planById('free');
+    await grantCredits(db, {
+      organizationId: SEED.organizationId,
+      credits: 2,
+      paymentId: 'pay_small',
+    });
+
+    for (let index = 0; index < free.prospectsPerMonth + 2; index += 1) {
+      const id = `per_out_${index}`;
+      await person(db, id);
+      await contacted(db, id, new Date(AT.getTime() + index * 60_000).toISOString());
+    }
+
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.credits.remaining).toBe(0);
+    expect(status.exhausted).toBe(true);
+    expect(status.onCredits).toBe(false);
+    expect(status.reason).toContain('prepaid credits behind it are spent');
+  });
+
+  test('tells an account with no credits how to continue', async () => {
+    seeded = await seedDatabase('meter-credits-none');
+    const { db } = seeded;
+
+    const free = planById('free');
+    for (let index = 0; index < free.prospectsPerMonth; index += 1) {
+      const id = `per_none_${index}`;
+      await person(db, id);
+      await contacted(db, id);
+    }
+
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.exhausted).toBe(true);
+    expect(status.reason).toContain('Buy prospect credits');
+  });
+
+  test('does not spend credits while the plan still has room', async () => {
+    // Charging here would bill a customer for prospects they had already paid
+    // for with their subscription.
+    seeded = await seedDatabase('meter-credits-unused');
+    const { db } = seeded;
+
+    await grantCredits(db, {
+      organizationId: SEED.organizationId,
+      credits: 100,
+      paymentId: 'pay_unused',
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      const id = `per_room_${index}`;
+      await person(db, id);
+      await contacted(db, id);
+    }
+
+    const status = await budgetStatus(db, SEED.workspaceId, AT);
+
+    expect(status.onCredits).toBe(false);
+    expect(status.credits.spent).toBe(0);
+    expect(status.credits.remaining).toBe(100);
   });
 });
 

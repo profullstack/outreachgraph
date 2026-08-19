@@ -43,6 +43,8 @@ export const ID_PREFIXES = {
   job: 'job',
   policyRule: 'pol',
   usageEvent: 'usg',
+  creditLedgerEntry: 'crd',
+  creditPurchase: 'cpu',
   auditEvent: 'aud',
   stageEvent: 'stg',
   notification: 'ntf',

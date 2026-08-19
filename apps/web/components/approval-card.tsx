@@ -272,6 +272,18 @@ export function ApprovalCard({ card }: { card: Card }) {
       {error ? (
         <p role="alert" className="text-hot mt-3 text-sm">
           {error}
+          {/* A refusal with nowhere to go about it reads as a bug. The budget
+              gate is the one denial here that the reviewer can actually clear
+              themselves, so it is the one that gets a way out. */}
+          {/budget|credit/i.test(error) ? (
+            <>
+              {' '}
+              <a href="/billing" className="underline">
+                Buy credits
+              </a>
+              .
+            </>
+          ) : null}
         </p>
       ) : null}
 

@@ -18,10 +18,12 @@ import {
   newId,
   periodStart,
   planById,
+  type CreditBalance,
   type Plan,
   type UsageSnapshot,
 } from '@outreachgraph/domain';
 import { queryOne, type Client } from '@outreachgraph/db';
+import { creditsFor, organizationFor, settleProspectCredits } from './credits';
 
 /**
  * What this workspace has used in the calendar month containing `at`.
@@ -120,6 +122,10 @@ export interface BudgetStatus {
   readonly exhausted: boolean;
   readonly plan: Plan;
   readonly usage: UsageSnapshot;
+  /** Prepaid credits behind the plan's allowance. */
+  readonly credits: CreditBalance;
+  /** True while the month's allowance is spent and credits are covering it. */
+  readonly onCredits: boolean;
   readonly reason?: string;
 }
 
@@ -137,20 +143,51 @@ export async function budgetStatus(
   workspaceId: string,
   at: Date = new Date(),
 ): Promise<BudgetStatus> {
-  const [plan, usage] = await Promise.all([
+  const [organizationId, plan, usage] = await Promise.all([
+    organizationFor(db, workspaceId),
     planFor(db, workspaceId),
     usageFor(db, workspaceId, at),
   ]);
 
-  const exhausted = usage.prospectsContacted >= plan.prospectsPerMonth;
+  // Two allowances, checked in the order they are consumed: the monthly one
+  // first because it refills and costs nothing to use, then prepaid credits.
+  // Spending credits while the plan still has room would be charging a
+  // customer for something they had already paid for.
+  const overPlan = usage.prospectsContacted >= plan.prospectsPerMonth;
+
+  // Settle before reading the balance, or the balance is the one from before
+  // this month's overage and the gate opens on credits that are already owed.
+  // Only when there is genuinely an overage: the common path does no writes.
+  if (organizationId && usage.prospectsContacted > plan.prospectsPerMonth) {
+    await settleProspectCredits(db, {
+      organizationId,
+      workspaceId,
+      allowance: plan.prospectsPerMonth,
+      periodStartIso: periodStart(at).toISOString(),
+      at,
+    });
+  }
+
+  const credits = organizationId
+    ? await creditsFor(db, organizationId)
+    : { granted: 0, spent: 0, remaining: 0 };
+  const onCredits = overPlan && credits.remaining > 0;
+  const exhausted = overPlan && credits.remaining <= 0;
 
   return {
     exhausted,
     plan,
     usage,
+    credits,
+    onCredits,
     ...(exhausted
       ? {
-          reason: `The ${plan.name} plan covers ${plan.prospectsPerMonth} prospects a month and ${usage.prospectsContacted} have been contacted.`,
+          reason:
+            `The ${plan.name} plan covers ${plan.prospectsPerMonth} prospects a month and ` +
+            `${usage.prospectsContacted} have been contacted. ` +
+            (credits.granted > 0
+              ? 'The prepaid credits behind it are spent too.'
+              : 'Buy prospect credits or move up a plan to continue.'),
         }
       : {}),
   };
