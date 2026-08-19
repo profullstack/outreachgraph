@@ -3,6 +3,7 @@
 import { useCallback, useState } from 'react';
 import { channelForNetwork, isNetwork, type Channel } from '@outreachgraph/domain';
 import { ApprovalCard } from './approval-card';
+import { ApproveAll } from './approve-all';
 import type { ApprovalBucket, ApprovalCard as Card } from '../lib/types';
 
 export type ApprovalFilter = 'all' | ApprovalBucket;
@@ -190,6 +191,11 @@ export function ApprovalQueue({
           />
         ))}
       </nav>
+
+      {/* Scoped to the tabs above it, so "approve all" means the list you are
+          looking at rather than the whole queue — which is the only reading
+          that is safe next to a channel filter. */}
+      <ApproveAll filter={filter} channel={channel} pending={visible.length} />
 
       {visible.length === 0 ? (
         <EmptyState
