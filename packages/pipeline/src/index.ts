@@ -76,6 +76,14 @@ export {
   spendProspectCredit,
 } from './credits';
 export {
+  finishContactImport,
+  importContactChunk,
+  startContactImport,
+  type ChunkResult,
+  type StartImportInput,
+} from './contact-import';
+export { enrichContact, type EnrichContactResult } from './enrich-contact';
+export {
   createResearchGrid,
   runResearchGrid,
   readResearchGrid,
