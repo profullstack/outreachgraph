@@ -19,7 +19,9 @@ import {
   executeActionSchema,
   backfillDraftsSchema,
   recordReplySchema,
+  forgotPasswordSchema,
   loginSchema,
+  resetPasswordSchema,
   privacyRequestSchema,
   registerSchema,
   snoozeRecommendationSchema,
@@ -40,9 +42,11 @@ import {
   isEmailVerified,
   login,
   logout,
+  mintPasswordResetToken,
   mintVerificationToken,
   readCookie,
   registerUser,
+  resetPassword,
   SESSION_COOKIE,
   sessionCookie,
   verifyEmailToken,
@@ -137,7 +141,13 @@ import {
   suggestSubreddits,
   FeedRateLimitError,
 } from '@outreachgraph/providers';
-import { ConsoleMailer, SMTP_PRESETS, verificationEmail, type Mailer } from '@outreachgraph/email';
+import {
+  ConsoleMailer,
+  passwordResetEmail,
+  SMTP_PRESETS,
+  verificationEmail,
+  type Mailer,
+} from '@outreachgraph/email';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
 import {
@@ -456,6 +466,63 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     c.header('set-cookie', sessionCookie(session.token, session.expiresAt, secure));
     return c.json({ userId: session.actor.userId, workspaceId: session.actor.workspaceId });
+  });
+
+  /**
+   * Asks for a reset link.
+   *
+   * Always answers `{ sent: true }`, whatever happened. An endpoint that says
+   * "no such account" is an account-enumeration oracle wearing a helpful face,
+   * and this one is unauthenticated and public. The mailer failing is likewise
+   * invisible to the caller and audited instead, so a broken SMTP credential
+   * does not become a way to probe which addresses are registered.
+   */
+  auth.post('/password/forgot', async (c) => {
+    const body = await parseBody(c.req.raw, forgotPasswordSchema);
+    const minted = await mintPasswordResetToken(options.db, body.email);
+
+    if (minted) {
+      const link = `${options.appUrl ?? 'http://localhost:8080'}/reset?token=${minted.token}`;
+      try {
+        await (options.mailer ?? new ConsoleMailer()).send(passwordResetEmail(minted.email, link));
+      } catch (error) {
+        await repo.audit(options.db, {
+          actorKind: 'system',
+          eventType: 'email.send_failed',
+          entityKind: 'user',
+          entityId: minted.userId,
+          detail: { kind: 'password_reset', message: String(error) },
+        });
+      }
+    }
+
+    return c.json({ sent: true });
+  });
+
+  /**
+   * Completes a reset from the emailed link.
+   *
+   * Unauthenticated, like `/verify`, because the link is usually opened in
+   * whichever browser the mail app hands it to — and by definition the person
+   * using it cannot sign in. It does not mint a session: every session for the
+   * user was just deleted, and sending them through the login screen with the
+   * password they chose thirty seconds ago proves it took.
+   */
+  auth.post('/password/reset', async (c) => {
+    const body = await parseBody(c.req.raw, resetPasswordSchema);
+    const result = await resetPassword(options.db, body.token, body.password);
+
+    await repo.audit(options.db, {
+      actorKind: 'user',
+      actorId: result.userId,
+      eventType: 'auth.password_reset',
+      entityKind: 'user',
+      entityId: result.userId,
+      detail: { email: result.email },
+    });
+
+    c.header('set-cookie', clearedCookie(secure));
+    return c.json({ reset: true, email: result.email });
   });
 
   auth.post('/logout', async (c) => {

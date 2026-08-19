@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 
@@ -74,7 +75,13 @@ export function LoginForm() {
         />
         {mode === 'register' ? (
           <span className="text-ink-muted text-xs">At least 12 characters.</span>
-        ) : null}
+        ) : (
+          // Only when signing in. Offering a reset to someone in the middle of
+          // choosing a password reads as an error message.
+          <Link href="/forgot" className="text-ink-muted self-start text-xs underline">
+            Forgot your password?
+          </Link>
+        )}
       </label>
 
       {error ? (

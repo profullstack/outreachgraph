@@ -40,7 +40,7 @@ export {
   type IncomingMessage,
   type MailReader,
 } from './imap';
-export { verificationEmail } from './templates';
+export { passwordResetEmail, verificationEmail } from './templates';
 export {
   dailyDigestEmail,
   leadAlertEmail,

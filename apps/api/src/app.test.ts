@@ -955,6 +955,269 @@ describe('email verification', () => {
   });
 });
 
+describe('password reset', () => {
+  /** Registers an account and returns its id, through an unguarded app. */
+  async function register(
+    seeded: Awaited<ReturnType<typeof seedDatabase>>,
+    mailer: Mailer,
+    email = 'new@example.com',
+  ) {
+    const open = createApp({ db: seeded.db, mailer, appUrl: 'https://og.test' });
+    const body = await (
+      await post(open, '/auth/register', { email, password: 'correct horse battery' })
+    ).json();
+    return { app: open, userId: body.userId as string };
+  }
+
+  test('asking for a link mails one', async () => {
+    const seeded = await seedDatabase('reset-request');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app } = await register(seeded, mailer);
+
+    const response = await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+
+    expect(response.status).toBe(200);
+    // [0] is the verification mail from registering.
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.to).toBe('new@example.com');
+    expect(sent[1]!.text).toContain('https://og.test/reset?token=');
+  });
+
+  test('an unknown address answers the same and mails nothing', async () => {
+    const seeded = await seedDatabase('reset-unknown');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const app = createApp({ db: seeded.db, mailer, appUrl: 'https://og.test' });
+
+    const response = await post(app, '/auth/password/forgot', { email: 'nobody@example.com' });
+
+    // Identical to the hit case, or the endpoint enumerates accounts.
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ sent: true });
+    expect(sent).toHaveLength(0);
+  });
+
+  test('the link sets a password that then works', async () => {
+    const seeded = await seedDatabase('reset-complete');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app } = await register(seeded, mailer);
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    const token = sent[1]!.text.match(/token=([a-f0-9]+)/)?.[1];
+
+    const reset = await post(app, '/auth/password/reset', {
+      token,
+      password: 'a whole new passphrase',
+    });
+    expect(reset.status).toBe(200);
+
+    expect(
+      (
+        await post(app, '/auth/login', {
+          email: 'new@example.com',
+          password: 'a whole new passphrase',
+        })
+      ).status,
+    ).toBe(200);
+
+    // The old one must stop working, or the reset changed nothing.
+    expect(
+      (
+        await post(app, '/auth/login', {
+          email: 'new@example.com',
+          password: 'correct horse battery',
+        })
+      ).status,
+    ).toBe(401);
+  });
+
+  test('resetting signs out every existing session', async () => {
+    const seeded = await seedDatabase('reset-sessions');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app, userId } = await register(seeded, mailer);
+
+    const before = await seeded.db.execute({
+      sql: 'SELECT count(*) AS n FROM sessions WHERE user_id = ?',
+      args: [userId],
+    });
+    expect(Number(before.rows[0]?.n)).toBeGreaterThan(0);
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    const token = sent[1]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    await post(app, '/auth/password/reset', { token, password: 'a whole new passphrase' });
+
+    // A reset is what someone does when a cookie may be in the wrong hands.
+    const after = await seeded.db.execute({
+      sql: 'SELECT count(*) AS n FROM sessions WHERE user_id = ?',
+      args: [userId],
+    });
+    expect(Number(after.rows[0]?.n)).toBe(0);
+  });
+
+  test('a token cannot be used twice', async () => {
+    const seeded = await seedDatabase('reset-replay');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app } = await register(seeded, mailer);
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    const token = sent[1]!.text.match(/token=([a-f0-9]+)/)?.[1];
+
+    await post(app, '/auth/password/reset', { token, password: 'a whole new passphrase' });
+
+    expect(
+      (await post(app, '/auth/password/reset', { token, password: 'yet another passphrase' }))
+        .status,
+    ).toBe(400);
+  });
+
+  test('an expired token is refused', async () => {
+    const seeded = await seedDatabase('reset-expired');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app } = await register(seeded, mailer);
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    await seeded.db.execute({
+      sql: 'UPDATE password_reset_tokens SET expires_at = ?',
+      args: ['2000-01-01T00:00:00.000Z'],
+    });
+
+    const token = sent[1]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    expect(
+      (await post(app, '/auth/password/reset', { token, password: 'a whole new passphrase' }))
+        .status,
+    ).toBe(400);
+  });
+
+  test('a made-up token is refused', async () => {
+    const seeded = await seedDatabase('reset-forged');
+    active = seeded;
+    const app = createApp({ db: seeded.db });
+
+    expect(
+      (
+        await post(app, '/auth/password/reset', {
+          token: 'deadbeef',
+          password: 'a long passphrase',
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  test('a weak password is refused without burning the link', async () => {
+    const seeded = await seedDatabase('reset-weak');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app } = await register(seeded, mailer);
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    const token = sent[1]!.text.match(/token=([a-f0-9]+)/)?.[1];
+
+    expect((await post(app, '/auth/password/reset', { token, password: 'short' })).status).toBe(
+      400,
+    );
+
+    // The token survives, so a rejected choice is a retry rather than a
+    // dead-end that needs a fresh email.
+    expect(
+      (await post(app, '/auth/password/reset', { token, password: 'a whole new passphrase' }))
+        .status,
+    ).toBe(200);
+  });
+
+  test('a second request inside the cooldown does not mail again', async () => {
+    const seeded = await seedDatabase('reset-cooldown');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app } = await register(seeded, mailer);
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    const response = await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+
+    // Still indistinguishable from a send, so the throttle does not leak
+    // whether the address exists either.
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ sent: true });
+    expect(sent).toHaveLength(2);
+  });
+
+  test('an outstanding link is superseded once the cooldown has passed', async () => {
+    const seeded = await seedDatabase('reset-supersede');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app } = await register(seeded, mailer);
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    const first = sent[1]!.text.match(/token=([a-f0-9]+)/)?.[1];
+
+    // Age the outstanding token past the cooldown rather than sleeping.
+    await seeded.db.execute({
+      sql: 'UPDATE password_reset_tokens SET created_at = ?',
+      args: ['2000-01-01T00:00:00.000Z'],
+    });
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    const second = sent[2]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    expect(second).not.toBe(first);
+
+    expect(
+      (
+        await post(app, '/auth/password/reset', {
+          token: first,
+          password: 'a whole new passphrase',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(app, '/auth/password/reset', {
+          token: second,
+          password: 'a whole new passphrase',
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  test('completing a reset also confirms the address', async () => {
+    const seeded = await seedDatabase('reset-verifies');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app, userId } = await register(seeded, mailer);
+
+    await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+    const token = sent[1]!.text.match(/token=([a-f0-9]+)/)?.[1];
+    await post(app, '/auth/password/reset', { token, password: 'a whole new passphrase' });
+
+    // Receiving the mail proves the mailbox as well as a verification link.
+    const row = await seeded.db.execute({
+      sql: 'SELECT email_verified_at FROM users WHERE id = ?',
+      args: [userId],
+    });
+    expect(row.rows[0]?.email_verified_at).toBeTruthy();
+  });
+
+  test('a suspended account gets no link', async () => {
+    const seeded = await seedDatabase('reset-suspended');
+    active = seeded;
+    const { sent, mailer } = recordingMailer();
+    const { app, userId } = await register(seeded, mailer);
+
+    await seeded.db.execute({
+      sql: "UPDATE users SET status = 'suspended' WHERE id = ?",
+      args: [userId],
+    });
+
+    const response = await post(app, '/auth/password/forgot', { email: 'new@example.com' });
+
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(1);
+  });
+});
+
 describe('listing prospects', () => {
   test('the seeded prospect is listed with its score', async () => {
     const { app } = await harness('people-list');

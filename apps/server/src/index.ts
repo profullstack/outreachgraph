@@ -31,7 +31,7 @@ import { ImapReader, ResendMailer } from '@outreachgraph/email';
 import { CoinPayClient } from '@outreachgraph/payments';
 import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
-import { pruneSessions } from '../../api/src/auth';
+import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import {
   drainQueue,
   emitEvent,
@@ -637,6 +637,11 @@ async function tick(): Promise<void> {
 
   const pruned = await pruneSessions(db);
   if (pruned > 0) console.log(`pruned ${pruned} expired sessions`);
+
+  // Spent and expired reset tokens are dead weight, and a hashed one is still
+  // a row tying an address to a moment someone lost their password.
+  const prunedResets = await prunePasswordResetTokens(db);
+  if (prunedResets > 0) console.log(`pruned ${prunedResets} password reset tokens`);
 
   // Progress rows accumulate at roughly one per prospect per stage. Nothing
   // reads a fortnight-old one, and the audit log they would otherwise bloat is

@@ -486,6 +486,177 @@ export async function isEmailVerified(db: Client, userId: string): Promise<boole
   return Boolean(row?.email_verified_at);
 }
 
+// ---------------------------------------------------------- password reset
+
+/**
+ * Short by design. A reset link is a live credential sitting in an inbox, and
+ * an hour is long enough to walk to a laptop but short enough that a mailbox
+ * skimmed weeks later yields nothing.
+ */
+const RESET_TTL_MINUTES = 60;
+
+/**
+ * How soon a second link may be mailed to the same account.
+ *
+ * Superseding alone does not stop someone typing a stranger's address into the
+ * form repeatedly to bury their inbox, because every request would still send.
+ * The cooldown bounds that to one message a minute per account while leaving a
+ * genuine "it never arrived" retry available.
+ */
+const RESET_RESEND_COOLDOWN_SECONDS = 60;
+
+export interface ResetToken {
+  readonly token: string;
+  readonly userId: string;
+  readonly email: string;
+  readonly expiresAt: string;
+}
+
+/**
+ * Mints a reset token for an address, or returns undefined if there is nothing
+ * to send.
+ *
+ * Returning undefined rather than throwing is the whole point: the caller
+ * answers identically whether or not the address exists, so the endpoint
+ * cannot be used to enumerate accounts. The three silent cases are an unknown
+ * address, a suspended account, and a request inside the cooldown.
+ */
+export async function mintPasswordResetToken(
+  db: Client,
+  rawEmail: string,
+): Promise<ResetToken | undefined> {
+  const email = normalizeEmail(rawEmail);
+  if (!isPlausibleEmail(email)) return undefined;
+
+  const user = await queryOne<{ id: string; status: string }>(
+    db,
+    'SELECT id, status FROM users WHERE email = ?',
+    [email],
+  );
+  if (!user || user.status !== 'active') return undefined;
+
+  const stamp = now();
+
+  const recent = await queryOne<{ created_at: string }>(
+    db,
+    `SELECT created_at FROM password_reset_tokens
+      WHERE user_id = ? AND consumed_at IS NULL
+   ORDER BY created_at DESC LIMIT 1`,
+    [user.id],
+  );
+  if (
+    recent &&
+    new Date(stamp).getTime() - new Date(recent.created_at).getTime() <
+      RESET_RESEND_COOLDOWN_SECONDS * 1_000
+  ) {
+    return undefined;
+  }
+
+  const token = mintSessionToken();
+  const expiresAt = new Date(new Date(stamp).getTime() + RESET_TTL_MINUTES * 60_000).toISOString();
+
+  // Replacing rather than accumulating: the newest mail in the inbox is always
+  // the one that works, and a pile of live links never builds up.
+  await db.batch([
+    { sql: 'DELETE FROM password_reset_tokens WHERE user_id = ?', args: [user.id] },
+    {
+      sql: `INSERT INTO password_reset_tokens (id, user_id, token_hash, email, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [newId('session'), user.id, await hashToken(token), email, stamp, expiresAt],
+    },
+  ]);
+
+  return { token, userId: user.id, email, expiresAt };
+}
+
+export interface ResetResult {
+  readonly userId: string;
+  readonly email: string;
+}
+
+/**
+ * Consumes a reset token and installs the new password.
+ *
+ * Three things happen alongside the write, and each is load-bearing:
+ *
+ *   - Every session for the user is deleted. Someone resetting a password may
+ *     be doing it because another party has one, and leaving those cookies
+ *     alive would make the reset cosmetic.
+ *   - The lockout counter is cleared, so an account locked by the failed
+ *     guesses that prompted the reset is usable immediately afterwards.
+ *   - The address is marked verified if it was not already. Receiving the mail
+ *     proves the mailbox as well as any verification link does, and stranding
+ *     someone behind a second confirmation they have just demonstrated would
+ *     be ceremony.
+ *
+ * The password is checked before the token is looked up so that a weak choice
+ * is rejected without burning the link.
+ */
+export async function resetPassword(
+  db: Client,
+  token: string,
+  password: string,
+): Promise<ResetResult> {
+  const invalid = new ApiError(400, 'invalid_token', 'that link is invalid or has expired');
+
+  const problem = passwordProblem(password);
+  if (problem) throw ApiError.badRequest(problem);
+  if (!token) throw invalid;
+
+  const row = await queryOne<{
+    id: string;
+    user_id: string;
+    email: string;
+    expires_at: string;
+    consumed_at: string | null;
+  }>(db, 'SELECT * FROM password_reset_tokens WHERE token_hash = ?', [await hashToken(token)]);
+
+  if (!row || row.consumed_at) throw invalid;
+
+  const stamp = now();
+  if (new Date(row.expires_at).getTime() <= new Date(stamp).getTime()) throw invalid;
+
+  // The address may have changed since the token was minted; honouring it
+  // would let a former address take over the account.
+  const user = await queryOne<{ email: string; status: string }>(
+    db,
+    'SELECT email, status FROM users WHERE id = ?',
+    [row.user_id],
+  );
+  if (!user || user.email !== row.email || user.status !== 'active') throw invalid;
+
+  const passwordHash = await hashPassword(password);
+
+  await db.batch([
+    {
+      sql: 'UPDATE password_reset_tokens SET consumed_at = ? WHERE id = ?',
+      args: [stamp, row.id],
+    },
+    {
+      sql: `UPDATE users
+               SET password_hash = ?,
+                   failed_login_count = 0,
+                   locked_until = NULL,
+                   email_verified_at = COALESCE(email_verified_at, ?),
+                   updated_at = ?
+             WHERE id = ?`,
+      args: [passwordHash, stamp, stamp, row.user_id],
+    },
+    { sql: 'DELETE FROM sessions WHERE user_id = ?', args: [row.user_id] },
+  ]);
+
+  return { userId: row.user_id, email: row.email };
+}
+
+/** Removes spent and expired reset tokens. Called by the background loop. */
+export async function prunePasswordResetTokens(db: Client): Promise<number> {
+  const result = await db.execute({
+    sql: 'DELETE FROM password_reset_tokens WHERE expires_at <= ? OR consumed_at IS NOT NULL',
+    args: [now()],
+  });
+  return Number(result.rowsAffected ?? 0);
+}
+
 /** Cookie attributes. `secure` is dropped only for plain-HTTP local dev. */
 export function sessionCookie(token: string, expiresAt: string, secure: boolean): string {
   const parts = [

@@ -66,3 +66,40 @@ export function verificationEmail(to: string, link: string): Message {
 
   return { to, subject: 'Confirm your email · OutreachGraph', text, html };
 }
+
+/**
+ * The password reset email.
+ *
+ * Says plainly that ignoring it is safe, because the single most common reader
+ * of this message is someone who did not ask for it — either a typo'd address
+ * or a stranger poking at the form — and the honest thing to tell them is that
+ * nothing has changed yet and nothing will unless they act.
+ */
+export function passwordResetEmail(to: string, link: string): Message {
+  const text = [
+    'Someone asked to reset the password for your OutreachGraph account.',
+    '',
+    link,
+    '',
+    'The link expires in an hour and can be used once. If this was not you,',
+    'ignore this message — your password has not changed and nobody can sign',
+    'in without it.',
+  ].join('\n');
+
+  const safe = escapeHtml(link);
+  const mark = markUrl(link);
+
+  const html = [
+    mark
+      ? `<p><img src="${escapeHtml(mark)}" alt="OutreachGraph" width="48" height="48" ` +
+        'style="width:48px;height:48px;border:0" /></p>'
+      : '',
+    '<p>Someone asked to reset the password for your OutreachGraph account.</p>',
+    `<p><a href="${safe}">${safe}</a></p>`,
+    '<p>The link expires in an hour and can be used once. If this was not you, ',
+    'ignore this message — your password has not changed and nobody can sign in ',
+    'without it.</p>',
+  ].join('');
+
+  return { to, subject: 'Reset your password · OutreachGraph', text, html };
+}

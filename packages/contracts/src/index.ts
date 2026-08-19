@@ -88,8 +88,27 @@ export const loginSchema = z.object({
   password: z.string().min(1).max(512),
 });
 
+/**
+ * Asking for a reset link.
+ *
+ * Only the address, and the response is the same whatever it is — so this
+ * schema's job is to reject junk before it reaches a mailer, not to tell the
+ * caller anything about the account.
+ */
+export const forgotPasswordSchema = z.object({
+  email: z.string().email().max(320),
+});
+
+/** Completing a reset. The password floor matches registration's. */
+export const resetPasswordSchema = z.object({
+  token: z.string().min(1).max(512),
+  password: z.string().min(12).max(512),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
+export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 
 /**
  * Adding a prospect by GitHub handle.
