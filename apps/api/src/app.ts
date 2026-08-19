@@ -502,8 +502,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
    * Answers 200 to anything it understood, including a duplicate delivery and
    * a payment belonging to somebody else's product on the same business
    * account. A webhook that 500s on "already handled" earns a retry storm.
+   *
+   * The path is `/api/v1/coinpay/callback` because that is what is registered
+   * on the CoinPayPortal side. It is configuration held by somebody else, so
+   * moving it silently breaks payments that have already been taken — the
+   * failure arrives as credits that never appear, long after the deploy.
    */
-  api.post('/webhooks/coinpay', async (c) => {
+  api.post('/coinpay/callback', async (c) => {
     if (!options.coinpay) {
       throw new ApiError(503, 'payments_unconfigured', 'This deployment cannot take payments.');
     }
