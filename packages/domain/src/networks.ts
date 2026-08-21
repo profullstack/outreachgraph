@@ -80,16 +80,22 @@ export function isOutboundAction(action: ActionKind): action is OutboundActionKi
 /**
  * Actions that only read or record state internally. These may be batched in
  * the approval queue because the prospect never sees them (PRD §15).
+ *
+ * Exported as a list, and not only as a predicate, because the rate limiters
+ * have to ask the same question in SQL. A research sweep is not outreach and
+ * must not be counted by the limits that govern outreach — see `actionCounts`.
  */
+export const INTERNAL_ACTION_KINDS = [
+  'observe',
+  'refresh_research',
+  'wait',
+  'suppress',
+  'manual_review',
+  'create_crm_task',
+] as const satisfies readonly ActionKind[];
+
 export function isInternalAction(action: ActionKind): boolean {
-  return (
-    action === 'observe' ||
-    action === 'refresh_research' ||
-    action === 'wait' ||
-    action === 'suppress' ||
-    action === 'manual_review' ||
-    action === 'create_crm_task'
-  );
+  return (INTERNAL_ACTION_KINDS as readonly ActionKind[]).includes(action);
 }
 
 export const CAPABILITY_LEVELS = ['yes', 'limited', 'no'] as const;

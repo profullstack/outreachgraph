@@ -257,4 +257,37 @@ describe('approve-all', () => {
 
     expect(Number(approvals.rows[0]?.n)).toBe(3);
   });
+
+  test('a research sweep does not consume the outreach rate limits', async () => {
+    // Production jammed exactly here. A campaign researching twenty thousand
+    // people wrote one `refresh_research` action per person per sweep, and the
+    // rate limiters counted every one of them: "Approve all" reported "daily
+    // action limit reached (11068/50)" and a 72h cooldown "since the last
+    // contact" for prospects nobody had ever written to. The policy engine
+    // waives every rate limit for an internal action, so nothing internal may
+    // consume one either.
+    const { app, seeded } = await harness('bulk-research-noise');
+    const stamp = new Date().toISOString();
+
+    for (let index = 0; index < 200; index += 1) {
+      await seeded.db.execute({
+        sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind,
+              network, mode, status, created_at)
+              VALUES (?, ?, ?, ?, 'refresh_research', 'x', 'auto', 'queued', ?)`,
+        args: [`act_noise_${index}`, SEED.workspaceId, SEED.recommendationId, SEED.personId, stamp],
+      });
+    }
+
+    const response = await approveAll(app);
+    const body = (await response.json()) as {
+      approved: number;
+      held: number;
+      holds: { gate: string; count: number }[];
+    };
+
+    expect(body.held).toBe(0);
+    expect(body.approved).toBe(1);
+    expect(body.holds.map((hold) => hold.gate)).not.toContain('rate_limit_daily');
+    expect(body.holds.map((hold) => hold.gate)).not.toContain('cooldown');
+  });
 });

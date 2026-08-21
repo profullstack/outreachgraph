@@ -10,7 +10,13 @@
  * enriched prospect is still inspectable in the UI.
  */
 
-import { isLikelyRoleAccount, newId, type Network, type SignalType } from '@outreachgraph/domain';
+import {
+  INTERNAL_ACTION_KINDS,
+  isLikelyRoleAccount,
+  newId,
+  type Network,
+  type SignalType,
+} from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { resolveIdentity, type EvidenceInput } from '@outreachgraph/identity';
 import {
@@ -1100,15 +1106,21 @@ async function actionCounts(db: Client, workspaceId: string, personId: string) {
   const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
   const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
 
+  // Internal actions are waived by every rate limit in the policy engine, so
+  // they must not consume one here either.
+  const countable = `kind NOT IN (${INTERNAL_ACTION_KINDS.map(() => '?').join(', ')})`;
+
   const today = await queryOne<{ n: number }>(
     db,
-    `SELECT count(*) AS n FROM actions WHERE workspace_id = ? AND created_at >= ?`,
-    [workspaceId, dayAgo],
+    `SELECT count(*) AS n FROM actions
+      WHERE workspace_id = ? AND created_at >= ? AND ${countable}`,
+    [workspaceId, dayAgo, ...INTERNAL_ACTION_KINDS],
   );
   const week = await queryOne<{ n: number }>(
     db,
-    `SELECT count(*) AS n FROM actions WHERE workspace_id = ? AND person_id = ? AND created_at >= ?`,
-    [workspaceId, personId, weekAgo],
+    `SELECT count(*) AS n FROM actions
+      WHERE workspace_id = ? AND person_id = ? AND created_at >= ? AND ${countable}`,
+    [workspaceId, personId, weekAgo, ...INTERNAL_ACTION_KINDS],
   );
 
   return { today: Number(today?.n ?? 0), thisProspect: Number(week?.n ?? 0) };

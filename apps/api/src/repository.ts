@@ -9,6 +9,7 @@
 import {
   CHANNELS,
   channelForNetwork,
+  INTERNAL_ACTION_KINDS,
   isChannel,
   isNetwork,
   newId,
@@ -404,27 +405,38 @@ export async function actionCounts(
   const exclude = excludeActionId ? 'AND id != ?' : '';
   const excludeArgs = excludeActionId ? [excludeActionId] : [];
 
+  // Only the actions these limits are about. The policy engine waives every
+  // rate limit for an internal action, so counting internal actions here
+  // measured one thing and charged it to another: a research sweep over
+  // twenty thousand people reported "daily action limit reached (11068/50)"
+  // and "only 15h since the last contact" for prospects nobody had ever
+  // written to, and the approval queue could never be emptied again.
+  const internal = INTERNAL_ACTION_KINDS.map(() => '?').join(', ');
+  const countable = `AND kind NOT IN (${internal})`;
+
   const today = await queryOne<{ n: number }>(
     db,
     `SELECT count(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= ? AND status != 'cancelled' ${exclude}`,
-    [workspaceId, dayAgo, ...excludeArgs],
+      WHERE workspace_id = ? AND created_at >= ? AND status != 'cancelled'
+        ${countable} ${exclude}`,
+    [workspaceId, dayAgo, ...INTERNAL_ACTION_KINDS, ...excludeArgs],
   );
 
   const week = await queryOne<{ n: number }>(
     db,
     `SELECT count(*) AS n FROM actions
       WHERE workspace_id = ? AND person_id = ? AND created_at >= ? AND status != 'cancelled'
-        ${exclude}`,
-    [workspaceId, personId, weekAgo, ...excludeArgs],
+        ${countable} ${exclude}`,
+    [workspaceId, personId, weekAgo, ...INTERNAL_ACTION_KINDS, ...excludeArgs],
   );
 
   const last = await queryOne<{ created_at: string }>(
     db,
     `SELECT created_at FROM actions
-      WHERE workspace_id = ? AND person_id = ? AND status != 'cancelled' ${exclude}
+      WHERE workspace_id = ? AND person_id = ? AND status != 'cancelled'
+        ${countable} ${exclude}
    ORDER BY created_at DESC LIMIT 1`,
-    [workspaceId, personId, ...excludeArgs],
+    [workspaceId, personId, ...INTERNAL_ACTION_KINDS, ...excludeArgs],
   );
 
   const hoursSinceLast = last ? (Date.now() - Date.parse(last.created_at)) / 3_600_000 : undefined;

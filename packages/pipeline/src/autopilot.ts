@@ -29,7 +29,7 @@
  * it was, so the next tick retries rather than silently dropping a lead.
  */
 
-import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
+import { INTERNAL_ACTION_KINDS, newId, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluatePolicy, isExecutable } from '@outreachgraph/policy';
 import type { Mailer } from '@outreachgraph/email';
@@ -540,12 +540,25 @@ function dayStart(at: Date): string {
   return `${at.toISOString().slice(0, 10)}T00:00:00.000Z`;
 }
 
+/**
+ * Actions the rate limits are about, and only those.
+ *
+ * The policy engine waives every rate limit for an internal action, so an
+ * internal action must not consume one either. Counting them did both: a
+ * research sweep over twenty thousand people put the workspace 200x over a
+ * fifty-a-day outreach cap, and because this count gates the whole tick
+ * (`today >= cap` returns before any candidate is read) autopilot stopped
+ * sending anything at all.
+ */
+const COUNTABLE_KINDS = `kind NOT IN (${INTERNAL_ACTION_KINDS.map(() => '?').join(', ')})`;
+
 async function countActionsToday(db: Client, workspaceId: string, at: Date): Promise<number> {
   const row = await queryOne<{ n: number }>(
     db,
     `SELECT COUNT(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= ? AND status != 'failed'`,
-    [workspaceId, dayStart(at)],
+      WHERE workspace_id = ? AND created_at >= ? AND status != 'failed'
+        AND ${COUNTABLE_KINDS}`,
+    [workspaceId, dayStart(at), ...INTERNAL_ACTION_KINDS],
   );
   return row?.n ?? 0;
 }
@@ -561,8 +574,9 @@ async function actionCounts(
   const row = await queryOne<{ n: number; last_at: string | null }>(
     db,
     `SELECT COUNT(*) AS n, MAX(created_at) AS last_at FROM actions
-      WHERE workspace_id = ? AND person_id = ? AND created_at >= ? AND status != 'failed'`,
-    [workspaceId, personId, weekAgo],
+      WHERE workspace_id = ? AND person_id = ? AND created_at >= ? AND status != 'failed'
+        AND ${COUNTABLE_KINDS}`,
+    [workspaceId, personId, weekAgo, ...INTERNAL_ACTION_KINDS],
   );
 
   const thisProspect = row?.n ?? 0;
