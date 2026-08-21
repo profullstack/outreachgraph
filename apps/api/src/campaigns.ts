@@ -351,6 +351,50 @@ export async function setCampaignAutopilot(
   return result.rowsAffected > 0;
 }
 
+/**
+ * Merges tunable limits into a campaign's stored budget.
+ *
+ * Merged rather than replaced: `budget_json` also carries the spend ceilings,
+ * and a caller adjusting the daily send cap must not silently drop
+ * `maxAiSpendUsd` on its way past. Undefined fields are left as they were, so
+ * omitting a key means "leave it alone" and not "reset it to the default".
+ */
+export async function setCampaignLimits(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+  limits: Record<string, number>,
+): Promise<Record<string, unknown> | undefined> {
+  const row = await queryOne<{ budget_json: string }>(
+    db,
+    'SELECT budget_json FROM campaigns WHERE id = ? AND workspace_id = ?',
+    [campaignId, workspaceId],
+  );
+
+  if (!row) return undefined;
+
+  let current: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(row.budget_json || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      current = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // A budget we cannot read is replaced rather than allowed to block the
+    // write; the caller's values are the ones they just asked for.
+  }
+
+  const merged = { ...current, ...limits };
+
+  await db.execute({
+    sql: `UPDATE campaigns SET budget_json = ?, updated_at = ?
+           WHERE id = ? AND workspace_id = ?`,
+    args: [JSON.stringify(merged), now(), campaignId, workspaceId],
+  });
+
+  return merged;
+}
+
 export interface WorkspaceSettingsInput {
   readonly notifyEmail?: string | null;
   readonly instantAlerts?: boolean;

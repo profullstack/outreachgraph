@@ -18,6 +18,7 @@ import {
   decideEmailCandidateSchema,
   executeActionSchema,
   backfillDraftsSchema,
+  campaignLimitsSchema,
   recordReplySchema,
   forgotPasswordSchema,
   loginSchema,
@@ -105,6 +106,7 @@ import {
   renameCampaign,
   saveWorkspaceSettings,
   setCampaignAutopilot,
+  setCampaignLimits,
   setCampaignStatus,
 } from './campaigns';
 import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
@@ -748,8 +750,45 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       touched = true;
     }
 
+    // The throughput and anti-spam knobs. Bounded by the schema rather than
+    // here, so the API and any future settings screen refuse the same values.
+    if (body.limits !== undefined) {
+      const parsed = campaignLimitsSchema.safeParse(body.limits);
+      if (!parsed.success) {
+        throw ApiError.badRequest(
+          `invalid limits: ${parsed.error.issues[0]?.message ?? 'bad shape'}`,
+        );
+      }
+
+      const limits = Object.fromEntries(
+        Object.entries(parsed.data).filter(([, value]) => value !== undefined),
+      ) as Record<string, number>;
+
+      if (Object.keys(limits).length === 0) {
+        throw ApiError.badRequest('limits needs at least one field');
+      }
+
+      const merged = await setCampaignLimits(db, actor.workspaceId, campaignId, limits);
+      if (!merged) throw ApiError.notFound('campaign');
+
+      // Worth an audit row of its own: raising a send cap is the change most
+      // likely to be asked about after the fact.
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'campaign.limits_changed',
+        entityKind: 'campaign',
+        entityId: campaignId,
+        detail: limits,
+      });
+
+      changed.limits = merged;
+      touched = true;
+    }
+
     if (!touched) {
-      throw ApiError.badRequest('send at least one of autopilot, name or status');
+      throw ApiError.badRequest('send at least one of autopilot, name, status or limits');
     }
 
     return c.json({ campaignId, ...changed });

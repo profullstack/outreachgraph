@@ -49,6 +49,30 @@ export const budgetSchema = z.object({
   maxActionsPerProspectPerWeek: z.number().int().nonnegative(),
 });
 
+/**
+ * The throughput and anti-spam knobs, tunable per campaign.
+ *
+ * These existed only as hard-coded fallbacks read from `campaigns.budget_json`,
+ * which nothing ever wrote — so a workspace that wanted to send faster, or a
+ * shared inbox that could stand more than one message a week, had no way to say
+ * so short of a direct database write.
+ *
+ * Every field is bounded. The daily cap is throughput and is allowed to be
+ * large; the per-recipient limits are what stop a mailbox being buried, so they
+ * top out at one message a day however they are configured. A cap of 0 disables
+ * that kind of outreach outright, which is a legitimate thing to want.
+ */
+export const campaignLimitsSchema = z
+  .object({
+    maxActionsPerDay: z.number().int().min(0).max(1_000),
+    maxActionsPerProspectPerWeek: z.number().int().min(0).max(7),
+    maxActionsPerAddressPerWeek: z.number().int().min(0).max(7),
+    minHoursBetweenActions: z.number().int().min(0).max(168),
+  })
+  .partial();
+
+export type CampaignLimits = z.infer<typeof campaignLimitsSchema>;
+
 export const createCampaignSchema = z.object({
   name: z.string().min(1).max(200),
   offeringId: z.string().min(1),
