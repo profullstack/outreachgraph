@@ -11,7 +11,16 @@
  *      error page.
  */
 
-const VERSION = 'v2';
+/*
+ * Bumped to v3 to evict a poisoned cache, not because the shell changed.
+ *
+ * While the redirect bug above was live, a signed-in launch stored the OFFLINE
+ * page against '/' in og-shell-v2. Shipping the fix alone would leave that entry
+ * in place and the app would keep opening to it. The activate handler deletes
+ * every og-* cache that is not the current one, so renaming the cache is what
+ * actually unsticks an install that is already broken.
+ */
+const VERSION = 'v3';
 const SHELL_CACHE = `og-shell-${VERSION}`;
 const ASSET_CACHE = `og-assets-${VERSION}`;
 
@@ -73,25 +82,55 @@ self.addEventListener('fetch', (event) => {
 });
 
 async function networkFirstNavigation(request) {
+  let response;
   try {
-    const response = await fetch(request);
-    if (response.ok) {
-      const cache = await caches.open(SHELL_CACHE);
-      cache.put(request, response.clone());
-    }
-    return response;
+    response = await fetch(request);
   } catch {
-    const cached = await caches.match(request);
-    if (cached) return cached;
-
-    const offline = await caches.match('/offline');
-    if (offline) return offline;
-
-    return new Response('Offline', {
-      status: 503,
-      headers: { 'content-type': 'text/plain' },
-    });
+    return offlineFallback(request);
   }
+
+  /*
+   * Two rules here, and between them they are why the installed app hung.
+   *
+   * `start_url` is '/', and a signed-in visit to '/' redirects to /today. Fetch
+   * follows that, so the response arrives with `redirected === true` -- and the
+   * Cache API REFUSES to store a redirected response, by specification: put()
+   * throws TypeError rather than writing it. That throw used to happen inside the
+   * same try as the fetch, so a perfectly good page was caught by the offline
+   * handler and the launcher was served the offline screen. Every launch. The
+   * only way out was clearing site data, which is not a thing to ask of anyone.
+   *
+   * So: never try to cache a redirect, and never let a cache write decide what
+   * the reader gets. The response is returned either way.
+   */
+  if (response.ok && !response.redirected) {
+    try {
+      const cache = await caches.open(SHELL_CACHE);
+      await cache.put(request, response.clone());
+    } catch {
+      // A full quota or a storage error is not a reason to withhold the page.
+    }
+  }
+  return response;
+}
+
+/**
+ * What a reader gets when the network genuinely failed.
+ *
+ * Reached only from a fetch rejection now. It used to be reachable from a cache
+ * write as well, which is how a working page turned into an offline screen.
+ */
+async function offlineFallback(request) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+
+  const offline = await caches.match('/offline');
+  if (offline) return offline;
+
+  return new Response('Offline', {
+    status: 503,
+    headers: { 'content-type': 'text/plain' },
+  });
 }
 
 async function cacheFirst(request) {
