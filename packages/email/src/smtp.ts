@@ -76,6 +76,7 @@ export class SmtpMailer implements Mailer {
         text: message.text,
         ...(message.html ? { html: message.html } : {}),
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+        ...(message.headers ? { headers: message.headers } : {}),
       });
 
       // Nodemailer always synthesises a Message-ID, so this is never empty —

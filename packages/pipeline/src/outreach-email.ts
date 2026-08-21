@@ -28,6 +28,7 @@ import { now, queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer } from '@outreachgraph/email';
 import { recordStatus } from './stages';
 import { trackLinksInBody } from './engagement';
+import { issueUnsubscribeToken, unsubscribeUrl } from './unsubscribe';
 
 export interface EmailRecipient {
   readonly address: string;
@@ -361,12 +362,44 @@ export async function deliverEmailAction(
       })
     : { body, tracked: 0 };
 
+  // Opt-out. Issued per message so a click can be traced to the mail that
+  // prompted it, and skipped only when we have no origin to point it at — a
+  // link to nowhere is worse than the header being absent, because a client
+  // will render the button and it will fail.
+  const optOutOrigin = settings.tracking_origin ?? deps.appUrl ?? undefined;
+  const optOutUrl = optOutOrigin
+    ? unsubscribeUrl(
+        optOutOrigin,
+        await issueUnsubscribeToken(db, {
+          workspaceId: input.workspaceId,
+          personId: row.person_id,
+          campaignId: row.campaign_id,
+          contactAddress: recipient.address,
+        }),
+      )
+    : undefined;
+
+  // Both the header and a line a human can see. The header is what providers
+  // and mail clients read; the visible line is what someone reading on a
+  // phone actually finds, and CAN-SPAM asks for the second one.
+  const text = optOutUrl
+    ? `${outgoing.body}\n\n--\nDon't want these? Unsubscribe: ${optOutUrl}`
+    : outgoing.body;
+
+  const headers = optOutUrl
+    ? {
+        'List-Unsubscribe': `<${optOutUrl}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      }
+    : undefined;
+
   try {
     const result = await deps.mailer.send({
       to: recipient.address,
       subject,
-      text: outgoing.body,
+      text,
       ...(replyTo ? { replyTo } : {}),
+      ...(headers ? { headers } : {}),
     });
 
     await recordEmailSent(db, {

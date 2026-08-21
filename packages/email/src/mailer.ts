@@ -20,6 +20,15 @@ export interface Message {
    * meant to do is answer, so the answer has to reach them.
    */
   readonly replyTo?: string;
+  /**
+   * Extra headers on the wire.
+   *
+   * This exists for `List-Unsubscribe` and `List-Unsubscribe-Post`, which have
+   * to travel as headers and not as body text: a mail client offers its own
+   * one-click opt-out button from the header, and providers weigh its presence
+   * when deciding whether commercial mail is worth delivering.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 export interface SendResult {
@@ -73,6 +82,7 @@ export class ResendMailer implements Mailer {
         text: message.text,
         ...(message.html ? { html: message.html } : {}),
         ...(message.replyTo ? { reply_to: [message.replyTo] } : {}),
+        ...(message.headers ? { headers: message.headers } : {}),
       }),
     });
 

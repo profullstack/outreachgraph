@@ -154,6 +154,13 @@ export {
   type EngagementFacts,
 } from './engagement';
 export {
+  applyUnsubscribe,
+  issueUnsubscribeToken,
+  unsubscribeUrl,
+  type IssueUnsubscribeInput,
+  type UnsubscribeResult,
+} from './unsubscribe';
+export {
   receiveReplies,
   workspacesWithReadableMailbox,
   type ReceiveRepliesInput,

@@ -80,6 +80,7 @@ import {
   deliverEmailAction,
   enrollInCadence,
   readResearchGrid,
+  applyUnsubscribe,
   recordLinkClick,
   runResearchGrid,
   setCadenceStatus,
@@ -245,6 +246,22 @@ const BULK_APPROVE_MAX = 200;
 const IMPORT_CHUNK_MAX = 500;
 
 /** Groups refusals by gate, keeping the first reason as the example. */
+/**
+ * Escapes text destined for an HTML page.
+ *
+ * The only untrusted value on the opt-out page is the address itself, which
+ * came from a crawled site and is therefore attacker-influenced. It is
+ * rendered back to whoever clicked, so it goes through here.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function tallyHold(
   holds: Map<string, { reason: string; count: number }>,
   gate: string | undefined,
@@ -299,6 +316,60 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
    * they were sent, and a database problem on our side is not a reason to
    * leave them looking at an error page.
    */
+  // ------------------------------------------------------------- opt-out
+  //
+  // Unauthenticated on purpose, and it has to be: the person clicking is the
+  // recipient of a cold email and has no account here. The token is the whole
+  // credential, which is why it is random and single-purpose.
+
+  const optOutPage = (message: string): string =>
+    `<!doctype html><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<title>Unsubscribe</title>` +
+    `<body style="font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">` +
+    `<p>${message}</p></body>`;
+
+  // RFC 8058 one-click. A mail client POSTs this without a human seeing it, so
+  // it must act and return 200 rather than render anything.
+  app.post('/u/:token', async (c) => {
+    const result = await applyUnsubscribe(options.db, c.req.param('token'));
+    if (!result) return c.text('unknown token', 404);
+    return c.text('unsubscribed', 200);
+  });
+
+  app.get('/u/:token', async (c) => {
+    const result = await applyUnsubscribe(options.db, c.req.param('token'));
+
+    if (!result) {
+      return c.html(
+        optOutPage('This unsubscribe link is not valid. It may be from a very old message.'),
+        404,
+      );
+    }
+
+    if (result.alreadyDone) {
+      return c.html(
+        optOutPage(
+          `<strong>${escapeHtml(result.address)}</strong> is already unsubscribed. No further messages will be sent.`,
+        ),
+      );
+    }
+
+    // Naming the mailbox rather than the person is deliberate: for a shared
+    // inbox the honest statement is that we have stopped writing to the
+    // address, which covers colleagues the reader never knew we had resolved.
+    const extra =
+      result.peopleSuppressed > 1
+        ? ` This covers all ${result.peopleSuppressed} contacts we had for that address.`
+        : '';
+
+    return c.html(
+      optOutPage(
+        `Done. <strong>${escapeHtml(result.address)}</strong> has been unsubscribed and no further messages will be sent.${extra}`,
+      ),
+    );
+  });
+
   app.get('/t/:token', async (c) => {
     const token = c.req.param('token');
 

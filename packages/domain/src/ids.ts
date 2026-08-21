@@ -58,6 +58,7 @@ export const ID_PREFIXES = {
   // keep it unguessable — a short or sequential token would let anyone
   // enumerate who a workspace has written to.
   trackedLink: 'tlk',
+  unsubscribe: 'uns',
   linkClick: 'clk',
   cadence: 'cad',
   cadenceStep: 'cst',

@@ -91,12 +91,13 @@ async function makeEmailCard(
 
 async function harness(
   label: string,
-  options: { mailer?: Mailer; encryptionKey?: Buffer } = {},
+  options: { mailer?: Mailer; encryptionKey?: Buffer; appUrl?: string } = {},
 ): Promise<{ app: Hono<AppEnv>; db: Client }> {
   const seeded = await seedDatabase(label);
   active = seeded;
 
   const app = createApp({
+    ...(options.appUrl ? { appUrl: options.appUrl } : {}),
     db: seeded.db,
     authenticate: async () => ACTOR,
     ...(options.mailer ? { mailer: options.mailer } : {}),
@@ -135,6 +136,37 @@ describe('approving an email', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.to).toBe('jane@acme.com');
     expect(sent[0]?.text).toContain('cross-border settlement');
+  });
+
+  test('carries a working unsubscribe, in the headers and in the body', async () => {
+    // Forward Email's terms require `List-Unsubscribe` on bulk mail and
+    // CAN-SPAM requires an opt-out a human can actually see, so both have to
+    // be on the wire — and the link has to be one that really works, which is
+    // why this follows it rather than just matching a regex.
+    const { sent, mailer } = recordingMailer();
+    const { app, db } = await harness('approve-unsub', {
+      mailer,
+      appUrl: 'https://outreachgraph.com',
+    });
+    await makeEmailCard(db, { personEmail: 'jane@acme.com' });
+
+    await approve(app);
+
+    const header = sent[0]?.headers?.['List-Unsubscribe'];
+    expect(header).toMatch(/^<https:\/\/outreachgraph\.com\/u\/uns_[a-z0-9]+>$/);
+    expect(sent[0]?.headers?.['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
+    expect(sent[0]?.text).toContain('Unsubscribe: https://outreachgraph.com/u/uns_');
+
+    // Follow it the way a recipient would.
+    const url = String(header).slice(1, -1);
+    const response = await app.request(new URL(url).pathname);
+    expect(response.status).toBe(200);
+
+    const suppressed = await db.execute({
+      sql: 'SELECT count(*) AS n FROM suppression_keys WHERE match_key = ?',
+      args: [`person:${SEED.personId}`],
+    });
+    expect(Number(suppressed.rows[0]?.n)).toBe(1);
   });
 
   test('the whole trail is recorded, not just the send', async () => {
