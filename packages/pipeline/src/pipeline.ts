@@ -905,6 +905,9 @@ async function createRecommendation(
       maxActionsPerDay: numberOr(budget.maxActionsPerDay, 50),
       actionsToThisProspectThisWeek: counts.thisProspect,
       maxActionsPerProspectPerWeek: numberOr(budget.maxActionsPerProspectPerWeek, 1),
+      ...(typeof budget.minHoursBetweenActions === 'number'
+        ? { minHoursBetweenActions: budget.minHoursBetweenActions }
+        : {}),
       featureFlags: flags,
     },
   });

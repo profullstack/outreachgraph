@@ -129,6 +129,37 @@ describe('campaign limits', () => {
     expect((await patch(app, { limits: { maxActionsPerDay: 999 } })).status).toBe(403);
   });
 
+  test('the configured cooldown reaches the decision, not just the badge', async () => {
+    // `evaluateAddressLimits` read this for the queue's preview from the
+    // start, but the real policy call did not pass it — so a campaign could
+    // set a 48h cooldown, see the card go green, and still be refused at 72h.
+    const { app, seeded } = await harness('limits-cooldown');
+
+    await patch(app, { limits: { minHoursBetweenActions: 12 } });
+
+    const stored = await budget(seeded);
+    expect(stored.minHoursBetweenActions).toBe(12);
+
+    // A contact reached 24h ago is inside the default 72h window and outside
+    // the configured 12h one.
+    const recent = new Date(Date.now() - 24 * 3_600_000).toISOString();
+    await seeded.db.execute({
+      sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind,
+            network, mode, status, created_at)
+            VALUES ('act_cool', ?, ?, ?, 'send_email', 'email', 'auto', 'completed', ?)`,
+      args: [SEED.workspaceId, SEED.recommendationId, SEED.personId, recent],
+    });
+
+    const response = await app.request('/api/v1/recommendations/approve-all', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dryRun: true }),
+    });
+
+    const payload = (await response.json()) as { holds: { gate: string }[] };
+    expect(payload.holds.map((hold) => hold.gate)).not.toContain('cooldown');
+  });
+
   test('writes an audit row naming what changed', async () => {
     const { app, seeded } = await harness('limits-audit');
 

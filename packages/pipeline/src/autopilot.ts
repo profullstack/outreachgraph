@@ -359,6 +359,13 @@ export async function runAutopilot(
       maxActionsPerDay: Math.min(numberOr(budget.maxActionsPerDay, 50), cap),
       actionsToThisProspectThisWeek: counts.thisProspect,
       maxActionsPerProspectPerWeek: numberOr(budget.maxActionsPerProspectPerWeek, 1),
+      // The cooldown the campaign configured, not only the engine default.
+      // `evaluateAddressLimits` already honoured this for the queue's badge,
+      // so leaving it out here made the preview and the refusal disagree about
+      // the same card.
+      ...(typeof budget.minHoursBetweenActions === 'number'
+        ? { minHoursBetweenActions: budget.minHoursBetweenActions }
+        : {}),
       ...(counts.hoursSinceLast !== undefined
         ? { hoursSinceLastActionToProspect: counts.hoursSinceLast }
         : {}),
