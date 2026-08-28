@@ -20,10 +20,7 @@ import { join } from 'node:path';
  * module, and it is the only way to test the file that actually ships.
  */
 
-const SW_SOURCE = readFileSync(
-  join(import.meta.dir, '..', 'public', 'sw.js'),
-  'utf8',
-);
+const SW_SOURCE = readFileSync(join(import.meta.dir, '..', 'public', 'sw.js'), 'utf8');
 
 type PutBehaviour = 'ok' | 'throw';
 
