@@ -42,6 +42,7 @@ import {
   clearedCookie,
   isEmailVerified,
   login,
+  createWorkspace,
   logout,
   mintPasswordResetToken,
   mintVerificationToken,
@@ -50,9 +51,21 @@ import {
   resetPassword,
   SESSION_COOKIE,
   sessionCookie,
+  switchSessionWorkspace,
   verifyEmailToken,
   workspacesForUser,
 } from './auth';
+import {
+  acceptInvitation,
+  inviteMember,
+  isInvitableRole,
+  listInvitations,
+  listMembers,
+  previewInvitation,
+  removeMember,
+  revokeInvitation,
+  TeamError,
+} from './team';
 import {
   evaluateAddressLimits,
   evaluatePolicy,
@@ -146,6 +159,7 @@ import {
 } from '@outreachgraph/providers';
 import {
   ConsoleMailer,
+  invitationEmail,
   passwordResetEmail,
   SMTP_PRESETS,
   verificationEmail,
@@ -542,6 +556,22 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   /**
+   * What an invitation link says before anybody signs in.
+   *
+   * Necessarily unauthenticated: the whole point is that the recipient may not
+   * have an account yet, and a link that 401s before it can explain itself is
+   * one that reads as broken. It answers 404 for a token that is unknown,
+   * spent, withdrawn or expired — the four are not distinguished, because a
+   * caller who does not hold a valid token has no business learning which of
+   * those it is.
+   */
+  auth.get('/invitations/:token', async (c) => {
+    const preview = await previewInvitation(options.db, c.req.param('token'));
+    if (!preview) throw ApiError.notFound('invitation');
+    return c.json({ invitation: preview });
+  });
+
+  /**
    * Asks for a reset link.
    *
    * Always answers `{ sent: true }`, whatever happened. An endpoint that says
@@ -700,6 +730,262 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     await next();
   });
 
+  // ----------------------------------------------------------------- team
+  //
+  // An organization has been a party of one since the schema was written:
+  // `organization_members` was inserted at registration and never again. These
+  // routes are the missing half — invite, accept, list, remove.
+  //
+  // Managing the team is owner/admin only. `member` deliberately cannot invite:
+  // seats are what the organization is billed for, and a role that can add
+  // them is a role that can raise the bill.
+
+  /** Roles permitted to change who is in the organization. */
+  const canManageTeam = (actor: RequestActor): boolean =>
+    actor.role === 'owner' || actor.role === 'admin';
+
+  api.get('/team', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    const [members, invitations] = await Promise.all([
+      listMembers(db, actor.organizationId),
+      // Pending invitations are seats already committed, so everyone who can
+      // see the member list can see them. Only managing them is restricted.
+      listInvitations(db, actor.organizationId),
+    ]);
+
+    return c.json({ members, invitations, canManage: canManageTeam(actor) });
+  });
+
+  api.post('/team/invitations', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canManageTeam(actor)) throw ApiError.forbidden('inviting people');
+    // Same gate as anything else that sends mail on the account's behalf: an
+    // unverified signup must not be able to mail strangers.
+    await requireVerifiedEmail(db, actor, 'we email an invitation');
+
+    const body = safeJson(await c.req.raw.text());
+    const email = typeof body.email === 'string' ? body.email : '';
+    const role = isInvitableRole(body.role) ? body.role : 'member';
+
+    let minted;
+    try {
+      minted = await inviteMember(db, {
+        organizationId: actor.organizationId,
+        invitedBy: actor.userId,
+        email,
+        role,
+      });
+    } catch (error) {
+      if (error instanceof TeamError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+
+    const organization = await queryOne<{ name: string }>(
+      db,
+      'SELECT name FROM organizations WHERE id = ?',
+      [actor.organizationId],
+    );
+    const inviter = await queryOne<{ email: string; name: string | null }>(
+      db,
+      'SELECT email, name FROM users WHERE id = ?',
+      [actor.userId],
+    );
+
+    const link = `${options.appUrl ?? 'http://localhost:8080'}/join?token=${minted.token}`;
+
+    // A send failure does not fail the request, for the same reason it does
+    // not for verification: the invitation exists and its link is recoverable,
+    // and a 500 here would leave a row nobody can see behind an error nobody
+    // can act on.
+    let sent = true;
+    try {
+      await (options.mailer ?? new ConsoleMailer()).send(
+        invitationEmail(minted.email, link, {
+          organization: organization?.name ?? 'their team',
+          invitedBy: inviter?.name?.trim() || inviter?.email || 'A teammate',
+        }),
+      );
+    } catch (error) {
+      sent = false;
+      await repo.audit(db, {
+        actorKind: 'system',
+        eventType: 'email.send_failed',
+        entityKind: 'user',
+        entityId: actor.userId,
+        detail: { kind: 'invitation', message: String(error) },
+      });
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'team.invited',
+      entityKind: 'user',
+      entityId: minted.id,
+      detail: { email: minted.email, role: minted.role, sent },
+    });
+
+    return c.json(
+      { id: minted.id, email: minted.email, role: minted.role, expiresAt: minted.expiresAt, sent },
+      201,
+    );
+  });
+
+  api.delete('/team/invitations/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canManageTeam(actor)) throw ApiError.forbidden('withdrawing an invitation');
+
+    if (!(await revokeInvitation(db, actor.organizationId, c.req.param('id')))) {
+      throw ApiError.notFound('invitation');
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'team.invitation_revoked',
+      entityKind: 'user',
+      entityId: c.req.param('id'),
+      detail: {},
+    });
+
+    return c.json({ revoked: true });
+  });
+
+  api.delete('/team/members/:userId', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const target = c.req.param('userId');
+
+    if (!canManageTeam(actor)) throw ApiError.forbidden('removing a teammate');
+    // Removing yourself is how an admin locks themselves out of an account
+    // they are still responsible for. Leaving is a different feature.
+    if (target === actor.userId) throw ApiError.badRequest('you cannot remove yourself');
+
+    try {
+      if (!(await removeMember(db, actor.organizationId, target))) {
+        throw ApiError.notFound('member');
+      }
+    } catch (error) {
+      if (error instanceof TeamError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'team.member_removed',
+      entityKind: 'user',
+      entityId: target,
+      detail: {},
+    });
+
+    return c.json({ removed: true });
+  });
+
+  /**
+   * Joining, once you are signed in.
+   *
+   * Authenticated on purpose: accepting has to attach the membership to an
+   * account, so the web app sends the holder through signup or login first and
+   * posts the token afterwards. The response names the workspace it joined so
+   * the client can land somewhere real rather than on whichever workspace the
+   * session happened to be pinned to.
+   */
+  api.post('/invitations/:token/accept', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    let accepted;
+    try {
+      accepted = await acceptInvitation(db, c.req.param('token'), actor.userId);
+    } catch (error) {
+      if (error instanceof TeamError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+
+    // Land in the organization just joined. A session left pinned to the
+    // user's own workspace makes an accepted invitation look like it did
+    // nothing at all.
+    const cookie = readCookie(c.req.header('cookie') ?? null, SESSION_COOKIE);
+    if (cookie && accepted.workspaceId) {
+      await switchSessionWorkspace(db, cookie, actor.userId, accepted.workspaceId);
+    }
+
+    await repo.audit(db, {
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'team.invitation_accepted',
+      entityKind: 'user',
+      entityId: actor.userId,
+      detail: { organizationId: accepted.organizationId, role: accepted.role },
+    });
+
+    return c.json({
+      joined: true,
+      organizationId: accepted.organizationId,
+      workspaceId: accepted.workspaceId,
+      role: accepted.role,
+    });
+  });
+
+  // ----------------------------------------------------------- workspaces
+  //
+  // `organizations → workspaces` has been in the schema since 0000, described
+  // there as how an agency keeps one client's prospect graph out of another's.
+  // Nothing could create a second one, and `sessions.workspace_id` was written
+  // at login and never again, so nothing could move between them either.
+
+  api.post('/workspaces', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canManageTeam(actor)) throw ApiError.forbidden('creating a workspace');
+
+    const body = safeJson(await c.req.raw.text());
+    const workspace = await createWorkspace(
+      db,
+      actor.organizationId,
+      typeof body.name === 'string' ? body.name : '',
+    );
+
+    await repo.audit(db, {
+      workspaceId: workspace.id,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'workspace.created',
+      entityKind: 'workspace',
+      entityId: workspace.id,
+      detail: { name: workspace.name },
+    });
+
+    return c.json({ workspace }, 201);
+  });
+
+  api.post('/workspaces/:id/switch', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    const cookie = readCookie(c.req.header('cookie') ?? null, SESSION_COOKIE);
+    // A service token has no session row to re-point. It names its workspace
+    // on every request instead, so there is nothing here for it to do.
+    if (!cookie) throw ApiError.badRequest('switching needs a browser session');
+
+    if (!(await switchSessionWorkspace(db, cookie, actor.userId, c.req.param('id')))) {
+      throw ApiError.notFound('workspace');
+    }
+
+    return c.json({ workspaceId: c.req.param('id') });
+  });
+
   // ------------------------------------------------------------ campaigns
   api.get('/campaigns', async (c) => {
     const actor = c.get('actor');
@@ -736,11 +1022,18 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       result = await createCampaignFromIntake(db, actor, input, {
         autopilot: body.autopilot === true,
         ...(typeof body.name === 'string' ? { name: body.name } : {}),
+        // Which product this run sells. Omitted, it falls back to the
+        // workspace's first offering, which is what every caller got before a
+        // workspace could describe more than one thing.
+        ...(typeof body.offeringId === 'string' && body.offeringId
+          ? { offeringId: body.offeringId }
+          : {}),
       });
     } catch (error) {
       if (error instanceof IntakeError) {
         throw ApiError.badRequest(error.message, { input: [error.message] });
       }
+      if (error instanceof UnknownProductError) throw ApiError.notFound('product');
       throw error;
     }
 
@@ -751,7 +1044,12 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       eventType: 'campaign.created',
       entityKind: 'campaign',
       entityId: result.campaignId,
-      detail: { kind: result.kind, seed: result.seed, autopilot: result.autopilot },
+      detail: {
+        kind: result.kind,
+        seed: result.seed,
+        autopilot: result.autopilot,
+        offeringId: result.offeringId,
+      },
     });
 
     return c.json(result, 202);

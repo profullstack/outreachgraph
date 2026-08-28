@@ -98,6 +98,8 @@ export const PIPELINE: readonly PipelineStep[] = [
 export type PageId =
   | 'today'
   | 'setup'
+  | 'products'
+  | 'team'
   | 'outreach'
   | 'prospects'
   | 'prospect'
@@ -136,6 +138,20 @@ export const PAGE_COPY: Record<PageId, PageCopy> = {
     you: 'Paste your website and correct the draft we come back with.',
     ours: 'We read the site and fill this in for you, then ground every future message in it.',
     note: 'One product per profile. A workspace selling two things needs two, because the buyers, claims and voice are all different.',
+  },
+  products: {
+    chip: 'Overview',
+    what: 'Everything this workspace sells, and the campaign each one runs.',
+    you: 'Add a product for each thing you sell, and pick the right one when you start a campaign.',
+    ours: 'We keep each product’s claims, buyers and voice apart, so a draft never pitches the wrong thing.',
+    note: 'Archiving a product stops its campaign. Nothing already sent is deleted.',
+  },
+  team: {
+    chip: 'Overview',
+    what: 'Everyone who can see this account, and anyone invited but not yet answered.',
+    you: 'Invite colleagues by email and pick what each of them may do.',
+    ours: 'We mail them a link that works whether or not they already have an account.',
+    note: 'Access is to the whole organization, and the plan is billed to it — so an invited teammate shares this month’s allowance rather than getting their own.',
   },
   outreach: {
     step: 'campaign',

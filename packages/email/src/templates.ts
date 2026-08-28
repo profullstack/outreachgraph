@@ -103,3 +103,54 @@ export function passwordResetEmail(to: string, link: string): Message {
 
   return { to, subject: 'Reset your password · OutreachGraph', text, html };
 }
+
+/**
+ * The team invitation.
+ *
+ * Names both the organization and the person who sent it. An invitation that
+ * says only "you have been invited to OutreachGraph" is indistinguishable from
+ * a cold signup blast, and the reader's first question — who is this from —
+ * has to be answered above the link rather than by opening it.
+ *
+ * Nothing about the recipient is assumed. They may have no account at all, so
+ * the link goes to a page that can sign them up as well as sign them in.
+ */
+export function invitationEmail(
+  to: string,
+  link: string,
+  context: { organization: string; invitedBy: string },
+): Message {
+  const from = `${context.invitedBy} invited you to join ${context.organization} on OutreachGraph.`;
+
+  const text = [
+    from,
+    '',
+    link,
+    '',
+    'The link expires in 14 days. If you were not expecting this you can ignore',
+    'the message — nothing is shared with you until you open it, and nothing is',
+    'sent on your behalf.',
+  ].join('\n');
+
+  const safe = escapeHtml(link);
+  const mark = markUrl(link);
+
+  const html = [
+    mark
+      ? `<p><img src="${escapeHtml(mark)}" alt="OutreachGraph" width="48" height="48" ` +
+        'style="width:48px;height:48px;border:0" /></p>'
+      : '',
+    `<p>${escapeHtml(from)}</p>`,
+    `<p><a href="${safe}">${safe}</a></p>`,
+    '<p>The link expires in 14 days. If you were not expecting this you can ignore ',
+    'the message — nothing is shared with you until you open it, and nothing is ',
+    'sent on your behalf.</p>',
+  ].join('');
+
+  return {
+    to,
+    subject: `Join ${context.organization} on OutreachGraph`,
+    text,
+    html,
+  };
+}

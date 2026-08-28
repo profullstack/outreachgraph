@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
+import type { ProductSummaryView } from '../lib/types';
 
 /**
  * The one box.
@@ -16,14 +17,26 @@ import { useState, type FormEvent } from 'react';
  * Autopilot is a checkbox rather than a separate flow, and it is on by
  * default, because a product that promises to run unattended and then makes
  * unattended the advanced option is not really offering it.
+ *
+ * **Which product this run sells** is the second question, and it only exists
+ * once there is a second answer. A workspace selling one thing never sees the
+ * control; a workspace selling two had no way to say, and every campaign was
+ * silently ground in the older offering — the run found the right companies
+ * and pitched them the wrong product.
  */
-export function CampaignIntake() {
+export function CampaignIntake({ products = [] }: { products?: ProductSummaryView[] }) {
   const router = useRouter();
   const [input, setInput] = useState('');
   const [autopilot, setAutopilot] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [note, setNote] = useState<string | undefined>();
+
+  // Only products someone actually described. The placeholder a first campaign
+  // bootstraps is not a choice, and offering it as one asks the user to pick
+  // between "Unconfigured offering" and nothing.
+  const sellable = products.filter((product) => product.configured);
+  const [offeringId, setOfferingId] = useState(sellable[0]?.offeringId ?? '');
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -38,7 +51,7 @@ export function CampaignIntake() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ input, autopilot }),
+        body: JSON.stringify({ input, autopilot, ...(offeringId ? { offeringId } : {}) }),
       });
 
       const payload = await response.json().catch(() => ({}));
@@ -102,6 +115,30 @@ export function CampaignIntake() {
           {busy ? 'Starting…' : 'Start'}
         </button>
       </div>
+
+      {sellable.length > 1 ? (
+        <div className="mt-3">
+          <label htmlFor="intake-product" className="text-sm font-medium">
+            Which product are you selling them?
+          </label>
+          <p className="text-ink-muted mt-1 text-xs">
+            Every draft in this campaign is grounded in what this product claims, and written in its
+            voice.
+          </p>
+          <select
+            id="intake-product"
+            value={offeringId}
+            onChange={(e) => setOfferingId(e.target.value)}
+            className="border-border bg-surface mt-2 w-full rounded-xl border px-3 py-3 text-sm"
+          >
+            {sellable.map((product) => (
+              <option key={product.offeringId} value={product.offeringId}>
+                {product.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
       <label className="mt-3 flex items-start gap-2 text-sm">
         <input

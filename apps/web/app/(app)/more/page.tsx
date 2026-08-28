@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { PageGuide } from '../../../components/page-guide';
 import { SignOutButton } from '../../../components/sign-out-button';
+import { WorkspaceSwitcher } from '../../../components/workspace-switcher';
 import { ApiUnavailableError, NotAuthenticatedError, fetchMe } from '../../../lib/api';
 
 export const dynamic = 'force-dynamic';
@@ -10,6 +11,16 @@ export const metadata = { title: 'More · OutreachGraph' };
 
 /** Real destinations, listed above the things that are still placeholders. */
 const LINKS = [
+  {
+    href: '/products',
+    label: 'Products',
+    hint: 'Everything you sell — each with its own buyers, voice and campaign',
+  },
+  {
+    href: '/team',
+    label: 'Team',
+    hint: 'Invite colleagues, and see who already has access',
+  },
   {
     href: '/settings',
     label: 'Settings',
@@ -37,7 +48,11 @@ const LINKS = [
   },
   { href: '/rules', label: 'Rules', hint: 'When this happens do that — and what it has cost' },
   { href: '/signals', label: 'Signals', hint: 'The raw observations behind every score' },
-  { href: '/setup', label: 'Setup', hint: 'What you sell, and who buys it' },
+  {
+    href: '/setup',
+    label: 'Setup',
+    hint: 'Describe one product: its claims, its buyers, its voice',
+  },
   { href: '/funnel', label: 'Funnel', hint: 'Stages, conversion and each lead over time' },
 ] as const;
 
@@ -70,6 +85,16 @@ export default async function MorePage() {
       </header>
 
       <PageGuide page="more" />
+
+      {/* Renders nothing for the ordinary case: one workspace, and no
+          permission to add another. */}
+      {me ? (
+        <WorkspaceSwitcher
+          workspaces={me.workspaces ?? []}
+          currentId={me.workspaceId}
+          canCreate={me.role === 'owner' || me.role === 'admin'}
+        />
+      ) : null}
 
       <ul className="border-border divide-border mb-6 divide-y overflow-hidden rounded-2xl border">
         {LINKS.map((link) => (

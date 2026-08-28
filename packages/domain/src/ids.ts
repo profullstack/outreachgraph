@@ -70,6 +70,7 @@ export const ID_PREFIXES = {
   termExpansion: 'tex',
   rule: 'rul',
   ruleRun: 'rrn',
+  invitation: 'inv',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

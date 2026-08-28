@@ -16,6 +16,10 @@
 import { classifyIntake, newId, type ClassifiedIntake } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { emitEvent, enqueue } from '@outreachgraph/pipeline';
+// One meaning of "you named a product this workspace does not sell", shared
+// with the setup routes rather than defined a second time here — two classes
+// with the same name are how one caller's `instanceof` quietly stops matching.
+import { UnknownProductError } from './workspace-profile';
 
 export interface IntakeActor {
   readonly workspaceId: string;
@@ -28,6 +32,8 @@ export interface CampaignIntakeResult {
   readonly kind: 'url' | 'keyword';
   readonly seed: string;
   readonly autopilot: boolean;
+  /** The product this run sells — echoed back so the caller can see which it got. */
+  readonly offeringId: string;
   readonly batchId: string;
   /** Sites queued immediately. Zero for a keyword — discovery queues them. */
   readonly queued: number;
@@ -59,7 +65,7 @@ export async function createCampaignFromIntake(
   db: Client,
   actor: IntakeActor,
   rawInput: string,
-  options: { autopilot?: boolean; name?: string } = {},
+  options: { autopilot?: boolean; name?: string; offeringId?: string } = {},
 ): Promise<CampaignIntakeResult> {
   const intake = classifyIntake(rawInput);
 
@@ -67,20 +73,21 @@ export async function createCampaignFromIntake(
     throw new IntakeError('enter a company website or describe who you want to reach');
   }
 
-  const offering = await ensureOffering(db, actor.workspaceId);
+  const offering = await ensureOffering(db, actor.workspaceId, options.offeringId);
   const campaignId = newId('campaign');
   const stamp = now();
   const name = options.name?.trim() || defaultName(intake);
 
   await db.execute({
-    sql: `INSERT INTO campaigns (id, workspace_id, name, offering_id, networks, approval_mode,
-          status, seed_kind, seed_value, created_at, updated_at, started_at)
-          VALUES (?, ?, ?, ?, '["website","email"]', ?, 'active', ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO campaigns (id, workspace_id, name, offering_id, voice_profile_id, networks,
+          approval_mode, status, seed_kind, seed_value, created_at, updated_at, started_at)
+          VALUES (?, ?, ?, ?, ?, '["website","email"]', ?, 'active', ?, ?, ?, ?, ?)`,
     args: [
       campaignId,
       actor.workspaceId,
       name,
       offering.id,
+      offering.voiceProfileId,
       options.autopilot ? 'trusted_automation' : 'draft_and_approve',
       intake.kind,
       intake.value,
@@ -89,6 +96,8 @@ export async function createCampaignFromIntake(
       stamp,
     ],
   });
+
+  await inheritFilters(db, campaignId, actor.workspaceId, offering.id, stamp);
 
   const batchId = newId('job');
   let queued = 0;
@@ -133,6 +142,7 @@ export async function createCampaignFromIntake(
     kind: intake.kind,
     seed: intake.value,
     autopilot: options.autopilot === true,
+    offeringId: offering.id,
     batchId,
     queued,
     needsProfile: offering.placeholder,
@@ -295,24 +305,64 @@ interface EnsuredOffering {
   readonly id: string;
   /** True when this was invented just now because the workspace had none. */
   readonly placeholder: boolean;
+  /** The voice this product is written in, if setup gave it one. */
+  readonly voiceProfileId: string | null;
 }
 
 /**
- * The workspace's offering, creating a placeholder if there is none.
+ * The offering this campaign sells, creating a placeholder if there is none.
  *
  * `campaigns.offering_id` is NOT NULL, so without this a workspace that has
  * not been through setup cannot start a campaign at all — the first thing a
  * new account tries would fail on a foreign key. A placeholder produces weaker
  * drafts, which the caller is told about, rather than a dead end.
+ *
+ * **Which product, though.** This used to be unconditionally
+ * `ORDER BY created_at LIMIT 1`, written when a workspace could only describe
+ * one thing. Setup can now describe several, each with its own claims, buyers
+ * and voice — and every campaign started from the intake box was still ground
+ * in the oldest of them. The failure was silent and expensive: the run found
+ * the right companies and then pitched them the wrong product.
+ *
+ * An explicit id is scoped to the workspace before it is trusted, because it
+ * arrives from a request body and an unchecked one would let a caller ground
+ * their drafts in another workspace's offering. Falling back to the first row
+ * is kept for callers that genuinely have no opinion — a workspace with one
+ * product, which is most of them.
  */
-async function ensureOffering(db: Client, workspaceId: string): Promise<EnsuredOffering> {
-  const existing = await queryOne<{ id: string }>(
+async function ensureOffering(
+  db: Client,
+  workspaceId: string,
+  offeringId?: string,
+): Promise<EnsuredOffering> {
+  if (offeringId) {
+    const owned = await queryOne<{ id: string; voice_profile_id: string | null }>(
+      db,
+      `SELECT o.id,
+              (SELECT c.voice_profile_id FROM campaigns c
+                WHERE c.offering_id = o.id AND c.voice_profile_id IS NOT NULL
+                ORDER BY c.created_at LIMIT 1) AS voice_profile_id
+         FROM offerings o WHERE o.id = ? AND o.workspace_id = ?`,
+      [offeringId, workspaceId],
+    );
+
+    if (!owned) throw new UnknownProductError(offeringId);
+    return { id: owned.id, placeholder: false, voiceProfileId: owned.voice_profile_id };
+  }
+
+  const existing = await queryOne<{ id: string; voice_profile_id: string | null }>(
     db,
-    `SELECT id FROM offerings WHERE workspace_id = ? ORDER BY created_at LIMIT 1`,
+    `SELECT o.id,
+            (SELECT c.voice_profile_id FROM campaigns c
+              WHERE c.offering_id = o.id AND c.voice_profile_id IS NOT NULL
+              ORDER BY c.created_at LIMIT 1) AS voice_profile_id
+       FROM offerings o WHERE o.workspace_id = ? ORDER BY o.created_at LIMIT 1`,
     [workspaceId],
   );
 
-  if (existing) return { id: existing.id, placeholder: false };
+  if (existing) {
+    return { id: existing.id, placeholder: false, voiceProfileId: existing.voice_profile_id };
+  }
 
   const id = newId('offering');
   const stamp = now();
@@ -326,7 +376,82 @@ async function ensureOffering(db: Client, workspaceId: string): Promise<EnsuredO
     args: [id, workspaceId, stamp, stamp],
   });
 
-  return { id, placeholder: true };
+  return { id, placeholder: true, voiceProfileId: null };
+}
+
+/**
+ * Gives a new campaign the ICP its product already has.
+ *
+ * `campaign_filters` is keyed by campaign, not by offering, so a campaign
+ * created from the intake box started with no row at all — and two places read
+ * it. `runPipelineForCandidate` scores every person against empty titles,
+ * seniorities and industries, and `extractionContext` reads a page with no
+ * technologies or keywords to look for. The result was a campaign that
+ * discovered the right companies and then had no opinion about anybody on
+ * them.
+ *
+ * Copied rather than shared. The intake campaign is a *run* against a market,
+ * and narrowing its titles for one market must not silently re-target every
+ * other campaign selling the same product. Listening targets are deliberately
+ * not copied: those say where to watch continuously, which is a setup-page
+ * decision about the product rather than a property of this run.
+ *
+ * A product with no filters row yet — one that has never been through setup —
+ * simply leaves the new campaign without one, exactly as before.
+ */
+async function inheritFilters(
+  db: Client,
+  campaignId: string,
+  workspaceId: string,
+  offeringId: string,
+  stamp: string,
+): Promise<void> {
+  const source = await queryOne<{
+    titles: string;
+    seniorities: string;
+    industries: string;
+    countries: string;
+    technologies: string;
+    keywords: string;
+    exclusions: string;
+    funding_stages: string;
+    employee_count_min: number | null;
+    employee_count_max: number | null;
+    hiring: number | null;
+  }>(
+    db,
+    `SELECT f.titles, f.seniorities, f.industries, f.countries, f.technologies, f.keywords,
+            f.exclusions, f.funding_stages, f.employee_count_min, f.employee_count_max, f.hiring
+       FROM campaign_filters f
+       JOIN campaigns c ON c.id = f.campaign_id
+      WHERE c.workspace_id = ? AND c.offering_id = ? AND c.id != ?
+      ORDER BY c.created_at ASC LIMIT 1`,
+    [workspaceId, offeringId, campaignId],
+  );
+
+  if (!source) return;
+
+  await db.execute({
+    sql: `INSERT INTO campaign_filters (campaign_id, titles, seniorities, industries, countries,
+            technologies, keywords, exclusions, funding_stages, employee_count_min,
+            employee_count_max, hiring, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      campaignId,
+      source.titles,
+      source.seniorities,
+      source.industries,
+      source.countries,
+      source.technologies,
+      source.keywords,
+      source.exclusions,
+      source.funding_stages,
+      source.employee_count_min,
+      source.employee_count_max,
+      source.hiring,
+      stamp,
+    ],
+  });
 }
 
 /**

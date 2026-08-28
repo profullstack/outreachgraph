@@ -10,8 +10,14 @@ import { useState, type FormEvent } from 'react';
  * Posts to the API from the browser so the `Set-Cookie` lands on the user's
  * own session, then reloads server components to pick it up. Same-origin,
  * because the API is served from this container under /api.
+ *
+ * `next` exists for the invitation flow: somebody arriving on a `/join` link
+ * has to sign in or sign up first, and landing them on Today afterwards
+ * abandons the invitation they came to accept. Callers pass a path; the login
+ * page validates the one it reads from the query string before passing it
+ * here, so this component cannot be pointed at another origin.
  */
-export function LoginForm() {
+export function LoginForm({ next = '/today' }: { next?: string }) {
   const router = useRouter();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
@@ -39,7 +45,7 @@ export function LoginForm() {
         return;
       }
 
-      router.replace('/today');
+      router.replace(next);
       router.refresh();
     } catch {
       setError('could not reach the server');

@@ -16,7 +16,25 @@ export const metadata = { title: 'Sign in · OutreachGraph' };
  * pixels inside the screen edge reads as a rendering artefact rather than as a
  * card, so the form simply sits on the page there.
  */
-export default function LoginPage() {
+/**
+ * Only a path on this origin is accepted as a destination.
+ *
+ * `//evil.example` and `https://evil.example` are both valid values of a
+ * `next` query parameter and both leave this site, so the check is "starts
+ * with one slash and not two" rather than anything cleverer.
+ */
+function safeNext(value: string | undefined): string {
+  if (!value || !value.startsWith('/') || value.startsWith('//')) return '/today';
+  return value;
+}
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) {
+  const { next } = await searchParams;
+
   return (
     <div className="flex min-h-[80dvh] items-center justify-center px-5 py-12">
       <div className="border-border w-full max-w-sm sm:rounded-2xl sm:border sm:p-8">
@@ -30,7 +48,7 @@ export default function LoginPage() {
           </p>
         </header>
 
-        <LoginForm />
+        <LoginForm next={safeNext(next)} />
       </div>
     </div>
   );

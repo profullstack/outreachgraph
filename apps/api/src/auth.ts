@@ -352,6 +352,77 @@ async function membershipForWorkspace(
   return { organizationId: row.organization_id, workspaceId, role: asRole(row.role) };
 }
 
+/**
+ * Re-points a live session at another workspace.
+ *
+ * The session row already carries `workspace_id` and `actorFromSession`
+ * already prefers it over `primaryMembership` — the column was written once at
+ * login and never again, so a user belonging to two workspaces could only ever
+ * reach the older one. This is the write that was missing.
+ *
+ * Membership is re-checked here rather than trusted from the caller: the
+ * request names a workspace id, and without this a member of one organization
+ * could pin their session to another's and every workspace-scoped route
+ * downstream would happily serve it.
+ */
+export async function switchSessionWorkspace(
+  db: Client,
+  token: string,
+  userId: string,
+  workspaceId: string,
+): Promise<boolean> {
+  const membership = await membershipForWorkspace(db, userId, workspaceId);
+  if (!membership) return false;
+
+  const result = await db.execute({
+    sql: `UPDATE sessions SET workspace_id = ? WHERE token_hash = ? AND user_id = ?`,
+    args: [workspaceId, await hashToken(token), userId],
+  });
+
+  return result.rowsAffected > 0;
+}
+
+/**
+ * A second workspace under an organization the user already belongs to.
+ *
+ * The schema has allowed this since 0000 — it is how an agency keeps one
+ * client's prospect graph out of another's — and nothing could create one.
+ * Slug is derived and de-duplicated because `UNIQUE (organization_id, slug)`
+ * makes a collision an error rather than a rename.
+ */
+export async function createWorkspace(
+  db: Client,
+  organizationId: string,
+  name: string,
+): Promise<{ id: string; name: string; slug: string }> {
+  const trimmed = name.trim().slice(0, 120);
+  if (!trimmed) throw new ApiError(400, 'bad_request', 'give the workspace a name');
+
+  const base = slugify(trimmed) || 'workspace';
+  let slug = base;
+
+  for (let attempt = 2; attempt < 50; attempt += 1) {
+    const taken = await queryOne<{ id: string }>(
+      db,
+      'SELECT id FROM workspaces WHERE organization_id = ? AND slug = ?',
+      [organizationId, slug],
+    );
+    if (!taken) break;
+    slug = `${base}-${attempt}`;
+  }
+
+  const id = newId('workspace');
+  const stamp = now();
+
+  await db.execute({
+    sql: `INSERT INTO workspaces (id, organization_id, name, slug, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)`,
+    args: [id, organizationId, trimmed, slug, stamp, stamp],
+  });
+
+  return { id, name: trimmed, slug };
+}
+
 export async function workspacesForUser(db: Client, userId: string) {
   return queryAll<{ id: string; name: string; organization_id: string; role: string }>(
     db,

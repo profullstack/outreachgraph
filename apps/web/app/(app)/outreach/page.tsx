@@ -8,8 +8,10 @@ import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchCampaignSummaries,
+  fetchProducts,
   type CampaignSummaryView,
 } from '../../../lib/api';
+import type { ProductSummaryView } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,13 +27,15 @@ export const metadata = { title: 'Outreach · OutreachGraph' };
  */
 export default async function OutreachPage() {
   let campaigns: CampaignSummaryView[] = [];
+  let products: ProductSummaryView[] = [];
   let offline = false;
 
   try {
-    // Only the campaign list is read here now. The signed-in user and the
-    // profile were fetched for the two banners the guide has taken over, and
-    // the guide reads them through the same memoized client.
-    campaigns = await fetchCampaignSummaries();
+    // The campaign list, plus the products a run can be started for. The
+    // signed-in user and the profile were fetched for the two banners the
+    // guide has taken over, and the guide reads them through the same
+    // memoized client.
+    [campaigns, products] = await Promise.all([fetchCampaignSummaries(), fetchProducts()]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
@@ -65,7 +69,7 @@ export default async function OutreachPage() {
         </p>
       ) : (
         <>
-          <CampaignIntake />
+          <CampaignIntake products={products} />
 
           {/* Still here, and still useful — but no longer the front door. Most
               people are starting from a market rather than from a list they

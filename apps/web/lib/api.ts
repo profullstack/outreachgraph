@@ -20,6 +20,7 @@ import type {
   ProspectDetail,
   ProspectRow,
   SignalRow,
+  TeamView,
 } from './types';
 
 export type {
@@ -33,6 +34,10 @@ export type {
   ProspectRow,
   SignalRow,
   SubredditSuggestionView,
+  TeamInvitationView,
+  TeamMemberView,
+  TeamView,
+  WorkspaceOptionView,
 } from './types';
 export { relativeTime } from './format';
 
@@ -141,6 +146,42 @@ export async function fetchProfile(offeringId?: string): Promise<WorkspaceProfil
 export async function fetchProducts(): Promise<ProductSummaryView[]> {
   const body = await request<{ products: ProductSummaryView[] }>('/products');
   return body.products;
+}
+
+/** Who else is in the organization, and who has been invited but not answered. */
+export async function fetchTeam(): Promise<TeamView> {
+  return request<TeamView>('/team');
+}
+
+export interface InvitationPreviewView {
+  organizationId: string;
+  organizationName: string;
+  email: string;
+  role: string;
+}
+
+/**
+ * What an invitation link says, before the holder has an account.
+ *
+ * Unauthenticated on the API side, and undefined here for anything the server
+ * would not honour — unknown, spent, withdrawn or expired. The four are not
+ * distinguished on purpose, so the page says "this link is no longer good"
+ * rather than telling a stranger which kind of token they are holding.
+ */
+export async function fetchInvitationPreview(
+  token: string,
+): Promise<InvitationPreviewView | undefined> {
+  try {
+    const body = await request<{ invitation: InvitationPreviewView }>(
+      `/auth/invitations/${encodeURIComponent(token)}`,
+    );
+    return body.invitation;
+  } catch (error) {
+    // A dead API is a different answer from a dead link, and only the second
+    // is this function's to give.
+    if (error instanceof ApiUnavailableError) throw error;
+    return undefined;
+  }
 }
 
 export type ApprovalFilter = 'all' | 'ready' | 'needs_draft' | 'research';

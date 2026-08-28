@@ -236,5 +236,43 @@ export interface CurrentUser {
   user: { id: string; email: string | null; name: string | null };
   emailVerified: boolean;
   workspaceId: string;
+  organizationId?: string;
   role: string;
+  /** Every workspace this account may act in. One, for most people. */
+  workspaces?: WorkspaceOptionView[];
+}
+
+export interface WorkspaceOptionView {
+  id: string;
+  name: string;
+  organization_id: string;
+  role: string;
+}
+
+/** Somebody already in the organization. */
+export interface TeamMemberView {
+  userId: string;
+  email: string;
+  name: string | null;
+  role: string;
+  joinedAt: string;
+}
+
+/** An invitation sent and not yet answered. */
+export interface TeamInvitationView {
+  id: string;
+  email: string;
+  role: string;
+  invitedBy: string | null;
+  expiresAt: string;
+  createdAt: string;
+  /** True once the expiry has passed, so the row says so rather than implying it is live. */
+  expired: boolean;
+}
+
+export interface TeamView {
+  members: TeamMemberView[];
+  invitations: TeamInvitationView[];
+  /** False for a member or viewer: they see the team but cannot change it. */
+  canManage: boolean;
 }

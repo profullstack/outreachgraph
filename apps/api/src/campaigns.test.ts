@@ -10,6 +10,7 @@ import {
   setCampaignAutopilot,
   setCampaignStatus,
 } from './campaigns';
+import { UnknownProductError } from './workspace-profile';
 
 let seeded: SeededDatabase | undefined;
 
@@ -131,6 +132,81 @@ describe('createCampaignFromIntake', () => {
     );
     expect(campaign?.seed_kind).toBe('keyword');
     expect(campaign?.seed_value).toBe('bike shops in Portland');
+  });
+
+  test('a named product is the one the campaign sells', async () => {
+    seeded = await seedDatabase('intake-product');
+    const { db } = seeded;
+    const stamp = new Date().toISOString();
+
+    // A second, newer product. The bug this covers is that intake always took
+    // the oldest offering, so this one could never be sold.
+    await db.execute({
+      sql: `INSERT INTO offerings (id, workspace_id, name, category, created_at, updated_at)
+            VALUES ('off_second', ?, 'Security Audit', 'security services', ?, ?)`,
+      args: [SEED.workspaceId, stamp, stamp],
+    });
+
+    const result = await createCampaignFromIntake(db, ACTOR, 'seed-stage SaaS founders', {
+      offeringId: 'off_second',
+    });
+
+    expect(result.offeringId).toBe('off_second');
+
+    const campaign = await queryOne<{ offering_id: string }>(
+      db,
+      `SELECT offering_id FROM campaigns WHERE id = ?`,
+      [result.campaignId],
+    );
+    expect(campaign?.offering_id).toBe('off_second');
+  });
+
+  test('a product from another workspace is refused rather than silently ignored', async () => {
+    seeded = await seedDatabase('intake-product-foreign');
+    const { db } = seeded;
+    const stamp = new Date().toISOString();
+
+    await db.execute({
+      sql: `INSERT INTO workspaces (id, organization_id, name, slug, created_at, updated_at)
+            VALUES ('wsp_other', ?, 'Other', 'other', ?, ?)`,
+      args: [SEED.organizationId, stamp, stamp],
+    });
+    await db.execute({
+      sql: `INSERT INTO offerings (id, workspace_id, name, category, created_at, updated_at)
+            VALUES ('off_other', 'wsp_other', 'Theirs', 'unspecified', ?, ?)`,
+      args: [stamp, stamp],
+    });
+
+    // Falling back to this workspace's own offering would be worse than an
+    // error: the run would start and quietly sell the wrong thing.
+    await expect(
+      createCampaignFromIntake(db, ACTOR, 'anyone at all', { offeringId: 'off_other' }),
+    ).rejects.toBeInstanceOf(UnknownProductError);
+  });
+
+  test('the new campaign inherits its product’s ICP', async () => {
+    seeded = await seedDatabase('intake-inherit-filters');
+    const { db } = seeded;
+    const stamp = new Date().toISOString();
+
+    await db.execute({
+      sql: `INSERT INTO campaign_filters (campaign_id, titles, industries, keywords, updated_at)
+            VALUES (?, '["VP Engineering"]', '["SaaS"]', '["stripe"]', ?)`,
+      args: [SEED.campaignId, stamp],
+    });
+
+    const result = await createCampaignFromIntake(db, ACTOR, 'payments teams in Berlin');
+
+    // Without this the pipeline scores everyone against an empty ICP and reads
+    // every page with nothing to look for.
+    const filters = await queryOne<{ titles: string; industries: string; keywords: string }>(
+      db,
+      `SELECT titles, industries, keywords FROM campaign_filters WHERE campaign_id = ?`,
+      [result.campaignId],
+    );
+    expect(JSON.parse(filters?.titles ?? '[]')).toEqual(['VP Engineering']);
+    expect(JSON.parse(filters?.industries ?? '[]')).toEqual(['SaaS']);
+    expect(JSON.parse(filters?.keywords ?? '[]')).toEqual(['stripe']);
   });
 });
 
