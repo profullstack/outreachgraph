@@ -157,7 +157,7 @@ export async function runPipelineForCandidate(
     };
   }
 
-  const personId = await upsertPerson(db, candidate, stamp);
+  const personId = await upsertPerson(db, candidate, origin, stamp);
 
   await recordProvenance(db, personId, candidate, origin, stamp);
   await ensureCampaignMembership(db, campaignId, personId, workspaceId, stamp);
@@ -199,7 +199,11 @@ export async function runPipelineForCandidate(
   // and it is not a merge — nothing is being matched to anything. It says only
   // "this named person is presented here as part of this company", which is
   // exactly the claim any message to them would rest on.
-  if (origin.sourceUrl) await storeSiteIdentity(db, personId, enriched, origin, stamp);
+  // Keyed on the *pre-resolution* name, which is the one `upsertPerson`
+  // searched for a moment ago. Writing the enriched name here would mint a key
+  // the lookup can never produce, and the duplicate this whole path exists to
+  // prevent would come straight back the next time a provider tidied a name.
+  if (origin.sourceUrl) await storeSiteIdentity(db, personId, candidate.fullName, origin, stamp);
 
   const linked = await linkIdentities(db, personId, enriched, origin, stamp);
 
@@ -394,28 +398,15 @@ async function storeSiteSignal(
 async function storeSiteIdentity(
   db: Client,
   personId: string,
-  candidate: PersonCandidate,
+  fullName: string,
   origin: CandidateOrigin,
   stamp: string,
 ): Promise<void> {
-  if (!origin.sourceUrl) return;
+  const sourceUrl = origin.sourceUrl;
+  if (!sourceUrl) return;
 
-  const host = (() => {
-    try {
-      return new URL(origin.sourceUrl).hostname.replace(/^www\./, '').toLowerCase();
-    } catch {
-      return undefined;
-    }
-  })();
-
-  if (!host) return;
-
-  const slug = candidate.fullName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-
-  if (!slug) return;
+  const key = siteIdentityKey(sourceUrl, fullName);
+  if (!key) return;
 
   await db.execute({
     sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
@@ -426,14 +417,54 @@ async function storeSiteIdentity(
     args: [
       newId('socialIdentity'),
       personId,
-      candidate.fullName,
-      `${host}:${slug}`,
-      origin.sourceUrl,
+      fullName,
+      key,
+      sourceUrl,
       origin.capabilities.sourceType,
       stamp,
       stamp,
     ],
   });
+}
+
+/**
+ * The key identifying "this named person, on this site".
+ *
+ * Shared by the write in `storeSiteIdentity` and the lookup in `upsertPerson`,
+ * because the two drifting apart is the whole defect this exists to close: the
+ * pipeline wrote this key on every crawl and never once searched for it, so a
+ * person named on a company page — and carrying no provider identity of their
+ * own — matched nothing on the next pass and was inserted again. Production
+ * reached 422 copies of one person and 77,816 rows for 21,219 distinct names,
+ * each duplicate proposing a fresh `refresh_research` card that re-queued the
+ * crawl that made it.
+ *
+ * Returns undefined when there is no usable host or name, which is the signal
+ * to fall through to an insert rather than to match everything with an empty
+ * key.
+ */
+export function siteIdentityKey(
+  sourceUrl: string | undefined,
+  fullName: string,
+): string | undefined {
+  if (!sourceUrl) return undefined;
+
+  let host: string;
+  try {
+    host = new URL(sourceUrl).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return undefined;
+  }
+  if (!host) return undefined;
+
+  const slug = fullName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  if (!slug) return undefined;
+
+  return `${host}:${slug}`;
 }
 
 /**
@@ -489,6 +520,7 @@ async function storeEmailIdentity(
 async function upsertPerson(
   db: Client,
   candidate: PersonCandidate,
+  origin: CandidateOrigin,
   stamp: string,
 ): Promise<string> {
   // Match on the stable platform id wherever the provider supplied one — it
@@ -521,6 +553,27 @@ async function upsertPerson(
       [identity.network, identity.handle],
     );
     if (byHandle) return byHandle.person_id;
+  }
+
+  // Finally, the identity this pipeline writes about the person itself.
+  //
+  // A crawled person usually carries no provider identity at all — a team page
+  // gives a name and a job title and nothing that identifies them anywhere
+  // else — so both loops above find nothing and every re-crawl inserted a new
+  // row. `storeSiteIdentity` has always recorded `host:name-slug` for exactly
+  // this person a few lines later; it was simply never read back. Searching
+  // the same key closes the loop, and it is deliberately the *last* resort:
+  // a real platform id or handle is stronger evidence and is preferred when
+  // either exists.
+  const siteKey = siteIdentityKey(origin.sourceUrl, candidate.fullName);
+  if (siteKey) {
+    const bySite = await queryOne<{ person_id: string }>(
+      db,
+      `SELECT person_id FROM social_identities
+        WHERE network = 'website' AND platform_user_id = ?`,
+      [siteKey],
+    );
+    if (bySite) return bySite.person_id;
   }
 
   const companyId = candidate.companyName ? await upsertCompany(db, candidate, stamp) : undefined;
