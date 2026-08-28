@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createDatabase } from './client';
-import { migrate, migrationStatus } from './migrate';
+import { loadMigrations, migrate, migrationStatus } from './migrate';
 
 const MIGRATIONS_DIR = join(import.meta.dir, '../../../migrations');
 
@@ -120,6 +120,51 @@ describe('migrations', () => {
     } finally {
       client.close();
     }
+  });
+
+  /**
+   * Two files sharing a number is not a naming quibble — it makes apply order
+   * depend on which environment you are in.
+   *
+   * The ledger is keyed by filename, so a database that already holds one of
+   * the pair applies only the other, in whatever order the deploy happened to
+   * land them. A database built from scratch applies both, in filename order.
+   * Production and a fresh clone therefore run the same two migrations in
+   * different orders, and nothing anywhere notices.
+   *
+   * It has happened twice, both times because two branches numbered their
+   * migration the same day and both merged. Neither pair can be repaired now,
+   * and renaming is specifically the repair that is *not* available: the
+   * ledger key is the filename, so a rename reads as a brand-new migration,
+   * gets applied a second time, fails on its `CREATE`, and stops the container
+   * booting. Forward-only cuts both ways.
+   *
+   * Both surviving pairs are harmless, which is luck rather than design —
+   * `0007` and `0029` each pair a table with indexes on tables the other never
+   * touches — so they are grandfathered by name rather than by loosening the
+   * rule. A third collision is caught by `bun run check`, before it can reach
+   * a database and become permanent like these two.
+   */
+  test('never reuse a number — apply order must not depend on the environment', async () => {
+    // Applied in production long before this test existed. Adding to this list
+    // is not a way to pass: renaming is impossible *after* a migration ships,
+    // which is exactly why the number has to be unique before it does.
+    const GRANDFATHERED = new Set(['0007', '0029']);
+
+    const names = (await loadMigrations(MIGRATIONS_DIR)).map((m) => m.name);
+
+    const byPrefix = new Map<string, string[]>();
+    for (const name of names) {
+      const prefix = name.slice(0, name.indexOf('_'));
+      byPrefix.set(prefix, [...(byPrefix.get(prefix) ?? []), name]);
+    }
+
+    const collisions = [...byPrefix.entries()]
+      .filter(([, files]) => files.length > 1)
+      .filter(([prefix]) => !GRANDFATHERED.has(prefix))
+      .map(([, files]) => files);
+
+    expect(collisions).toEqual([]);
   });
 
   test('report status for applied and pending migrations', async () => {

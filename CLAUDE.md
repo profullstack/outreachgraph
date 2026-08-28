@@ -34,6 +34,7 @@ These come from the PRD and are not style preferences:
 ## Migrations
 
 - Forward-only. Never edit an applied migration — the runner rejects it by checksum. Write the next one.
+- **Never reuse a number.** Check `ls migrations` before naming a file; rebasing onto a branch that took your number means renaming yours _before_ it ships. The ledger is keyed by filename, so two files sharing a number apply in one order on a database that already holds one of them and another order on a fresh one. After a migration has been applied anywhere, renaming it is not a repair — the new name reads as a new migration, gets applied twice and stops the container booting. `0007` and `0029` collided this way and are stuck; a test in `packages/db/src/migrate.test.ts` fails on any new pair.
 - `bun run db:migrate`, `bun run db:status`, `bun run db:reset` (local file databases only).
 - The container applies pending migrations at boot and refuses to start if they fail. That is safe only because the deployment is one container pinned to one replica; if `numReplicas` ever rises, set `RUN_MIGRATIONS=false` and run them as an explicit release step instead.
 
