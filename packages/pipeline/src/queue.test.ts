@@ -268,9 +268,109 @@ describe('drainQueue', () => {
       });
     }
 
-    const summary = await drainQueue(db, async () => {}, 2);
+    const summary = await drainQueue(db, async () => {}, { limit: 2 });
 
     expect(summary.processed).toBe(2);
     expect((await queueDepth(db)).pending).toBe(3);
+  });
+});
+
+describe('failJob during an outage', () => {
+  // Every failure here is the shared model chain refusing everybody, which is
+  // what the real incident looked like: a 400 carrying a billing message.
+  const outOfBudget = (error: unknown): boolean => String(error).includes('usage limits');
+
+  test('an outage does not spend the last attempt', async () => {
+    const { db } = await setup('queue-outage-refund');
+
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      maxAttempts: 1,
+    });
+
+    // Claiming charges the attempt up front, so this job is on its last one —
+    // the exact state in which the incident killed 4,888 rows.
+    const job = await claimNext(db);
+    expect(job?.attempts).toBe(1);
+
+    const outcome = await failJob(
+      db,
+      job!,
+      new Error('You have reached your specified API usage limits.'),
+      outOfBudget,
+    );
+
+    expect(outcome).toBe('deferred');
+
+    const row = await queryOne<{ status: string; attempts: number; run_after: string }>(
+      db,
+      'SELECT status, attempts, run_after FROM jobs WHERE id = ?',
+      [job!.id],
+    );
+
+    // Alive, and with its attempt handed back rather than burnt on an outage.
+    expect(row?.status).toBe('pending');
+    expect(Number(row?.attempts)).toBe(0);
+    // Held for a while, so a provider that has already said no is not asked
+    // again on the very next tick.
+    expect(new Date(row!.run_after).getTime()).toBeGreaterThan(Date.now() + 60_000);
+  });
+
+  test('a genuine fault still dies, outage check or not', async () => {
+    const { db } = await setup('queue-outage-not-everything');
+
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      maxAttempts: 1,
+    });
+
+    const job = await claimNext(db);
+    const outcome = await failJob(db, job!, new Error('unparseable homepage'), outOfBudget);
+
+    // The refund is for outages only; widening it would let a poisonous payload
+    // retry forever.
+    expect(outcome).toBe('dead');
+
+    const row = await queryOne<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', [
+      job!.id,
+    ]);
+
+    expect(row?.status).toBe('failed');
+  });
+
+  test('one outage holds the rest of the tick instead of burning it', async () => {
+    const { db } = await setup('queue-outage-stops-tick');
+
+    for (let i = 0; i < 4; i += 1) {
+      await enqueue(db, {
+        workspaceId: SEED.workspaceId,
+        kind: 'crawl_site',
+        payload: { i },
+        maxAttempts: 3,
+      });
+    }
+
+    let calls = 0;
+    const summary = await drainQueue(
+      db,
+      async () => {
+        calls += 1;
+        throw new Error('You have reached your specified API usage limits.');
+      },
+      { isOutage: outOfBudget },
+    );
+
+    // The outage is global, so there was no point in asking four times.
+    expect(calls).toBe(1);
+    expect(summary.processed).toBe(1);
+    expect(summary.deferred).toBe(1);
+    expect(summary.dead).toBe(0);
+
+    // Nothing died, and the queue is intact for when the budget returns.
+    const depth = await queueDepth(db);
+    expect(depth.failed).toBe(0);
+    expect(depth.pending).toBe(4);
   });
 });

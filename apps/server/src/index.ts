@@ -25,6 +25,7 @@ import {
   FallbackModel,
   GeminiModel,
   OpenAIModel,
+  isBudgetExhausted,
   type FallbackEntry,
 } from '@outreachgraph/ai';
 import { ImapReader, ResendMailer } from '@outreachgraph/email';
@@ -683,11 +684,23 @@ async function tick(): Promise<void> {
 
   // The queue drains before the send sweep, so anything discovered this tick
   // can go out on the same tick rather than waiting for the next one.
-  const drained = await drainQueue(db, runJob);
+  const drained = await drainQueue(db, runJob, { isOutage: isBudgetExhausted });
   if (drained.processed > 0 || drained.reclaimed > 0) {
     console.log(
       `jobs: ${drained.succeeded} done, ${drained.retried} retrying, ` +
-        `${drained.dead} failed, ${drained.reclaimed} reclaimed`,
+        `${drained.dead} failed, ${drained.deferred} deferred, ` +
+        `${drained.reclaimed} reclaimed`,
+    );
+  }
+
+  // Said plainly and every tick it happens, because the previous version of
+  // this outage was silent: the queue drained itself to death against providers
+  // that had no budget left, and the only trace was a 400 in `jobs.last_error`
+  // that read like a bug in the crawler.
+  if (drained.deferred > 0) {
+    console.log(
+      'jobs: every model provider is refusing work, so the queue is holding ' +
+        'rather than spending attempts — it resumes on its own once they answer',
     );
   }
 
