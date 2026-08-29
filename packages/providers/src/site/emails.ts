@@ -121,6 +121,31 @@ export interface FoundEmail {
   readonly isRole: boolean;
 }
 
+/**
+ * What an address may actually contain.
+ *
+ * Every other check here is structural — has an `@`, has a dot after it, is
+ * not a filename — and none of them look at the characters. That gap put
+ * `kontakt@assarchristian.se\\\` into production: the address was lifted from
+ * a `mailto:` inside an escaped string, kept its trailing backslashes, passed
+ * every test above because it does have an `@` and its "domain" does contain a
+ * dot, and was only rejected months later by an SMTP server —
+ * `501 5.1.3 Bad recipient address syntax`, three times, after which autopilot
+ * gave up on that lead for good.
+ *
+ * A deliverability failure is the worst place to find this out. It costs a
+ * send attempt against a provider that will never accept it, and it strands
+ * the recommendation: the failure count is per recommendation and never
+ * resets, so the lead is unreachable even once the address is corrected.
+ *
+ * The local part is the RFC 5322 unquoted set; the domain is letters, digits
+ * and interior hyphens per label. Quoted local parts (`"a b"@x.com`) are legal
+ * and not accepted — they are vanishingly rare on public pages and every one
+ * seen so far has been a parsing artefact rather than a real address.
+ */
+const ADDRESS_SHAPE =
+  /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
 /** Normalises and validates one candidate address, or rejects it. */
 export function parseEmail(raw: string): FoundEmail | undefined {
   const address = raw
@@ -135,6 +160,9 @@ export function parseEmail(raw: string): FoundEmail | undefined {
 
   const localPart = address.slice(0, at);
   const domain = address.slice(at + 1);
+
+  // Before anything semantic: if it cannot be an address, it is not one.
+  if (!ADDRESS_SHAPE.test(address)) return undefined;
 
   if (IGNORED_DOMAINS.has(domain)) return undefined;
   if (FILE_SUFFIX.test(domain)) return undefined;
@@ -167,7 +195,12 @@ export function findEmails(html: string): readonly FoundEmail[] {
     if (parsed && !seen.has(parsed.address)) seen.set(parsed.address, parsed);
   };
 
-  for (const match of html.matchAll(/mailto:([^"'\s>)]+)/gi)) {
+  // The backslash in this class is what stops an escaped `\"mailto:...\\\"` —
+  // a `mailto:` inside a JSON string embedded in the page — from carrying its
+  // escaping into the captured address. `parseEmail` would reject the result
+  // now anyway, but rejecting it means losing the address entirely, and the
+  // clean one is often only in the prose pass by luck.
+  for (const match of html.matchAll(/mailto:([^"'\s>)\\]+)/gi)) {
     if (match[1]) add(match[1]);
   }
 

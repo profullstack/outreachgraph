@@ -21,6 +21,33 @@ describe('parseEmail', () => {
     // A hashed id embedded in markup.
     expect(parseEmail('a1b2c3d4e5f60718@acme.com')).toBeUndefined();
   });
+
+  /**
+   * The address that reached production and was only caught by an SMTP server.
+   *
+   * `kontakt@assarchristian.se\\\` has an `@`, and its "domain" does contain a
+   * dot, so every structural check above passed it. Three send attempts later
+   * the provider answered `501 5.1.3 Bad recipient address syntax` and
+   * autopilot gave up on the lead permanently — the failure count is per
+   * recommendation and never resets.
+   */
+  test('rejects an address carrying characters no address may contain', () => {
+    // Three literal trailing backslashes, written as escapes: a raw string
+    // cannot end in one without escaping its own closing delimiter.
+    expect(parseEmail('kontakt@assarchristian.se\\\\\\')).toBeUndefined();
+    expect(parseEmail('jane@acme.com>')).toBeUndefined();
+    expect(parseEmail('jane@acme,com')).toBeUndefined();
+    expect(parseEmail('jane doe@acme.com')).toBeUndefined();
+    expect(parseEmail('jane@-acme.com')).toBeUndefined();
+    expect(parseEmail('jane@acme-.com')).toBeUndefined();
+    expect(parseEmail('jane@@acme.com')).toBeUndefined();
+
+    // The neighbours it must not take with it.
+    expect(parseEmail("o'brien@acme.com")?.address).toBe("o'brien@acme.com");
+    expect(parseEmail('jane+tag@acme.co.uk')?.address).toBe('jane+tag@acme.co.uk');
+    expect(parseEmail('j@sub-domain.acme.com')?.address).toBe('j@sub-domain.acme.com');
+    expect(parseEmail('a_b.c@xn--80ak6aa92e.com')?.address).toBe('a_b.c@xn--80ak6aa92e.com');
+  });
 });
 
 describe('findEmails', () => {
@@ -109,5 +136,22 @@ describe('assignEmails', () => {
     const assigned = assignEmails(found, [], 'acme.com');
 
     expect(assigned.companyEmail).toBe('hello@acme.com');
+  });
+
+  /**
+   * A `mailto:` inside an escaped string — JSON embedded in a page — used to
+   * capture its own escaping. The address survived validation and shipped.
+   *
+   * Worth keeping as its own case because the old behaviour was not simply
+   * "returns nothing useful": it returned the corrupted address *first*, since
+   * `mailto:` hits deliberately outrank prose, with the clean address second.
+   * The right address was on the page the whole time and lost to its own
+   * broken twin.
+   */
+  test('an escaped mailto does not carry its escaping into the address', () => {
+    const html = String.raw`<a href=\"mailto:kontakt@assarchristian.se\\\">Kontakt</a>`;
+    const found = findEmails(html);
+
+    expect(found.map((e) => e.address)).toEqual(['kontakt@assarchristian.se']);
   });
 });
