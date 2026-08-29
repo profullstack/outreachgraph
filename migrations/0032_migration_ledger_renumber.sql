@@ -1,0 +1,35 @@
+-- 0032_migration_ledger_renumber.sql
+-- Clears the two ledger rows left behind by renumbering.
+--
+-- This is the one migration in the directory that touches `_migrations`
+-- itself, so it is worth being explicit about why it is safe and why it is
+-- needed.
+--
+-- Two files were renumbered to end the duplicate-number collisions:
+--
+--   0007_video_assets.sql      -> 0031_video_assets.sql
+--   0029_person_fk_indexes.sql -> 0030_person_fk_indexes.sql
+--
+-- The ledger is keyed by filename. A database that already applied the old
+-- names therefore holds two rows naming files that no longer exist, and will
+-- separately record the new names when it re-applies them. Without this, the
+-- ledger permanently disagrees with `ls migrations` — which is exactly the
+-- kind of drift someone hits at the worst possible moment while debugging a
+-- migration that will not apply.
+--
+-- Safe because it cannot run before those re-applies have been recorded.
+-- `migrate()` reads the applied set **once**, before its loop, so nothing this
+-- file does is visible to the run it is part of; the renamed migrations are
+-- re-applied and recorded in the same pass regardless of what happens here.
+-- Deleting the old rows can therefore never cause a re-apply — the rows being
+-- deleted are the ones no file claims any more.
+--
+-- On a database built from scratch this deletes nothing: the old names were
+-- never recorded, because the files no longer carry them.
+--
+-- It does not rename rather than delete, because the new names are inserted by
+-- the runner itself with their own real `applied_at` and checksum. An UPDATE
+-- would either collide with those rows or carry a checksum that no longer
+-- matches the file.
+
+DELETE FROM _migrations WHERE name IN ('0007_video_assets.sql', '0029_person_fk_indexes.sql');

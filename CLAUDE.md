@@ -34,7 +34,8 @@ These come from the PRD and are not style preferences:
 ## Migrations
 
 - Forward-only. Never edit an applied migration — the runner rejects it by checksum. Write the next one.
-- **Never reuse a number.** Check `ls migrations` before naming a file; rebasing onto a branch that took your number means renaming yours _before_ it ships. The ledger is keyed by filename, so two files sharing a number apply in one order on a database that already holds one of them and another order on a fresh one. After a migration has been applied anywhere, renaming it is not a repair — the new name reads as a new migration, gets applied twice and stops the container booting. `0007` and `0029` collided this way and are stuck; a test in `packages/db/src/migrate.test.ts` fails on any new pair.
+- **Never reuse a number.** Check `ls migrations` before naming a file; rebasing onto a branch that took your number means renaming yours _before_ it ships. The ledger is keyed by filename, so two files sharing a number apply in one order on a database that already holds one of them and another order on a fresh one. A test in `packages/db/src/migrate.test.ts` fails on any pair.
+- **Renaming a shipped migration is not free.** The new name reads as an unrecorded migration and is applied a second time, so it works only if every statement in it is `IF NOT EXISTS` — otherwise the re-apply fails and the container refuses to boot. `0007`/`0029` were renumbered this way (to `0031`/`0030`, with `0032` clearing the stale ledger rows); a migration that cannot be made idempotent cannot be renamed at all.
 - `bun run db:migrate`, `bun run db:status`, `bun run db:reset` (local file databases only).
 - The container applies pending migrations at boot and refuses to start if they fail. That is safe only because the deployment is one container pinned to one replica; if `numReplicas` ever rises, set `RUN_MIGRATIONS=false` and run them as an explicit release step instead.
 

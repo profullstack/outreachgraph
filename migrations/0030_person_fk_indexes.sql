@@ -1,4 +1,11 @@
+-- 0030_person_fk_indexes.sql
 -- Index the foreign keys that point at `people`.
+--
+-- Renumbered from `0029_person_fk_indexes.sql`, which shared its number with
+-- `0029_invitations.sql`. It was already `CREATE INDEX IF NOT EXISTS`
+-- throughout, which is the only reason the rename is free here: a database
+-- that ran this under its old name applies it again under the new one, and
+-- finds there is nothing to do. `0032` clears the stale ledger row.
 --
 -- SQLite enforces `foreign_keys = 1` here, and enforcement means that deleting
 -- one person is a lookup on every child table that references them. Three of

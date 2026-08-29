@@ -132,25 +132,25 @@ describe('migrations', () => {
    * Production and a fresh clone therefore run the same two migrations in
    * different orders, and nothing anywhere notices.
    *
-   * It has happened twice, both times because two branches numbered their
-   * migration the same day and both merged. Neither pair can be repaired now,
-   * and renaming is specifically the repair that is *not* available: the
-   * ledger key is the filename, so a rename reads as a brand-new migration,
-   * gets applied a second time, fails on its `CREATE`, and stops the container
-   * booting. Forward-only cuts both ways.
+   * It happened twice — `0007` and `0029` — both times because two branches
+   * numbered their migration the same day and both merged. Both pairs have
+   * since been renumbered, which was only possible because the halves that
+   * moved were re-appliable: one was already `CREATE INDEX IF NOT EXISTS`
+   * throughout and the other was rewritten to match.
    *
-   * Both surviving pairs are harmless, which is luck rather than design —
-   * `0007` and `0029` each pair a table with indexes on tables the other never
-   * touches — so they are grandfathered by name rather than by loosening the
-   * rule. A third collision is caught by `bun run check`, before it can reach
-   * a database and become permanent like these two.
+   * That is the part worth remembering, and the reason this test has no
+   * exemption list. A rename is not generally available as a repair. The
+   * ledger key is the filename, so to a database that already ran the file the
+   * new name is an unrecorded migration and gets applied again — and a second
+   * `CREATE TABLE` fails, which stops the container booting. Renumbering these
+   * two cost an `IF NOT EXISTS` rewrite and a ledger-cleanup migration; the
+   * next collision might land on a migration that cannot be made idempotent at
+   * all, and then it is permanent.
+   *
+   * So the number has to be unique *before* it ships, and this is the only
+   * moment that is still cheap.
    */
   test('never reuse a number — apply order must not depend on the environment', async () => {
-    // Applied in production long before this test existed. Adding to this list
-    // is not a way to pass: renaming is impossible *after* a migration ships,
-    // which is exactly why the number has to be unique before it does.
-    const GRANDFATHERED = new Set(['0007', '0029']);
-
     const names = (await loadMigrations(MIGRATIONS_DIR)).map((m) => m.name);
 
     const byPrefix = new Map<string, string[]>();
@@ -161,7 +161,6 @@ describe('migrations', () => {
 
     const collisions = [...byPrefix.entries()]
       .filter(([, files]) => files.length > 1)
-      .filter(([prefix]) => !GRANDFATHERED.has(prefix))
       .map(([, files]) => files);
 
     expect(collisions).toEqual([]);
