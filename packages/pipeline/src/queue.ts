@@ -24,6 +24,17 @@ const BASE_BACKOFF_MS = 30_000;
 const MAX_BACKOFF_MS = 3_600_000;
 
 /**
+ * How long a job waits after a failure that was not its own fault.
+ *
+ * Flat rather than doubling, because there is no escalating suspicion to
+ * express: the job is fine and the world is not. Ten minutes is long enough
+ * that a provider which has already refused everyone is not asked again every
+ * tick, and short enough that the queue comes back to life within minutes of
+ * the outage clearing rather than within the hour.
+ */
+const OUTAGE_BACKOFF_MS = 600_000;
+
+/**
  * How long a claimed job may stay `running` before it is considered abandoned.
  *
  * Generous on purpose: the cost of reclaiming too early is running a job twice,
@@ -180,7 +191,16 @@ export async function completeJob(db: Client, id: string): Promise<void> {
   });
 }
 
-export type FailOutcome = 'retry' | 'dead';
+export type FailOutcome = 'retry' | 'dead' | 'deferred';
+
+/**
+ * Recognises a failure caused by shared infrastructure rather than by this job.
+ *
+ * Injected rather than imported so this module keeps knowing nothing about what
+ * a job actually does: the server passes `isBudgetExhausted`, and a test passes
+ * whatever it needs to.
+ */
+export type OutageCheck = (error: unknown) => boolean;
 
 /**
  * Records a failed attempt, and either schedules a retry or gives up.
@@ -189,9 +209,37 @@ export type FailOutcome = 'retry' | 'dead';
  * its last error, which is the only way to answer "why did that URL never
  * produce a card".
  */
-export async function failJob(db: Client, job: QueuedJob, error: unknown): Promise<FailOutcome> {
+export async function failJob(
+  db: Client,
+  job: QueuedJob,
+  error: unknown,
+  isOutage?: OutageCheck,
+): Promise<FailOutcome> {
   const stamp = now();
   const message = error instanceof Error ? error.message : String(error);
+
+  // A job must not be charged an attempt for someone else's outage. Charging it
+  // is how three days of exhausted model budget silently emptied the queue:
+  // every job burned through `max_attempts` against providers that were
+  // refusing everybody, and nothing ever brings a `failed` row back, so the
+  // pipeline reached a fixed point it could not leave once the budget returned.
+  //
+  // Refunding is safe here in a way it deliberately is not in `reclaimStalled`:
+  // there the suspect is the payload, and the evidence is that this job killed
+  // its container. Here the evidence points the other way — every other job in
+  // the queue is failing identically, which is precisely what makes the payload
+  // innocent.
+  if (isOutage?.(error)) {
+    await db.execute({
+      sql: `UPDATE jobs SET status = 'pending', attempts = MAX(attempts - 1, 0),
+              last_error = ?, run_after = ?, started_at = NULL, updated_at = ?
+             WHERE id = ?`,
+      args: [message.slice(0, 2000), plus(stamp, OUTAGE_BACKOFF_MS), stamp, job.id],
+    });
+
+    return 'deferred';
+  }
+
   const exhausted = job.attempts >= job.maxAttempts;
 
   if (exhausted) {
@@ -253,7 +301,16 @@ export interface DrainSummary {
   readonly succeeded: number;
   readonly retried: number;
   readonly dead: number;
+  /** Put back untouched because the failure was an outage, not a fault. */
+  readonly deferred: number;
   readonly reclaimed: number;
+}
+
+export interface DrainOptions {
+  /** Ceiling on how many jobs one tick runs. */
+  readonly limit?: number;
+  /** Recognises a failure that means "not this job's fault". */
+  readonly isOutage?: OutageCheck;
 }
 
 /**
@@ -268,13 +325,16 @@ export interface DrainSummary {
 export async function drainQueue(
   db: Client,
   handler: JobHandler,
-  limit = 25,
+  options: DrainOptions = {},
 ): Promise<DrainSummary> {
+  const { limit = 25, isOutage } = options;
+
   const reclaimed = await reclaimStalled(db);
   let processed = 0;
   let succeeded = 0;
   let retried = 0;
   let dead = 0;
+  let deferred = 0;
 
   for (let i = 0; i < limit; i += 1) {
     const job = await claimNext(db);
@@ -289,13 +349,23 @@ export async function drainQueue(
     } catch (error) {
       // A handler throwing is an expected outcome, not a bug in the loop: it is
       // how a job says "not this time". The tick must survive it.
-      const outcome = await failJob(db, job, error);
-      if (outcome === 'dead') dead += 1;
-      else retried += 1;
+      const outcome = await failJob(db, job, error, isOutage);
+
+      if (outcome === 'dead') {
+        dead += 1;
+      } else if (outcome === 'deferred') {
+        deferred += 1;
+        // An outage is global by definition, so every remaining job would fail
+        // the same way. Stopping now spares the rest of the tick and, more to
+        // the point, stops us asking a provider that has already said no.
+        break;
+      } else {
+        retried += 1;
+      }
     }
   }
 
-  return { processed, succeeded, retried, dead, reclaimed };
+  return { processed, succeeded, retried, dead, deferred, reclaimed };
 }
 
 export interface BatchItem {

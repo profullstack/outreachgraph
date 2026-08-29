@@ -245,11 +245,13 @@ export {
   JOB_STATUSES,
   type BatchItem,
   type BatchStatus,
+  type DrainOptions,
   type DrainSummary,
   type EnqueueInput,
   type EnqueueResult,
   type JobHandler,
   type JobStatus,
+  type OutageCheck,
   type QueuedJob,
 } from './queue';
 
