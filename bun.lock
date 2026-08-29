@@ -12,7 +12,7 @@
     },
     "apps/api": {
       "name": "@outreachgraph/api",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/contracts": "workspace:*",
@@ -32,7 +32,7 @@
     },
     "apps/cli": {
       "name": "@outreachgraph/cli",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "bin": {
         "og": "./src/index.ts",
       },
@@ -42,7 +42,7 @@
     },
     "apps/mcp": {
       "name": "@outreachgraph/mcp",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "bin": {
         "outreachgraph-mcp": "./src/index.ts",
       },
@@ -53,7 +53,7 @@
     },
     "apps/server": {
       "name": "@outreachgraph/server",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/contracts": "workspace:*",
@@ -74,7 +74,7 @@
     },
     "apps/web": {
       "name": "@outreachgraph/web",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
@@ -92,7 +92,7 @@
     },
     "packages/ai": {
       "name": "@outreachgraph/ai",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.70.0",
         "@outreachgraph/contracts": "workspace:*",
@@ -102,7 +102,7 @@
     },
     "packages/contracts": {
       "name": "@outreachgraph/contracts",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "zod": "^3.24.1",
       },
@@ -112,7 +112,7 @@
     },
     "packages/db": {
       "name": "@outreachgraph/db",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libsql/client": "^0.15.0",
       },
@@ -122,11 +122,11 @@
     },
     "packages/domain": {
       "name": "@outreachgraph/domain",
-      "version": "0.3.0",
+      "version": "0.4.0",
     },
     "packages/email": {
       "name": "@outreachgraph/email",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "imapflow": "^1.7.1",
         "nodemailer": "^9.0.5",
@@ -137,14 +137,14 @@
     },
     "packages/identity": {
       "name": "@outreachgraph/identity",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
       },
     },
     "packages/media": {
       "name": "@outreachgraph/media",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/db": "workspace:*",
@@ -154,14 +154,14 @@
     },
     "packages/payments": {
       "name": "@outreachgraph/payments",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
       },
     },
     "packages/pipeline": {
       "name": "@outreachgraph/pipeline",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/db": "workspace:*",
@@ -178,14 +178,14 @@
     },
     "packages/policy": {
       "name": "@outreachgraph/policy",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
       },
     },
     "packages/providers": {
       "name": "@outreachgraph/providers",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/identity": "workspace:*",
@@ -193,7 +193,7 @@
     },
     "packages/recommend": {
       "name": "@outreachgraph/recommend",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/policy": "workspace:*",
@@ -202,7 +202,7 @@
     },
     "packages/scoring": {
       "name": "@outreachgraph/scoring",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
@@ -210,11 +210,11 @@
     },
     "packages/secrets": {
       "name": "@outreachgraph/secrets",
-      "version": "0.3.0",
+      "version": "0.4.0",
     },
     "packages/signals": {
       "name": "@outreachgraph/signals",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
       },
