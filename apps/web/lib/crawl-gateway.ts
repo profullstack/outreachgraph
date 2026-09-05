@@ -1,5 +1,5 @@
-import { createGateway } from "@profullstack/x402-gateway";
-import { x402Proxy } from "@profullstack/x402-gateway/next";
+import { createGateway } from '@profullstack/x402-gateway';
+import { x402Proxy } from '@profullstack/x402-gateway/next';
 
 /**
  * Sells crawl access to AI training crawlers (GPTBot, ClaudeBot, CCBot,
@@ -16,11 +16,11 @@ import { x402Proxy } from "@profullstack/x402-gateway/next";
 const env = (name: string) => process.env[name];
 
 export const gateway = createGateway({
-  siteUrl: env("SITE_URL") || env("NEXT_PUBLIC_SITE_URL") || "https://outreachgraph.com",
-  siteName: "OutreachGraph",
-  coinpay: { apiKey: env("COINPAY_X402_KEY") },
-  payTo: env("CRAWL_PAY_TO"),
-  contact: "mailto:support@outreachgraph.com",
+  siteUrl: env('SITE_URL') || env('NEXT_PUBLIC_SITE_URL') || 'https://outreachgraph.com',
+  siteName: 'OutreachGraph',
+  coinpay: { apiKey: env('COINPAY_X402_KEY') },
+  payTo: env('CRAWL_PAY_TO'),
+  contact: 'mailto:support@outreachgraph.com',
 });
 
 /** Resolves to a Response for a refused crawler, or undefined to carry on. */
