@@ -926,6 +926,23 @@ async function createRecommendation(
     if (inbox?.contact_email) reachable.push('email');
   }
 
+  // An address they gave us themselves counts before either of the above.
+  //
+  // Imported contacts keep their mailbox in `person_emails`, not in
+  // `social_identities`, and this list was built from the latter alone — so a
+  // consented, imported person with nothing else known about them was
+  // "unreachable" and dead-ended at research. Sixteen thousand of them, in
+  // production, enrolled in nothing and written to never.
+  if (!reachable.includes('email')) {
+    const imported = await queryOne<{ id: string }>(
+      db,
+      `SELECT id FROM person_emails WHERE person_id = ? AND workspace_id = ? LIMIT 1`,
+      [personId, workspaceId],
+    );
+
+    if (imported) reachable.push('email');
+  }
+
   const score = await queryOne<{ opportunity: number }>(
     db,
     'SELECT opportunity FROM scores WHERE campaign_id = ? AND person_id = ?',

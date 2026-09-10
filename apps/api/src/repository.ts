@@ -28,6 +28,7 @@ export interface PersonRow {
   current_title: string | null;
   current_company_id: string | null;
   location: string | null;
+  avatar_url?: string | null;
   identity_confidence: number;
   status: string;
   outreach_eligible: number;
@@ -190,7 +191,7 @@ export async function listPendingRecommendations(
 
   return queryAll(
     db,
-    `SELECT r.*, p.display_name, p.current_title, p.identity_confidence,
+    `SELECT r.*, p.display_name, p.current_title, p.avatar_url, p.identity_confidence,
             s.summary AS signal_summary, s.source_url AS signal_url,
             s.source_timestamp AS signal_at,
             d.body AS draft_body, d.subject AS draft_subject,
@@ -475,6 +476,15 @@ export async function resolveContactAddress(
   );
   if (personal?.handle) return { address: personal.handle.trim().toLowerCase(), shared: false };
 
+  // An imported address is the person's own too: they gave it to us, with
+  // consent recorded on the import. Personal, not shared.
+  const imported = await queryOne<{ address: string }>(
+    db,
+    `SELECT address FROM person_emails WHERE person_id = ? ORDER BY created_at LIMIT 1`,
+    [personId],
+  );
+  if (imported?.address) return { address: imported.address.trim().toLowerCase(), shared: false };
+
   const company = await queryOne<{ contact_email: string }>(
     db,
     `SELECT co.contact_email FROM people p
@@ -578,10 +588,15 @@ export async function pendingAddressUsage(
     `WITH candidate AS (
         SELECT r.id AS recommendation_id, r.campaign_id AS campaign_id,
                EXISTS (SELECT 1 FROM drafts d WHERE d.recommendation_id = r.id) AS has_draft,
-               (SELECT lower(trim(si.handle)) FROM social_identities si
-                 WHERE si.person_id = r.person_id AND si.network = 'email'
-                   AND si.handle IS NOT NULL AND trim(si.handle) <> ''
-              ORDER BY si.confidence DESC LIMIT 1) AS personal,
+               COALESCE(
+                 (SELECT lower(trim(si.handle)) FROM social_identities si
+                   WHERE si.person_id = r.person_id AND si.network = 'email'
+                     AND si.handle IS NOT NULL AND trim(si.handle) <> ''
+                ORDER BY si.confidence DESC LIMIT 1),
+                 (SELECT lower(trim(pe.address)) FROM person_emails pe
+                   WHERE pe.person_id = r.person_id AND pe.workspace_id = r.workspace_id
+                ORDER BY pe.created_at LIMIT 1)
+               ) AS personal,
                (SELECT lower(trim(co.contact_email)) FROM people p
                   JOIN companies co ON co.id = p.current_company_id
                  WHERE p.id = r.person_id AND co.contact_email IS NOT NULL

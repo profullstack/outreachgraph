@@ -252,6 +252,18 @@ export async function enrichContact(
 
   const filledName = await fillGaps(db, input.personId, profile);
 
+  // The picture they chose for exactly this purpose. Gravatar's whole point is
+  // an avatar looked up by address, and it was being fetched and thrown away.
+  // Never overwrites one already held; a later, better source wins by being
+  // first, not by being later.
+  if (profile.avatarUrl) {
+    await db.execute({
+      sql: `UPDATE people SET avatar_url = ?, avatar_source = 'gravatar', updated_at = ?
+             WHERE id = ? AND avatar_url IS NULL`,
+      args: [sizedGravatar(profile.avatarUrl), now(), input.personId],
+    });
+  }
+
   return {
     personId: input.personId,
     found: true,
@@ -259,6 +271,11 @@ export async function enrichContact(
     filledName,
     ...(companyDomain ? { companyDomain } : {}),
   };
+}
+
+/** Gravatar serves 80px unless asked; the digest and the queue want more. */
+function sizedGravatar(url: string): string {
+  return url.includes('?') ? url : `${url}?s=256`;
 }
 
 /**

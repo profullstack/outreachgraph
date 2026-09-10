@@ -47,7 +47,10 @@ import {
   pruneWorkflowEvents,
   regenerateRecommendations,
   rescoreProspect,
+  reseedIdleCampaigns,
   runAutopilot,
+  sweepProfilePhotos,
+  workspacesAwaitingPhotos,
   runCadences,
   runCrawlJob,
   runDiscoveryJob,
@@ -67,6 +70,7 @@ import {
   RedditSource,
   RssSource,
   SiteProvider,
+  ValueSerpClient,
   type FeedSource,
 } from '@outreachgraph/providers';
 
@@ -236,6 +240,21 @@ const encryptionKey = secretKeyFromEnv();
 if (!encryptionKey) {
   console.log('no SECRET_ENCRYPTION_KEY: workspaces cannot connect their own sending mailbox');
 }
+
+/**
+ * Pictures of leads, by search.
+ *
+ * Optional, like every provider: unset, Gravatar is the only source and most
+ * people stay as initials. Each lookup is a paid request, so the sweep is
+ * capped per workspace per day as well as per tick.
+ */
+const photoFinder = process.env.VALUESERP_API_KEY
+  ? new ValueSerpClient({ apiKey: process.env.VALUESERP_API_KEY })
+  : undefined;
+
+const photoLookupsPerDay = Number(process.env.PHOTO_LOOKUPS_PER_DAY ?? 300);
+
+if (!photoFinder) console.log('no VALUESERP_API_KEY: lead photos come from Gravatar only');
 
 /**
  * The feed clients for one campaign's own targets.
@@ -679,6 +698,42 @@ async function tick(): Promise<void> {
           `${swept.found} had a profile, ${swept.identities} identities, ` +
           `${swept.remaining} left`,
       );
+    }
+  }
+
+  // A face for the people about to be written to. Bounded per tick and per
+  // day inside the sweep; this loop only decides who is looked at.
+  if (photoFinder) {
+    for (const workspaceId of await workspacesAwaitingPhotos(db)) {
+      try {
+        const swept = await sweepProfilePhotos(
+          { db, finder: photoFinder, dailyCap: photoLookupsPerDay },
+          { workspaceId },
+        );
+
+        if (swept.looked > 0) {
+          console.log(
+            `photos: looked up ${swept.looked} in ${workspaceId}, ${swept.found} found, ` +
+              `${swept.profiles} LinkedIn profile(s) recorded, ${swept.remainingToday} left today`,
+          );
+        }
+      } catch (error) {
+        console.error(`photo sweep failed for ${workspaceId}`, error);
+      }
+    }
+  }
+
+  // Campaigns whose seed has not been read in a week are asked again. This is
+  // the only thing that puts work back into an idle queue: once the first crop
+  // of research cards is cleared, nothing else ever asks the seed for more.
+  for (const workspace of workspaces) {
+    try {
+      const reseeded = await reseedIdleCampaigns(db, { workspaceId: workspace.id });
+      if (reseeded.queued > 0) {
+        console.log(`reseeded ${reseeded.queued} idle campaign(s) in ${workspace.id}`);
+      }
+    } catch (error) {
+      console.error(`reseed failed for ${workspace.id}`, error);
     }
   }
 

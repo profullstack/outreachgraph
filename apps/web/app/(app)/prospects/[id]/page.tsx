@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
+import { Avatar } from '../../../../components/avatar';
 import { EmailCandidates } from '../../../../components/email-candidates';
 import { EnrolButton } from '../../../../components/enrol-button';
 import { PageGuide } from '../../../../components/page-guide';
@@ -65,12 +66,15 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
         ← Prospects
       </Link>
 
-      <header className="mt-3">
-        <h1 className="text-xl font-semibold">{person.display_name}</h1>
-        <p className="text-ink-muted text-sm">{person.current_title ?? '—'}</p>
-        <p className="text-ink-muted mt-1 text-xs">
-          Identity confidence {Math.round((person.identity_confidence ?? 0) * 100)}%
-        </p>
+      <header className="mt-3 flex items-center gap-4">
+        <Avatar name={person.display_name} src={person.avatar_url} size="lg" />
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold">{person.display_name}</h1>
+          <p className="text-ink-muted text-sm">{person.current_title ?? '—'}</p>
+          <p className="text-ink-muted mt-1 text-xs">
+            Identity confidence {Math.round((person.identity_confidence ?? 0) * 100)}%
+          </p>
+        </div>
       </header>
 
       <div className="mt-4">

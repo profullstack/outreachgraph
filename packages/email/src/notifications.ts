@@ -147,6 +147,8 @@ export interface DigestLead {
   readonly companyName?: string;
   readonly opportunity?: number;
   readonly sentTo?: string;
+  /** A picture they published, when one is known. HTML only; text reads fine without. */
+  readonly avatarUrl?: string;
 }
 
 export interface DailyDigest {
@@ -155,7 +157,22 @@ export interface DailyDigest {
   readonly sitesCrawled: number;
   readonly peopleFound: number;
   readonly messagesSent: number;
+  /** Every pending card, whoever will act on it. */
   readonly awaitingApproval: number;
+  /**
+   * The pending cards autopilot will send itself, and how many of those are
+   * currently held by a limit. Absent when the workspace has no campaign on
+   * autopilot, in which case "awaiting approval" says everything.
+   */
+  readonly autopilotQueue?: { readonly total: number; readonly held: number };
+  /**
+   * Pending cards only a human can act on — LinkedIn, X, GitHub — where the
+   * product drafts and the person acts in the network's own interface.
+   */
+  readonly needsYou?: {
+    readonly total: number;
+    readonly byNetwork: Readonly<Record<string, number>>;
+  };
   readonly repliesReceived?: number;
   readonly leads: readonly DigestLead[];
   /** Campaigns that produced nothing, and why, when the reason is knowable. */
@@ -178,11 +195,28 @@ export function dailyDigestEmail(to: string, digest: DailyDigest, appUrl: string
     : `${digest.peopleFound} new ${digest.peopleFound === 1 ? 'lead' : 'leads'}, ` +
       `${digest.messagesSent} sent · OutreachGraph`;
 
+  // "Awaiting approval: 1117" was the line that got this digest replied to
+  // with "why is it not sending?". Most of those cards were not waiting for
+  // anyone: autopilot was going to send them, and was holding them under a
+  // limit. The split says which is which, and the notes say what the limit is.
+  const queue = digest.autopilotQueue;
+  const needsYou = digest.needsYou;
+  const networks = needsYou
+    ? Object.entries(needsYou.byNetwork)
+        .filter(([, n]) => n > 0)
+        .map(([network, n]) => `${networkName(network)} ${n}`)
+        .join(', ')
+    : '';
+
   const counts = [
     `Sites read:        ${digest.sitesCrawled}`,
     `New people:        ${digest.peopleFound}`,
     `Messages sent:     ${digest.messagesSent}`,
-    `Awaiting approval: ${digest.awaitingApproval}`,
+    queue
+      ? `Autopilot queue:   ${queue.total}${queue.held > 0 ? ` (${queue.held} held by a limit)` : ''}`
+      : '',
+    needsYou ? `Needs you:         ${needsYou.total}${networks ? ` (${networks})` : ''}` : '',
+    !queue && !needsYou ? `Awaiting approval: ${digest.awaitingApproval}` : '',
     digest.repliesReceived !== undefined ? `Replies:           ${digest.repliesReceived}` : '',
   ].filter(Boolean);
 
@@ -219,19 +253,28 @@ export function dailyDigestEmail(to: string, digest: DailyDigest, appUrl: string
     row('Sites read', digest.sitesCrawled),
     row('New people', digest.peopleFound),
     row('Messages sent', digest.messagesSent),
-    row('Awaiting approval', digest.awaitingApproval),
+    queue
+      ? row(
+          'Autopilot queue',
+          queue.total,
+          queue.held > 0 ? `${queue.held} held by a limit` : undefined,
+        )
+      : '',
+    needsYou ? row('Needs you', needsYou.total, networks || undefined) : '',
+    !queue && !needsYou ? row('Awaiting approval', digest.awaitingApproval) : '',
     digest.repliesReceived !== undefined ? row('Replies', digest.repliesReceived) : '',
     '</table>',
     quiet
       ? '<p>Nothing new came back today. Campaigns are still running.</p>'
       : digest.leads.length
-        ? `<ul>${digest.leads
+        ? `<ul style="list-style:none;padding:0;margin:0 0 16px">${digest.leads
             .map((lead) => {
               const where = [lead.title, lead.companyName].filter(Boolean).join(' at ');
               const score = lead.opportunity !== undefined ? ` <em>[${lead.opportunity}]</em>` : '';
               const sent = lead.sentTo ? ' — written to' : '';
               return (
-                `<li><a href="${escapeHtml(`${base}/prospects/${lead.personId}`)}">` +
+                `<li style="margin:0 0 8px">${avatarHtml(lead)}` +
+                `<a href="${escapeHtml(`${base}/prospects/${lead.personId}`)}">` +
                 `${escapeHtml(lead.personName)}</a>` +
                 `${where ? ` — ${escapeHtml(where)}` : ''}${score}${sent}</li>`
               );
@@ -248,9 +291,44 @@ export function dailyDigestEmail(to: string, digest: DailyDigest, appUrl: string
   return { to, subject, text: text + foot.text, html };
 }
 
-function row(label: string, value: number): string {
+function row(label: string, value: number, note?: string): string {
   return (
     `<tr><td style="padding:2px 16px 2px 0;color:#666">${escapeHtml(label)}</td>` +
-    `<td style="padding:2px 0;text-align:right"><strong>${value}</strong></td></tr>`
+    `<td style="padding:2px 0;text-align:right"><strong>${value}</strong>` +
+    `${note ? ` <span style="color:#666;font-size:13px">${escapeHtml(note)}</span>` : ''}` +
+    '</td></tr>'
   );
+}
+
+/**
+ * A small round picture before the name, when one is known.
+ *
+ * Inline styles and fixed dimensions because mail clients honour little else,
+ * and `alt=""` because the name follows immediately — a reader with images off
+ * loses nothing.
+ */
+function avatarHtml(lead: DigestLead): string {
+  if (!lead.avatarUrl) return '';
+  return (
+    `<img src="${escapeHtml(lead.avatarUrl)}" alt="" width="32" height="32" ` +
+    'style="width:32px;height:32px;border-radius:16px;object-fit:cover;vertical-align:middle;' +
+    'margin-right:8px;border:0" />'
+  );
+}
+
+function networkName(network: string): string {
+  switch (network) {
+    case 'linkedin':
+      return 'LinkedIn';
+    case 'x':
+      return 'X';
+    case 'github':
+      return 'GitHub';
+    case 'bluesky':
+      return 'Bluesky';
+    case 'mastodon':
+      return 'Mastodon';
+    default:
+      return network;
+  }
 }

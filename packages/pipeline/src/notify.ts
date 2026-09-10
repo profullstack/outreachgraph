@@ -19,8 +19,9 @@
  * a crash mid-loop cannot produce a second copy.
  */
 
-import { newId } from '@outreachgraph/domain';
+import { INTERNAL_ACTION_KINDS, newId } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { heldSummary, type HoldLedger } from './autopilot';
 import {
   dailyDigestEmail,
   leadAlertEmail,
@@ -36,6 +37,8 @@ export interface NotifyDeps {
   /** Absolute base for links in the mail. */
   readonly appUrl: string;
   readonly now?: Date;
+  /** Where autopilot remembers what it is holding. Defaults to the process-wide one. */
+  readonly holdLedger?: HoldLedger;
 }
 
 export interface NotifySettings {
@@ -291,7 +294,9 @@ export async function sendDailyDigest(deps: NotifyDeps, workspaceId: string): Pr
 
   const since = `${today}T00:00:00.000Z`;
 
-  const [crawled, found, sent, awaiting, leads] = await Promise.all([
+  const internal = INTERNAL_ACTION_KINDS.map(() => '?').join(', ');
+
+  const [crawled, found, sent, awaiting, queue, manual, leads] = await Promise.all([
     countOne(
       deps.db,
       `SELECT COUNT(*) AS n FROM jobs
@@ -317,16 +322,42 @@ export async function sendDailyDigest(deps: NotifyDeps, workspaceId: string): Pr
         WHERE workspace_id = ? AND status = 'pending'`,
       [workspaceId],
     ),
+    // What autopilot will send on its own: email cards in a campaign that
+    // opted in. The only network the matrix lets a machine act on.
+    countOne(
+      deps.db,
+      `SELECT COUNT(*) AS n FROM recommendations r
+         JOIN campaigns c ON c.id = r.campaign_id
+        WHERE r.workspace_id = ? AND r.status = 'pending'
+          AND r.action = 'send_email' AND r.network = 'email'
+          AND c.approval_mode = 'trusted_automation' AND c.status != 'archived'`,
+      [workspaceId],
+    ),
+    // What only a human can do: everything outbound that is not the above.
+    // Research cards are internal and clear themselves, so they are neither.
+    queryAll<{ network: string; n: number }>(
+      deps.db,
+      `SELECT r.network, COUNT(*) AS n FROM recommendations r
+         JOIN campaigns c ON c.id = r.campaign_id
+        WHERE r.workspace_id = ? AND r.status = 'pending'
+          AND r.action NOT IN (${internal})
+          AND NOT (r.action = 'send_email' AND r.network = 'email'
+                   AND c.approval_mode = 'trusted_automation' AND c.status != 'archived')
+        GROUP BY r.network
+        ORDER BY n DESC`,
+      [workspaceId, ...INTERNAL_ACTION_KINDS],
+    ),
     queryAll<{
       person_id: string;
       display_name: string;
       current_title: string | null;
       company_name: string | null;
       opportunity: number | null;
+      avatar_url: string | null;
       sent_today: number;
     }>(
       deps.db,
-      `SELECT p.id AS person_id, p.display_name, p.current_title,
+      `SELECT p.id AS person_id, p.display_name, p.current_title, p.avatar_url,
               co.name AS company_name, s.opportunity,
               (SELECT COUNT(*) FROM actions a
                 WHERE a.person_id = p.id AND a.workspace_id = e.workspace_id
@@ -350,8 +381,21 @@ export async function sendDailyDigest(deps: NotifyDeps, workspaceId: string): Pr
     ...(lead.current_title ? { title: lead.current_title } : {}),
     ...(lead.company_name ? { companyName: lead.company_name } : {}),
     ...(lead.opportunity !== null ? { opportunity: Math.round(lead.opportunity) } : {}),
+    ...(lead.avatar_url ? { avatarUrl: lead.avatar_url } : {}),
     ...(lead.sent_today > 0 ? { sentTo: 'sent' } : {}),
   }));
+
+  // Why the queue is not moving, from the sweep's own memory of what it held
+  // on its last pass. The question a digest that says "6 sent" has to answer
+  // is what happened to the other five hundred, and until now it did not.
+  const held = heldSummary(workspaceId, deps.holdLedger);
+  const heldCount = held.reduce((sum, group) => sum + group.count, 0);
+
+  const notes = held.map((group) => `${group.count} held in the autopilot queue: ${group.label}.`);
+
+  const byNetwork: Record<string, number> = {};
+  for (const row of manual) byNetwork[row.network] = Number(row.n);
+  const manualTotal = Object.values(byNetwork).reduce((sum, n) => sum + n, 0);
 
   const digest: DailyDigest = {
     date: today,
@@ -359,7 +403,12 @@ export async function sendDailyDigest(deps: NotifyDeps, workspaceId: string): Pr
     peopleFound: found,
     messagesSent: sent,
     awaitingApproval: awaiting,
+    ...(queue > 0 || heldCount > 0
+      ? { autopilotQueue: { total: queue, held: Math.min(heldCount, queue) } }
+      : {}),
+    ...(manualTotal > 0 ? { needsYou: { total: manualTotal, byNetwork } } : {}),
     leads: digestLeads,
+    ...(notes.length > 0 ? { notes } : {}),
   };
 
   try {

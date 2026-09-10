@@ -31,7 +31,7 @@
 
 import { INTERNAL_ACTION_KINDS, newId, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
-import { evaluatePolicy, isExecutable } from '@outreachgraph/policy';
+import { evaluateAddressLimits, evaluatePolicy, isExecutable } from '@outreachgraph/policy';
 import type { Mailer } from '@outreachgraph/email';
 import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { mailerForWorkspace } from './email-account';
@@ -85,6 +85,8 @@ export interface AutopilotDeps {
    */
   readonly model?: TextModel;
   readonly now?: Date;
+  /** Where holds are remembered between runs. Defaults to the process-wide one. */
+  readonly holdLedger?: HoldLedger;
 }
 
 export interface SentOutreach {
@@ -142,10 +144,150 @@ interface Candidate {
 const MAX_SEND_ATTEMPTS = 3;
 
 /**
+ * How many pending cards one run will look at.
+ *
+ * This used to be `cap - today`, on the theory that a run can send at most
+ * that many and so need not read more. It was wrong in the one situation that
+ * matters: a queue where the top of the priority order cannot be sent. In
+ * production 597 email cards were pending against a cap of 200, and the 194
+ * highest-priority ones all resolved to a handful of shared company inboxes
+ * already inside their weekly limit. Every tick read those 194, held every
+ * one, and stopped — while 172 cards with a personal address sat just past the
+ * window and were never looked at. Six messages a day out of a queue that
+ * could have sent a hundred.
+ *
+ * So the window is now bounded by a ceiling that exists only to keep one run
+ * finite, and the loop stops when the cap is spent rather than when the window
+ * is. A held card costs an in-memory check, not a slot.
+ */
+const CANDIDATE_CEILING = 2000;
+
+/**
+ * Why a card is currently held, remembered across runs.
+ *
+ * Autopilot runs every tick and a held card is held on every one of them, so
+ * writing the reason each time produced 18,532 identical "held back" rows in
+ * one day for 120 people — enough that reading the day's events timed out.
+ * The reason is written when it is new or when it changes, and released when
+ * the card is sent. Numbers are ignored when comparing, because "Only 9.85h
+ * since this address was last contacted" and "Only 9.09h" are the same hold.
+ *
+ * The ledger also answers "what is holding the queue up" for the digest,
+ * which is the question a queue that sends six a day most needs to answer.
+ */
+export class HoldLedger {
+  private readonly held = new Map<string, Map<string, HoldEntry>>();
+
+  /** Records a hold. True when it is worth writing down — new, or changed. */
+  observe(workspaceId: string, recommendationId: string, reason: string): boolean {
+    const key = holdKey(reason);
+    const entries = this.entriesFor(workspaceId);
+    const previous = entries.get(recommendationId);
+    entries.set(recommendationId, { reason, key });
+    return previous?.key !== key;
+  }
+
+  /** Forgets a card that was sent, or otherwise stopped being held. */
+  release(workspaceId: string, recommendationId: string): void {
+    this.held.get(workspaceId)?.delete(recommendationId);
+  }
+
+  /**
+   * Drops cards a completed run did not see — sent by hand, superseded,
+   * expired. Only called after a full pass, so a run that stopped at the cap
+   * does not forget the cards it never reached.
+   */
+  retain(workspaceId: string, seen: ReadonlySet<string>): void {
+    const entries = this.held.get(workspaceId);
+    if (!entries) return;
+    for (const id of [...entries.keys()]) {
+      if (!seen.has(id)) entries.delete(id);
+    }
+  }
+
+  /** The holds in force, grouped by reason, largest group first. */
+  summary(workspaceId: string): readonly HeldGroup[] {
+    const groups = new Map<string, { label: string; count: number }>();
+
+    for (const entry of this.held.get(workspaceId)?.values() ?? []) {
+      const group = groups.get(entry.key);
+      if (group) group.count += 1;
+      else groups.set(entry.key, { label: describeHold(entry.reason), count: 1 });
+    }
+
+    return [...groups.values()].sort((a, b) => b.count - a.count);
+  }
+
+  private entriesFor(workspaceId: string): Map<string, HoldEntry> {
+    let entries = this.held.get(workspaceId);
+    if (!entries) {
+      entries = new Map();
+      this.held.set(workspaceId, entries);
+    }
+    return entries;
+  }
+}
+
+interface HoldEntry {
+  readonly reason: string;
+  readonly key: string;
+}
+
+export interface HeldGroup {
+  /** The reason as a short noun phrase, the same for one card or a hundred. */
+  readonly label: string;
+  readonly count: number;
+}
+
+/** The process-wide ledger; one container, one replica, one worker loop. */
+export const holdLedger = new HoldLedger();
+
+/** What is holding a workspace's queue up right now. */
+export function heldSummary(
+  workspaceId: string,
+  ledger: HoldLedger = holdLedger,
+): readonly HeldGroup[] {
+  return ledger.summary(workspaceId);
+}
+
+function holdKey(reason: string): string {
+  return reason.replace(/\d+(?:\.\d+)?/g, '#');
+}
+
+/**
+ * The engine's refusal, reworded to follow a count.
+ *
+ * "This prospect shares a company inbox that has already had 2 message(s)
+ * this week" is right for one card and wrong for a hundred and twenty. Unknown
+ * reasons are passed through rather than dropped.
+ */
+export function describeHold(reason: string): string {
+  if (/shares a company inbox/i.test(reason)) {
+    return "the company inbox already had this week's messages";
+  }
+  if (/weekly limit for this address/i.test(reason)) {
+    return "the address already had this week's messages";
+  }
+  if (/the cooldown is/i.test(reason)) return 'the address was written to within the cooldown';
+  if (/weekly limit for this prospect/i.test(reason)) return 'already written to this week';
+  if (/no address published/i.test(reason)) return 'no address to write to';
+  if (/no drafted message/i.test(reason)) return 'no message written yet';
+  if (/quality checks/i.test(reason)) return 'the draft failed its quality checks';
+  if (/giving up after/i.test(reason)) return 'sending failed repeatedly';
+  if (/requires human approval/i.test(reason)) return 'waiting for your approval';
+  if (/no mailbox is connected/i.test(reason)) return 'no mailbox connected';
+  if (/budget/i.test(reason)) return "over the plan's monthly allowance";
+  return reason;
+}
+
+/**
  * Sends everything due for one workspace.
  *
  * Ordered by priority so a daily cap spends itself on the best leads rather
- * than on whichever rows the planner happened to return first.
+ * than on whichever rows the planner happened to return first. A personal
+ * address sorts ahead of a shared inbox at equal priority: the shared one is
+ * the more likely to be held, and the cap is better spent on a message that
+ * reaches the person it names.
  */
 export async function runAutopilot(
   deps: AutopilotDeps,
@@ -153,6 +295,7 @@ export async function runAutopilot(
 ): Promise<AutopilotResult> {
   const { db } = deps;
   const at = deps.now ?? new Date();
+  const ledger = deps.holdLedger ?? holdLedger;
 
   const sent: SentOutreach[] = [];
   const skipped: SkippedOutreach[] = [];
@@ -174,6 +317,11 @@ export async function runAutopilot(
     return { sent, skipped, failed };
   }
 
+  // The address is the person's own when one is known — published on a page
+  // they control, or given to us in an import they consented to — and the
+  // employer's shared inbox otherwise. Imported addresses live in
+  // `person_emails`, and until now this query only read `social_identities`,
+  // so sixteen thousand consented mailboxes were invisible to the sender.
   const candidates = await queryAll<Candidate>(
     db,
     `SELECT r.id AS recommendation_id, r.campaign_id, r.person_id, r.action, r.network,
@@ -183,9 +331,15 @@ export async function runAutopilot(
             w.min_outreach_confidence,
             d.id AS draft_id, d.subject, d.body, d.checks_json,
             co.name AS company_name, co.contact_email AS company_contact_email,
-            (SELECT si.handle FROM social_identities si
-              WHERE si.person_id = p.id AND si.network = 'email'
-              ORDER BY si.confidence DESC LIMIT 1) AS person_email,
+            COALESCE(
+              (SELECT si.handle FROM social_identities si
+                WHERE si.person_id = p.id AND si.network = 'email'
+                  AND si.handle IS NOT NULL AND trim(si.handle) <> ''
+                ORDER BY si.confidence DESC LIMIT 1),
+              (SELECT pe.address FROM person_emails pe
+                WHERE pe.person_id = p.id AND pe.workspace_id = r.workspace_id
+                ORDER BY pe.created_at LIMIT 1)
+            ) AS person_email,
             (SELECT COUNT(*) FROM actions a
               WHERE a.recommendation_id = r.id AND a.status = 'failed') AS failed_attempts
        FROM recommendations r
@@ -201,26 +355,48 @@ export async function runAutopilot(
         AND r.action = 'send_email'
         AND r.network = 'email'
         AND p.status = 'active'
-      ORDER BY r.priority DESC, r.created_at ASC
+      ORDER BY r.priority DESC, (person_email IS NULL) ASC, r.created_at ASC
       LIMIT ?`,
-    [workspaceId, Math.max(cap - today, 0)],
+    [workspaceId, CANDIDATE_CEILING],
   );
 
+  // What each mailbox has already had, read once per address per run. A
+  // hundred colleagues behind one `support@` cost one query and a hundred
+  // comparisons, not a hundred queries — and after a send the entry is
+  // updated in place so the next colleague sees the message that just left.
+  const addressUsage = new Map<string, AddressUsage>();
+
+  // Read once and refreshed after each send rather than once per candidate: a
+  // workspace can cross its monthly allowance partway through a sweep, and only
+  // a send can move it.
+  let budgetState = await budgetStatus(db, workspaceId, at);
+
+  const seen = new Set<string>();
+  let completed = true;
+
   for (const row of candidates) {
-    if (today >= cap) break;
+    if (today >= cap) {
+      completed = false;
+      break;
+    }
+    seen.add(row.recommendation_id);
 
     // Skips are reported, not swallowed.
     //
     // "No address published for this person" and "still requires human
     // approval" are the two reasons a campaign sits at a stage looking broken,
     // and neither is an error anywhere else in the system — so if they are not
-    // surfaced here they are not surfaced at all.
+    // surfaced here they are not surfaced at all. The event is written when
+    // the reason is new; the same hold on the next tick is remembered, not
+    // repeated.
     const note = async (reason: string): Promise<void> => {
       skipped.push({
         recommendationId: row.recommendation_id,
         personName: row.display_name,
         reason,
       });
+
+      if (!ledger.observe(workspaceId, row.recommendation_id, reason)) return;
 
       await emitEvent(db, {
         workspaceId,
@@ -246,6 +422,111 @@ export async function runAutopilot(
       continue;
     }
 
+    const recipient = pickEmailRecipient(row);
+    if (!recipient) {
+      await note('no address published for this person or their company');
+      continue;
+    }
+
+    const budget = safeJson(row.budget_json);
+    const cooldown =
+      typeof budget.minHoursBetweenActions === 'number'
+        ? { minHoursBetweenActions: budget.minHoursBetweenActions }
+        : {};
+
+    // ------------------------------------------------------ address gates
+    //
+    // Counted against the mailbox as well as the person, and checked first,
+    // before anything that costs a query or a model call. This is the gate
+    // that holds most of a real queue: a prospect with no personal address
+    // falls back to their employer's shared inbox, so N colleagues are N
+    // separate people, each comfortably inside its own weekly limit, while one
+    // `support@` receives N messages. The engine grew these gates in #34 and
+    // only the human approval route fed them until #48; they are the same
+    // arithmetic the queue's badge uses, so what is shown as held is held.
+    const address = recipient.address.trim().toLowerCase();
+    let usage = addressUsage.get(address);
+    if (!usage) {
+      usage = await addressCounts(db, workspaceId, recipient.address, at);
+      addressUsage.set(address, usage);
+    }
+
+    const breaches = evaluateAddressLimits({
+      actionsThisWeek: usage.thisWeek,
+      maxPerWeek: numberOr(budget.maxActionsPerAddressPerWeek, 1),
+      shared: recipient.shared,
+      ...(usage.hoursSinceLast !== undefined ? { hoursSinceLast: usage.hoursSinceLast } : {}),
+      ...(typeof budget.minHoursBetweenActions === 'number'
+        ? { cooldownHours: budget.minHoursBetweenActions }
+        : {}),
+    });
+
+    // The engine reports the last breach when several fire; so does this.
+    const breach = breaches[breaches.length - 1];
+    if (breach) {
+      await note(breach.reason);
+      continue;
+    }
+
+    // ------------------------------------------------------------- policy
+    //
+    // Re-evaluated from live rows, never from the stored snapshot.
+    const counts = await actionCounts(db, workspaceId, row.person_id, at);
+
+    const decision = evaluatePolicy({
+      network: row.network as Network,
+      action: row.action as ActionKind,
+      approvalMode: row.approval_mode as 'trusted_automation',
+      hasConnectedAccount: sender !== undefined,
+      personSuppressed: row.person_status === 'suppressed' || row.outreach_eligible === 0,
+      personBelievedMinor: row.believed_minor === 1,
+      personDeleted: row.person_status === 'deleted',
+      identityConfidence: row.identity_confidence,
+      minIdentityConfidence: row.min_outreach_confidence,
+      actionsToday: today,
+      maxActionsPerDay: Math.min(numberOr(budget.maxActionsPerDay, 50), cap),
+      actionsToThisProspectThisWeek: counts.thisProspect,
+      maxActionsPerProspectPerWeek: numberOr(budget.maxActionsPerProspectPerWeek, 1),
+      // The cooldown the campaign configured, not only the engine default.
+      ...cooldown,
+      ...(counts.hoursSinceLast !== undefined
+        ? { hoursSinceLastActionToProspect: counts.hoursSinceLast }
+        : {}),
+      // Already known to pass; supplied so the engine's answer is complete.
+      actionsToThisAddressThisWeek: usage.thisWeek,
+      maxActionsPerAddressPerWeek: numberOr(budget.maxActionsPerAddressPerWeek, 1),
+      addressShared: recipient.shared,
+      ...(usage.hoursSinceLast !== undefined
+        ? { hoursSinceLastActionToAddress: usage.hoursSinceLast }
+        : {}),
+      budgetExhausted: budgetState.exhausted,
+    });
+
+    // `approved: false` is the whole point. Autopilot holds no approval, so
+    // only a decision of plain `allow` gets through — `allow_with_approval`
+    // means a human still has to look at it, and reaching here with that would
+    // mean the capability matrix no longer marks email customer-managed.
+    // Sending anyway would be exactly what the approval default prevents.
+    if (!isExecutable(decision.decision, false)) {
+      await note(
+        decision.decision === 'allow_with_approval'
+          ? 'this action still requires human approval'
+          : decision.reason,
+      );
+      continue;
+    }
+
+    if (!sender) {
+      await note('no mailbox is connected, so nothing can be sent');
+      continue;
+    }
+
+    // -------------------------------------------------------------- draft
+    //
+    // Only now, once the card is known to be sendable. Drafting is a model
+    // call, and writing a message for a card the address gate was about to
+    // hold anyway paid for a hundred drafts a tick that went nowhere.
+    //
     // A recommendation with no draft has nothing to send — but "the composer
     // declined to write one" and "nobody ever tried" are different states, and
     // until now they produced the same warning on every tick forever. Drafting
@@ -307,93 +588,6 @@ export async function runAutopilot(
     // machine either.
     if (hasFailingCheck(checks)) {
       await note('the draft did not pass its quality checks');
-      continue;
-    }
-
-    const recipient = pickEmailRecipient(row);
-    if (!recipient) {
-      await note('no address published for this person or their company');
-      continue;
-    }
-
-    // ------------------------------------------------------------- policy
-    //
-    // Re-evaluated from live rows, never from the stored snapshot.
-    const counts = await actionCounts(db, workspaceId, row.person_id, at);
-
-    // Counted against the mailbox as well as the person.
-    //
-    // Both limits are needed and neither substitutes for the other. The
-    // per-person limit answers "how often do we contact this human"; this one
-    // answers "how much mail does this mailbox get", and a prospect with no
-    // personal address falls back to their employer's shared inbox — so N
-    // colleagues are N separate people, each comfortably inside its own weekly
-    // limit, while one `support@` receives N messages.
-    //
-    // The policy engine grew these gates in #34, but only the human approval
-    // route in `app.ts` ever filled them in. They are optional inputs, so
-    // omitting them does not fail loudly — it silently disables them, and this
-    // is the unattended path that sends at volume. In production the manual
-    // route was protected and autopilot was not, which is how an address that
-    // had already been written to that afternoon was written to again hours
-    // after the fix shipped.
-    const addressUsage = await addressCounts(db, workspaceId, recipient.address, at);
-    const budget = safeJson(row.budget_json);
-
-    // Read inside the loop rather than once per run: a workspace can cross its
-    // monthly allowance partway through a sweep, and a snapshot taken before
-    // the first send would let the rest of the batch through on a stale count.
-    const budgetState = await budgetStatus(db, workspaceId, at);
-
-    const decision = evaluatePolicy({
-      network: row.network as Network,
-      action: row.action as ActionKind,
-      approvalMode: row.approval_mode as 'trusted_automation',
-      hasConnectedAccount: sender !== undefined,
-      personSuppressed: row.person_status === 'suppressed' || row.outreach_eligible === 0,
-      personBelievedMinor: row.believed_minor === 1,
-      personDeleted: row.person_status === 'deleted',
-      identityConfidence: row.identity_confidence,
-      minIdentityConfidence: row.min_outreach_confidence,
-      actionsToday: today,
-      maxActionsPerDay: Math.min(numberOr(budget.maxActionsPerDay, 50), cap),
-      actionsToThisProspectThisWeek: counts.thisProspect,
-      maxActionsPerProspectPerWeek: numberOr(budget.maxActionsPerProspectPerWeek, 1),
-      // The cooldown the campaign configured, not only the engine default.
-      // `evaluateAddressLimits` already honoured this for the queue's badge,
-      // so leaving it out here made the preview and the refusal disagree about
-      // the same card.
-      ...(typeof budget.minHoursBetweenActions === 'number'
-        ? { minHoursBetweenActions: budget.minHoursBetweenActions }
-        : {}),
-      ...(counts.hoursSinceLast !== undefined
-        ? { hoursSinceLastActionToProspect: counts.hoursSinceLast }
-        : {}),
-      actionsToThisAddressThisWeek: addressUsage.thisWeek,
-      maxActionsPerAddressPerWeek: numberOr(budget.maxActionsPerAddressPerWeek, 1),
-      addressShared: recipient.shared,
-      ...(addressUsage.hoursSinceLast !== undefined
-        ? { hoursSinceLastActionToAddress: addressUsage.hoursSinceLast }
-        : {}),
-      budgetExhausted: budgetState.exhausted,
-    });
-
-    // `approved: false` is the whole point. Autopilot holds no approval, so
-    // only a decision of plain `allow` gets through — `allow_with_approval`
-    // means a human still has to look at it, and reaching here with that would
-    // mean the capability matrix no longer marks email customer-managed.
-    // Sending anyway would be exactly what the approval default prevents.
-    if (!isExecutable(decision.decision, false)) {
-      await note(
-        decision.decision === 'allow_with_approval'
-          ? 'this action still requires human approval'
-          : decision.reason,
-      );
-      continue;
-    }
-
-    if (!sender) {
-      await note('no mailbox is connected, so nothing can be sent');
       continue;
     }
 
@@ -485,6 +679,12 @@ export async function runAutopilot(
       });
 
       today += 1;
+      ledger.release(workspaceId, row.recommendation_id);
+
+      // The mailbox just received one; colleagues behind it on this run must
+      // see that without re-reading the table.
+      addressUsage.set(address, { thisWeek: usage.thisWeek + 1, hoursSinceLast: 0 });
+      budgetState = await budgetStatus(db, workspaceId, at);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failed += 1;
@@ -520,7 +720,14 @@ export async function runAutopilot(
     }
   }
 
+  if (completed) ledger.retain(workspaceId, seen);
+
   return { sent, skipped, failed };
+}
+
+interface AddressUsage {
+  readonly thisWeek: number;
+  readonly hoursSinceLast?: number;
 }
 
 /** True when any recorded quality gate failed. Unparseable checks fail closed. */
@@ -612,7 +819,7 @@ async function addressCounts(
   workspaceId: string,
   address: string,
   at: Date,
-): Promise<{ thisWeek: number; hoursSinceLast?: number }> {
+): Promise<AddressUsage> {
   const weekAgo = new Date(at.getTime() - 7 * 24 * 3_600_000).toISOString();
 
   const row = await queryOne<{ n: number; last_at: string | null }>(
