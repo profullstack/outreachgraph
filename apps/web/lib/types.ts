@@ -19,6 +19,7 @@ export interface ApprovalCard {
   person_id: string;
   display_name: string;
   current_title: string | null;
+  avatar_url?: string | null;
   action: string;
   network: string;
   priority: number;
@@ -154,6 +155,7 @@ export interface ProspectRow {
   id: string;
   display_name: string;
   current_title: string | null;
+  avatar_url?: string | null;
   current_company: string | null;
   identity_confidence: number;
   prospect_status: string;
@@ -196,6 +198,7 @@ export interface ProspectDetail {
     id: string;
     display_name: string;
     current_title: string | null;
+    avatar_url?: string | null;
     identity_confidence: number;
     status: string;
   };

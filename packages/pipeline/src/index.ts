@@ -16,11 +16,23 @@ export {
 export { runDiscoveryJob, type DiscoveryJobDeps, type DiscoveryJobResult } from './discovery';
 export {
   runAutopilot,
+  HoldLedger,
+  holdLedger,
+  heldSummary,
+  describeHold,
   type AutopilotDeps,
   type AutopilotResult,
+  type HeldGroup,
   type SentOutreach,
   type SkippedOutreach,
 } from './autopilot';
+export {
+  sweepProfilePhotos,
+  workspacesAwaitingPhotos,
+  type PhotoSweepDeps,
+  type PhotoSweepResult,
+} from './photos';
+export { reseedIdleCampaigns, type ReseedResult } from './reseed';
 export {
   runListening,
   listeningCampaigns,

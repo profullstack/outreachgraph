@@ -3,6 +3,8 @@ import { now, queryAll, type Client } from '@outreachgraph/db';
 import type { Mailer, Message, SendResult } from '@outreachgraph/email';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { notifyAddress, loadNotifySettings, sendDailyDigest, sendLeadAlerts } from './notify';
+import { HoldLedger } from './autopilot';
+import { recordDiscovered } from './stages';
 
 let seeded: SeededDatabase | undefined;
 
@@ -227,5 +229,82 @@ describe('sendDailyDigest', () => {
     await sendDailyDigest({ db, mailer, appUrl: APP_URL, now: at(12) }, SEED.workspaceId);
 
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe('what the digest says about the queue', () => {
+  test('splits the queue into what autopilot will send and what needs a human', async () => {
+    seeded = await seedDatabase('digest-queue');
+    const { db } = seeded;
+    await setDigestHour(db, 9);
+
+    // One email card autopilot owns, on a campaign that opted in.
+    await db.execute({
+      sql: `UPDATE campaigns SET approval_mode = 'trusted_automation' WHERE id = ?`,
+      args: [SEED.campaignId],
+    });
+    await db.execute({
+      sql: `UPDATE recommendations SET action = 'send_email', network = 'email' WHERE id = ?`,
+      args: [SEED.recommendationId],
+    });
+
+    // One LinkedIn card only a person can act on.
+    await db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
+            priority, reason, policy_status, policy_version, status, created_at)
+            VALUES ('rec_li', ?, ?, ?, 'reply', 'linkedin', 10, 'they posted',
+                    'manual_only', '2026-01-01', 'pending', ?)`,
+      args: [SEED.workspaceId, SEED.campaignId, SEED.personId, now()],
+    });
+
+    // Autopilot remembers holding the email card.
+    const ledger = new HoldLedger();
+    ledger.observe(
+      SEED.workspaceId,
+      SEED.recommendationId,
+      'This prospect shares a company inbox that has already had 2 message(s) this week; the limit is 2.',
+    );
+
+    // Jane has a picture and surfaced today.
+    await db.execute({
+      sql: `UPDATE people SET avatar_url = 'https://pics.example/jane.jpg' WHERE id = ?`,
+      args: [SEED.personId],
+    });
+    await recordDiscovered(db, {
+      workspaceId: SEED.workspaceId,
+      campaignId: SEED.campaignId,
+      personId: SEED.personId,
+    });
+
+    const { sent, mailer } = recordingMailer();
+    await sendDailyDigest(
+      { db, mailer, appUrl: APP_URL, now: at(12), holdLedger: ledger },
+      SEED.workspaceId,
+    );
+
+    const mail = sent[0];
+    expect(mail?.text).toContain('Autopilot queue:   1 (1 held by a limit)');
+    expect(mail?.text).toContain('Needs you:         1 (LinkedIn 1)');
+    expect(mail?.text).not.toContain('Awaiting approval');
+    expect(mail?.text).toContain(
+      "1 held in the autopilot queue: the company inbox already had this week's messages.",
+    );
+    expect(mail?.html).toContain('<img src="https://pics.example/jane.jpg"');
+  });
+
+  test('a workspace with nothing on autopilot still gets the plain count', async () => {
+    seeded = await seedDatabase('digest-plain');
+    const { db } = seeded;
+    await setDigestHour(db, 9);
+
+    const { sent, mailer } = recordingMailer();
+    await sendDailyDigest(
+      { db, mailer, appUrl: APP_URL, now: at(12), holdLedger: new HoldLedger() },
+      SEED.workspaceId,
+    );
+
+    // The seed's one pending card is a reply on a manual network.
+    expect(sent[0]?.text).toContain('Needs you:         1');
+    expect(sent[0]?.text).not.toContain('Autopilot queue');
   });
 });

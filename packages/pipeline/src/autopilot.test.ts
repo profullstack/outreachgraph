@@ -3,7 +3,7 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer, Message, SendResult } from '@outreachgraph/email';
 import type { GenerateResult, TextModel } from '@outreachgraph/ai';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
-import { runAutopilot } from './autopilot';
+import { HoldLedger, describeHold, runAutopilot } from './autopilot';
 
 let seeded: SeededDatabase | undefined;
 
@@ -549,5 +549,193 @@ describe('one mailbox, several colleagues', () => {
 
     expect(sent).toHaveLength(0);
     expect(result.skipped).toHaveLength(1);
+  });
+});
+
+describe('a queue held at the top', () => {
+  /**
+   * The production shape that sent six a day: the highest-priority cards all
+   * resolve to one shared inbox that has already been written to, and the
+   * card that could actually go out sits behind them.
+   */
+  async function addHeldColleague(db: Client, name: string, priority: number): Promise<void> {
+    const stamp = now();
+    const personId = `per_${name.toLowerCase()}`;
+
+    await db.execute({
+      sql: `INSERT INTO people (id, display_name, current_company_id, status, believed_minor,
+            outreach_eligible, identity_confidence, created_at, updated_at)
+            VALUES (?, ?, ?, 'active', 0, 1, 0.95, ?, ?)`,
+      args: [personId, name, SEED.companyId, stamp, stamp],
+    });
+
+    await db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
+            priority, reason, policy_status, policy_version, status, created_at)
+            VALUES (?, ?, ?, ?, 'send_email', 'email', ?, 'same company',
+                    'allow', '2026-01-01', 'pending', ?)`,
+      args: [
+        `rec_${name.toLowerCase()}`,
+        SEED.workspaceId,
+        SEED.campaignId,
+        personId,
+        priority,
+        stamp,
+      ],
+    });
+
+    await db.execute({
+      sql: `INSERT INTO drafts (id, workspace_id, recommendation_id, subject, body, checks_json,
+            created_at, updated_at)
+            VALUES (?, ?, ?, 'Hello', 'A grounded message.', '[]', ?, ?)`,
+      args: [
+        `drf_${name.toLowerCase()}`,
+        SEED.workspaceId,
+        `rec_${name.toLowerCase()}`,
+        stamp,
+        stamp,
+      ],
+    });
+  }
+
+  async function inboxAlreadyWrittenTo(db: Client, address: string): Promise<void> {
+    await db.execute({
+      sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, network,
+            direction, state, body, contact_address, shared_inbox, occurred_at, recorded_at)
+            VALUES ('int_earlier', ?, ?, ?, 'email', 'outbound', 'contacted', 'earlier',
+                    ?, 1, ?, ?)`,
+      args: [SEED.workspaceId, SEED.personId, SEED.campaignId, address, now(), now()],
+    });
+  }
+
+  test('a sendable card behind the held ones is still reached', async () => {
+    seeded = await seedDatabase('autopilot-starvation');
+    const { db } = seeded;
+
+    // Jane can be written to, at the lowest priority in the queue.
+    await makeSendable(db, { personEmail: 'jane@acme.com', companyEmail: 'support@acme.com' });
+    await db.execute({
+      sql: 'UPDATE recommendations SET priority = 1 WHERE id = ?',
+      args: [SEED.recommendationId],
+    });
+
+    // Three colleagues ahead of her, all resolving to an inbox on cooldown.
+    await inboxAlreadyWrittenTo(db, 'support@acme.com');
+    await addHeldColleague(db, 'Held1', 50);
+    await addHeldColleague(db, 'Held2', 50);
+    await addHeldColleague(db, 'Held3', 50);
+
+    // A cap smaller than the number of held cards. The old window was
+    // `cap - sent today` rows, so this read two held cards and stopped.
+    const stamp = now();
+    await db.execute({
+      sql: `INSERT INTO workspace_settings (workspace_id, autopilot_daily_cap, created_at, updated_at)
+            VALUES (?, 2, ?, ?)`,
+      args: [SEED.workspaceId, stamp, stamp],
+    });
+
+    const { sent, mailer } = recordingMailer();
+    const result = await runAutopilot(
+      { db, mailer, holdLedger: new HoldLedger() },
+      SEED.workspaceId,
+    );
+
+    expect(sent.map((message) => message.to)).toEqual(['jane@acme.com']);
+    expect(result.skipped).toHaveLength(3);
+    expect(result.skipped.every((skip) => /address|company inbox/i.test(skip.reason))).toBe(true);
+  });
+
+  test('the same hold is written down once, not every tick', async () => {
+    seeded = await seedDatabase('autopilot-hold-once');
+    const { db } = seeded;
+
+    await makeSendable(db, { companyEmail: 'support@acme.com' });
+    await inboxAlreadyWrittenTo(db, 'support@acme.com');
+
+    const ledger = new HoldLedger();
+    const { mailer } = recordingMailer();
+
+    const first = await runAutopilot({ db, mailer, holdLedger: ledger }, SEED.workspaceId);
+    const second = await runAutopilot({ db, mailer, holdLedger: ledger }, SEED.workspaceId);
+
+    // Reported on every run — the log still says what is happening.
+    expect(first.skipped).toHaveLength(1);
+    expect(second.skipped).toHaveLength(1);
+
+    // Written to the live feed once.
+    const events = await queryAll<{ message: string }>(
+      db,
+      `SELECT message FROM workflow_events WHERE phase = 'send' AND level = 'warn'`,
+    );
+    expect(events).toHaveLength(1);
+
+    // And the digest can say what is holding the queue.
+    expect(ledger.summary(SEED.workspaceId)).toEqual([
+      { label: 'the address was written to within the cooldown', count: 1 },
+    ]);
+  });
+
+  test('an address they gave us in an import is their own, not a shared one', async () => {
+    seeded = await seedDatabase('autopilot-imported-address');
+    const { db } = seeded;
+
+    // No published identity, no company inbox — only the imported row.
+    await makeSendable(db);
+    await db.execute({
+      sql: `INSERT INTO person_emails (id, workspace_id, person_id, address, dedupe_key, source,
+            verified, created_at) VALUES ('pem_jane', ?, ?, 'jane@home.example',
+            'jane@home.example', 'import', 1, ?)`,
+      args: [SEED.workspaceId, SEED.personId, now()],
+    });
+
+    const { sent, mailer } = recordingMailer();
+    const result = await runAutopilot(
+      { db, mailer, holdLedger: new HoldLedger() },
+      SEED.workspaceId,
+    );
+
+    expect(sent.map((message) => message.to)).toEqual(['jane@home.example']);
+    expect(result.sent[0]?.toSharedInbox).toBe(false);
+  });
+});
+
+describe('HoldLedger', () => {
+  test('a changed number is the same hold; a changed reason is a new one', () => {
+    const ledger = new HoldLedger();
+
+    expect(ledger.observe('wsp', 'rec', 'Only 9.85h since this address was last contacted')).toBe(
+      true,
+    );
+    expect(ledger.observe('wsp', 'rec', 'Only 9.09h since this address was last contacted')).toBe(
+      false,
+    );
+    expect(ledger.observe('wsp', 'rec', 'no drafted message')).toBe(true);
+
+    ledger.release('wsp', 'rec');
+    expect(ledger.observe('wsp', 'rec', 'no drafted message')).toBe(true);
+  });
+
+  test('forgets cards a full pass did not see', () => {
+    const ledger = new HoldLedger();
+    ledger.observe('wsp', 'gone', 'no drafted message');
+    ledger.observe('wsp', 'kept', 'no drafted message');
+
+    ledger.retain('wsp', new Set(['kept']));
+
+    expect(ledger.summary('wsp')).toEqual([{ label: 'no message written yet', count: 1 }]);
+  });
+
+  test('describes the engine’s refusals as short reasons', () => {
+    expect(
+      describeHold(
+        'This prospect shares a company inbox that has already had 2 message(s) this week; the limit is 2.',
+      ),
+    ).toBe("the company inbox already had this week's messages");
+    expect(describeHold('Weekly limit for this prospect reached (1/1).')).toBe(
+      'already written to this week',
+    );
+    expect(describeHold('something the engine has never said')).toBe(
+      'something the engine has never said',
+    );
   });
 });

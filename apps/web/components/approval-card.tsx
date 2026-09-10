@@ -5,6 +5,7 @@ import { useState } from 'react';
 // Imported from the server-safe modules, not lib/api: that pulls in
 // next/headers and cannot be bundled for the browser.
 import { relativeTime } from '../lib/format';
+import { Avatar } from './avatar';
 import { ShareButtons } from './share-buttons';
 import type { ApprovalCard as Card } from '../lib/types';
 
@@ -166,9 +167,12 @@ export function ApprovalCard({ card }: { card: Card }) {
   return (
     <article className="border-border bg-surface-raised rounded-2xl border p-4">
       <header className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold">{card.display_name}</h2>
-          <p className="text-ink-muted truncate text-sm">{card.current_title ?? '—'}</p>
+        <div className="flex min-w-0 items-center gap-3">
+          <Avatar name={card.display_name} src={card.avatar_url} size="md" />
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-semibold">{card.display_name}</h2>
+            <p className="text-ink-muted truncate text-sm">{card.current_title ?? '—'}</p>
+          </div>
         </div>
         <div className="shrink-0 text-right">
           <div className="text-accent text-lg leading-none font-semibold tabular-nums">

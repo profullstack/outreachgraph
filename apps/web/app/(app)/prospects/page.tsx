@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { Avatar } from '../../../components/avatar';
 import { PageGuide } from '../../../components/page-guide';
 import { ApiUnavailableError, NotAuthenticatedError, fetchProspects } from '../../../lib/api';
 import type { ProspectRow } from '../../../lib/types';
@@ -75,14 +76,18 @@ function ProspectItem({ person }: { person: ProspectRow }) {
         href={`/prospects/${person.id}`}
         className="border-border bg-surface-raised block rounded-2xl border p-4"
       >
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="truncate font-semibold">{person.display_name}</span>
-          <span className="text-accent shrink-0 font-semibold tabular-nums">
-            {person.opportunity ?? '—'}
-          </span>
+        <div className="flex items-center gap-3">
+          <Avatar name={person.display_name} src={person.avatar_url} size="md" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="truncate font-semibold">{person.display_name}</span>
+              <span className="text-accent shrink-0 font-semibold tabular-nums">
+                {person.opportunity ?? '—'}
+              </span>
+            </div>
+            <p className="text-ink-muted mt-1 truncate text-sm">{subtitle || '—'}</p>
+          </div>
         </div>
-
-        <p className="text-ink-muted mt-1 truncate text-sm">{subtitle || '—'}</p>
 
         <dl className="text-ink-muted mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
           <div className="flex gap-1">

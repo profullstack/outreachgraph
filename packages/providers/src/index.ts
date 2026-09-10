@@ -29,6 +29,17 @@ export {
 export { deriveEvidence, type EvidenceContext } from './evidence';
 
 export {
+  ValueSerpClient,
+  carriesName,
+  corroborate,
+  isLinkedInProfile,
+  type ProfilePhoto,
+  type ProfilePhotoFinder,
+  type ProfilePhotoQuery,
+  type ValueSerpOptions,
+} from './valueserp';
+
+export {
   FixtureProvider,
   FIXTURE_CANDIDATES,
   type FixtureProviderOptions,
