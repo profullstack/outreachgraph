@@ -77,6 +77,7 @@ export async function draftForRecommendation(
   if (!signal?.evidence) return { ok: false, reason: 'no_evidence' };
 
   const person = await queryOne<{
+    kind: string;
     display_name: string;
     first_name: string | null;
     current_title: string | null;
@@ -84,7 +85,8 @@ export async function draftForRecommendation(
     identity_confidence: number;
   }>(
     db,
-    `SELECT display_name, first_name, current_title, current_company_id, identity_confidence
+    `SELECT kind, display_name, first_name, current_title, current_company_id,
+            identity_confidence
        FROM people WHERE id = ?`,
     [recommendation.person_id],
   );
@@ -149,6 +151,7 @@ export async function draftForRecommendation(
       competitors: parseArray(offering.competitors),
     },
     prospect: {
+      ...(person.kind === 'company_inbox' ? { kind: 'company_inbox' as const } : {}),
       displayName: person.display_name,
       ...(person.first_name ? { firstName: person.first_name } : {}),
       ...(person.current_title ? { title: person.current_title } : {}),

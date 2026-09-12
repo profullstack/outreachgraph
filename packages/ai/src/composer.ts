@@ -16,7 +16,7 @@
  *      rejected — including on a retry — rather than shown with a warning.
  */
 
-import type { ActionKind, Network, OutreachStyle } from '@outreachgraph/domain';
+import type { ActionKind, Network, OutreachStyle, PersonKind } from '@outreachgraph/domain';
 import { runChecks, type CheckReport, type GroundingContext } from './checks';
 import type { TextModel } from './model';
 
@@ -29,6 +29,8 @@ export interface OfferingContext {
 }
 
 export interface ProspectContext {
+  /** Absent means a person. A `company_inbox` is written to as a team. */
+  readonly kind?: PersonKind;
   readonly displayName: string;
   readonly firstName?: string;
   readonly title?: string;
@@ -250,19 +252,37 @@ function buildSystem(input: ComposeInput): string {
 
 function buildUser(input: ComposeInput, failed?: CheckReport): string {
   const trigger = input.trigger!;
-  const name = input.prospect.firstName ?? input.prospect.displayName;
+  const inbox = input.prospect.kind === 'company_inbox';
+  const company = input.prospect.companyName ?? input.prospect.displayName;
+  const name = inbox
+    ? `the ${company} team`
+    : (input.prospect.firstName ?? input.prospect.displayName);
 
-  const sections = [
-    'CONTEXT — the only facts you may use:',
-    `Person: ${input.prospect.displayName}${input.prospect.title ? `, ${input.prospect.title}` : ''}${
-      input.prospect.companyName ? ` at ${input.prospect.companyName}` : ''
-    }`,
-    `What they did: ${trigger.summary} (${trigger.network}, ${trigger.ageDescription})`,
-    `Their exact words:\n"""\n${trigger.evidence}\n"""`,
-    '',
-    `Write a message to ${name} responding to what they said.`,
-    'Reference their words specifically enough that it could not have been sent to anyone else.',
-  ];
+  // A shared inbox has no first name to greet and nobody's words to quote.
+  // What it has is a company that published a way to be reached and, often,
+  // a line about itself. So the message is to the team, about the company,
+  // and grounded in what the site says rather than in what a person said.
+  const sections = inbox
+    ? [
+        'CONTEXT — the only facts you may use:',
+        `Recipient: the shared inbox of ${company}. Nobody specific is named; whoever handles the company's mail will read this.`,
+        `What their site says: ${trigger.summary} (${trigger.network}, ${trigger.ageDescription})`,
+        `The site's exact words:\n"""\n${trigger.evidence}\n"""`,
+        '',
+        `Write a message to ${name}. Greet the team, never a first name.`,
+        'Reference what the site says specifically enough that it could not have been sent to any other company.',
+      ]
+    : [
+        'CONTEXT — the only facts you may use:',
+        `Person: ${input.prospect.displayName}${input.prospect.title ? `, ${input.prospect.title}` : ''}${
+          input.prospect.companyName ? ` at ${input.prospect.companyName}` : ''
+        }`,
+        `What they did: ${trigger.summary} (${trigger.network}, ${trigger.ageDescription})`,
+        `Their exact words:\n"""\n${trigger.evidence}\n"""`,
+        '',
+        `Write a message to ${name} responding to what they said.`,
+        'Reference their words specifically enough that it could not have been sent to anyone else.',
+      ];
 
   if (failed) {
     // Naming the exact rejected fragments works far better than repeating the

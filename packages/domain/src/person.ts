@@ -25,8 +25,22 @@ export interface Company {
 export const PERSON_STATUS = ['active', 'suppressed', 'deleted'] as const;
 export type PersonStatus = (typeof PERSON_STATUS)[number];
 
+/**
+ * What a `people` row stands for.
+ *
+ * `person` is a named human. `company_inbox` is a company's shared mailbox
+ * (`support@`, `info@`) standing in for the nobody its site named, so a
+ * company that publishes a way to reach it can be reached through the same
+ * queue, policy and approval as everyone else. The kind is set deliberately by
+ * the crawl, never inferred from a scraped name: `isLikelyRoleAccount` still
+ * rejects "webmaster" and "admin" as people.
+ */
+export const PERSON_KINDS = ['person', 'company_inbox'] as const;
+export type PersonKind = (typeof PERSON_KINDS)[number];
+
 export interface Person {
   readonly id: PrefixedId<'person'>;
+  readonly kind: PersonKind;
   readonly displayName: string;
   readonly firstName?: string;
   readonly lastName?: string;

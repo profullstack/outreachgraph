@@ -290,3 +290,55 @@ describe('determinism of the checked surface', () => {
     expect(stripVolatile(a.calls[0]!)).toEqual(stripVolatile(b.calls[0]!));
   });
 });
+
+describe('a company inbox as the recipient', () => {
+  test('is written to as the team, about what the site says', async () => {
+    const model = new StubModel(
+      'Shipping research supplies the same day is a lot of parcels to reconcile by hand.',
+    );
+
+    const result = await composeDraft(
+      model,
+      input({
+        action: 'send_email',
+        network: 'email',
+        prospect: {
+          kind: 'company_inbox',
+          displayName: 'Family Shop',
+          companyName: 'Family Shop',
+          identityConfidence: 0.9,
+        },
+        trigger: {
+          id: 'sig_inbox',
+          summary:
+            'Publishes hello@familyshop.example as the contact address on the company website.',
+          evidence:
+            'A family-owned store shipping research supplies the same day. ' +
+            'Contact: hello@familyshop.example',
+          sourceUrl: 'https://familyshop.example',
+          network: 'website',
+          ageDescription: 'today',
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+
+    // Nobody is named, so the prompt must not pretend someone is.
+    const prompt = model.calls[0]!.user;
+    expect(prompt).toContain('the Family Shop team');
+    expect(prompt).toContain('Nobody specific is named');
+    expect(prompt).toContain('Greet the team, never a first name');
+    expect(prompt).not.toContain('What they did');
+    expect(prompt).not.toContain('Person:');
+  });
+
+  test('a named person is still written to by name', async () => {
+    const model = new StubModel(GOOD_DRAFT);
+    await composeDraft(model, input());
+
+    const prompt = model.calls[0]!.user;
+    expect(prompt).toContain('Write a message to Jane');
+    expect(prompt).not.toContain('team');
+  });
+});

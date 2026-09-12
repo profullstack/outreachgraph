@@ -166,6 +166,7 @@ export async function proposeAddresses(
        JOIN companies co ON co.id = p.current_company_id
       WHERE co.domain IS NOT NULL AND trim(co.domain) <> ''
         AND p.status = 'active'
+        AND p.kind = 'person'
         ${options.personId ? 'AND p.id = ?' : ''}
         AND NOT EXISTS (
           SELECT 1 FROM social_identities si

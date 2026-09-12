@@ -1,0 +1,11 @@
+-- A company's published inbox as a lead in its own right.
+--
+-- A crawl that names nobody still finds a company and, usually, a support@ or
+-- info@ address. Until now that address was recorded and then unreachable: a
+-- recommendation only ever hangs off a person, so a small store whose site
+-- says "family-owned" and publishes one shared mailbox produced a company row
+-- and an empty queue. `kind` marks the person row that stands in for that
+-- inbox so the rest of the product can treat it honestly: greet the team
+-- rather than a first name, never propose or enrich a personal address for
+-- it, never look up a photo of it.
+ALTER TABLE people ADD COLUMN kind TEXT NOT NULL DEFAULT 'person';

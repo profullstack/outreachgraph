@@ -171,7 +171,9 @@ export function ApprovalCard({ card }: { card: Card }) {
           <Avatar name={card.display_name} src={card.avatar_url} size="md" />
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold">{card.display_name}</h2>
-            <p className="text-ink-muted truncate text-sm">{card.current_title ?? '—'}</p>
+            <p className="text-ink-muted truncate text-sm">
+              {card.kind === 'company_inbox' ? 'Company inbox' : (card.current_title ?? '—')}
+            </p>
           </div>
         </div>
         <div className="shrink-0 text-right">

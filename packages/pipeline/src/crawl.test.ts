@@ -44,6 +44,19 @@ const COMPANY_HTML = `<!doctype html><html><head>
   </footer>
 </body></html>`;
 
+/** A small store's homepage: a company, a line about itself, an inbox, nobody named. */
+const INBOX_ONLY_HTML = `<!doctype html><html><head>
+  <title>Family Shop</title>
+  <meta property="og:site_name" content="Family Shop" />
+  <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"Organization","name":"Family Shop",
+     "description":"A family-owned store shipping research supplies the same day."}
+  </script>
+</head><body>
+  <p>We are family-owned and operated. Orders before 4 PM ship today.</p>
+  <footer><a href="mailto:hello@familyshop.example">hello@familyshop.example</a></footer>
+</body></html>`;
+
 function stubNetwork(html = COMPANY_HTML): FetchLike {
   return async (input) => {
     const url = input.toString();
@@ -194,6 +207,124 @@ describe('URL to approval card', () => {
       added.id!,
     ]);
     expect(job?.status).toBe('done');
+  });
+
+  test(
+    'a page naming nobody but publishing an inbox makes the inbox the lead',
+    async () => {
+      const { db } = await setup('e2e-inbox-lead');
+
+      await enqueue(db, {
+        workspaceId: SEED.workspaceId,
+        kind: 'crawl_site',
+        payload: { url: 'https://familyshop.example' },
+      });
+
+      const site = new SiteProvider({ fetchImpl: stubNetwork(INBOX_ONLY_HTML) });
+
+      const summary = await drainQueue(db, async (job: QueuedJob) => {
+        await runCrawlJob({ db, site, providers: [], emailSendingEnabled: true }, job);
+      });
+      expect(summary.succeeded).toBe(1);
+
+      // The lead is the company's inbox, typed as such, not a scraped "person".
+      const lead = await queryOne<{
+        id: string;
+        kind: string;
+        display_name: string;
+        first_name: string | null;
+        current_title: string | null;
+        identity_confidence: number;
+      }>(
+        db,
+        `SELECT id, kind, display_name, first_name, current_title, identity_confidence
+           FROM people WHERE kind = 'company_inbox'`,
+      );
+      expect(lead?.display_name).toBe('Family Shop');
+      expect(lead?.first_name).toBeNull();
+      expect(lead?.current_title).toBeNull();
+      // Its own site published the address: clears the default outreach bar.
+      expect(lead!.identity_confidence).toBeGreaterThanOrEqual(0.85);
+
+      // The address stays the company's. No email identity is written, so the
+      // send path resolves the company inbox and flags it shared, and every
+      // shared-inbox limit applies exactly as it does for a named colleague.
+      const personal = await queryOne<{ id: string }>(
+        db,
+        `SELECT id FROM social_identities WHERE person_id = ? AND network = 'email'`,
+        [lead!.id],
+      );
+      expect(personal).toBeUndefined();
+
+      const company = await queryOne<{ contact_email: string }>(
+        db,
+        `SELECT co.contact_email FROM companies co
+           JOIN people p ON p.current_company_id = co.id WHERE p.id = ?`,
+        [lead!.id],
+      );
+      expect(company?.contact_email).toBe('hello@familyshop.example');
+
+      // What the site said is the evidence, and it names the address.
+      const signal = await queryOne<{ summary: string; evidence: string }>(
+        db,
+        'SELECT summary, evidence FROM signals WHERE person_id = ?',
+        [lead!.id],
+      );
+      expect(signal?.summary).toContain('hello@familyshop.example');
+      expect(signal?.evidence).toContain('family-owned');
+
+      // And it reaches the queue as an email to approve, like anyone else.
+      const card = await queryOne<{ action: string; network: string; status: string }>(
+        db,
+        'SELECT action, network, status FROM recommendations WHERE person_id = ?',
+        [lead!.id],
+      );
+      expect(card).toEqual({ action: 'send_email', network: 'email', status: 'pending' });
+
+      // Re-reading the site finds the same lead, not a second one.
+      await enqueue(db, {
+        workspaceId: SEED.workspaceId,
+        kind: 'crawl_site',
+        payload: { url: 'https://familyshop.example/contact' },
+      });
+      await drainQueue(db, async (job: QueuedJob) => {
+        await runCrawlJob({ db, site, providers: [], emailSendingEnabled: true }, job);
+      });
+      const leads = await queryAll(db, `SELECT id FROM people WHERE kind = 'company_inbox'`);
+      expect(leads).toHaveLength(1);
+    },
+    SLOW_CHAIN_MS,
+  );
+
+  test('a page naming someone does not also queue the inbox', async () => {
+    const { db } = await setup('e2e-inbox-not-doubled');
+
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      payload: { url: 'https://loopwright.io' },
+    });
+
+    // The team page above, plus a published inbox.
+    const html = COMPANY_HTML.replace(
+      '<footer>',
+      '<footer><a href="mailto:hello@loopwright.io">hello@loopwright.io</a>',
+    );
+    const site = new SiteProvider({ fetchImpl: stubNetwork(html) });
+
+    await drainQueue(db, async (job: QueuedJob) => {
+      await runCrawlJob({ db, site, providers: [] }, job);
+    });
+
+    const named = await queryOne<{ kind: string }>(
+      db,
+      'SELECT kind FROM people WHERE display_name = ?',
+      ['Alex Chen'],
+    );
+    expect(named?.kind).toBe('person');
+
+    const inboxes = await queryAll(db, `SELECT id FROM people WHERE kind = 'company_inbox'`);
+    expect(inboxes).toHaveLength(0);
   });
 
   test('a page nobody could read retries instead of reporting success', async () => {

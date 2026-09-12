@@ -191,7 +191,7 @@ export async function listPendingRecommendations(
 
   return queryAll(
     db,
-    `SELECT r.*, p.display_name, p.current_title, p.avatar_url, p.identity_confidence,
+    `SELECT r.*, p.kind, p.display_name, p.current_title, p.avatar_url, p.identity_confidence,
             s.summary AS signal_summary, s.source_url AS signal_url,
             s.source_timestamp AS signal_at,
             d.body AS draft_body, d.subject AS draft_subject,
