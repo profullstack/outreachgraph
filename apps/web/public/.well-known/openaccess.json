@@ -1,0 +1,29 @@
+{
+  "openaccess": "0.1",
+  "name": "OutreachGraph",
+  "url": "https://outreachgraph.com",
+  "operator": "https://logicsrc.com/.well-known/openprofile.md",
+  "redirect_uris": [
+    "https://outreachgraph.com/api/v1/openaccess/callback"
+  ],
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "ipCi57tAx6o7",
+        "x": "UYkoATRmhJfbXwNYQl--khutnkrARMGOCxDPp1RmoXI",
+        "alg": "EdDSA",
+        "use": "sig"
+      }
+    ]
+  },
+  "scopes": {},
+  "honours": [
+    "profullstack.com/all-access"
+  ],
+  "webhooks": "https://outreachgraph.com/api/v1/openaccess/events",
+  "hubs": [
+    "https://openaccess.logicsrc.com"
+  ]
+}
