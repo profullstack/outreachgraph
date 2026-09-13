@@ -37,6 +37,7 @@ export class ApiError extends Error {
 export interface ApiClient {
   get(path: string, query?: Record<string, string | undefined>): Promise<unknown>;
   post(path: string, body?: unknown): Promise<unknown>;
+  put(path: string, body?: unknown): Promise<unknown>;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -120,6 +121,7 @@ export function createClient(config: ApiConfig, fetchImpl: FetchLike = fetch): A
       return call('GET', suffix ? `${path}?${suffix}` : path);
     },
     post: (path, body) => call('POST', path, body),
+    put: (path, body) => call('PUT', path, body),
   };
 }
 

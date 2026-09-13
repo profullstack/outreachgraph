@@ -20,6 +20,7 @@
  * take a `fetchImpl`, so a test can hand in pages and never touch the network.
  */
 
+import { listSection, makeOpenProfile, renderOpenProfile } from '@profullstack/openprofile';
 import { anchors, collapse, decodeEntities, isRelMe, metaContent, networkForUrl } from './extract';
 import { parseFediverseHandle, parseFediverseUrl } from './fediverse';
 import type { FetchLike } from './fetch';
@@ -401,33 +402,37 @@ export function mergeFacts(
   };
 }
 
-/** Render the Markdown the spec describes. One `#`, an identity block, one line, sections. */
+/**
+ * Render the Markdown the spec describes, through the house reader and writer
+ * (@profullstack/openprofile), so what OutreachGraph assembles is the same
+ * shape every other house app serves: one `#`, an identity block, one line,
+ * then Accounts, Topics and Links in the spec's order. An empty value is not
+ * written; absence is unstated.
+ */
 export function buildOpenProfile(input: ProfileInput): string {
-  const lines: string[] = [`# ${input.name.trim() || input.handle}`, ''];
-  lines.push(`- **Kind**: ${input.kind ?? 'person'}`);
-  lines.push(`- **Handle**: @${input.handle.replace(/^@/, '')}`);
-  if (input.web) lines.push(`- **Web**: ${input.web}`);
-  if (input.email) lines.push(`- **Email**: ${input.email}`);
-  if (input.avatar) lines.push(`- **Avatar**: ${input.avatar}`);
-  lines.push('');
-  if (input.headline) lines.push(input.headline.trim(), '');
-
+  const handle = input.handle.replace(/^@/, '');
   // The home page is the Web line; listing it again under Links says nothing new.
   const isWeb = (entry: ProfileAccount) => Boolean(input.web && samePage(entry.url, input.web));
   const me = input.accounts.filter((entry) => entry.relation === 'me' && !isWeb(entry));
   const links = input.accounts.filter((entry) => entry.relation === 'link' && !isWeb(entry));
-  if (me.length) {
-    lines.push('## Accounts', '');
-    for (const entry of me) lines.push(`- [${entry.label}](${entry.url})`);
-    lines.push('');
-  }
-  if (input.topics.length) {
-    lines.push('## Topics', '', `- ${input.topics.join(', ')}`, '');
-  }
-  if (links.length) {
-    lines.push('## Links', '');
-    for (const entry of links) lines.push(`- [${entry.label}](${entry.url})`);
-    lines.push('');
-  }
-  return `${lines.join('\n').trimEnd()}\n`;
+  const bullet = (entry: ProfileAccount) => `[${entry.label}](${entry.url})`;
+
+  return renderOpenProfile(
+    makeOpenProfile({
+      name: input.name.trim() || handle,
+      identity: {
+        Kind: input.kind ?? 'person',
+        Handle: `@${handle}`,
+        Web: input.web,
+        Email: input.email,
+        Avatar: input.avatar,
+      },
+      headline: input.headline,
+      sections: [
+        listSection('Accounts', me.map(bullet)),
+        listSection('Topics', input.topics),
+        listSection('Links', links.map(bullet)),
+      ],
+    }),
+  );
 }

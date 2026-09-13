@@ -16,7 +16,9 @@
       }
     ]
   },
-  "scopes": {},
+  "scopes": {
+    "openprofile:edit": "Correct the OpenProfile.md OutreachGraph holds about you: PUT /api/v1/people/{id}/openprofile with the file or a JSON overlay. Honoured only when the grant's principal is you, by an email this deployment has verified for you or by the OpenProfile.md you publish."
+  },
   "honours": ["profullstack.com/all-access"],
   "webhooks": "https://outreachgraph.com/api/v1/openaccess/events",
   "hubs": ["https://openaccess.logicsrc.com"]

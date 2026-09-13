@@ -33,6 +33,7 @@ import { CoinPayClient } from '@outreachgraph/payments';
 import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
+import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import {
   drainQueue,
   emitEvent,
@@ -389,6 +390,9 @@ const api = createApp({
   ...(encryptionKey ? { encryptionKey } : {}),
   ...(appUrl ? { appUrl } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
+  // A person editing their own OpenProfile.md carries an OpenAccess bearer
+  // rather than a session here.
+  verifyBearer: verifyOpenAccessBearer,
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',

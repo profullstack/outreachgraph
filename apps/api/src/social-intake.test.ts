@@ -127,6 +127,11 @@ describe('GET /people/:id/openprofile.md', () => {
       url: `/api/v1/people/${SEED.personId}/openprofile.md`,
       generatedAt: '2026-09-13T00:00:00.000Z',
       publishedUrl: 'https://jane.example/.well-known/openprofile.md',
+      // Private until somebody switches it on; nobody has claimed or edited it.
+      public: false,
+      handle: null,
+      claimedAt: null,
+      editedAt: null,
     });
 
     expect((await get(app, '/people/per_nobody/openprofile.md')).status).toBe(404);

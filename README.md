@@ -62,6 +62,34 @@ persuasive caller can be pointed at.
 No API keys are needed. The pipeline runs end to end on a deterministic
 fixture provider, so a fresh checkout works with an empty `.env`.
 
+### A person's OpenProfile.md
+
+The `openprofile` job assembles one [OpenProfile.md](https://logicsrc.com/openprofile)
+per person from their public profiles, through `@profullstack/openprofile`. It
+is private until somebody switches it on, and it can be corrected from every
+surface: what the owner writes wins section by section, the rest is still
+generated, and a rewrite by the job never touches the corrections.
+
+```bash
+og profile per_...                            # the file, as this workspace sees it
+og profile edit per_... [--file profile.md]   # correct it ($EDITOR when no --file)
+og profile publish per_... --public|--private # list it for directories, or stop
+```
+
+The same three over HTTP: `GET /api/v1/people/{id}/openprofile.md`,
+`PUT /api/v1/people/{id}/openprofile` (the whole file as `text/markdown`, or a
+JSON overlay of `identity`, `headline`, `sections`, `public`, `handle`), and
+`POST /api/v1/people/{id}/openprofile/publish {public}`. MCP:
+`get_openprofile`, `update_openprofile`, `publish_openprofile`.
+
+A public profile is served to anybody, minus email, phone and any Contact
+section, and listed at `GET /api/v1/openprofiles?since=&limit=&cursor=` for a
+directory such as nichedb.dev to pull. A suppressed person is never public.
+The person may correct their own profile without a session here: an OpenAccess
+bearer with the `openprofile:edit` scope is honoured when its principal is
+provably them, by an email this deployment verified or by the OpenProfile.md
+they publish.
+
 ### Sending outreach
 
 Outreach leaves through the workspace's **own** SMTP server, connected on

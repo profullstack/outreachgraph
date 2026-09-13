@@ -75,6 +75,77 @@ function handleFromUrl(url: string): string | undefined {
   return nested?.replace(/^@/, '');
 }
 
+/**
+ * Opens the person's editor on a file and returns what they saved. Injected
+ * through `edit` on the context so tests never spawn anything.
+ */
+async function editInEditor(markdown: string): Promise<string> {
+  const { mkdtempSync, readFileSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'og-profile-'));
+  const path = join(dir, 'openprofile.md');
+  writeFileSync(path, markdown);
+  try {
+    const editor = process.env.VISUAL ?? process.env.EDITOR ?? 'vi';
+    const child = Bun.spawnSync([...editor.split(/\s+/), path], {
+      stdio: ['inherit', 'inherit', 'inherit'],
+    });
+    if (child.exitCode !== 0)
+      throw new Error(`${editor} exited with ${child.exitCode}; nothing saved`);
+    return readFileSync(path, 'utf8');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * `og profile <id>` prints the file; `og profile edit <id>` corrects it, from
+ * `--file` or from $EDITOR; `og profile publish <id> --public|--private`
+ * switches it. What is sent is always the whole file or one flag, so what the
+ * server stores is exactly what the person saw.
+ */
+async function runProfile({ client, args, flags }: CommandContext): Promise<string> {
+  const [first, second] = args;
+  const verb = first === 'edit' || first === 'publish' || first === 'show' ? first : 'show';
+  const personId = verb === 'show' && first !== 'show' ? first : second;
+  if (!personId)
+    throw new Error(
+      `a person id is required: og profile ${verb === 'show' ? '' : `${verb} `}<personId>`,
+    );
+  const path = `/people/${encodeURIComponent(personId)}/openprofile`;
+
+  if (verb === 'publish') {
+    const isPublic = flags.public === true ? true : flags.private === true ? false : undefined;
+    if (isPublic === undefined)
+      throw new Error('say which: og profile publish <personId> --public | --private');
+    const result = (await client.post(`${path}/publish`, { public: isPublic })) as Record<
+      string,
+      unknown
+    >;
+    return result.public
+      ? `Public: ${text(result, 'url')}`
+      : `Private. ${personId} is served only to this workspace again.`;
+  }
+
+  const current = (await client.get(`${path}.md`)) as Record<string, unknown>;
+  // The route answers text/markdown; the client hands non-JSON back under `raw`.
+  const markdown = text(current, 'raw').trimEnd();
+  if (verb === 'show') return markdown;
+
+  const file = flagString(flags, 'file');
+  const edited = file
+    ? await Bun.file(file).text()
+    : await ((flags as { edit?: (markdown: string) => Promise<string> }).edit ?? editInEditor)(
+        `${markdown}\n`,
+      );
+  if (!edited.trim()) throw new Error('an empty file corrects nothing; nothing saved');
+  if (edited.trim() === markdown.trim()) return 'No change.';
+
+  const result = (await client.put(path, { markdown: edited })) as Record<string, unknown>;
+  return `Saved ${personId} at ${text(result, 'updatedAt')}${result.public ? ' (public)' : ''}\n\n${text(result, 'markdown').trimEnd()}`;
+}
+
 export const COMMANDS: readonly Command[] = [
   {
     name: 'today',
@@ -189,16 +260,17 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'openprofile',
     usage: 'og openprofile <personId>',
-    summary: 'The OpenProfile.md assembled for one person.',
-    async run({ client, args }) {
-      const personId = args[0];
-      if (!personId) throw new Error('a person id is required: og openprofile <personId>');
-      const result = (await client.get(
-        `/people/${encodeURIComponent(personId)}/openprofile.md`,
-      )) as Record<string, unknown>;
-      // The route answers text/markdown; the client hands non-JSON back under `raw`.
-      return text(result, 'raw').trimEnd();
+    summary: 'The OpenProfile.md assembled for one person (same as `og profile <personId>`).',
+    async run(context) {
+      return runProfile({ ...context, args: ['show', ...context.args] });
     },
+  },
+  {
+    name: 'profile',
+    usage:
+      'og profile <personId> | og profile edit <personId> [--file <md>] | og profile publish <personId> --public|--private',
+    summary: "A person's OpenProfile.md: read it, correct it, switch it public.",
+    run: runProfile,
   },
   {
     name: 'signals',
