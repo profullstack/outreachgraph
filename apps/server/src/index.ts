@@ -54,6 +54,7 @@ import {
   runCadences,
   runCrawlJob,
   runDiscoveryJob,
+  runNichedbDiscoveryJob,
   runOpenProfileJob,
   loadImapCredentials,
   receiveReplies,
@@ -572,6 +573,15 @@ async function discoverDomains(job: QueuedJob): Promise<void> {
   );
 }
 
+/** nichedb.dev's open collections, read since a cursor, become crawls; needs no model. */
+async function discoverNichedb(job: QueuedJob): Promise<void> {
+  const result = await runNichedbDiscoveryJob({ db }, job);
+  console.log(
+    `discover nichedb for ${result.campaignId}: read ${result.read}, ${result.candidates} sites, queued ${result.queued}` +
+      `${result.rescheduled ? ', next run queued' : ''}`,
+  );
+}
+
 async function runJob(job: QueuedJob): Promise<void> {
   switch (job.kind) {
     case 'crawl_site':
@@ -579,6 +589,9 @@ async function runJob(job: QueuedJob): Promise<void> {
       return;
     case 'discover_domains':
       await discoverDomains(job);
+      return;
+    case 'discover_nichedb':
+      await discoverNichedb(job);
       return;
     case 'rescore_prospect': {
       const { campaignId, personId } = job.payload as { campaignId?: string; personId?: string };

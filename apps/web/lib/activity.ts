@@ -16,6 +16,7 @@ import type { WorkflowStatusView } from './api';
 const KIND_LABELS: Record<string, string> = {
   crawl_site: 'reading sites',
   discover_domains: 'finding companies',
+  discover_nichedb: 'reading nichedb.dev for sites',
   rescore_prospect: 'rescoring',
   process_deletion: 'deleting',
 };

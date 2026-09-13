@@ -150,7 +150,16 @@ import {
   type ShareNetwork,
 } from '@outreachgraph/domain';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
-import { batchStatus, enqueue, runPipeline } from '@outreachgraph/pipeline';
+import {
+  batchStatus,
+  enqueue,
+  nichedbDiscoveryStatus,
+  nichedbFirstDedupeKey,
+  NICHEDB_DEFAULT_COLLECTIONS,
+  NICHEDB_DEFAULT_EVERY_MS,
+  runPipeline,
+  stopNichedbDiscovery,
+} from '@outreachgraph/pipeline';
 import {
   GitHubProvider,
   SiteProvider,
@@ -1051,6 +1060,89 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const campaign = await repo.getCampaign(c.get('db'), actor.workspaceId, c.req.param('id'));
     if (!campaign) throw ApiError.notFound('campaign');
     return c.json({ campaign });
+  });
+
+  /**
+   * Follow nichedb.dev for a campaign: every few hours, read the open
+   * collections that are people's own sites (webring members, OpenSite
+   * records, profiles with a home page), queue a crawl per new site, and
+   * come back. One pending run per campaign; POST again to change the
+   * collections or the clock, DELETE to stop.
+   */
+  api.get('/campaigns/:id/discover/nichedb', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaign = await repo.getCampaign(db, actor.workspaceId, c.req.param('id'));
+    if (!campaign) throw ApiError.notFound('campaign');
+    const runs = await nichedbDiscoveryStatus(db, actor.workspaceId, campaign.id);
+    return c.json({ campaignId: campaign.id, following: runs.length > 0, runs });
+  });
+
+  api.post('/campaigns/:id/discover/nichedb', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('following nichedb');
+    const campaign = await repo.getCampaign(db, actor.workspaceId, c.req.param('id'));
+    if (!campaign) throw ApiError.notFound('campaign');
+
+    const raw = safeJson(await c.req.raw.text());
+    const collections =
+      Array.isArray(raw.collections) && raw.collections.length
+        ? raw.collections
+            .map((x: unknown) =>
+              String(x)
+                .toLowerCase()
+                .replace(/[^a-z0-9-]/g, ''),
+            )
+            .filter(Boolean)
+        : [...NICHEDB_DEFAULT_COLLECTIONS];
+    const everyHours = Number(raw.everyHours);
+    const everyMs =
+      Number.isFinite(everyHours) && everyHours >= 0
+        ? Math.round(everyHours * 3_600_000)
+        : NICHEDB_DEFAULT_EVERY_MS;
+    const limit =
+      Number.isFinite(Number(raw.limit)) && Number(raw.limit) > 0
+        ? Math.min(200, Math.round(Number(raw.limit)))
+        : undefined;
+    const since = typeof raw.since === 'string' && raw.since ? raw.since : null;
+
+    // A new request replaces the pending schedule rather than adding to it.
+    await stopNichedbDiscovery(db, actor.workspaceId, campaign.id);
+    const result = await enqueue(db, {
+      workspaceId: actor.workspaceId,
+      kind: 'discover_nichedb',
+      payload: {
+        campaignId: campaign.id,
+        collections,
+        since,
+        everyMs,
+        ...(limit ? { limit } : {}),
+      },
+      dedupeKey: nichedbFirstDedupeKey(campaign.id),
+    });
+    return c.json(
+      {
+        ok: true,
+        campaignId: campaign.id,
+        queued: result.queued,
+        jobId: result.id ?? null,
+        collections,
+        everyHours: everyMs / 3_600_000,
+        since,
+      },
+      202,
+    );
+  });
+
+  api.delete('/campaigns/:id/discover/nichedb', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('stopping nichedb discovery');
+    const campaign = await repo.getCampaign(db, actor.workspaceId, c.req.param('id'));
+    if (!campaign) throw ApiError.notFound('campaign');
+    const removed = await stopNichedbDiscovery(db, actor.workspaceId, campaign.id);
+    return c.json({ ok: true, campaignId: campaign.id, removed });
   });
 
   /**

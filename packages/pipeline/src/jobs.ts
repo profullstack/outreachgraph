@@ -30,6 +30,8 @@ export const JOB_KINDS = [
   'crawl_site',
   /** Expand a keyword into real companies and queue a crawl for each. */
   'discover_domains',
+  /** Read nichedb.dev's open collections since a cursor, queue a crawl per new site, and queue itself again. */
+  'discover_nichedb',
   /**
    * Find the rest of an imported contact from their address alone.
    *
