@@ -166,6 +166,15 @@ import {
   verificationEmail,
   type Mailer,
 } from '@outreachgraph/email';
+import {
+  DIRECTORY_CACHE_SECONDS,
+  DIRECTORY_DEFAULT_LIMIT,
+  DIRECTORY_RATE_LIMIT,
+  DIRECTORY_RATE_WINDOW_MS,
+  FixedWindowLimiter,
+  clientKey,
+  listPublicDirectory,
+} from './public-directory';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
 import {
@@ -226,6 +235,11 @@ export interface AppOptions {
   readonly suggestSubreddits?: typeof suggestSubreddits;
   /** Public origin, used to build links that land in someone's inbox. */
   readonly appUrl?: string;
+  /**
+   * Throttles the keyless public directory. Tests inject a small one;
+   * production leaves it unset and gets sixty requests a minute per caller.
+   */
+  readonly publicDirectoryLimiter?: FixedWindowLimiter;
   /**
    * Sells credit packs over CoinPayPortal. Omit and the billing routes answer
    * 503 rather than 500 — a deployment without payment credentials is a
@@ -720,6 +734,43 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
       throw error;
     }
+  });
+
+  /**
+   * The public directory: companies, sites and self-published people, keyless.
+   *
+   * Sits above the session guard because it is meant for readers with no
+   * account -- the nichedb.dev directory is the first. What it may say is
+   * decided in `public-directory.ts`, in one query, and nothing here adds a
+   * field to it. The page is cacheable by anyone for five minutes, and a
+   * caller is throttled per address so a runaway loop cannot turn a cheap read
+   * into a load; a reader walking the whole directory needs a handful of
+   * requests, not sixty a minute.
+   *
+   * Paging is by `since` and an opaque `cursor`, ascending by update time, so
+   * a reader can resume from where it stopped and pick up what changed since.
+   */
+  const directoryLimiter =
+    options.publicDirectoryLimiter ??
+    new FixedWindowLimiter(DIRECTORY_RATE_LIMIT, DIRECTORY_RATE_WINDOW_MS);
+
+  api.get('/public/directory', async (c) => {
+    const verdict = directoryLimiter.take(clientKey(c.req.raw));
+    c.header('x-ratelimit-remaining', String(verdict.remaining));
+    if (!verdict.allowed) {
+      c.header('retry-after', String(verdict.retryAfterSeconds));
+      throw new ApiError(429, 'rate_limited', 'too many requests; slow down and retry');
+    }
+
+    const rawLimit = c.req.query('limit');
+    const page = await listPublicDirectory(options.db, {
+      since: c.req.query('since'),
+      cursor: c.req.query('cursor'),
+      limit: rawLimit === undefined ? DIRECTORY_DEFAULT_LIMIT : Number(rawLimit),
+    });
+
+    c.header('cache-control', `public, max-age=${DIRECTORY_CACHE_SECONDS}`);
+    return c.json(page);
   });
 
   // Everything else under /api/v1 is authenticated and workspace-scoped.
