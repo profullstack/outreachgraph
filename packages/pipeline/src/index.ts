@@ -26,6 +26,16 @@ export {
 } from './regenerate';
 export { runDiscoveryJob, type DiscoveryJobDeps, type DiscoveryJobResult } from './discovery';
 export {
+  runNichedbDiscoveryJob,
+  nichedbDiscoveryStatus,
+  stopNichedbDiscovery,
+  firstDedupeKey as nichedbFirstDedupeKey,
+  DEFAULT_COLLECTIONS as NICHEDB_DEFAULT_COLLECTIONS,
+  DEFAULT_EVERY_MS as NICHEDB_DEFAULT_EVERY_MS,
+  type NichedbDiscoveryDeps,
+  type NichedbDiscoveryResult,
+} from './nichedb-discovery';
+export {
   runAutopilot,
   HoldLedger,
   holdLedger,
