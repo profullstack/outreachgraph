@@ -11,6 +11,8 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@logicsrc/openaccess": "^0.3.0",
+    "@outreachgraph/ai": "workspace:*",
     "@outreachgraph/contracts": "workspace:*",
     "@outreachgraph/db": "workspace:*",
     "@outreachgraph/domain": "workspace:*",
@@ -22,8 +24,8 @@
     "@outreachgraph/scoring": "workspace:*",
     "@outreachgraph/secrets": "workspace:*",
     "@outreachgraph/signals": "workspace:*",
+    "@profullstack/openprofile": "^0.1.0",
     "hono": "^4.6.14",
-    "zod": "^3.24.1",
-    "@outreachgraph/ai": "workspace:*"
+    "zod": "^3.24.1"
   }
 }

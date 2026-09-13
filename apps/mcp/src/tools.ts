@@ -343,6 +343,79 @@ export const TOOLS: readonly ToolDefinition[] = [
     },
   },
   {
+    name: 'update_openprofile',
+    title: "Correct a person's OpenProfile.md",
+    description:
+      'Correct the OpenProfile.md OutreachGraph assembled for a person. Send the whole edited file ' +
+      'as `markdown`, or a partial overlay: `identity` keys (null removes one), `headline`, and ' +
+      '`sections` by name (`accounts`, `topics`, `broadcast`, `guest`, ...; the single word `none` ' +
+      'removes a generated section). What you write wins over what the generator wrote; the rest ' +
+      'is still generated. `public` switches the profile public or private; `handle` names it.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        personId: { type: 'string' },
+        markdown: {
+          type: 'string',
+          description: 'The whole OpenProfile.md, when editing the file.',
+        },
+        identity: {
+          type: 'object',
+          additionalProperties: { type: ['string', 'null'] },
+          description: 'Identity block keys: Kind, Handle, Web, Avatar, Location, Pronouns, ...',
+        },
+        headline: { type: ['string', 'null'] },
+        sections: {
+          type: 'object',
+          additionalProperties: { type: ['string', 'null'] },
+          description: 'Section bodies in Markdown, by normalised section name.',
+        },
+        public: { type: 'boolean' },
+        handle: { type: ['string', 'null'] },
+      },
+      required: ['personId'],
+    },
+    run: (client, args) => {
+      const personId = require(args, 'personId');
+      const body: Record<string, unknown> = {};
+      for (const key of [
+        'markdown',
+        'identity',
+        'headline',
+        'sections',
+        'public',
+        'handle',
+      ] as const) {
+        if (args[key] !== undefined) body[key] = args[key];
+      }
+      // An empty overlay is the server's to refuse, so that every mutation
+      // still leaves this process as an HTTP call.
+      return client.put(`/people/${encodeURIComponent(personId)}/openprofile`, body);
+    },
+  },
+  {
+    name: 'publish_openprofile',
+    title: "Switch a person's OpenProfile.md public or private",
+    description:
+      'Make the OpenProfile.md OutreachGraph holds about a person public, so directories such as ' +
+      'nichedb.dev can read it at /api/v1/people/{id}/openprofile.md and through /api/v1/openprofiles, ' +
+      'or private again. A public profile never carries an email or phone. A suppressed person is never public.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        personId: { type: 'string' },
+        public: { type: 'boolean' },
+      },
+      required: ['personId', 'public'],
+    },
+    run: (client, args) =>
+      client.post(`/people/${encodeURIComponent(require(args, 'personId'))}/openprofile/publish`, {
+        public: args.public === true,
+      }),
+  },
+  {
     name: 'suppress',
     title: 'Never contact this person again',
     description:

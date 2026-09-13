@@ -167,6 +167,18 @@ import {
   type Mailer,
 } from '@outreachgraph/email';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
+import {
+  bearerMayEdit,
+  composeProfile,
+  decodeCursor,
+  encodeCursor,
+  listingEntry,
+  loadSettings,
+  overridesFromRequest,
+  saveSettings,
+  verifiedEmails,
+  type BearerClaims,
+} from './openprofile';
 import * as repo from './repository';
 import {
   listProducts,
@@ -234,6 +246,12 @@ export interface AppOptions {
   readonly coinpay?: CoinPayClient;
   /** Public origin of *this* API, so CoinPayPortal knows where to call back. */
   readonly apiUrl?: string;
+  /**
+   * Verifies an OpenAccess bearer (openaccess.logicsrc.com) and returns its
+   * claims, or undefined for a token that is not one. Tests inject a stub;
+   * production verifies against the hub's published keys.
+   */
+  readonly verifyBearer?: (token: string) => Promise<BearerClaims | undefined>;
   readonly version?: string;
   readonly commitHash?: string;
 }
@@ -720,6 +738,251 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
       throw error;
     }
+  });
+
+  // ------------------------------------------------------- openprofiles
+  //
+  // A person's OpenProfile.md is public only when somebody switched it on,
+  // and then it is public to everyone: a directory such as nichedb.dev reads
+  // the listing and the files with no key. Until then the file is served to
+  // the workspace that holds the person, and to nobody else, with a 404 that
+  // says nothing about whether the person exists. Both routes sit above the
+  // authentication gate for that reason; each decides for itself.
+
+  const origin = (options.apiUrl ?? 'https://outreachgraph.com').replace(/\/+$/, '');
+  const PUBLIC_HEADERS = {
+    'content-type': 'text/markdown; charset=utf-8',
+    'cache-control': 'public, max-age=3600',
+    'access-control-allow-origin': '*',
+  } as const;
+
+  const publicPerson = async (db: Client, personId: string) =>
+    queryOne<{ id: string }>(
+      db,
+      `SELECT p.id FROM people p JOIN openprofile_settings s ON s.person_id = p.id
+        WHERE p.id = ? AND p.status = 'active' AND s.public = 1`,
+      [personId],
+    );
+
+  const heldPerson = async (db: Client, personId: string, workspaceId: string) =>
+    queryOne<{ person_id: string }>(
+      db,
+      `SELECT cp.person_id FROM campaign_people cp JOIN people p ON p.id = cp.person_id
+        WHERE cp.person_id = ? AND cp.workspace_id = ? AND p.status != 'deleted' LIMIT 1`,
+      [personId, workspaceId],
+    );
+
+  const generatedProfile = async (db: Client, personId: string) =>
+    queryOne<{ markdown: string; generated_at: string; published_url: string | null }>(
+      db,
+      'SELECT markdown, generated_at, published_url FROM openprofiles WHERE person_id = ?',
+      [personId],
+    );
+
+  /** Every public profile, newest change first, for a directory to pull. */
+  api.get('/openprofiles', async (c) => {
+    const db = options.db;
+    const limit = Math.min(500, Math.max(1, Number(c.req.query('limit') ?? 100) || 100));
+    const since = c.req.query('since');
+    const cursor = decodeCursor(c.req.query('cursor'));
+
+    const rows = await queryAll<{
+      person_id: string;
+      markdown: string;
+      overrides_json: string;
+      updated_at: string;
+      generated_at: string;
+    }>(
+      db,
+      `SELECT s.person_id, o.markdown, s.overrides_json,
+              MAX(s.updated_at, o.generated_at) AS updated_at, o.generated_at
+         FROM openprofile_settings s
+         JOIN people p ON p.id = s.person_id AND p.status = 'active'
+         JOIN openprofiles o ON o.person_id = s.person_id
+        WHERE s.public = 1
+          AND (? IS NULL OR MAX(s.updated_at, o.generated_at) >= ?)
+          AND (? IS NULL OR MAX(s.updated_at, o.generated_at) < ?
+               OR (MAX(s.updated_at, o.generated_at) = ? AND s.person_id > ?))
+        ORDER BY updated_at DESC, s.person_id ASC
+        LIMIT ?`,
+      [
+        since ?? null,
+        since ?? null,
+        cursor?.updatedAt ?? null,
+        cursor?.updatedAt ?? null,
+        cursor?.updatedAt ?? null,
+        cursor?.personId ?? null,
+        limit + 1,
+      ],
+    );
+
+    const page = rows.slice(0, limit);
+    const openprofiles = page.map((row) => {
+      const settings = { overrides: JSON.parse(row.overrides_json || '{}') };
+      const { doc } = composeProfile(row.markdown, settings.overrides, 'public');
+      return listingEntry(doc, row.person_id, row.updated_at, origin);
+    });
+    const last = page[page.length - 1];
+    const next = rows.length > limit && last ? encodeCursor(last.updated_at, last.person_id) : null;
+
+    return c.json({ openprofiles, next }, 200, {
+      'access-control-allow-origin': '*',
+      'cache-control': 'public, max-age=300',
+    });
+  });
+
+  /**
+   * The OpenProfile.md OutreachGraph assembled for a person, with the
+   * owner's corrections over it. Public when switched on; otherwise served to
+   * a workspace that holds the person, and 404 to everyone else.
+   */
+  api.get('/people/:id/openprofile.md', async (c) => {
+    const db = options.db;
+    const personId = c.req.param('id');
+
+    const profile = await generatedProfile(db, personId);
+    const isPublic = profile ? await publicPerson(db, personId) : undefined;
+
+    if (isPublic && profile) {
+      const settings = await loadSettings(db, personId);
+      const { markdown } = composeProfile(profile.markdown, settings.overrides, 'public');
+      return c.body(markdown, 200, {
+        ...PUBLIC_HEADERS,
+        'last-modified': new Date(settings.updatedAt ?? profile.generated_at).toUTCString(),
+        ...(profile.published_url ? { link: `<${profile.published_url}>; rel="canonical"` } : {}),
+      });
+    }
+
+    const actor = await resolveActor(c.req.raw);
+    const held = actor ? await heldPerson(db, personId, actor.workspaceId) : undefined;
+    if (!held) throw ApiError.notFound('person');
+    if (!profile) throw ApiError.notFound('openprofile');
+
+    const settings = await loadSettings(db, personId);
+    const { markdown } = composeProfile(profile.markdown, settings.overrides, 'private');
+    return c.body(markdown, 200, {
+      'content-type': 'text/markdown; charset=utf-8',
+      'last-modified': new Date(settings.updatedAt ?? profile.generated_at).toUTCString(),
+      ...(profile.published_url ? { link: `<${profile.published_url}>; rel="canonical"` } : {}),
+    });
+  });
+
+  /**
+   * Correct the profile. The operator may, as with every other write about a
+   * person; so may the person, carrying an OpenAccess bearer with the
+   * `openprofile:edit` scope that is provably theirs. A Markdown body is the
+   * whole file; a JSON body is a partial overlay, and may also flip `public`
+   * and set `handle`.
+   */
+  api.put('/people/:id/openprofile', async (c) => {
+    const db = options.db;
+    const personId = c.req.param('id');
+    const stamp = now();
+
+    const actor = await resolveActor(c.req.raw);
+    let editor:
+      { kind: 'operator'; userId: string } | { kind: 'subject'; method: 'email' | 'profile' };
+    if (actor) {
+      if (!(await heldPerson(db, personId, actor.workspaceId))) throw ApiError.notFound('person');
+      if (!canApprove(actor)) throw ApiError.forbidden('editing a profile');
+      editor = { kind: 'operator', userId: actor.userId };
+    } else {
+      const header = c.req.header('authorization') ?? '';
+      const token = /^Bearer\s+(\S+)$/i.exec(header.trim())?.[1];
+      const claims = token && options.verifyBearer ? await options.verifyBearer(token) : undefined;
+      if (!claims) throw ApiError.unauthorized();
+      const person = await queryOne<{ id: string }>(
+        db,
+        "SELECT id FROM people WHERE id = ? AND status != 'deleted'",
+        [personId],
+      );
+      if (!person) throw ApiError.notFound('person');
+      const profile = await generatedProfile(db, personId);
+      const verdict = bearerMayEdit(claims, {
+        emails: await verifiedEmails(db, personId),
+        publishedUrl: profile?.published_url ?? null,
+      });
+      if (!verdict.ok) throw ApiError.forbidden(verdict.reason);
+      editor = { kind: 'subject', method: verdict.method };
+    }
+
+    const profile = await generatedProfile(db, personId);
+    if (!profile) throw ApiError.notFound('openprofile');
+    const stored = await loadSettings(db, personId);
+
+    const contentType = c.req.header('content-type') ?? null;
+    let body: string | Record<string, unknown>;
+    if (/application\/json/i.test(contentType ?? '')) {
+      const parsed: unknown = await c.req.json().catch(() => undefined);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        throw ApiError.badRequest('expected a JSON object or a text/markdown body');
+      body = parsed as Record<string, unknown>;
+      const known = [
+        'markdown',
+        'name',
+        'headline',
+        'prose',
+        'identity',
+        'sections',
+        'public',
+        'handle',
+      ];
+      const overlay = body;
+      if (!known.some((key) => overlay[key] !== undefined))
+        throw ApiError.badRequest(
+          'nothing to change: send markdown, identity, headline, sections, public or handle',
+        );
+    } else {
+      body = await c.req.text();
+      if (!body.trim()) throw ApiError.badRequest('an empty body corrects nothing');
+    }
+
+    const overrides = overridesFromRequest(contentType, body, profile.markdown, stored.overrides);
+    const patch: Parameters<typeof saveSettings>[2] = { overrides };
+    if (typeof body === 'object') {
+      if (typeof body.public === 'boolean') (patch as { public?: boolean }).public = body.public;
+      if (typeof body.handle === 'string' || body.handle === null) {
+        const handle = body.handle?.trim().replace(/^@/, '').toLowerCase() || null;
+        if (handle && !/^[a-z0-9][a-z0-9._-]{1,62}$/.test(handle))
+          throw ApiError.badRequest(
+            'a handle is 2 to 63 letters, digits, dots, dashes or underscores',
+          );
+        (patch as { handle?: string | null }).handle = handle;
+      }
+    }
+    // The first edit by the person themselves is their claim; the operator's
+    // edit claims nothing on their behalf.
+    if (editor.kind === 'subject' && !stored.claimedAt)
+      (
+        patch as { claim?: { userId: string | null; method: 'email' | 'profile' | 'operator' } }
+      ).claim = { userId: null, method: editor.method };
+
+    const saved = await saveSettings(db, personId, patch, stamp);
+    const { markdown } = composeProfile(
+      profile.markdown,
+      saved.overrides,
+      editor.kind === 'subject' || saved.public ? 'public' : 'private',
+    );
+
+    if (editor.kind === 'operator' && actor) {
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'openprofile.edited',
+        entityKind: 'person',
+        entityId: personId,
+        detail: { sections: Object.keys(saved.overrides.sections ?? {}), public: saved.public },
+      });
+    }
+
+    return c.json({
+      markdown,
+      updatedAt: saved.updatedAt,
+      public: saved.public,
+      handle: saved.handle,
+      editedBy: editor.kind,
+    });
   });
 
   // Everything else under /api/v1 is authenticated and workspace-scoped.
@@ -1796,36 +2059,47 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   /**
-   * The OpenProfile.md OutreachGraph assembled for a person, or the one they
-   * publish themselves. Workspace-scoped like everything else about a person:
-   * a reader has to hold the person in a campaign of their own.
+   * Switch a person's OpenProfile.md public or private. Operator only: making
+   * a profile public is publishing what this workspace holds about somebody,
+   * and that is the workspace's decision to make and to answer for. The
+   * reading and the editing routes sit above the authentication gate.
    */
-  api.get('/people/:id/openprofile.md', async (c) => {
+  api.post('/people/:id/openprofile/publish', async (c) => {
     const actor = c.get('actor');
     const db = c.get('db');
     const personId = c.req.param('id');
+    if (!canApprove(actor)) throw ApiError.forbidden('publishing a profile');
 
-    const held = await queryOne<{ person_id: string }>(
-      db,
-      `SELECT cp.person_id FROM campaign_people cp JOIN people p ON p.id = cp.person_id
-        WHERE cp.person_id = ? AND cp.workspace_id = ? AND p.status != 'deleted' LIMIT 1`,
-      [personId, actor.workspaceId],
-    );
+    const body = z.object({ public: z.boolean() }).safeParse(await c.req.json().catch(() => ({})));
+    if (!body.success) throw ApiError.badRequest('expected { public: true | false }');
+
+    const held = await heldPerson(db, personId, actor.workspaceId);
     if (!held) throw ApiError.notFound('person');
+    const person = await repo.getPerson(db, personId);
+    if (!person) throw ApiError.notFound('person');
+    if (body.data.public && person.status !== 'active')
+      throw new ApiError(409, 'not_publishable', 'a suppressed person is never public');
+    if (body.data.public && !(await generatedProfile(db, personId)))
+      throw new ApiError(409, 'not_publishable', 'no OpenProfile.md has been assembled yet');
 
-    const profile = await queryOne<{
-      markdown: string;
-      generated_at: string;
-      published_url: string | null;
-    }>(db, 'SELECT markdown, generated_at, published_url FROM openprofiles WHERE person_id = ?', [
+    const saved = await saveSettings(db, personId, { public: body.data.public });
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: saved.public ? 'openprofile.published' : 'openprofile.unpublished',
+      entityKind: 'person',
+      entityId: personId,
+      detail: { public: saved.public },
+    });
+
+    return c.json({
       personId,
-    ]);
-    if (!profile) throw ApiError.notFound('openprofile');
-
-    return c.body(profile.markdown, 200, {
-      'content-type': 'text/markdown; charset=utf-8',
-      'last-modified': new Date(profile.generated_at).toUTCString(),
-      ...(profile.published_url ? { link: `<${profile.published_url}>; rel="canonical"` } : {}),
+      public: saved.public,
+      publishedAt: saved.publishedAt,
+      url: saved.public
+        ? `${origin}/api/v1/people/${encodeURIComponent(personId)}/openprofile.md`
+        : null,
     });
   });
 
@@ -1845,6 +2119,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       emailCandidates,
       membership,
       openprofile,
+      profileSettings,
     ] = await Promise.all([
       repo.listIdentities(db, personId),
       repo.listCompanyIdentities(db, personId),
@@ -1872,6 +2147,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         'SELECT generated_at, published_url FROM openprofiles WHERE person_id = ?',
         [personId],
       ),
+      loadSettings(db, personId),
     ]);
 
     return c.json({
@@ -1888,6 +2164,10 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
             url: `/api/v1/people/${personId}/openprofile.md`,
             generatedAt: openprofile.generated_at,
             publishedUrl: openprofile.published_url,
+            public: profileSettings.public,
+            handle: profileSettings.handle,
+            claimedAt: profileSettings.claimedAt,
+            editedAt: profileSettings.updatedAt,
           }
         : null,
     });

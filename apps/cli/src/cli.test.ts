@@ -69,6 +69,51 @@ describe('parseArgv', () => {
   });
 });
 
+describe('profile', () => {
+  test('show prints the file; edit sends the whole edited file; publish sends one flag', async () => {
+    const { client: reader } = client({ raw: '# Jane\n\n- **Kind**: person\n' });
+    const shown = await commandByName('profile')!.run({
+      client: reader,
+      args: ['per_1'],
+      flags: {},
+    });
+    expect(shown).toBe('# Jane\n\n- **Kind**: person');
+
+    // The editor is injected, so nothing is spawned; what it returns is what is sent.
+    const { client: editor, calls } = client({
+      raw: '# Jane\n\n- **Kind**: person\n',
+      markdown: '# Jane\n\n- **Kind**: person\n\nEdited.\n',
+      updatedAt: '2026-09-13T00:00:00.000Z',
+    });
+    const edited = await commandByName('profile')!.run({
+      client: editor,
+      args: ['edit', 'per_1'],
+      flags: { edit: async (markdown: string) => `${markdown}\nEdited.\n` } as never,
+    });
+    expect(edited.startsWith('Saved per_1 at 2026-09-13')).toBe(true);
+    const put = calls.find((call) => call.method === 'PUT');
+    expect(put?.url).toBe('https://api.test/api/v1/people/per_1/openprofile');
+    expect((put?.body as { markdown: string }).markdown).toContain('Edited.');
+
+    const { client: publisher, calls: publishCalls } = client({
+      public: true,
+      url: 'https://og/x.md',
+    });
+    const published = await commandByName('profile')!.run({
+      client: publisher,
+      args: ['publish', 'per_1'],
+      flags: { public: true },
+    });
+    expect(published).toBe('Public: https://og/x.md');
+    expect(publishCalls[0]?.url).toBe('https://api.test/api/v1/people/per_1/openprofile/publish');
+    expect(publishCalls[0]?.body).toEqual({ public: true });
+
+    await expect(
+      commandByName('profile')!.run({ client: publisher, args: ['publish', 'per_1'], flags: {} }),
+    ).rejects.toThrow('--public | --private');
+  });
+});
+
 describe('commands', () => {
   test('today lists the queue with ids first', async () => {
     const { client: api } = client({

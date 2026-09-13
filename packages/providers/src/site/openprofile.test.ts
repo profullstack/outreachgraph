@@ -259,7 +259,8 @@ describe('mergeFacts and buildOpenProfile', () => {
         '',
         '## Topics',
         '',
-        '- babbage, poetry',
+        '- babbage',
+        '- poetry',
         '',
       ].join('\n'),
     );

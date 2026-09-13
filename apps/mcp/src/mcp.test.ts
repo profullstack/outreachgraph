@@ -155,6 +155,23 @@ describe('tools', () => {
     }
   });
 
+  test('update_openprofile sends the overlay as a PUT and refuses an empty one', async () => {
+    const { fetchImpl, calls } = recorder(ok());
+    const client = createClient(CONFIG, fetchImpl);
+    const tool = toolByName('update_openprofile')!;
+    await runTool(tool, client, {
+      personId: 'per_1',
+      sections: { guest: '- **Available**: yes' },
+      public: true,
+    });
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/people/per_1/openprofile');
+    expect(calls[0]?.method).toBe('PUT');
+    expect(calls[0]?.body).toEqual({ sections: { guest: '- **Available**: yes' }, public: true });
+    // An empty overlay still goes to the server, which is where it is refused.
+    await runTool(tool, client, { personId: 'per_1' });
+    expect(calls[1]?.body).toEqual({});
+  });
+
   test('there is no tool that posts to a network directly', () => {
     // A tool named "post_to_linkedin" would be a way around the policy engine
     // whatever its implementation did today.

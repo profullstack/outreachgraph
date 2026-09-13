@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@outreachgraph/domain": "workspace:*",
-    "@outreachgraph/identity": "workspace:*"
+    "@outreachgraph/identity": "workspace:*",
+    "@profullstack/openprofile": "^0.1.0"
   }
 }

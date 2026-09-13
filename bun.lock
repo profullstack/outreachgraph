@@ -14,6 +14,7 @@
       "name": "@outreachgraph/api",
       "version": "0.4.0",
       "dependencies": {
+        "@logicsrc/openaccess": "^0.3.0",
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/db": "workspace:*",
@@ -26,6 +27,7 @@
         "@outreachgraph/scoring": "workspace:*",
         "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
+        "@profullstack/openprofile": "^0.1.0",
         "hono": "^4.6.14",
         "zod": "^3.24.1",
       },
@@ -190,6 +192,7 @@
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/identity": "workspace:*",
+        "@profullstack/openprofile": "^0.1.0",
       },
     },
     "packages/recommend": {
@@ -324,6 +327,8 @@
 
     "@libsql/win32-x64-msvc": ["@libsql/win32-x64-msvc@0.5.29", "", { "os": "win32", "cpu": "x64" }, "sha512-4/0CvEdhi6+KjMxMaVbFM2n2Z44escBRoEYpR+gZg64DdetzGnYm8mcNLcoySaDJZNaBd6wz5DNdgRmcI4hXcg=="],
 
+    "@logicsrc/openaccess": ["@logicsrc/openaccess@0.3.0", "", { "dependencies": { "@hono/node-server": "^2.1.1", "hono": "^4.13.7" }, "bin": { "openaccess": "bin/openaccess.mjs" } }, "sha512-zGhn/IJSiFXSc0TJqfXYxRo2Od+LF5zCWILeksurf0hVGGleo0N7WEfk6M0lipts6pm46z7JFN5JPO4qJQZsJQ=="],
+
     "@modelcontextprotocol/sdk": ["@modelcontextprotocol/sdk@1.30.0", "", { "dependencies": { "@hono/node-server": "^1.19.9 || ^2.0.5", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "content-type": "^1.0.5", "cors": "^2.8.5", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.0", "express": "^5.2.1", "express-rate-limit": "^8.2.1", "hono": "^4.11.4", "jose": "^6.1.3", "json-schema-typed": "^8.0.2", "pkce-challenge": "^5.0.0", "raw-body": "^3.0.0", "zod": "^3.25 || ^4.0", "zod-to-json-schema": "^3.25.1" }, "peerDependencies": { "@cfworker/json-schema": "^4.1.1" }, "optionalPeers": ["@cfworker/json-schema"] }, "sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA=="],
 
     "@neon-rs/load": ["@neon-rs/load@0.0.4", "", {}, "sha512-kTPhdZyTQxB+2wpiRcFWrDcejc4JI6tkPuS7UZCG4l6Zvc5kU/gGQ/ozvHTh1XR5tS+UlfAfGuPajjzQjCiHCw=="],
@@ -387,6 +392,8 @@
     "@outreachgraph/web": ["@outreachgraph/web@workspace:apps/web"],
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
+
+    "@profullstack/openprofile": ["@profullstack/openprofile@0.1.0", "", {}, "sha512-3Gj5fQJW8wYAJ8iiYNIC0r/bnvbf+9piRhjJ8cktfgE2UFlfcv6A1nfABTK3wcoEGTbAs1x8SLVoIc0RjBQvJw=="],
 
     "@profullstack/x402-gateway": ["@profullstack/x402-gateway@0.1.0", "", {}, "sha512-B7tWvWk/bIEoqyec6UoyRF1pO7X/+b+wFRv2ZFIClqskmEpyxoA559ZgdTvnxqAIvuDeE9v56nVpYRQ+lmOZQQ=="],
 
@@ -755,6 +762,8 @@
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
+
+    "@logicsrc/openaccess/hono": ["hono@4.13.7", "", {}, "sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ=="],
 
     "@tailwindcss/oxide-wasm32-wasi/@emnapi/core": ["@emnapi/core@1.11.3", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.3", "tslib": "^2.4.0" }, "bundled": true }, "sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg=="],
 
