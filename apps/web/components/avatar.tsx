@@ -1,3 +1,7 @@
+'use client';
+
+import { useState } from 'react';
+
 /**
  * A face, or the initials standing in for one.
  *
@@ -25,9 +29,10 @@ export function Avatar({
   size?: keyof typeof SIZES;
   className?: string;
 }) {
+  const [failedSrc, setFailedSrc] = useState<string>();
   const box = `${SIZES[size]} shrink-0 rounded-full ${className}`;
 
-  if (src) {
+  if (src && src !== failedSrc) {
     return (
       // eslint-disable-next-line @next/next/no-img-element -- remote hosts are not known ahead of time
       <img
@@ -35,6 +40,7 @@ export function Avatar({
         alt=""
         loading="lazy"
         referrerPolicy="no-referrer"
+        onError={() => setFailedSrc(src)}
         className={`${box} bg-surface object-cover`}
       />
     );

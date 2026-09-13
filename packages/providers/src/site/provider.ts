@@ -28,6 +28,7 @@ import { extractSite, handleFromUrl, type ExtractedCompany } from './extract';
 import { attributeToPeople, mergeAttribution } from './attribute';
 import { extractWithModel, visibleText, type ExtractionModel } from './model-extract';
 import { assignEmails, findEmails } from './emails';
+import { extractNamedPhotos } from './photos';
 
 export interface SiteProviderOptions extends FetchOptions {
   /** Omit to run deterministic-only; the crawl still works, it just reads less. */
@@ -320,6 +321,26 @@ export class SiteProvider implements PersonEnrichmentProvider {
         usedSignals.add('email');
       }
     }
+
+    // Read named portraits only after the people are known, including names
+    // supplied by the model. No extra requests or image-search credits.
+    const photoOwners = new Map<string, Set<string>>();
+    const portraits = pages.map((read) =>
+      extractNamedPhotos(
+        read.html ?? '',
+        read.finalUrl,
+        people.map((person) => person.fullName),
+        photoOwners,
+      ),
+    );
+    people = people.map((person) => {
+      for (const pagePhotos of portraits) {
+        const photo = pagePhotos.get(person.fullName);
+        if (photo && photoOwners.get(photo.url)?.size === 1) return { ...person, photo };
+      }
+      return person;
+    });
+    if (people.some((person) => person.photo)) usedSignals.add('photo');
 
     // Addresses are read last, once the people are known: matching
     // `jane@acme.com` to a person needs the person, and the model pass is

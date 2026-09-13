@@ -23,14 +23,58 @@
  */
 
 import { newId } from '@outreachgraph/domain';
-import type { ProfilePhotoFinder } from '@outreachgraph/providers';
-import { isLinkedInProfile } from '@outreachgraph/providers';
+import type {
+  CandidatePhoto,
+  ProfilePhotoFinder,
+  ProviderCapabilities,
+} from '@outreachgraph/providers';
+import { isLinkedInProfile, publicPhotoUrl } from '@outreachgraph/providers';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 
 /** Lookups per workspace per tick. */
 const SWEEP_SIZE = 20;
 /** Lookups per workspace per day, absent a configured ceiling. */
 const DEFAULT_DAILY_CAP = 300;
+
+/** Fill a missing portrait, keeping the public source in the same transaction. */
+export async function storeDiscoveredPhoto(
+  db: Client,
+  personId: string,
+  photo: CandidatePhoto,
+  provider: ProviderCapabilities,
+  stamp: string,
+): Promise<void> {
+  const url = publicPhotoUrl(photo.url);
+  const pageUrl = publicPhotoUrl(photo.pageUrl);
+  if (!url || !pageUrl) return;
+  await db.batch(
+    [
+      {
+        sql: `INSERT INTO field_provenance (id, entity_kind, entity_id, field, value, source_type,
+              provider, source_record_id, license_class, confidence, observed_at, created_at)
+            SELECT ?, 'person', id, 'avatar_url', ?, ?, ?, ?, ?, 1.0, ?, ?
+              FROM people WHERE id = ? AND avatar_url IS NULL AND kind = 'person' AND status = 'active'`,
+        args: [
+          newId('fieldProvenance'),
+          url,
+          provider.sourceType,
+          provider.slug,
+          pageUrl,
+          provider.licenseClass,
+          stamp,
+          stamp,
+          personId,
+        ],
+      },
+      {
+        sql: `UPDATE people SET avatar_url = ?, avatar_source = ?, updated_at = ?
+              WHERE id = ? AND avatar_url IS NULL AND kind = 'person' AND status = 'active'`,
+        args: [url, provider.slug, stamp, personId],
+      },
+    ],
+    'write',
+  );
+}
 
 /**
  * How much to believe a LinkedIn URL found by search.

@@ -9,8 +9,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { queryOne } from '@outreachgraph/db';
 import type { ProfilePhoto, ProfilePhotoFinder, ProfilePhotoQuery } from '@outreachgraph/providers';
+import { SiteProvider } from '@outreachgraph/providers';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
-import { sweepProfilePhotos, workspacesAwaitingPhotos } from './photos';
+import { storeDiscoveredPhoto, sweepProfilePhotos, workspacesAwaitingPhotos } from './photos';
 
 let seeded: SeededDatabase | undefined;
 
@@ -42,6 +43,28 @@ const LINKEDIN_HIT: ProfilePhoto = {
 };
 
 describe('sweepProfilePhotos', () => {
+  test('public crawl photos fill a previous search miss without spending another credit', async () => {
+    seeded = await seedDatabase('photos-later-crawl');
+    const { db } = seeded;
+    const { asked, finder: missed } = finder(undefined);
+    await sweepProfilePhotos({ db, finder: missed }, { workspaceId: SEED.workspaceId });
+    await storeDiscoveredPhoto(
+      db,
+      SEED.personId,
+      { url: 'https://acme.com/jane.jpg', pageUrl: 'https://acme.com/team' },
+      new SiteProvider().capabilities(),
+      new Date().toISOString(),
+    );
+    const person = await queryOne<{ avatar_url: string; photo_looked_up_at: string }>(
+      db,
+      'SELECT avatar_url, photo_looked_up_at FROM people WHERE id = ?',
+      [SEED.personId],
+    );
+    expect(person?.avatar_url).toBe('https://acme.com/jane.jpg');
+    expect(person?.photo_looked_up_at).toBeTruthy();
+    expect(asked).toHaveLength(1);
+    expect(await workspacesAwaitingPhotos(db)).toEqual([]);
+  });
   test('asks with everything known and records the picture and the profile', async () => {
     seeded = await seedDatabase('photos-hit');
     const { db } = seeded;
