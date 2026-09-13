@@ -54,6 +54,7 @@ import {
   runCadences,
   runCrawlJob,
   runDiscoveryJob,
+  runOpenProfileJob,
   loadImapCredentials,
   receiveReplies,
   runListening,
@@ -610,6 +611,20 @@ async function runJob(job: QueuedJob): Promise<void> {
       const { deletionJobId } = job.payload as { deletionJobId?: string };
       if (!deletionJobId) throw new Error('process_deletion needs deletionJobId');
       await processDeletion(db, deletionJobId);
+      return;
+    }
+    case 'openprofile': {
+      const result = await runOpenProfileJob({ db }, job);
+      console.log(
+        `openprofile ${result.personId}: ${result.outcome}` +
+          (result.outcome === 'ok' || result.outcome === 'published'
+            ? `, ${result.accounts} accounts, ${result.identities} new identit${result.identities === 1 ? 'y' : 'ies'}` +
+              (result.corroborated ? ', corroborated by rel=me' : '') +
+              (result.recommendationId ? `, card ${result.recommendationId}` : ', no card yet')
+            : result.detail
+              ? ` (${result.detail})`
+              : ''),
+      );
       return;
     }
     case 'enrich_contact': {

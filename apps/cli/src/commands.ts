@@ -47,6 +47,34 @@ function pad(value: string, width: number): string {
   return value.length >= width ? value : value + ' '.repeat(width - value.length);
 }
 
+/** The network a profile URL belongs to, for the handful `og add-social` accepts by URL. */
+function networkFromUrl(url: string): string | undefined {
+  const host = new URL(url).hostname.replace(/^www\./, '');
+  if (/(^|\.)bsky\.app$/.test(host)) return 'bluesky';
+  if (/(^|\.)(x|twitter)\.com$/.test(host)) return 'x';
+  if (/(^|\.)github\.com$/.test(host)) return 'github';
+  if (/(^|\.)linkedin\.com$/.test(host)) return 'linkedin';
+  if (/(^|\.)reddit\.com$/.test(host)) return 'reddit';
+  if (/(^|\.)youtube\.com$/.test(host)) return 'youtube';
+  if (/(^|\.)instagram\.com$/.test(host)) return 'instagram';
+  // `/@user` on any other host is read as a Fediverse account.
+  return /^\/@[^/]+/.test(new URL(url).pathname) ? 'mastodon' : undefined;
+}
+
+/** `https://bsky.app/profile/ada.example` → `ada.example`; `https://hachyderm.io/@ada` → `ada@hachyderm.io`. */
+function handleFromUrl(url: string): string | undefined {
+  const parsed = new URL(url);
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  const first = segments[0];
+  if (!first) return undefined;
+  if (first.startsWith('@')) {
+    const user = first.slice(1);
+    return user.includes('@') ? user : `${user}@${parsed.hostname}`;
+  }
+  const nested = /^(profile|in|user|u|c|channel)$/i.test(first) ? segments[1] : first;
+  return nested?.replace(/^@/, '');
+}
+
 export const COMMANDS: readonly Command[] = [
   {
     name: 'today',
@@ -109,6 +137,67 @@ export const COMMANDS: readonly Command[] = [
       })) as Record<string, unknown>;
 
       return `Added ${text(result, 'personId', text(result, 'id', url))}`;
+    },
+  },
+  {
+    name: 'add-social',
+    usage: 'og add-social <network:handle | profile url>... [--campaign <id>] [--via <how>]',
+    summary: 'Hand over people from a social network, for assessment and an OpenProfile.',
+    async run({ client, args, flags }) {
+      if (args.length === 0) {
+        throw new Error('at least one person is required: og add-social bluesky:ada.example');
+      }
+      const people = args.map((entry) => {
+        const url = /^https?:\/\//i.test(entry) ? entry : undefined;
+        const colon = entry.indexOf(':');
+        const network = url ? networkFromUrl(url) : colon > 0 ? entry.slice(0, colon) : undefined;
+        const handle = url ? handleFromUrl(url) : colon > 0 ? entry.slice(colon + 1) : entry;
+        if (!network || !handle)
+          throw new Error(`cannot place ${entry}: use network:handle or a profile url`);
+        return {
+          network,
+          handle,
+          ...(url ? { profileUrl: url } : {}),
+          ...(flagString(flags, 'via') ? { via: flagString(flags, 'via') } : {}),
+        };
+      });
+
+      const result = (await client.post('/people/from-social', {
+        people,
+        source: 'og',
+        ...(flagString(flags, 'campaign') ? { campaignId: flagString(flags, 'campaign') } : {}),
+      })) as Record<string, unknown>;
+
+      const added = rows(result, 'people');
+      const rejected = rows(result, 'rejected');
+      const lines = added.map((person) =>
+        [
+          pad(text(person, 'id'), 30),
+          pad(text(person, 'created') === 'true' ? 'new' : 'known', 6),
+          `${text(person, 'network')}:${text(person, 'handle')}`,
+        ].join(' '),
+      );
+      for (const entry of rejected)
+        lines.push(`rejected ${text(entry, 'handle')}: ${text(entry, 'reason')}`);
+      lines.push(
+        `${text(result, 'created', '0')} new, ${text(result, 'existing', '0')} known, ` +
+          `${text(result, 'queued', '0')} queued for an OpenProfile in campaign ${text(result, 'campaignId')}`,
+      );
+      return lines.join('\n');
+    },
+  },
+  {
+    name: 'openprofile',
+    usage: 'og openprofile <personId>',
+    summary: 'The OpenProfile.md assembled for one person.',
+    async run({ client, args }) {
+      const personId = args[0];
+      if (!personId) throw new Error('a person id is required: og openprofile <personId>');
+      const result = (await client.get(
+        `/people/${encodeURIComponent(personId)}/openprofile.md`,
+      )) as Record<string, unknown>;
+      // The route answers text/markdown; the client hands non-JSON back under `raw`.
+      return text(result, 'raw').trimEnd();
     },
   },
   {

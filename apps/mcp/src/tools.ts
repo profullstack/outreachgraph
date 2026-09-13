@@ -267,6 +267,82 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'add_people_from_social',
+    title: 'Hand over people from a social network',
+    description:
+      'Add people known only by a social handle (Bluesky, Mastodon, X, GitHub, ...): the accounts ' +
+      'you follow, or their followers. Each lands in a campaign for assessment; their bio becomes a ' +
+      'signal and an OpenProfile.md is assembled from their profile and home page. Nothing is sent.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        people: {
+          type: 'array',
+          maxItems: 200,
+          items: {
+            type: 'object',
+            properties: {
+              network: {
+                type: 'string',
+                description:
+                  'bluesky, mastodon, x, github, reddit, youtube, instagram, linkedin, nostr',
+              },
+              handle: {
+                type: 'string',
+                description: 'Without the @. A Fediverse handle keeps its host: ada@hachyderm.io.',
+              },
+              profileUrl: { type: 'string' },
+              platformUserId: {
+                type: 'string',
+                description: 'A DID or numeric id, when the network has one.',
+              },
+              displayName: { type: 'string' },
+              bio: { type: 'string' },
+              avatarUrl: { type: 'string' },
+              via: {
+                type: 'string',
+                description: 'How you came by them: follow, following, followers, graph.',
+              },
+            },
+            required: ['network', 'handle'],
+          },
+        },
+        campaignId: { type: 'string', description: "Defaults to the workspace's active campaign." },
+        source: {
+          type: 'string',
+          description: 'The client sending them, recorded on the audit trail.',
+        },
+      },
+      required: ['people'],
+    },
+    run: (client, args) =>
+      client.post('/people/from-social', {
+        people: Array.isArray(args.people) ? args.people : [],
+        source: str(args, 'source') ?? 'mcp',
+        ...(str(args, 'campaignId') ? { campaignId: str(args, 'campaignId') } : {}),
+      }),
+  },
+  {
+    name: 'get_openprofile',
+    title: "Get a person's OpenProfile.md",
+    description:
+      'The OpenProfile.md (logicsrc.com/openprofile) assembled for one person: name, handle, home ' +
+      'page, the accounts that are theirs, topics. Absent until the openprofile job has run for them.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { personId: { type: 'string' } },
+      required: ['personId'],
+    },
+    run: async (client, args) => {
+      const result = (await client.get(
+        `/people/${encodeURIComponent(require(args, 'personId'))}/openprofile.md`,
+      )) as { raw?: string };
+      return { markdown: result.raw ?? '' };
+    },
+  },
+  {
     name: 'suppress',
     title: 'Never contact this person again',
     description:

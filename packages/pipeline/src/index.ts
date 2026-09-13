@@ -9,6 +9,17 @@
 
 export { runCrawlJob, type CrawlJobDeps, type CrawlJobResult } from './crawl';
 export {
+  intakeSocialPeople,
+  normaliseSocialInput,
+  profileUrlFor,
+  type IntakeDeps,
+  type IntakeInput,
+  type IntakePerson,
+  type IntakeResult,
+  type SocialPersonInput,
+} from './social-intake';
+export { runOpenProfileJob, type OpenProfileDeps, type OpenProfileResult } from './openprofile';
+export {
   regenerateRecommendations,
   type RegenerateInput,
   type RegenerateResult,

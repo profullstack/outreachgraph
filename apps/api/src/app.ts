@@ -84,6 +84,7 @@ import {
   crawlDedupeKey,
   startContactImport,
   importContactChunk,
+  intakeSocialPeople,
   finishContactImport,
   createCadence,
   createRule,
@@ -176,6 +177,8 @@ import {
 
 /** One paste, one reviewable unit of work. */
 const MAX_BULK_URLS = 100;
+/** People per social intake request. myna sends a follow list in pages of this size. */
+const MAX_SOCIAL_INTAKE = 200;
 
 export interface AppOptions {
   readonly db: Client;
@@ -1705,6 +1708,127 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json({ people: rows.rows });
   });
 
+  /**
+   * People handed over from a social client: a handle, a display name, a bio
+   * and a profile URL, and nothing more. myna sends the accounts it follows
+   * (or their followers) here so OutreachGraph can decide whether each is
+   * worth an offer. Every person lands in a campaign, the bio becomes a
+   * signal, and an `openprofile` job reads what their profile and home page
+   * say, so a card can appear once there is something to act on.
+   *
+   * 202 rather than 201 because the person exists but the assessment has not
+   * run: the profile read and the recommendation follow in the worker.
+   */
+  api.post('/people/from-social', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('adding people');
+
+    const raw = safeJson(await c.req.raw.text());
+    const submitted = Array.isArray(raw.people)
+      ? raw.people
+      : raw.handle !== undefined
+        ? [raw]
+        : [];
+    if (!submitted.length)
+      throw ApiError.badRequest('people is required: [{ network, handle, ... }]');
+    if (submitted.length > MAX_SOCIAL_INTAKE) {
+      throw ApiError.badRequest(`at most ${MAX_SOCIAL_INTAKE} people per request`);
+    }
+
+    let campaignId =
+      typeof raw.campaignId === 'string' && raw.campaignId.trim()
+        ? raw.campaignId.trim()
+        : undefined;
+    if (campaignId) {
+      const owned = await queryOne<{ id: string }>(
+        db,
+        `SELECT id FROM campaigns WHERE id = ? AND workspace_id = ? AND status != 'archived'`,
+        [campaignId, actor.workspaceId],
+      );
+      if (!owned) throw ApiError.notFound('campaign');
+    } else {
+      campaignId = await ensureDefaultCampaign(db, actor.workspaceId);
+    }
+
+    const source =
+      typeof raw.source === 'string' && raw.source.trim() ? raw.source.trim().slice(0, 40) : 'api';
+    const text = (entry: Record<string, unknown>, key: string): string | undefined =>
+      typeof entry[key] === 'string' ? (entry[key] as string) : undefined;
+    const result = await intakeSocialPeople(
+      { db },
+      {
+        workspaceId: actor.workspaceId,
+        campaignId,
+        source,
+        people: (submitted as Record<string, unknown>[]).map((entry) => ({
+          network: String(entry.network ?? ''),
+          handle: String(entry.handle ?? ''),
+          profileUrl: text(entry, 'profileUrl'),
+          platformUserId: text(entry, 'platformUserId'),
+          displayName: text(entry, 'displayName'),
+          bio: text(entry, 'bio'),
+          avatarUrl: text(entry, 'avatarUrl'),
+          followers: typeof entry.followers === 'number' ? entry.followers : undefined,
+          via: text(entry, 'via'),
+        })),
+      },
+    );
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'people.social_intake',
+      entityKind: 'campaign',
+      entityId: campaignId,
+      detail: {
+        source,
+        created: result.created,
+        existing: result.existing,
+        queued: result.queued,
+        rejected: result.rejected.length,
+      },
+    });
+
+    return c.json({ campaignId, ...result }, 202);
+  });
+
+  /**
+   * The OpenProfile.md OutreachGraph assembled for a person, or the one they
+   * publish themselves. Workspace-scoped like everything else about a person:
+   * a reader has to hold the person in a campaign of their own.
+   */
+  api.get('/people/:id/openprofile.md', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const personId = c.req.param('id');
+
+    const held = await queryOne<{ person_id: string }>(
+      db,
+      `SELECT cp.person_id FROM campaign_people cp JOIN people p ON p.id = cp.person_id
+        WHERE cp.person_id = ? AND cp.workspace_id = ? AND p.status != 'deleted' LIMIT 1`,
+      [personId, actor.workspaceId],
+    );
+    if (!held) throw ApiError.notFound('person');
+
+    const profile = await queryOne<{
+      markdown: string;
+      generated_at: string;
+      published_url: string | null;
+    }>(db, 'SELECT markdown, generated_at, published_url FROM openprofiles WHERE person_id = ?', [
+      personId,
+    ]);
+    if (!profile) throw ApiError.notFound('openprofile');
+
+    return c.body(profile.markdown, 200, {
+      'content-type': 'text/markdown; charset=utf-8',
+      'last-modified': new Date(profile.generated_at).toUTCString(),
+      ...(profile.published_url ? { link: `<${profile.published_url}>; rel="canonical"` } : {}),
+    });
+  });
+
   api.get('/people/:id', async (c) => {
     const actor = c.get('actor');
     const db = c.get('db');
@@ -1713,30 +1837,42 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const person = await repo.getPerson(db, personId);
     if (!person || person.status === 'deleted') throw ApiError.notFound('person');
 
-    const [identities, companyIdentities, signals, provenance, emailCandidates, membership] =
-      await Promise.all([
-        repo.listIdentities(db, personId),
-        repo.listCompanyIdentities(db, personId),
-        repo.listPersonSignals(db, actor.workspaceId, personId),
-        repo.listProvenance(db, personId),
-        // Served here rather than behind its own fetch: deciding on an address
-        // is a judgement about this person, made with their evidence on screen.
-        candidatesForPerson(db, actor.workspaceId, personId),
-        // Which campaign this person belongs to, so anything acting on them
-        // acts within it. Without this a caller has to guess, and a wrong
-        // guess enrols somebody into a campaign they were never part of —
-        // which then scores and drafts for them against the wrong brief.
-        queryOne<{ campaign_id: string }>(
-          db,
-          `SELECT cp.campaign_id
+    const [
+      identities,
+      companyIdentities,
+      signals,
+      provenance,
+      emailCandidates,
+      membership,
+      openprofile,
+    ] = await Promise.all([
+      repo.listIdentities(db, personId),
+      repo.listCompanyIdentities(db, personId),
+      repo.listPersonSignals(db, actor.workspaceId, personId),
+      repo.listProvenance(db, personId),
+      // Served here rather than behind its own fetch: deciding on an address
+      // is a judgement about this person, made with their evidence on screen.
+      candidatesForPerson(db, actor.workspaceId, personId),
+      // Which campaign this person belongs to, so anything acting on them
+      // acts within it. Without this a caller has to guess, and a wrong
+      // guess enrols somebody into a campaign they were never part of —
+      // which then scores and drafts for them against the wrong brief.
+      queryOne<{ campaign_id: string }>(
+        db,
+        `SELECT cp.campaign_id
              FROM campaign_people cp
              JOIN campaigns c ON c.id = cp.campaign_id
             WHERE cp.person_id = ? AND c.workspace_id = ? AND c.status != 'archived'
          ORDER BY cp.updated_at DESC
             LIMIT 1`,
-          [personId, actor.workspaceId],
-        ),
-      ]);
+        [personId, actor.workspaceId],
+      ),
+      queryOne<{ generated_at: string; published_url: string | null }>(
+        db,
+        'SELECT generated_at, published_url FROM openprofiles WHERE person_id = ?',
+        [personId],
+      ),
+    ]);
 
     return c.json({
       person,
@@ -1746,6 +1882,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       signals,
       provenance,
       emailCandidates,
+      // Where the assembled OpenProfile.md is served, once the job has run.
+      openprofile: openprofile
+        ? {
+            url: `/api/v1/people/${personId}/openprofile.md`,
+            generatedAt: openprofile.generated_at,
+            publishedUrl: openprofile.published_url,
+          }
+        : null,
     });
   });
 
