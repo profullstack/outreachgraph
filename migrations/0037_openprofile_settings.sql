@@ -1,4 +1,4 @@
--- 0036_openprofile_settings.sql
+-- 0037_openprofile_settings.sql
 --
 -- What the person, or the operator on their behalf, decided about the
 -- OpenProfile.md OutreachGraph assembled for them.

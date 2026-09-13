@@ -218,3 +218,16 @@ production customer data is never copied into staging.
 See [`CLAUDE.md`](CLAUDE.md). The short version: TypeScript strict, ESM,
 kebab-case, colocated tests, forward-only migrations, and a set of
 non-negotiables that come from the PRD rather than from taste.
+
+## Public directory
+
+`GET /api/v1/public/directory` is the one keyless read: what the crawler learned
+from pages that were already public, about things that are public by nature.
+Companies and sites by their domain, and people only when they publish their own
+profile (an OpenProfile.md they serve themselves, or a profile and a home page
+that point at each other with rel=me). Never an email, a phone, a location, a
+score, a signal, a campaign or a workspace. One row shape,
+`{ id, kind: company|site|person, name, url, description, topics, country, openprofile, updated }`,
+paged by `since` and an opaque `cursor`, cacheable for five minutes, sixty
+requests a minute per caller. The rule lives in `apps/api/src/public-directory.ts`
+and nowhere else; nichedb.dev reads it into its directory collection.
