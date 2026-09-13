@@ -1,0 +1,22 @@
+-- 0036_openprofile_corroborated.sql
+--
+-- Whether the person's home page vouched for the profile we started from.
+--
+-- The openprofile job already decides this: it reads the profile, follows the
+-- home page the profile names, and looks for a rel=me link pointing back. Two
+-- sources agreeing is what lifts the person to 0.9 and turns the page's links
+-- into their accounts. But the decision was only ever expressed as a
+-- confidence, and 0.9 is also what a person crawled off a company page gets,
+-- so nothing could later ask "did this person verify themselves" and get a
+-- straight answer.
+--
+-- The public directory needs that answer. It lists a person only when they
+-- publish their own profile: an OpenProfile.md they serve themselves
+-- (`published_url`), or a profile and a home page that point at each other.
+-- Storing the bit keeps that rule a column test rather than an inference over
+-- confidences that mean different things in different rows.
+--
+-- Rows written before this column default to 0 and are re-decided the next
+-- time the job runs for that person.
+
+ALTER TABLE openprofiles ADD COLUMN corroborated INTEGER NOT NULL DEFAULT 0;

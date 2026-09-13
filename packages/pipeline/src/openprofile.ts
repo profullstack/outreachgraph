@@ -321,11 +321,19 @@ export async function runOpenProfileJob(
   const markdown = published?.markdown ?? buildOpenProfile({ ...merged, web: merged.web ?? web });
 
   await db.execute({
-    sql: `INSERT INTO openprofiles (person_id, markdown, sources_json, published_url, generated_at)
-          VALUES (?, ?, ?, ?, ?)
+    sql: `INSERT INTO openprofiles (person_id, markdown, sources_json, published_url, corroborated, generated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
           ON CONFLICT(person_id) DO UPDATE SET markdown = excluded.markdown, sources_json = excluded.sources_json,
-                                              published_url = excluded.published_url, generated_at = excluded.generated_at`,
-    args: [personId, markdown, JSON.stringify(sources), published?.url ?? null, stamp],
+                                              published_url = excluded.published_url, corroborated = excluded.corroborated,
+                                              generated_at = excluded.generated_at`,
+    args: [
+      personId,
+      markdown,
+      JSON.stringify(sources),
+      published?.url ?? null,
+      corroborated ? 1 : 0,
+      stamp,
+    ],
   });
 
   // What the sources corroborate, kept where the rest of the product reads it.
