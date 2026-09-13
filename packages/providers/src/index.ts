@@ -8,6 +8,7 @@
 export {
   ProviderConfigurationError,
   type CandidateIdentity,
+  type CandidatePhoto,
   type PersonCandidate,
   type PersonEnrichmentInput,
   type PersonEnrichmentProvider,
@@ -16,6 +17,8 @@ export {
   type PersonSearchResult,
   type ProviderCapabilities,
 } from './provider';
+
+export { publicPhotoUrl } from './photo';
 
 export {
   attributeFields,

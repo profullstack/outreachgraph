@@ -34,6 +34,7 @@ import { generateRecommendation, type CandidateSignal } from '@outreachgraph/rec
 import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { rescoreProspect } from './jobs';
 import { recordDiscovered, recordStatus } from './stages';
+import { storeDiscoveredPhoto } from './photos';
 
 export interface PipelineOptions {
   readonly db: Client;
@@ -187,6 +188,10 @@ export async function runPipelineForCandidate(
     };
   }
 
+  if (candidate.photo) {
+    await storeDiscoveredPhoto(db, personId, candidate.photo, origin.capabilities, stamp);
+  }
+
   // -------------------------------------------------------------- resolve
   //
   // Ask the other configured providers what else they can vouch for before
@@ -196,6 +201,9 @@ export async function runPipelineForCandidate(
     options.providers.length > 0 ? await findIdentities(candidate, options.providers) : undefined;
 
   const enriched = fanned?.candidate ?? candidate;
+  if (fanned?.photo) {
+    await storeDiscoveredPhoto(db, personId, fanned.photo.value, fanned.photo.capabilities, stamp);
+  }
 
   // The page they were named on is itself an identity for them.
   //

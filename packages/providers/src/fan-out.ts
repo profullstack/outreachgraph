@@ -13,7 +13,13 @@
  */
 
 import type { Network } from '@outreachgraph/domain';
-import type { CandidateIdentity, PersonCandidate, PersonEnrichmentProvider } from './provider';
+import type {
+  CandidateIdentity,
+  CandidatePhoto,
+  PersonCandidate,
+  PersonEnrichmentProvider,
+  ProviderCapabilities,
+} from './provider';
 
 export interface FanOutAttempt {
   readonly provider: string;
@@ -27,6 +33,8 @@ export interface FanOutResult {
   readonly candidate: PersonCandidate;
   readonly attempts: readonly FanOutAttempt[];
   readonly costUsd: number;
+  /** A portrait from a provider that answered for an identity we already held. */
+  readonly photo?: { readonly value: CandidatePhoto; readonly capabilities: ProviderCapabilities };
 }
 
 function key(identity: CandidateIdentity): string {
@@ -54,6 +62,7 @@ export async function findIdentities(
 
   const attempts: FanOutAttempt[] = [];
   let costUsd = 0;
+  let photo: FanOutResult['photo'];
 
   const known: Partial<Record<Network, string>> = {};
   for (const identity of candidate.identities) {
@@ -78,6 +87,22 @@ export async function findIdentities(
 
       costUsd += result.costUsd;
 
+      // A same-name search result may carry a plausible but wrong portrait.
+      // Only retain a photo when the provider confirmed a known account.
+      if (!photo && result.candidate?.photo && result.matchConfidence >= 0.85) {
+        const confirmed = result.candidate.identities.some((returned) =>
+          candidate.identities.some(
+            (known) =>
+              known.network === returned.network &&
+              ((known.platformUserId && known.platformUserId === returned.platformUserId) ||
+                (known.handle &&
+                  returned.handle &&
+                  known.handle.toLowerCase() === returned.handle.toLowerCase())),
+          ),
+        );
+        if (confirmed) photo = { value: result.candidate.photo, capabilities };
+      }
+
       let found = 0;
       for (const identity of result.candidate?.identities ?? []) {
         const id = key(identity);
@@ -101,5 +126,6 @@ export async function findIdentities(
     candidate: { ...candidate, identities: [...merged.values()] },
     attempts,
     costUsd,
+    ...(photo ? { photo } : {}),
   };
 }

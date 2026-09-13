@@ -23,6 +23,7 @@ export interface GitHubUser {
   public_repos: number;
   followers: number;
   html_url: string;
+  avatar_url?: string;
   created_at: string;
   updated_at: string;
 }

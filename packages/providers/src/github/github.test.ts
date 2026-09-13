@@ -23,6 +23,7 @@ const USER = {
   public_repos: 42,
   followers: 900,
   html_url: 'https://github.com/janesmith',
+  avatar_url: 'https://avatars.githubusercontent.com/u/27381?v=4',
   created_at: '2012-01-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',
 };
@@ -44,6 +45,10 @@ function stubFetch(routes: Record<string, unknown>, status = 200): typeof fetch 
 }
 
 describe('profile mapping', () => {
+  test('keeps the public avatar with its profile page, and rejects unsafe URLs', () => {
+    expect(toCandidate(USER).photo).toEqual({ url: USER.avatar_url, pageUrl: USER.html_url });
+    expect(toCandidate({ ...USER, avatar_url: 'data:image/svg+xml,unsafe' }).photo).toBeUndefined();
+  });
   test('turns self-declared profile fields into linked identities', () => {
     const candidate = toCandidate(USER as never);
 

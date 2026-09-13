@@ -60,8 +60,15 @@ export interface CandidateIdentity {
   readonly providerConfidence?: number;
 }
 
+/** A public portrait and the page that explicitly assigns it to this person. */
+export interface CandidatePhoto {
+  readonly url: string;
+  readonly pageUrl: string;
+}
+
 export interface PersonCandidate {
   readonly fullName: string;
+  readonly photo?: CandidatePhoto;
   /**
    * What this candidate is. Absent means a person. `company_inbox` is set
    * only by the crawl, for the shared mailbox of a company that named nobody;

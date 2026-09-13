@@ -247,8 +247,8 @@ if (!encryptionKey) {
 /**
  * Pictures of leads, by search.
  *
- * Optional, like every provider: unset, Gravatar is the only source and most
- * people stay as initials. Each lookup is a paid request, so the sweep is
+ * Optional: crawls, public profile enrichment and Gravatar also supply photos.
+ * Each search lookup is a paid request, so the sweep is
  * capped per workspace per day as well as per tick.
  */
 const photoFinder = process.env.VALUESERP_API_KEY
@@ -257,7 +257,8 @@ const photoFinder = process.env.VALUESERP_API_KEY
 
 const photoLookupsPerDay = Number(process.env.PHOTO_LOOKUPS_PER_DAY ?? 300);
 
-if (!photoFinder) console.log('no VALUESERP_API_KEY: lead photos come from Gravatar only');
+if (!photoFinder)
+  console.log('no VALUESERP_API_KEY: lead photos come from public profiles and crawls');
 
 /**
  * The feed clients for one campaign's own targets.

@@ -35,7 +35,7 @@ const COMPANY_HTML = `<!doctype html><html><head>
   </script>
   <script type="application/ld+json">
     {"@context":"https://schema.org","@type":"Person","name":"Alex Chen",
-     "jobTitle":"Staff Engineer","sameAs":["https://github.com/alexchen"]}
+     "jobTitle":"Staff Engineer","sameAs":["https://github.com/alexchen"],"image":"/alex.jpg"}
   </script>
 </head><body>
   <footer>
@@ -112,13 +112,28 @@ describe('URL to approval card', () => {
       expect(summary.processed).toBe(1);
       expect(summary.succeeded).toBe(1);
 
-      const person = await queryOne<{ id: string; display_name: string; current_title: string }>(
+      const person = await queryOne<{
+        id: string;
+        display_name: string;
+        current_title: string;
+        avatar_url: string;
+        avatar_source: string;
+      }>(
         db,
-        'SELECT id, display_name, current_title FROM people WHERE display_name = ?',
+        'SELECT id, display_name, current_title, avatar_url, avatar_source FROM people WHERE display_name = ?',
         ['Alex Chen'],
       );
       expect(person?.display_name).toBe('Alex Chen');
       expect(person?.current_title).toBe('Staff Engineer');
+      expect(person?.avatar_url).toBe('https://loopwright.io/alex.jpg');
+      expect(person?.avatar_source).toBe('site');
+      const photoSource = await queryOne<{ source_record_id: string; provider: string }>(
+        db,
+        "SELECT source_record_id, provider FROM field_provenance WHERE entity_id = ? AND field = 'avatar_url'",
+        [person!.id],
+      );
+      expect(photoSource?.source_record_id).toBe('https://loopwright.io/');
+      expect(photoSource?.provider).toBe('site');
 
       // Filed into the workspace's campaign, or the card has nowhere to appear.
       const membership = await queryOne<{ status: string }>(

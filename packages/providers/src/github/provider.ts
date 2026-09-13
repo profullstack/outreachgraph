@@ -8,6 +8,7 @@
  */
 
 import type { CandidateIdentity, PersonCandidate } from '../provider';
+import { publicPhotoUrl } from '../photo';
 import type {
   PersonEnrichmentInput,
   PersonEnrichmentProvider,
@@ -155,9 +156,11 @@ export function toCandidate(user: GitHubUser): PersonCandidate {
   }
 
   const [firstName, lastName] = splitName(user.name ?? user.login);
+  const photoUrl = publicPhotoUrl(user.avatar_url);
 
   return {
     fullName: user.name ?? user.login,
+    ...(photoUrl ? { photo: { url: photoUrl, pageUrl: user.html_url } } : {}),
     ...(firstName ? { firstName } : {}),
     ...(lastName ? { lastName } : {}),
     ...(user.company ? { companyName: cleanCompany(user.company) } : {}),

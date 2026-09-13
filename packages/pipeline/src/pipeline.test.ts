@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { GitHubProvider } from '@outreachgraph/providers';
+import { GitHubProvider, SiteProvider } from '@outreachgraph/providers';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
-import { runPipeline } from './pipeline';
+import { runPipeline, runPipelineForCandidate } from './pipeline';
 
 /** A GitHub profile with the self-declared cross-links the resolver needs. */
 const PROFILE = {
@@ -17,6 +17,7 @@ const PROFILE = {
   public_repos: 30,
   followers: 500,
   html_url: 'https://github.com/alexchen',
+  avatar_url: 'https://avatars.githubusercontent.com/u/4242?v=4',
   created_at: '2015-01-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',
 };
@@ -120,6 +121,68 @@ function options(db: SeededDatabase['db']) {
 }
 
 describe('end to end', () => {
+  test('a crawled GitHub handle gains its public avatar with GitHub attribution', async () => {
+    const { db } = await fixture('portrait-fanout');
+    const result = await runPipelineForCandidate(
+      { ...options(db), providers: [stubGitHub()] },
+      {
+        fullName: 'Alex Chen',
+        title: 'Staff Engineer',
+        companyName: 'Loopwright',
+        identities: [{ network: 'github', handle: 'alexchen' }],
+        observedAt: new Date().toISOString(),
+      },
+      { capabilities: new SiteProvider().capabilities(), sourceUrl: 'https://loopwright.io/team' },
+    );
+    const person = await db.execute({
+      sql: 'SELECT avatar_url, avatar_source FROM people WHERE id = ?',
+      args: [result.personId!],
+    });
+    expect(person.rows[0]?.avatar_url).toBe(PROFILE.avatar_url);
+    expect(person.rows[0]?.avatar_source).toBe('github');
+    const provenance = await db.execute({
+      sql: "SELECT provider, source_type, source_record_id FROM field_provenance WHERE entity_id = ? AND field = 'avatar_url'",
+      args: [result.personId!],
+    });
+    expect(provenance.rows[0]).toMatchObject({
+      provider: 'github',
+      source_type: 'official_api',
+      source_record_id: PROFILE.html_url,
+    });
+  });
+  test('stores a GitHub portrait and provenance once, and keeps an existing photo', async () => {
+    const { db } = await fixture('portrait');
+    const result = await runPipeline(options(db), 'alexchen');
+    const person = await db.execute({
+      sql: 'SELECT avatar_url, avatar_source FROM people WHERE id = ?',
+      args: [result.personId!],
+    });
+    expect(person.rows[0]?.avatar_url).toBe(PROFILE.avatar_url);
+    expect(person.rows[0]?.avatar_source).toBe('github');
+    await runPipeline(options(db), 'alexchen');
+    const provenance = await db.execute({
+      sql: "SELECT value, provider, source_record_id, license_class FROM field_provenance WHERE entity_id = ? AND field = 'avatar_url'",
+      args: [result.personId!],
+    });
+    expect(provenance.rows).toHaveLength(1);
+    expect(provenance.rows[0]).toMatchObject({
+      value: PROFILE.avatar_url,
+      provider: 'github',
+      source_record_id: PROFILE.html_url,
+      license_class: 'public_api',
+    });
+    await db.execute({
+      sql: "UPDATE people SET avatar_url = 'https://example.com/chosen.jpg', avatar_source = 'profile' WHERE id = ?",
+      args: [result.personId!],
+    });
+    await runPipeline(options(db), 'alexchen');
+    const kept = await db.execute({
+      sql: 'SELECT avatar_url, avatar_source FROM people WHERE id = ?',
+      args: [result.personId!],
+    });
+    expect(kept.rows[0]?.avatar_url).toBe('https://example.com/chosen.jpg');
+    expect(kept.rows[0]?.avatar_source).toBe('profile');
+  });
   test('takes a bare handle all the way to the approval queue', async () => {
     const { db } = await fixture('happy');
 
@@ -292,11 +355,20 @@ describe('refusals', () => {
       sql: 'DELETE FROM recommendations WHERE person_id = ?',
       args: [first.personId!],
     });
+    await db.execute({
+      sql: 'UPDATE people SET avatar_url = NULL WHERE id = ?',
+      args: [first.personId!],
+    });
 
     const second = await runPipeline(options(db), 'alexchen');
 
     expect(second.stage).toBe('stopped');
     expect(second.stoppedBecause).toBe('suppressed');
+    const photo = await db.execute({
+      sql: 'SELECT avatar_url FROM people WHERE id = ?',
+      args: [first.personId!],
+    });
+    expect(photo.rows[0]?.avatar_url).toBeNull();
 
     const recommendations = await db.execute({
       sql: 'SELECT count(*) AS n FROM recommendations WHERE person_id = ?',

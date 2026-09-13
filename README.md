@@ -147,6 +147,22 @@ typically yields three linked identities before any paid provider is touched.
 Each stage persists before the next runs, so a crash resumes rather than
 restarting, and a half-enriched prospect is still inspectable.
 
+## Public profile photos
+
+Prospects, approval cards and the daily digest show a photo when a public source
+supplies one. Crawls retain JSON-LD `Person.image` portraits and team images whose
+alt text names the person, including lazy-loaded images and relative URLs. GitHub
+enrichment keeps the public account's avatar. Photos are stored with the source
+page in field provenance; existing photos are kept, and a later crawl or enrichment
+can fill an empty photo even after image search previously missed.
+
+These paths use the pages and public API responses already being read. Gravatar
+and social profile intake remain available, and `VALUESERP_API_KEY` optionally
+enables the bounded image-search fallback for LinkedIn and company team pages.
+Nothing signs into LinkedIn or bypasses a blocked page. Missing or unavailable
+photos show initials. Previously imported people gain these photos on their next
+crawl or enrichment; this change does not run a production backfill.
+
 ## The three ideas worth knowing
 
 **The policy engine is arithmetic, not judgement.** Every outbound action
