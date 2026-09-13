@@ -93,6 +93,22 @@ export {
 } from './site/extract';
 
 export {
+  buildOpenProfile,
+  extractProfilePage,
+  hashtagsIn,
+  labelFor,
+  mergeFacts,
+  readBlueskyProfile,
+  readMastodonProfile,
+  readPublishedOpenProfile,
+  urlsInText,
+  wellKnownOpenProfile,
+  type ProfileAccount,
+  type ProfileFacts,
+  type ProfileInput,
+} from './site/openprofile';
+
+export {
   extractWithModel,
   visibleText,
   type ExtractionModel,

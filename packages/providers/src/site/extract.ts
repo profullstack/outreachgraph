@@ -115,7 +115,7 @@ export function handleFromUrl(url: string): string | undefined {
   }
 }
 
-function decodeEntities(text: string): string {
+export function decodeEntities(text: string): string {
   return text
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -126,7 +126,7 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/g, '&');
 }
 
-function collapse(text: string): string {
+export function collapse(text: string): string {
   return decodeEntities(text).replace(/\s+/g, ' ').trim();
 }
 
@@ -185,7 +185,11 @@ function urlList(node: unknown, field: string): string[] {
   return [];
 }
 
-function metaContent(html: string, attr: 'property' | 'name', key: string): string | undefined {
+export function metaContent(
+  html: string,
+  attr: 'property' | 'name',
+  key: string,
+): string | undefined {
   const pattern = new RegExp(
     `<meta\\b[^>]*${attr}\\s*=\\s*["']${key}["'][^>]*content\\s*=\\s*["']([^"']*)["']`,
     'i',

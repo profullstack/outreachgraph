@@ -47,6 +47,15 @@ export const JOB_KINDS = [
    * runs for people found on the page *this* time.
    */
   'regenerate_recommendations',
+  /**
+   * Build one person's OpenProfile.md from their public profiles.
+   *
+   * Queued by the social intake route for every person a client hands over,
+   * one job per person so a profile page that times out costs one person and
+   * not the batch. Reads the network's public API and the site the profile
+   * links to, records what they corroborate, then re-decides the person.
+   */
+  'openprofile',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
