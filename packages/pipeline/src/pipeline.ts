@@ -117,6 +117,15 @@ export interface CandidateOrigin {
    * `storeSiteSignal`.
    */
   readonly sourceUrl?: string;
+  /**
+   * The company's published inbox, when the candidate *is* that inbox.
+   *
+   * Only read for a `company_inbox` candidate. It is the citable fact the
+   * signal records ("publishes support@acme.com on its website") and it never
+   * becomes an identity, so `pickEmailRecipient` keeps resolving it as the
+   * company's shared address with every limit that implies.
+   */
+  readonly inbox?: { readonly address: string; readonly description?: string };
 }
 
 /**
@@ -148,7 +157,10 @@ export async function runPipelineForCandidate(
   // Rejected here rather than in any one extractor: every provider funnels
   // through this function, so this is the only place the rule cannot be
   // bypassed by adding a new source later.
-  if (isLikelyRoleAccount(candidate.fullName)) {
+  //
+  // A `company_inbox` candidate is the one deliberate exception: it is typed
+  // by the crawl, not scraped, and its name is the company's.
+  if (candidate.kind !== 'company_inbox' && isLikelyRoleAccount(candidate.fullName)) {
     return {
       stage: 'stopped',
       identitiesLinked: 0,
@@ -351,14 +363,25 @@ async function storeSiteSignal(
 
   const where = candidate.companyName ? ` at ${candidate.companyName}` : '';
   const titled = Boolean(candidate.title);
+  const inbox = candidate.kind === 'company_inbox' ? origin.inbox : undefined;
 
-  const summary = titled
-    ? `Listed as ${candidate.title}${where} on the company website.`
-    : `Named on the company website${where ? ` (${candidate.companyName})` : ''}.`;
+  // A company inbox is not "named on" its own site; what the site did is
+  // publish a way to reach the company. That, plus the company's own line
+  // about itself when the page carried one, is the whole of what a message to
+  // it may rest on.
+  const summary = inbox
+    ? `Publishes ${inbox.address} as the contact address on the company website.`
+    : titled
+      ? `Listed as ${candidate.title}${where} on the company website.`
+      : `Named on the company website${where ? ` (${candidate.companyName})` : ''}.`;
 
   // Evidence is what the page actually said, verbatim, and nothing more — an
   // untitled listing has only the name to offer, so that is all it claims.
-  const evidence = titled ? `${candidate.fullName} — ${candidate.title}` : candidate.fullName;
+  const evidence = inbox
+    ? [inbox.description, `Contact: ${inbox.address}`].filter(Boolean).join(' ')
+    : titled
+      ? `${candidate.fullName} — ${candidate.title}`
+      : candidate.fullName;
 
   await db.execute({
     sql: `INSERT INTO signals (id, workspace_id, person_id, network, signal_type, subtype,
@@ -580,12 +603,13 @@ async function upsertPerson(
 
   const personId = newId('person');
   await db.execute({
-    sql: `INSERT INTO people (id, display_name, first_name, last_name, current_company_id,
+    sql: `INSERT INTO people (id, kind, display_name, first_name, last_name, current_company_id,
           current_title, location, identity_confidence, status, outreach_eligible,
           believed_minor, created_at, updated_at, last_resolved_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'active', 1, 0, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'active', 1, 0, ?, ?, ?)`,
     args: [
       personId,
+      candidate.kind ?? 'person',
       candidate.fullName,
       candidate.firstName ?? null,
       candidate.lastName ?? null,

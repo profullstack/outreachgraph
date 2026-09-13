@@ -106,7 +106,7 @@ export async function sweepProfilePhotos(
        JOIN campaigns c ON c.id = cp.campaign_id
        LEFT JOIN companies co ON co.id = p.current_company_id
       WHERE cp.workspace_id = ? AND c.status IN ('active', 'running')
-        AND p.status = 'active'
+        AND p.status = 'active' AND p.kind = 'person'
         AND p.avatar_url IS NULL AND p.photo_looked_up_at IS NULL
       GROUP BY p.id
       ORDER BY EXISTS (SELECT 1 FROM recommendations r

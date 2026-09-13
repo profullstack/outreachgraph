@@ -3,9 +3,7 @@
   "name": "OutreachGraph",
   "url": "https://outreachgraph.com",
   "operator": "https://logicsrc.com/.well-known/openprofile.md",
-  "redirect_uris": [
-    "https://outreachgraph.com/api/v1/openaccess/callback"
-  ],
+  "redirect_uris": ["https://outreachgraph.com/api/v1/openaccess/callback"],
   "jwks": {
     "keys": [
       {
@@ -19,11 +17,7 @@
     ]
   },
   "scopes": {},
-  "honours": [
-    "profullstack.com/all-access"
-  ],
+  "honours": ["profullstack.com/all-access"],
   "webhooks": "https://outreachgraph.com/api/v1/openaccess/events",
-  "hubs": [
-    "https://openaccess.logicsrc.com"
-  ]
+  "hubs": ["https://openaccess.logicsrc.com"]
 }

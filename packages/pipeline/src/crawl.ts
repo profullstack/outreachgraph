@@ -11,6 +11,7 @@ import { newId } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import type {
   CandidateIdentity,
+  PersonCandidate,
   PersonEnrichmentProvider,
   SiteProvider,
 } from '@outreachgraph/providers';
@@ -35,6 +36,8 @@ export interface CrawlJobResult {
   readonly companyName?: string;
   readonly peopleFound: number;
   readonly peopleQueued: number;
+  /** True when the page named nobody and its published inbox became the lead. */
+  readonly inboxLead?: boolean;
   readonly usedSignals: readonly string[];
 }
 
@@ -177,6 +180,19 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
     await recordCompanyIdentities(deps.db, companyId, result, stamp);
   }
 
+  // A page that names nobody but publishes an inbox is still a way in.
+  //
+  // This was the one shape that produced nothing at all. The company row and
+  // its `support@` were written above, correctly, and then sat there: a
+  // recommendation only ever hangs off a person, so a family-run store whose
+  // site says "we" throughout ended as a company with an address and an empty
+  // queue. The inbox is queued as a lead of its own kind: the same chain,
+  // policy, approval and shared-inbox limits as a named person, with the
+  // composer told it is writing to a team and the enrichment sweeps told to
+  // leave it alone. It is only ever done when the page named nobody; a named
+  // person is always the better lead and already reaches that inbox.
+  const inboxLead = result.people.length === 0 && Boolean(result.contactEmail) && Boolean(domain);
+
   await emitEvent(deps.db, {
     workspaceId: job.workspaceId,
     campaignId: campaign.id,
@@ -186,6 +202,7 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
       result.company.name ?? domain ?? url,
       result.people.length,
       result.contactEmail,
+      inboxLead,
     ),
     detail: {
       url,
@@ -197,6 +214,41 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
   });
 
   let queued = 0;
+  let inboxLeadQueued = false;
+
+  if (inboxLead && result.contactEmail && domain) {
+    const inboxCandidate: PersonCandidate = {
+      kind: 'company_inbox',
+      fullName: result.company.name ?? domain,
+      companyName: result.company.name ?? domain,
+      companyDomain: domain,
+      identities: [],
+      observedAt: now(),
+    };
+
+    const outcome = await runPipelineForCandidate(
+      {
+        db: deps.db,
+        workspaceId: job.workspaceId,
+        campaignId: campaign.id,
+        providers: deps.providers,
+        ...(deps.model ? { model: deps.model } : {}),
+        ...(deps.emailSendingEnabled ? { emailSendingEnabled: true } : {}),
+      },
+      inboxCandidate,
+      {
+        capabilities: deps.site.capabilities(),
+        sourceUrl: result.finalUrl,
+        inbox: {
+          address: result.contactEmail,
+          ...(result.company.description ? { description: result.company.description } : {}),
+        },
+      },
+    );
+
+    inboxLeadQueued = outcome.stage !== 'stopped';
+  }
+
   for (const candidate of result.people) {
     await runPipelineForCandidate(
       {
@@ -228,6 +280,7 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
     ...(result.company.name ? { companyName: result.company.name } : {}),
     peopleFound: result.people.length,
     peopleQueued: queued,
+    ...(inboxLeadQueued ? { inboxLead: true } : {}),
     usedSignals: result.usedSignals,
   };
 }
@@ -305,13 +358,19 @@ function displayUrl(url: string): string {
  * a count and mean completely different things for whether outreach can happen,
  * so they are worded differently here.
  */
-function describeCrawl(subject: string, people: number, contactEmail?: string): string {
+function describeCrawl(
+  subject: string,
+  people: number,
+  contactEmail?: string,
+  inboxLead = false,
+): string {
   if (people > 0) {
     return `${subject}: found ${people} ${people === 1 ? 'person' : 'people'}`;
   }
-  return contactEmail
-    ? `${subject}: nobody named, but ${contactEmail} is published`
-    : `${subject}: no people and no contact address on the page`;
+  if (!contactEmail) return `${subject}: no people and no contact address on the page`;
+  return inboxLead
+    ? `${subject}: nobody named, so ${contactEmail} is the lead`
+    : `${subject}: nobody named, but ${contactEmail} is published`;
 }
 
 /** The host actually fetched, which is known even when extraction found little. */

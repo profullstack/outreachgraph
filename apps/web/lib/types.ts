@@ -20,6 +20,8 @@ export interface ApprovalCard {
   display_name: string;
   current_title: string | null;
   avatar_url?: string | null;
+  /** Absent or `person` is a named human; `company_inbox` is a shared mailbox lead. */
+  kind?: 'person' | 'company_inbox';
   action: string;
   network: string;
   priority: number;
@@ -156,6 +158,8 @@ export interface ProspectRow {
   display_name: string;
   current_title: string | null;
   avatar_url?: string | null;
+  /** Absent or `person` is a named human; `company_inbox` is a shared mailbox lead. */
+  kind?: 'person' | 'company_inbox';
   current_company: string | null;
   identity_confidence: number;
   prospect_status: string;
@@ -199,6 +203,8 @@ export interface ProspectDetail {
     display_name: string;
     current_title: string | null;
     avatar_url?: string | null;
+    /** Absent or `person` is a named human; `company_inbox` is a shared mailbox lead. */
+    kind?: 'person' | 'company_inbox';
     identity_confidence: number;
     status: string;
   };

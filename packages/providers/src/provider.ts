@@ -8,7 +8,7 @@
  * are all vendor-agnostic.
  */
 
-import type { LicenseClass, Network, SourceType } from '@outreachgraph/domain';
+import type { LicenseClass, Network, PersonKind, SourceType } from '@outreachgraph/domain';
 
 export interface ProviderCapabilities {
   readonly slug: string;
@@ -62,6 +62,12 @@ export interface CandidateIdentity {
 
 export interface PersonCandidate {
   readonly fullName: string;
+  /**
+   * What this candidate is. Absent means a person. `company_inbox` is set
+   * only by the crawl, for the shared mailbox of a company that named nobody;
+   * see `PersonKind`.
+   */
+  readonly kind?: PersonKind;
   readonly firstName?: string;
   readonly lastName?: string;
   readonly title?: string;

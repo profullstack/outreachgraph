@@ -1683,7 +1683,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const limit = clampLimit(c.req.query('limit'));
 
     const rows = await c.get('db').execute({
-      sql: `SELECT p.id, p.display_name, p.current_title, p.avatar_url, p.identity_confidence,
+      sql: `SELECT p.id, p.kind, p.display_name, p.current_title, p.avatar_url, p.identity_confidence,
                    p.status,
                    co.name AS current_company,
                    cp.status AS prospect_status, cp.interaction_state,
