@@ -14,6 +14,12 @@ export interface RequestActor {
   readonly workspaceId: string;
   readonly organizationId: string;
   readonly role: 'owner' | 'admin' | 'member' | 'viewer';
+  /**
+   * What the caller presented. Absent means a session, which is what every
+   * caller was before API keys existed. A key may do what its owner may do,
+   * except mint more keys — that stays with the person who signs in.
+   */
+  readonly credential?: 'session' | 'api_key' | 'service';
 }
 
 export interface AppEnv {

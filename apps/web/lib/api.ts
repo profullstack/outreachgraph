@@ -317,6 +317,20 @@ export async function fetchEmailIntegration(): Promise<EmailIntegrationView> {
   return request<EmailIntegrationView>('/integrations/email');
 }
 
+export interface ApiKeyView {
+  readonly id: string;
+  readonly name: string;
+  /** The first characters of the secret; the rest is never returned. */
+  readonly prefix: string;
+  readonly createdAt: string;
+  readonly lastUsedAt: string | null;
+}
+
+export async function fetchApiKeys(): Promise<readonly ApiKeyView[]> {
+  const body = await request<{ keys: readonly ApiKeyView[] }>('/api-keys');
+  return body.keys;
+}
+
 export interface CreditPackView {
   readonly id: string;
   readonly name: string;

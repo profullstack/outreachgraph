@@ -18,6 +18,7 @@ import {
   type SignalType,
 } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { matchKeysForPerson } from './suppression-keys';
 import { resolveIdentity, type EvidenceInput } from '@outreachgraph/identity';
 import {
   deriveEvidence,
@@ -1162,18 +1163,7 @@ async function setStatus(
 }
 
 async function isSuppressed(db: Client, workspaceId: string, personId: string): Promise<boolean> {
-  const identities = await queryAll<{ network: string; platform_user_id: string | null }>(
-    db,
-    'SELECT network, platform_user_id FROM social_identities WHERE person_id = ?',
-    [personId],
-  );
-
-  const keys = [`person:${personId}`];
-  for (const identity of identities) {
-    if (identity.platform_user_id) {
-      keys.push(`platform:${identity.network}:${identity.platform_user_id}`);
-    }
-  }
+  const keys = await matchKeysForPerson(db, personId);
 
   const placeholders = keys.map(() => '?').join(', ');
   const row = await queryOne<{ n: number }>(

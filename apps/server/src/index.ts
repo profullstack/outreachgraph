@@ -50,6 +50,7 @@ import {
   rescoreProspect,
   reseedIdleCampaigns,
   runAutopilot,
+  applyProjectBudgets,
   sweepProfilePhotos,
   workspacesAwaitingPhotos,
   runCadences,
@@ -926,6 +927,17 @@ async function tick(): Promise<void> {
       }
     } catch (error) {
       console.error(`cadences failed for ${workspace.id}`, error);
+    }
+
+    try {
+      // Project ceilings become campaign caps before the sender reads them,
+      // so a budget set a minute ago is the budget this tick honours.
+      const budgets = await applyProjectBudgets(db, workspace.id);
+      if (budgets.changed > 0) {
+        console.log(`budgets ${workspace.id}: ${budgets.changed} campaign cap(s) reallocated`);
+      }
+    } catch (error) {
+      console.error(`budget allocation failed for ${workspace.id}`, error);
     }
 
     try {

@@ -15,6 +15,7 @@
 
 import { newId, type CadenceStep, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { matchKeysForPerson } from './suppression-keys';
 import type { PolicyDecision, PolicyRequest } from '@outreachgraph/policy';
 import { advanceCadences, type AdvanceResult, type DueEnrollment } from './cadence';
 import { budgetStatus } from './metering';
@@ -279,18 +280,7 @@ async function conversationOpen(
  * the person being re-ingested by a later provider lookup.
  */
 async function isSuppressed(db: Client, workspaceId: string, personId: string): Promise<boolean> {
-  const identities = await queryAll<{ network: string; platform_user_id: string | null }>(
-    db,
-    'SELECT network, platform_user_id FROM social_identities WHERE person_id = ?',
-    [personId],
-  );
-
-  const keys = [`person:${personId}`];
-  for (const identity of identities) {
-    if (identity.platform_user_id) {
-      keys.push(`platform:${identity.network}:${identity.platform_user_id}`);
-    }
-  }
+  const keys = await matchKeysForPerson(db, personId);
 
   const placeholders = keys.map(() => '?').join(', ');
   const row = await queryOne<{ n: number }>(

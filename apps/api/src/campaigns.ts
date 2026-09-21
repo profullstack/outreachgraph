@@ -330,7 +330,7 @@ interface EnsuredOffering {
  * is kept for callers that genuinely have no opinion — a workspace with one
  * product, which is most of them.
  */
-async function ensureOffering(
+export async function ensureOffering(
   db: Client,
   workspaceId: string,
   offeringId?: string,
@@ -399,7 +399,7 @@ async function ensureOffering(
  * A product with no filters row yet — one that has never been through setup —
  * simply leaves the new campaign without one, exactly as before.
  */
-async function inheritFilters(
+export async function inheritFilters(
   db: Client,
   campaignId: string,
   workspaceId: string,

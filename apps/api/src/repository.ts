@@ -19,6 +19,7 @@ import {
   type Network,
 } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { matchKeysForPerson } from '@outreachgraph/pipeline';
 
 export interface PersonRow {
   id: string;
@@ -695,19 +696,7 @@ export async function isSuppressed(
 
 /** Match keys for a person, used for suppression lookup. */
 export async function suppressionKeysForPerson(db: Client, personId: string): Promise<string[]> {
-  const identities = await queryAll<{ network: string; platform_user_id: string | null }>(
-    db,
-    'SELECT network, platform_user_id FROM social_identities WHERE person_id = ?',
-    [personId],
-  );
-
-  const keys = [`person:${personId}`];
-  for (const identity of identities) {
-    if (identity.platform_user_id) {
-      keys.push(`platform:${identity.network}:${identity.platform_user_id}`);
-    }
-  }
-  return keys;
+  return matchKeysForPerson(db, personId);
 }
 
 export async function hasConnectedAccount(

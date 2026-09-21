@@ -308,7 +308,7 @@ export async function actorFromSession(
   };
 }
 
-interface Membership {
+export interface Membership {
   readonly organizationId: string;
   readonly workspaceId: string;
   readonly role: RequestActor['role'];
@@ -334,7 +334,7 @@ async function primaryMembership(db: Client, userId: string): Promise<Membership
 }
 
 /** Confirms the user may act in this specific workspace. */
-async function membershipForWorkspace(
+export async function membershipForWorkspace(
   db: Client,
   userId: string,
   workspaceId: string,

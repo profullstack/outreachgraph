@@ -298,3 +298,20 @@ export {
   type EnrichCandidateRow,
   type ProposeResult,
 } from './enrich';
+
+export {
+  domainMatchKey,
+  emailMatchKey,
+  matchKeysForPerson,
+  normaliseDomain,
+  peopleMatchingKeys,
+} from './suppression-keys';
+export {
+  applyProjectBudget,
+  applyProjectBudgets,
+  campaignBudgetFrom,
+  readBudgetJson,
+  setCampaignDailyBudget,
+  type ApplyResult,
+  type CampaignBudget,
+} from './project-budgets';
