@@ -204,6 +204,16 @@ import {
   saveWorkspaceProfile,
   UnknownProductError,
 } from './workspace-profile';
+import { autogtmRoutes } from './autogtm';
+import { llmsText, openApiDocument } from './autogtm-docs';
+import {
+  actorFromApiKey,
+  ApiKeyError,
+  listApiKeys,
+  mintApiKey,
+  presentedApiKey,
+  revokeApiKey,
+} from './api-keys';
 
 /** One paste, one reviewable unit of work. */
 const MAX_BULK_URLS = 100;
@@ -491,6 +501,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const cookie = readCookie(request.headers.get('cookie'), SESSION_COOKIE);
     if (cookie) {
       const actor = await actorFromSession(options.db, cookie);
+      if (actor) return { ...actor, credential: 'session' };
+    }
+
+    // A workspace key: `X-API-Key` or a bearer that looks like one. Scoped by
+    // the row it hashes to, so it needs no headers naming a workspace.
+    const apiKey = presentedApiKey(request);
+    if (apiKey) {
+      const actor = await actorFromApiKey(options.db, apiKey);
       if (actor) return actor;
     }
 
@@ -509,6 +527,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
             workspaceId,
             organizationId,
             role: 'owner',
+            credential: 'service',
           };
         }
       }
@@ -1045,6 +1064,24 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json(page);
   });
 
+  // The API described for machines. Keyless: an agent reads these before it
+  // has a key, and there is nothing in them that is not in this file.
+  api.get('/public/openapi.json', (c) => {
+    c.header('cache-control', 'public, max-age=300');
+    return c.json(openApiDocument(publicOrigin(c.req.raw), options.version ?? '0.0.0'));
+  });
+
+  api.get('/public/llms.txt', (c) => {
+    c.header('cache-control', 'public, max-age=300');
+    return c.text(llmsText(publicOrigin(c.req.raw)));
+  });
+
+  const publicOrigin = (request: Request): string => {
+    if (options.apiUrl) return options.apiUrl.replace(/\/$/, '');
+    if (options.appUrl) return options.appUrl.replace(/\/$/, '');
+    return new URL(request.url).origin;
+  };
+
   // Everything else under /api/v1 is authenticated and workspace-scoped.
   api.use('*', async (c, next) => {
     const actor = await resolveActor(c.req.raw);
@@ -1055,6 +1092,88 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.set('requestId', newId('auditEvent'));
     await next();
   });
+
+  // ------------------------------------------------------------- api keys
+  //
+  // Minted by a person with a session, used by their agents. A key cannot
+  // mint keys: the credential that can create credentials stays with the
+  // human who signs in.
+
+  api.get('/api-keys', async (c) => {
+    const actor = c.get('actor');
+    return c.json({ keys: await listApiKeys(c.get('db'), actor.workspaceId) });
+  });
+
+  api.post('/api-keys', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (actor.credential === 'api_key') throw ApiError.forbidden('a key cannot mint keys');
+    if (!canApprove(actor)) throw ApiError.forbidden('creating an API key');
+
+    const body = safeJson(await c.req.raw.text());
+    const name = typeof body.name === 'string' ? body.name : '';
+
+    let minted;
+    try {
+      minted = await mintApiKey(db, {
+        workspaceId: actor.workspaceId,
+        organizationId: actor.organizationId,
+        userId: actor.userId,
+        name,
+      });
+    } catch (error) {
+      if (error instanceof ApiKeyError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'api_key.created',
+      entityKind: 'api_key',
+      entityId: minted.id,
+      detail: { name: minted.name, prefix: minted.prefix },
+    });
+
+    return c.json({ key: minted }, 201);
+  });
+
+  api.delete('/api-keys/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('revoking an API key');
+
+    const revoked = await revokeApiKey(db, actor.workspaceId, c.req.param('id'));
+    if (!revoked) throw ApiError.notFound('API key');
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'api_key.revoked',
+      entityKind: 'api_key',
+      entityId: c.req.param('id'),
+      detail: {},
+    });
+
+    return c.json({ revoked: true, id: c.req.param('id') });
+  });
+
+  // -------------------------------------------------------------- autogtm
+  //
+  // The agent-facing surface, in its own module. It receives the approval
+  // path rather than reimplementing it, which is what keeps this product
+  // with exactly one way to send.
+  api.route(
+    '/autogtm',
+    autogtmRoutes({
+      approve: (db, actor, recommendation) =>
+        approveRecommendation(db, options, actor, recommendation, {}),
+      requireVerifiedEmail: (db, actor) => requireVerifiedEmail(db, actor),
+    }),
+  );
 
   // ----------------------------------------------------------------- team
   //
@@ -3280,6 +3399,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         ? await repo.resolveContactAddress(db, action.person_id)
         : undefined;
 
+    // Attributed to the campaign the card came from, as the automated path
+    // does; a null here is a message no per-campaign number can see.
+    const manualRecommendation = await repo.getRecommendation(
+      db,
+      actor.workspaceId,
+      action.recommendation_id,
+    );
+
     await db.batch([
       {
         sql: `UPDATE actions SET status = 'completed', mode = ?, external_url = ?, executed_at = ?
@@ -3287,13 +3414,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         args: [body.mode, body.externalUrl ?? null, stamp, action.id],
       },
       {
-        sql: `INSERT INTO interactions (id, workspace_id, person_id, action_id, network, direction,
-              state, contact_address, shared_inbox, occurred_at, recorded_at)
-              VALUES (?, ?, ?, ?, ?, 'outbound', 'contacted', ?, ?, ?, ?)`,
+        sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, action_id, network,
+              direction, state, contact_address, shared_inbox, occurred_at, recorded_at)
+              VALUES (?, ?, ?, ?, ?, ?, 'outbound', 'contacted', ?, ?, ?, ?)`,
         args: [
           newId('interaction'),
           actor.workspaceId,
           action.person_id,
+          manualRecommendation?.campaign_id ?? null,
           action.id,
           action.network,
           manualContact?.address ?? null,
@@ -4838,6 +4966,11 @@ async function recheckPolicy(
             : { hoursSinceLastActionToAddress: addressUsage.hoursSinceLast }),
         }),
     conversationOpen: replied,
+    // A `reply` card answers a message that came in. It is the only action
+    // the engine's 7b gate lets through on an open thread, and it still
+    // needs the approval this route is.
+    isFollowUp:
+      recommendation.action === 'reply' || recommendation.expected_goal === 'continue_conversation',
     budgetExhausted: budgetState.exhausted,
     featureFlags: flags,
   });

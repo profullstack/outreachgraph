@@ -368,6 +368,52 @@ describe('a contact who has replied', () => {
     expect(isExecutable(result.decision, false)).toBe(false);
   });
 
+  test('answering an open thread is not paced like cold outreach', () => {
+    // The weekly per-prospect cap and the cooldown exist to stop pestering
+    // someone who has not answered. A reply to someone who wrote to us is the
+    // opposite case, and used to be refused by the very gate meant to protect
+    // them — one email out, one reply in, and the answer was "weekly limit
+    // reached (1/1)".
+    const result = evaluatePolicy(
+      request({
+        conversationOpen: true,
+        isFollowUp: true,
+        actionsToThisProspectThisWeek: 1,
+        maxActionsPerProspectPerWeek: 1,
+        hoursSinceLastActionToProspect: 2,
+        minHoursBetweenActions: 48,
+      }),
+    );
+
+    expect(result.decision).toBe('allow_with_approval');
+    expect(result.gate).toBe('conversation_open');
+  });
+
+  test('the same pacing still applies to cold outreach', () => {
+    const result = evaluatePolicy(
+      request({
+        actionsToThisProspectThisWeek: 1,
+        maxActionsPerProspectPerWeek: 1,
+      }),
+    );
+    expect(result.decision).toBe('deny');
+    expect(result.gate).toBe('rate_limit_prospect');
+  });
+
+  test('the daily cap and budget still bind a follow-up', () => {
+    const daily = evaluatePolicy(
+      request({ conversationOpen: true, isFollowUp: true, actionsToday: 50, maxActionsPerDay: 50 }),
+    );
+    expect(daily.decision).toBe('deny');
+    expect(daily.gate).toBe('rate_limit_daily');
+
+    const budget = evaluatePolicy(
+      request({ conversationOpen: true, isFollowUp: true, budgetExhausted: true }),
+    );
+    expect(budget.decision).toBe('deny');
+    expect(budget.gate).toBe('budget_exhausted');
+  });
+
   test('a follow-up is still refused when a rate limit already denied it', () => {
     // `deny` outranks `allow_with_approval`, so the follow-up downgrade must
     // not be able to loosen a decision another gate has already tightened.

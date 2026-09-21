@@ -326,7 +326,17 @@ export function evaluatePolicy(request: PolicyRequest): PolicyResult {
         `Daily action limit reached (${request.actionsToday}/${request.maxActionsPerDay}).`,
       );
     }
-    if (request.actionsToThisProspectThisWeek >= request.maxActionsPerProspectPerWeek) {
+    // The per-prospect pacing gates exist to stop pestering someone who has
+    // not answered. Answering someone who wrote to us is the opposite of
+    // that, so a flagged follow-up on an open conversation skips them — and
+    // only them: the daily cap, the budget and every suppression gate still
+    // apply, and 7b below still routes it to a human.
+    const answering = request.isFollowUp === true && request.conversationOpen === true;
+
+    if (
+      !answering &&
+      request.actionsToThisProspectThisWeek >= request.maxActionsPerProspectPerWeek
+    ) {
       restrict(
         'rate_limit_prospect',
         'deny',
@@ -337,7 +347,7 @@ export function evaluatePolicy(request: PolicyRequest): PolicyResult {
 
     const cooldown = request.minHoursBetweenActions ?? DEFAULT_COOLDOWN_HOURS;
     const elapsed = request.hoursSinceLastActionToProspect;
-    if (elapsed !== undefined && elapsed < cooldown) {
+    if (!answering && elapsed !== undefined && elapsed < cooldown) {
       restrict(
         'cooldown',
         'deny',

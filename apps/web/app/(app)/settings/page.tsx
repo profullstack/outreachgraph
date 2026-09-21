@@ -2,13 +2,16 @@ import { redirect } from 'next/navigation';
 import { SettingsForm } from '../../../components/settings-form';
 import { MailboxForm } from '../../../components/mailbox-form';
 import { BlueskyForm } from '../../../components/bluesky-form';
+import { ApiKeysForm } from '../../../components/api-keys-form';
 import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
+  fetchApiKeys,
   fetchBlueskyIntegration,
   fetchEmailIntegration,
   fetchSettings,
+  type ApiKeyView,
   type BlueskyIntegrationView,
   type SettingsView,
 } from '../../../lib/api';
@@ -30,13 +33,15 @@ export default async function SettingsPage() {
   let settings: SettingsView | undefined;
   let mailbox: EmailIntegrationView | undefined;
   let bluesky: BlueskyIntegrationView | undefined;
+  let apiKeys: readonly ApiKeyView[] = [];
   let offline = false;
 
   try {
-    [settings, mailbox, bluesky] = await Promise.all([
+    [settings, mailbox, bluesky, apiKeys] = await Promise.all([
       fetchSettings(),
       fetchEmailIntegration(),
       fetchBlueskyIntegration(),
+      fetchApiKeys(),
     ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
@@ -69,6 +74,10 @@ export default async function SettingsPage() {
           {bluesky ? <BlueskyForm initial={bluesky} /> : null}
 
           <SettingsForm initial={settings} />
+
+          {/* Last: for the agents that drive the product, once it has
+              something to drive. */}
+          <ApiKeysForm initial={apiKeys} />
         </div>
       )}
     </div>

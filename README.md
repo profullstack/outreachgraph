@@ -247,3 +247,27 @@ score, a signal, a campaign or a workspace. One row shape,
 paged by `since` and an opaque `cursor`, cacheable for five minutes, sixty
 requests a minute per caller. The rule lives in `apps/api/src/public-directory.ts`
 and nowhere else; nichedb.dev reads it into its directory collection.
+
+## AutoGTM API
+
+The agent-facing surface: `/api/v1/autogtm/*`. Projects (one per product), campaigns with
+budgets in dollars per day, a project-level autopilot that splits the ceiling across campaigns
+by reply rate, an inbox with `need_reply` / `replied` / `sent` / `unsubscribed` tabs, replies,
+hot leads, named suppress lists for addresses and domains, and an import that makes a campaign
+from your own list.
+
+Read `/api/v1/public/llms.txt` first (the quick guide) and `/api/v1/public/openapi.json` for
+the schema. Both are keyless and rendered from one table in `apps/api/src/autogtm-docs.ts`, so
+a route cannot appear in one and not the other; a test refuses a documented route that does not
+exist.
+
+Authenticate with a workspace key: mint one on `/settings` (or `POST /api/v1/api-keys` with a
+session) and send it as `X-API-Key` on every request. A key acts with its owner's current
+role and cannot mint keys. The service token and its scope headers still work for internal
+callers.
+
+A dollar budget becomes `max_contacts_per_day = floor(usd / price_per_contact_usd)` on the
+campaign, which the policy engine enforces at send time like any other cap. Nothing in this
+surface can send outside the engine: a reply is a `send_email` card marked as a follow-up,
+approved by the call itself, and refused with 409 when the lead is suppressed or the budget is
+spent.
