@@ -1244,8 +1244,9 @@ async function actionCounts(db: Client, workspaceId: string, personId: string) {
 
   const today = await queryOne<{ n: number }>(
     db,
+    // Hand-offs are exempt from the daily limit; see `actionCounts` in the API.
     `SELECT count(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= ? AND ${countable}`,
+      WHERE workspace_id = ? AND created_at >= ? AND mode != 'manual' AND ${countable}`,
     [workspaceId, dayAgo, ...INTERNAL_ACTION_KINDS],
   );
   const week = await queryOne<{ n: number }>(

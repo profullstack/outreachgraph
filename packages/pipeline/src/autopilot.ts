@@ -769,9 +769,10 @@ const COUNTABLE_KINDS = `kind NOT IN (${INTERNAL_ACTION_KINDS.map(() => '?').joi
 async function countActionsToday(db: Client, workspaceId: string, at: Date): Promise<number> {
   const row = await queryOne<{ n: number }>(
     db,
+    // Hand-offs are exempt from the daily limit: a person paces those.
     `SELECT COUNT(*) AS n FROM actions
       WHERE workspace_id = ? AND created_at >= ? AND status != 'failed'
-        AND ${COUNTABLE_KINDS}`,
+        AND mode != 'manual' AND ${COUNTABLE_KINDS}`,
     [workspaceId, dayStart(at), ...INTERNAL_ACTION_KINDS],
   );
   return row?.n ?? 0;

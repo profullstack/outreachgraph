@@ -175,12 +175,28 @@ describe('approving a manual-only card', () => {
     expect(Number(actions.rows[0]?.n)).toBe(0);
   });
 
-  test('a rate limit is still refused, not handed off', async () => {
-    const { app, seeded } = await harness('handoff-rate-limit');
+  // Exempt by the owner's decision on 2026-09-24: the daily limit paces what
+  // the product does on its own, and a hand-off is paced by the person.
+  test('a full day does not hold a hand-off', async () => {
+    const { app, seeded } = await harness('handoff-daily-exempt');
     await linkedinCard(seeded);
     await seeded.db.execute({
       sql: `UPDATE campaigns SET budget_json = ? WHERE id = ?`,
       args: [JSON.stringify({ maxActionsPerDay: 0 }), SEED.campaignId],
+    });
+
+    const response = await send(app, 'POST', `/recommendations/${LINKEDIN_REC}/approve`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ApproveBody;
+    expect(body.handoff?.network).toBe('linkedin');
+  });
+
+  test('the per-prospect limit still holds a hand-off', async () => {
+    const { app, seeded } = await harness('handoff-prospect-limit');
+    await linkedinCard(seeded);
+    await seeded.db.execute({
+      sql: `UPDATE campaigns SET budget_json = ? WHERE id = ?`,
+      args: [JSON.stringify({ maxActionsPerProspectPerWeek: 0 }), SEED.campaignId],
     });
 
     const response = await send(app, 'POST', `/recommendations/${LINKEDIN_REC}/approve`);

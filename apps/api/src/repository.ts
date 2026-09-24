@@ -418,8 +418,13 @@ export async function actionCounts(
 
   const today = await queryOne<{ n: number }>(
     db,
+    // Hand-offs (mode 'manual') are left out of the daily total, by the owner's
+    // decision on 2026-09-24. That limit is about how fast the product acts
+    // on its own; a card a person carries out by hand is paced by the person.
+    // They still count per prospect below, so nobody is contacted twice.
     `SELECT count(*) AS n FROM actions
       WHERE workspace_id = ? AND created_at >= ? AND status != 'cancelled'
+        AND mode != 'manual'
         ${countable} ${exclude}`,
     [workspaceId, dayAgo, ...INTERNAL_ACTION_KINDS, ...excludeArgs],
   );
