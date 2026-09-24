@@ -206,3 +206,36 @@ export {
   type GravatarOptions,
   type GravatarProfile,
 } from './gravatar';
+
+export {
+  XClient,
+  XAuthError,
+  XWriteError,
+  tweetIdFromUrl,
+  X_API,
+  X_POST_LIMIT,
+  type XClientOptions,
+  type XUser,
+} from './x/client';
+
+export {
+  exchangeXCode,
+  newOAuthState,
+  pkcePair,
+  refreshXToken,
+  xAuthorizeUrl,
+  X_AUTHORIZE_URL,
+  X_SCOPES,
+  X_TOKEN_URL,
+  type XOAuthClient,
+  type XTokens,
+} from './x/oauth';
+
+export {
+  LinkedInSession,
+  LinkedInSessionError,
+  LinkedInWriteError,
+  threadUrnFromUrl,
+  type LinkedInMember,
+  type LinkedInSessionOptions,
+} from './linkedin/session';

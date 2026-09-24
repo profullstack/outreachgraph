@@ -38,6 +38,8 @@ export interface ApiClient {
   get(path: string, query?: Record<string, string | undefined>): Promise<unknown>;
   post(path: string, body?: unknown): Promise<unknown>;
   put(path: string, body?: unknown): Promise<unknown>;
+  /** Optional so existing fakes in tests need not grow one. */
+  delete?(path: string): Promise<unknown>;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -122,6 +124,7 @@ export function createClient(config: ApiConfig, fetchImpl: FetchLike = fetch): A
     },
     post: (path, body) => call('POST', path, body),
     put: (path, body) => call('PUT', path, body),
+    delete: (path) => call('DELETE', path),
   };
 }
 

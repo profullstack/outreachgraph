@@ -1063,6 +1063,7 @@ async function createRecommendation(
         WHERE workspace_id = ? AND campaign_id = ? AND person_id = ?
           AND status = 'pending' AND policy_status != 'manual_only'
           AND action NOT IN ('refresh_research', 'observe', 'wait')
+          AND ${CONNECTED_NETWORK}
         LIMIT 1`,
       [workspaceId, campaignId, personId],
     );
@@ -1072,7 +1073,8 @@ async function createRecommendation(
       sql: `UPDATE recommendations
                SET status = 'superseded'
              WHERE workspace_id = ? AND campaign_id = ? AND person_id = ?
-               AND status = 'pending' AND policy_status = 'manual_only'
+               AND status = 'pending'
+               AND (policy_status = 'manual_only' OR NOT ${CONNECTED_NETWORK})
                AND action NOT IN ('refresh_research', 'observe', 'wait')`,
       args: [workspaceId, campaignId, personId],
     });
@@ -1277,6 +1279,20 @@ async function featureFlags(db: Client, workspaceId: string): Promise<Record<str
   for (const row of rows) flags[row.key] = row.enabled === 1;
   return flags;
 }
+
+/**
+ * SQL: the card's network is one the workspace can act through.
+ *
+ * A stored `allow` is a snapshot, and until the connected-account check was
+ * per network it was wrong for every social network: 189 X replies were
+ * stored `allow` with no X account connected. Whether a card can run is
+ * therefore read from `integration_accounts` now, not from the snapshot.
+ */
+const CONNECTED_NETWORK = `(recommendations.network = 'email'
+  OR EXISTS (SELECT 1 FROM integration_accounts ia
+              WHERE ia.workspace_id = recommendations.workspace_id
+                AND ia.network = recommendations.network
+                AND ia.status = 'active'))`;
 
 async function connectedNetworks(db: Client, workspaceId: string): Promise<Set<string>> {
   const rows = await queryAll<{ network: string }>(

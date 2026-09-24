@@ -188,7 +188,11 @@ export interface SentPostRecord {
   readonly actor: AuditActor;
   readonly policyVersion?: string;
   readonly at?: string;
+  /** Which network the post went to. Bluesky when omitted, for existing callers. */
+  readonly network?: 'bluesky' | 'x' | 'linkedin';
 }
+
+const NETWORK_LABEL = { bluesky: 'Bluesky', x: 'X', linkedin: 'LinkedIn' } as const;
 
 /**
  * Everything a completed public reply implies.
@@ -200,6 +204,7 @@ export interface SentPostRecord {
  */
 export async function recordBlueskySent(db: Client, record: SentPostRecord): Promise<void> {
   const at = record.at ?? now();
+  const network = record.network ?? 'bluesky';
 
   await db.execute({
     sql: `UPDATE actions SET status = 'completed', external_id = ?, external_url = ?,
@@ -210,13 +215,14 @@ export async function recordBlueskySent(db: Client, record: SentPostRecord): Pro
   await db.execute({
     sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, action_id,
           network, direction, state, body, occurred_at, recorded_at)
-          VALUES (?, ?, ?, ?, ?, 'bluesky', 'outbound', 'contacted', ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, 'outbound', 'contacted', ?, ?, ?)`,
     args: [
       newId('interaction'),
       record.workspaceId,
       record.personId,
       record.campaignId,
       record.actionId,
+      network,
       record.body,
       at,
       at,
@@ -239,16 +245,19 @@ export async function recordBlueskySent(db: Client, record: SentPostRecord): Pro
     campaignId: record.campaignId,
     personId: record.personId,
     status: 'executed' satisfies ProspectStatus,
-    reason: `${record.actor.actorId} replied on Bluesky`,
+    reason: `${record.actor.actorId} acted on ${NETWORK_LABEL[network]}`,
     at,
   });
 
   await auditAction(db, record.workspaceId, record.actionId, record.actor, {
     eventType: 'action.executed',
     detail: {
-      mode: 'bluesky',
+      mode: network,
       url: record.url,
       ...(record.policyVersion ? { policyVersion: record.policyVersion } : {}),
     },
   });
 }
+
+/** The same bookkeeping for any network the product can post to. */
+export const recordSocialSent = recordBlueskySent;

@@ -79,7 +79,16 @@ export async function regenerateRecommendations(input: RegenerateInput): Promise
         AND r.campaign_id = ?
         AND r.status = 'pending'
         AND (r.action IN ('refresh_research', 'observe', 'wait')
-             OR r.policy_status = 'manual_only')
+             OR r.policy_status = 'manual_only'
+             -- Stored as runnable when the connected-account check was
+             -- workspace-wide, and held at approval since: 189 X replies in
+             -- production, all allow with no X account connected.
+             OR (r.network NOT IN ('email', 'website', 'rss')
+                 AND NOT EXISTS (
+                       SELECT 1 FROM integration_accounts ia
+                        WHERE ia.workspace_id = r.workspace_id
+                          AND ia.network = r.network
+                          AND ia.status = 'active')))
         AND p.status = 'active'
         AND p.outreach_eligible = 1
         AND EXISTS (

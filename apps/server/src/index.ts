@@ -69,6 +69,7 @@ import {
   workspacesWithReadableMailbox,
   type ListeningTargets,
   type QueuedJob,
+  runSocialDelivery,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
@@ -408,8 +409,23 @@ if (!coinpay) {
 // hostname in production, so this is the same origin the browser uses.
 const apiUrl = process.env.API_URL ?? appUrl;
 
+// The X app accounts are connected through, over OAuth 2.1. The callback is
+// registered on the X app as exactly this URL, so it is derived from the one
+// origin the API is served on rather than configured separately.
+const xOAuth =
+  process.env.X_CLIENT_ID && process.env.X_CLIENT_SECRET && apiUrl
+    ? {
+        clientId: process.env.X_CLIENT_ID,
+        clientSecret: process.env.X_CLIENT_SECRET,
+        redirectUri: `${apiUrl.replace(/\/$/, '')}/api/v1/x/oauth/callback`,
+      }
+    : undefined;
+
+if (!xOAuth) console.log('X_CLIENT_ID/X_CLIENT_SECRET unset: X cards stay hand-offs');
+
 // ---------------------------------------------------------------------- api
 const api = createApp({
+  ...(xOAuth ? { xOAuth } : {}),
   db,
   ...(coinpay ? { coinpay } : {}),
   ...(apiUrl ? { apiUrl } : {}),
@@ -668,6 +684,21 @@ async function runJob(job: QueuedJob): Promise<void> {
             : result.detail
               ? ` (${result.detail})`
               : ''),
+      );
+      return;
+    }
+    case 'deliver_social': {
+      const result = await runSocialDelivery(
+        {
+          db,
+          ...(encryptionKey ? { encryptionKey } : {}),
+          ...(xOAuth ? { xOAuth } : {}),
+        },
+        job,
+      );
+      console.log(
+        `deliver_social ${String(job.payload.network)} ${String(job.payload.actionId)}: ` +
+          (result.sent ? `sent ${result.url ?? ''}` : `not sent (${result.reason ?? 'unknown'})`),
       );
       return;
     }

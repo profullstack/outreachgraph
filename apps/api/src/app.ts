@@ -31,6 +31,7 @@ import {
 import {
   channelForNetwork,
   isNetwork,
+  isOutboundAction,
   newId,
   OUTBOUND_ACTION_KINDS,
   type ActionKind,
@@ -112,7 +113,19 @@ import {
   workspaceAnalytics,
   EmailAccountError,
   LISTEN_SOURCE_SLUGS,
+  completeXConnect,
+  connectLinkedInSession,
+  disconnectLinkedInSession,
+  disconnectXAccount,
+  isPacedNetwork,
+  linkedInAccountSummary,
+  LinkedInAccountError,
+  scheduleSocialDelivery,
+  startXConnect,
+  xAccountSummary,
+  XAccountError,
 } from '@outreachgraph/pipeline';
+import type { XOAuthClient } from '@outreachgraph/providers';
 import {
   archiveCampaign,
   createCampaignFromIntake,
@@ -125,6 +138,7 @@ import {
   setCampaignStatus,
 } from './campaigns';
 import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
+import { isHandoffDecision, listHandoffs, type Handoff } from './handoff';
 import { CoinPayClient } from '@outreachgraph/payments';
 import {
   billingOverview,
@@ -257,6 +271,11 @@ export interface AppOptions {
    * already-stored mailbox reads as disconnected.
    */
   readonly encryptionKey?: Buffer | undefined;
+  /**
+   * The X app this deployment connects accounts through (OAuth 2.1). Without
+   * it `og connect x` is refused and X cards stay hand-offs.
+   */
+  readonly xOAuth?: XOAuthClient | undefined;
   /**
    * Suggests the communities a campaign should listen to.
    *
@@ -742,6 +761,67 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
    * moving it silently breaks payments that have already been taken — the
    * failure arrives as credits that never appear, long after the deploy.
    */
+  /**
+   * Where X sends the browser back after the member approves (OAuth 2.1).
+   *
+   * Above the session guard because the request comes from X's redirect, not
+   * from a signed-in page; the single-use `state` is what ties it to the
+   * workspace that started it. The path follows the house shape,
+   * `/api/v1/<provider>/oauth/callback`, and must match the X app's
+   * registered callback exactly.
+   */
+  api.get('/x/oauth/callback', async (c) => {
+    const page = (title: string, detail: string, status: 200 | 400 | 503) =>
+      c.html(
+        `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">` +
+          `<title>${title}</title><body style="font:16px system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem">` +
+          `<h1 style="font-size:1.25rem">${title}</h1><p>${detail}</p></body>`,
+        status,
+      );
+
+    if (!options.xOAuth || !options.encryptionKey) {
+      return page('X is not configured here', 'This deployment has no X app.', 503);
+    }
+
+    const error = c.req.query('error');
+    if (error)
+      return page(
+        'X sign-in was cancelled',
+        'Nothing was connected. Run og connect x to try again.',
+        400,
+      );
+
+    const state = c.req.query('state') ?? '';
+    const code = c.req.query('code') ?? '';
+    if (!state || !code) return page('X sign-in failed', 'The link from X was incomplete.', 400);
+
+    try {
+      const connected = await completeXConnect(options.db, {
+        state,
+        code,
+        oauth: options.xOAuth,
+        encryptionKey: options.encryptionKey,
+      });
+      await repo.audit(options.db, {
+        workspaceId: connected.workspaceId,
+        actorKind: 'system',
+        actorId: 'x_oauth',
+        eventType: 'integration.connected',
+        entityKind: 'workspace',
+        entityId: connected.workspaceId,
+        detail: { network: 'x', username: connected.username },
+      });
+      return page(
+        `Connected @${escapeHtml(connected.username)}`,
+        'You can close this tab. The terminal will pick it up.',
+        200,
+      );
+    } catch (err) {
+      const detail = err instanceof XAccountError ? err.message : 'X did not accept the sign-in.';
+      return page('X sign-in failed', escapeHtml(detail), 400);
+    }
+  });
+
   api.post('/coinpay/callback', async (c) => {
     if (!options.coinpay) {
       throw new ApiError(503, 'payments_unconfigured', 'This deployment cannot take payments.');
@@ -2971,7 +3051,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     let approved = 0;
     let sent = 0;
+    let scheduled = 0;
     let researchQueued = 0;
+    // Counted apart from both `approved` and `held`. Folding them into
+    // `approved` would claim two hundred things happened when a human still
+    // has to do each one; folding them into `held` is the bug this replaces,
+    // where the preview read "Nothing here can be approved" over a queue of
+    // work that only needed a person to press the button.
+    let handoffs = 0;
     const holds = new Map<string, { reason: string; count: number }>();
 
     for (const row of selected) {
@@ -2986,6 +3073,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         );
 
         if (isExecutable(decision.decision, true)) approved += 1;
+        else if (isHandoffDecision(decision)) handoffs += 1;
         else tallyHold(holds, decision.gate, decision.reason);
 
         continue;
@@ -2993,6 +3081,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
       const outcome = await approveRecommendation(db, options, actor, recommendation, {
         ...(body.note ? { note: body.note } : {}),
+        allowHandoff: true,
       });
 
       if (!outcome.ok) {
@@ -3000,8 +3089,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         continue;
       }
 
+      if (outcome.handoff) {
+        handoffs += 1;
+        continue;
+      }
+
       approved += 1;
       if (outcome.delivery?.sent) sent += 1;
+      if (outcome.scheduled?.queued) scheduled += 1;
       if (outcome.research?.queued) researchQueued += 1;
     }
 
@@ -3015,7 +3110,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         eventType: 'recommendation.bulk_approved',
         entityKind: 'workspace',
         entityId: actor.workspaceId,
-        detail: { attempted: selected.length, approved, held, sent, filter, channel },
+        detail: { attempted: selected.length, approved, handoffs, held, sent, filter, channel },
       });
     }
 
@@ -3023,8 +3118,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       dryRun: body.dryRun === true,
       attempted: selected.length,
       approved,
+      handoffs,
       held,
       sent,
+      // X and LinkedIn posts queued to go out a few minutes apart.
+      scheduled,
       researchQueued,
       // Grouped rather than one row per card: two hundred cards behind four
       // shared inboxes is four facts, not two hundred.
@@ -3063,6 +3161,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const outcome = await approveRecommendation(db, options, actor, recommendation, {
       editedBody: body.editedBody,
       note: body.note,
+      allowHandoff: true,
+      draftIfMissing: true,
     });
 
     if (!outcome.ok) {
@@ -3079,7 +3179,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       actionId: outcome.actionId,
       policy: { decision: outcome.decision, policyVersion: outcome.policyVersion },
       ...(outcome.delivery ? { delivery: outcome.delivery } : {}),
+      ...(outcome.scheduled ? { scheduled: outcome.scheduled } : {}),
       ...(outcome.research ? { research: outcome.research } : {}),
+      ...(outcome.handoff ? { handoff: outcome.handoff } : {}),
     });
   });
 
@@ -3270,6 +3372,71 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     ]);
 
     return c.json({ snoozed: true, until: body.until });
+  });
+
+  // ------------------------------------------------------------- handoffs
+  //
+  // Approved work the product may not do itself, waiting for a person. Marking
+  // one done is `POST /actions/:id/execute` with mode `manual`, the route that
+  // has always recorded what a human did by hand; these two only list and
+  // dismiss, so there is still exactly one way an action is completed.
+
+  api.get('/handoffs', async (c) => {
+    const actor = c.get('actor');
+    const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 100) || 100, 1), 500);
+
+    const handoffs = await listHandoffs(c.get('db'), actor.workspaceId, { limit });
+    return c.json({ handoffs, more: handoffs.length === limit });
+  });
+
+  /**
+   * Dismissing a hand-off: the reviewer approved it, then decided against it.
+   *
+   * Cancelled rather than deleted, because `actionCounts` already ignores a
+   * cancelled action. A queued one counts against the prospect's weekly limit,
+   * so a dismissed card left queued would keep that person unreachable for a
+   * week on account of something nobody did.
+   */
+  api.post('/handoffs/:actionId/skip', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    const action = await repo.getAction(db, actor.workspaceId, c.req.param('actionId'));
+    if (!action) throw ApiError.notFound('action');
+    // Only a hand-off. An approved email waiting on its send is not this
+    // route's to cancel; it has its own controls.
+    if (action.mode !== 'manual') throw ApiError.badRequest('action is not a hand-off');
+    if (action.status !== 'queued') {
+      throw ApiError.badRequest(`action is already ${action.status}`);
+    }
+
+    await db.batch([
+      {
+        sql: `UPDATE actions SET status = 'cancelled' WHERE id = ? AND status = 'queued'`,
+        args: [action.id],
+      },
+      {
+        sql: `INSERT INTO approvals (id, workspace_id, recommendation_id, decision, decided_by, decided_at)
+              VALUES (?, ?, ?, 'skip', ?, ?)`,
+        args: [newId('approval'), actor.workspaceId, action.recommendation_id, actor.userId, now()],
+      },
+      {
+        sql: `UPDATE recommendations SET status = 'skipped' WHERE id = ?`,
+        args: [action.recommendation_id],
+      },
+    ]);
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'handoff.skipped',
+      entityKind: 'action',
+      entityId: action.id,
+      detail: { recommendationId: action.recommendation_id },
+    });
+
+    return c.json({ skipped: true, actionId: action.id });
   });
 
   // -------------------------------------------------------------- actions
@@ -4139,6 +4306,99 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     }
   });
 
+  /** The workspace's X account, and a sign-in in progress if there is one. */
+  api.get('/integrations/x', async (c) => {
+    const actor = c.get('actor');
+    return c.json({
+      canConnect: Boolean(options.xOAuth && options.encryptionKey),
+      account: await xAccountSummary(c.get('db'), actor.workspaceId),
+    });
+  });
+
+  /**
+   * Starts connecting an X account: returns the URL to open. `og connect x`
+   * opens it and polls `GET /integrations/x` until the callback lands.
+   */
+  api.post('/integrations/x/oauth/start', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting an X account');
+    if (!options.xOAuth || !options.encryptionKey) {
+      throw new ApiError(503, 'x_unconfigured', 'This deployment has no X app (X_CLIENT_ID).');
+    }
+    const started = await startXConnect(c.get('db'), {
+      workspaceId: actor.workspaceId,
+      oauth: options.xOAuth,
+      encryptionKey: options.encryptionKey,
+    });
+    return c.json({ authorizeUrl: started.authorizeUrl, expiresAt: started.expiresAt });
+  });
+
+  api.delete('/integrations/x', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('disconnecting an X account');
+    return c.json({ disconnected: await disconnectXAccount(c.get('db'), actor.workspaceId) });
+  });
+
+  /** The workspace's LinkedIn session, if one is connected. */
+  api.get('/integrations/linkedin', async (c) => {
+    const actor = c.get('actor');
+    return c.json({
+      canConnect: Boolean(options.encryptionKey),
+      account: await linkedInAccountSummary(c.get('db'), actor.workspaceId),
+    });
+  });
+
+  /**
+   * Connects a LinkedIn session from the member's `li_at` cookie.
+   *
+   * There is no OAuth route to commenting on someone else's post, so this is
+   * the one connect that takes a pasted credential. `acknowledgeTerms` must be
+   * true: automating LinkedIn is against its terms and risks the account, and
+   * that choice is recorded against the person who made it.
+   */
+  api.put('/integrations/linkedin', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting a LinkedIn session');
+    if (!options.encryptionKey) {
+      throw new ApiError(503, 'no_key', 'This deployment has no SECRET_ENCRYPTION_KEY.');
+    }
+    const body = await parseBody(
+      c.req.raw,
+      z.object({ liAt: z.string().min(20), acknowledgeTerms: z.literal(true) }),
+    );
+    try {
+      const account = await connectLinkedInSession(db, {
+        workspaceId: actor.workspaceId,
+        liAt: body.liAt,
+        encryptionKey: options.encryptionKey,
+      });
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'integration.connected',
+        entityKind: 'workspace',
+        entityId: actor.workspaceId,
+        detail: { network: 'linkedin', sessionAutomation: true, acknowledgedTerms: true },
+      });
+      return c.json({ account });
+    } catch (error) {
+      if (error instanceof LinkedInAccountError) {
+        throw ApiError.badRequest(`LinkedIn refused that cookie: ${error.message}`);
+      }
+      throw error;
+    }
+  });
+
+  api.delete('/integrations/linkedin', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('disconnecting a LinkedIn session');
+    return c.json({
+      disconnected: await disconnectLinkedInSession(c.get('db'), actor.workspaceId),
+    });
+  });
+
   api.delete('/integrations/bluesky', async (c) => {
     const actor = c.get('actor');
     if (!canApprove(actor)) throw ApiError.forbidden('disconnecting a Bluesky account');
@@ -4700,7 +4960,10 @@ export type ApproveOutcome =
       readonly decision: string;
       readonly policyVersion: string;
       readonly delivery?: { sent: boolean; to?: string; reason?: string };
+      readonly scheduled?: { queued: boolean; runAt: string };
       readonly research?: { queued: boolean; url?: string; reason?: string };
+      /** Present when the approval produced a hand-off card for a human to act on. */
+      readonly handoff?: Handoff;
     };
 
 /**
@@ -4721,11 +4984,36 @@ async function approveRecommendation(
   options: AppOptions,
   actor: RequestActor,
   recommendation: repo.RecommendationRow,
-  input: { readonly editedBody?: string | undefined; readonly note?: string | undefined },
+  input: {
+    readonly editedBody?: string | undefined;
+    readonly note?: string | undefined;
+    /**
+     * Write a draft for a hand-off that has none. One model call per card, so
+     * the single-card route asks for it and the bulk route does not: two
+     * hundred inline drafts would be a two-hundred-call invoice behind one
+     * button, and the card works without one (the text is picked up from the
+     * drafts table whenever one is written later).
+     */
+    readonly draftIfMissing?: boolean;
+    /**
+     * Accept a hand-off as an outcome. The reviewer's routes do; the AutoGTM
+     * reply route does not, because an agent asking to send a reply needs a
+     * send or a refusal it can act on, not a card waiting for a human.
+     */
+    readonly allowHandoff?: boolean;
+  },
 ): Promise<ApproveOutcome> {
   const decision = await recheckPolicy(db, actor, recommendation, options.mailer !== undefined);
 
-  if (!isExecutable(decision.decision, true)) {
+  // `manual_only` from the capability matrix or a missing account is not a
+  // refusal: it is permitted work a person has to do by hand. Production held
+  // 200 cards this way (175 LinkedIn engagement, 25 X replies with no account
+  // connected) and approving any of them was a 409, so none ever reached the
+  // human who could have done them. They are approved as hand-offs instead.
+  // Anything else short of executable, `deny` above all, is still refused.
+  const handoff = input.allowHandoff === true && isHandoffDecision(decision);
+
+  if (!isExecutable(decision.decision, true) && !handoff) {
     await repo.audit(db, {
       workspaceId: actor.workspaceId,
       actorKind: 'user',
@@ -4745,10 +5033,35 @@ async function approveRecommendation(
     };
   }
 
-  const draft = await db.execute({
+  let draft = await db.execute({
     sql: 'SELECT body FROM drafts WHERE recommendation_id = ? LIMIT 1',
     args: [recommendation.id],
   });
+
+  // A hand-off's whole value is the text to paste, so one without a draft
+  // gets one written here when the caller will pay for it. A refusal or an
+  // error leaves an empty textarea rather than blocking the approval: the
+  // person can still open the post and write two lines themselves.
+  if (
+    handoff &&
+    input.draftIfMissing &&
+    !input.editedBody &&
+    draft.rows.length === 0 &&
+    options.model &&
+    isOutboundAction(recommendation.action as ActionKind)
+  ) {
+    try {
+      const drafted = await draftForRecommendation(db, options.model, recommendation.id);
+      if (drafted.ok) {
+        draft = await db.execute({
+          sql: 'SELECT body FROM drafts WHERE recommendation_id = ? LIMIT 1',
+          args: [recommendation.id],
+        });
+      }
+    } catch (error) {
+      console.warn('hand-off draft failed', recommendation.id, error);
+    }
+  }
 
   const finalBody = input.editedBody ?? (draft.rows[0]?.body as string | undefined) ?? undefined;
 
@@ -4800,7 +5113,12 @@ async function approveRecommendation(
     eventType: 'recommendation.approved',
     entityKind: 'recommendation',
     entityId: recommendation.id,
-    detail: { actionId, decision: decision.decision, edited: Boolean(input.editedBody) },
+    detail: {
+      actionId,
+      decision: decision.decision,
+      edited: Boolean(input.editedBody),
+      ...(handoff ? { handoff: true, gate: decision.gate } : {}),
+    },
   });
 
   // Approving an email is the instruction to send it.
@@ -4814,6 +5132,20 @@ async function approveRecommendation(
   const delivery =
     mode === 'customer_managed' && recommendation.network === 'email'
       ? await sendEmailAction(db, options, actor, actionId, decision.policyVersion)
+      : undefined;
+
+  // Approving an X or LinkedIn card is the same instruction, carried out at a
+  // human pace: scheduled behind the workspace's other approved posts rather
+  // than sent inline, so "approve all" is not a hundred posts in one second.
+  const scheduled =
+    mode !== 'manual' && isPacedNetwork(recommendation.network)
+      ? await scheduleSocialDelivery(db, {
+          workspaceId: actor.workspaceId,
+          actionId,
+          network: recommendation.network,
+          actor: { actorKind: 'user', actorId: actor.userId },
+          policyVersion: decision.policyVersion,
+        })
       : undefined;
 
   // Approving research is the instruction to go and research.
@@ -4865,8 +5197,20 @@ async function approveRecommendation(
     decision: decision.decision,
     policyVersion: decision.policyVersion,
     ...(delivery ? { delivery } : {}),
+    ...(scheduled ? { scheduled } : {}),
     ...(research ? { research } : {}),
+    ...(handoff ? { handoff: await handoffFor(db, actor.workspaceId, actionId) } : {}),
   };
+}
+
+/** The card for an action just written, read back through the same query the list uses. */
+async function handoffFor(
+  db: Client,
+  workspaceId: string,
+  actionId: string,
+): Promise<Handoff | undefined> {
+  const [card] = await listHandoffs(db, workspaceId, { limit: 1, actionId });
+  return card;
 }
 
 /**
@@ -5028,6 +5372,8 @@ function modeForNetwork(network: Network): 'official_api' | 'manual' | 'crm' | '
   // Sent through a mailbox the customer owns, which is what the capability
   // matrix has always called this channel.
   if (network === 'email') return 'customer_managed';
+  // The member's own session, which is what the capability matrix calls it.
+  if (network === 'linkedin') return 'customer_managed';
   if (network === 'x' || network === 'bluesky' || network === 'github') return 'official_api';
   return 'manual';
 }
