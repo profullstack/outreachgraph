@@ -86,6 +86,17 @@ export default async function CadencePage({ params }: { params: Promise<{ id: st
                 </span>
               </div>
 
+              {step.condition && step.condition !== 'always' ? (
+                <p className="mt-1 text-xs font-medium">
+                  {CONDITION_LABELS[step.condition] ?? step.condition}
+                </p>
+              ) : null}
+              {step.wait_for_acceptance_hours ? (
+                <p className="text-ink-muted mt-1 text-xs">
+                  Waits up to {formatHours(step.wait_for_acceptance_hours)} for them to accept
+                  before the next connection-dependent step decides.
+                </p>
+              ) : null}
               {step.intent ? <p className="text-ink-muted mt-1 text-xs">{step.intent}</p> : null}
             </li>
           ))}
@@ -139,6 +150,14 @@ export default async function CadencePage({ params }: { params: Promise<{ id: st
     </div>
   );
 }
+
+const CONDITION_LABELS: Record<string, string> = {
+  if_connected: 'Only if connected on LinkedIn',
+  if_not_connected: 'Only if not connected on LinkedIn',
+  if_no_reply: 'Only if they have not replied',
+  if_clicked: 'Only if they clicked a link',
+  if_not_clicked: 'Only if they have not clicked',
+};
 
 function formatHours(hours: number): string {
   if (hours === 0) return 'no wait';

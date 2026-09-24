@@ -273,12 +273,12 @@ describe('advanceCadences', () => {
   });
 
   test('turns a step we may not automate into a human one', async () => {
-    // The whole point. LinkedIn messaging is `manual_only` in the capability
+    // The whole point. X direct messaging is `manual_only` in the capability
     // matrix, so the same plan shape produces a human touch here rather than
     // being refused or, worse, automated.
     seeded = await seedDatabase('cadence-manual');
     const { db } = seeded;
-    const id = await plan(db, [step({ network: 'linkedin', action: 'send_dm' })]);
+    const id = await plan(db, [step({ network: 'x', action: 'send_dm' })]);
     await enroll(db, id, new Date('2026-08-18T09:00:00.000Z'));
 
     const { result } = await advance(db, { at: new Date('2026-08-18T09:00:01.000Z') });
@@ -295,7 +295,7 @@ describe('advanceCadences', () => {
     const { db } = seeded;
     const id = await plan(db, [
       step({ position: 0, network: 'email', action: 'send_email' }),
-      step({ position: 1, network: 'linkedin', action: 'send_dm', delayHours: 24 }),
+      step({ position: 1, network: 'x', action: 'send_dm', delayHours: 24 }),
     ]);
     await enroll(db, id, new Date('2026-08-18T09:00:00.000Z'));
 

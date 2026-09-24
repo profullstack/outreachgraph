@@ -72,6 +72,7 @@ export const ID_PREFIXES = {
   rule: 'rul',
   ruleRun: 'rrn',
   invitation: 'inv',
+  linkedinConnection: 'lic',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

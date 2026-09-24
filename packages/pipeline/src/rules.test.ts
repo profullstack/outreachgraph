@@ -325,8 +325,8 @@ describe('the boundary', () => {
 
   test('an enrolled prospect still goes through the capability matrix', async () => {
     // A rule enrolling somebody onto a LinkedIn plan does not make LinkedIn
-    // automatable. The step is resolved when it falls due, and lands as a
-    // human step.
+    // automatable. The step is resolved when it falls due — its condition,
+    // then the capability matrix against the session in force then.
     seeded = await seedDatabase('rules-still-gated');
     const { db } = seeded;
 
@@ -342,6 +342,7 @@ describe('the boundary', () => {
           action: 'send_dm',
           delayHours: 0,
           stopOnReply: true,
+          condition: 'if_connected',
         },
       ],
     });

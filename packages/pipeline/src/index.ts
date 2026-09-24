@@ -353,9 +353,21 @@ export {
 } from './linkedin-account';
 export { deliverLinkedInAction, type DeliverLinkedInResult } from './outreach-linkedin';
 export {
+  capGroupFor,
+  capsFor,
   isPacedNetwork,
+  LINKEDIN_ACTION_CAPS,
   PACING,
   runSocialDelivery,
   scheduleSocialDelivery,
+  type CapGroup,
   type PacedNetwork,
 } from './social-delivery';
+export {
+  checkLinkedInAcceptances,
+  recordInvitationSent,
+  recordObservedStatus,
+  workspacesWithLinkedInSession,
+  type AcceptanceCheckResult,
+} from './linkedin-connections';
+export { resolveStepCondition, type ConditionVerdict } from './cadence-conditions';

@@ -212,8 +212,9 @@ function RefusalSection() {
           </h2>
           <p className="text-ink-muted mt-4 text-[17px] leading-relaxed">
             The policy engine is arithmetic, not judgement. No model is in the loop, an unknown
-            network is a deny, and LinkedIn automation isn’t discouraged — it’s unreachable. The
-            check runs again when you approve, not when the card was made.
+            network is a deny, and LinkedIn is never automated by default — only through your own
+            session, after you accept the risk, paced and capped. The check runs again when you
+            approve, not when the card was made.
           </p>
         </div>
 
@@ -261,7 +262,7 @@ function SiteFooter() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <BrandLockup size="sm" />
         <span className="text-ink-muted text-[13px]">
-          No LinkedIn automation. Suppression survives deletion.
+          LinkedIn only through your own session, opt-in. Suppression survives deletion.
         </span>
       </div>
 

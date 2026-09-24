@@ -190,6 +190,13 @@ export interface SentPostRecord {
   readonly at?: string;
   /** Which network the post went to. Bluesky when omitted, for existing callers. */
   readonly network?: 'bluesky' | 'x' | 'linkedin';
+  /**
+   * False for an action the person may notice but that says nothing to them —
+   * a profile visit, a follow. Those complete the card and the funnel step,
+   * but are not a contact: they write no `contacted` interaction and leave the
+   * campaign's interaction state alone. Omitted means true.
+   */
+  readonly countsAsContact?: boolean;
 }
 
 const NETWORK_LABEL = { bluesky: 'Bluesky', x: 'X', linkedin: 'LinkedIn' } as const;
@@ -212,22 +219,26 @@ export async function recordBlueskySent(db: Client, record: SentPostRecord): Pro
     args: [record.uri, record.url, at, record.actionId],
   });
 
-  await db.execute({
-    sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, action_id,
-          network, direction, state, body, occurred_at, recorded_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'outbound', 'contacted', ?, ?, ?)`,
-    args: [
-      newId('interaction'),
-      record.workspaceId,
-      record.personId,
-      record.campaignId,
-      record.actionId,
-      network,
-      record.body,
-      at,
-      at,
-    ],
-  });
+  const contact = record.countsAsContact !== false;
+
+  if (contact) {
+    await db.execute({
+      sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, action_id,
+            network, direction, state, body, occurred_at, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'outbound', 'contacted', ?, ?, ?)`,
+      args: [
+        newId('interaction'),
+        record.workspaceId,
+        record.personId,
+        record.campaignId,
+        record.actionId,
+        network,
+        record.body,
+        at,
+        at,
+      ],
+    });
+  }
 
   await db.execute({
     sql: `UPDATE recommendations SET status = 'executed' WHERE id = ?`,
@@ -235,8 +246,10 @@ export async function recordBlueskySent(db: Client, record: SentPostRecord): Pro
   });
 
   await db.execute({
-    sql: `UPDATE campaign_people SET interaction_state = 'contacted', last_actioned_at = ?
-           WHERE campaign_id = ? AND person_id = ?`,
+    sql: contact
+      ? `UPDATE campaign_people SET interaction_state = 'contacted', last_actioned_at = ?
+           WHERE campaign_id = ? AND person_id = ?`
+      : `UPDATE campaign_people SET last_actioned_at = ? WHERE campaign_id = ? AND person_id = ?`,
     args: [at, record.campaignId, record.personId],
   });
 

@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { ApiError, createClient, type FetchLike } from '@outreachgraph/mcp/src/client';
-import { commandByName, usage } from './commands';
+import { commandByName, parseStepSpec, usage } from './commands';
 import { explain, parseArgv } from './index';
 
 const CONFIG = {
@@ -198,6 +198,92 @@ describe('commands', () => {
 
     expect(output).toContain('4 answered');
     expect(output).toContain('7 remaining');
+  });
+});
+
+describe('cadences', () => {
+  test('a step spec carries its delay, condition and acceptance wait', () => {
+    expect(parseStepSpec('linkedin:connect:24::168', 1)).toEqual({
+      position: 1,
+      network: 'linkedin',
+      action: 'connect',
+      delayHours: 24,
+      waitForAcceptanceHours: 168,
+    });
+    expect(parseStepSpec('email:send_email:0:if_not_connected', 3)).toEqual({
+      position: 3,
+      network: 'email',
+      action: 'send_email',
+      delayHours: 0,
+      condition: 'if_not_connected',
+    });
+    expect(() => parseStepSpec('linkedin', 0)).toThrow('network:action');
+    expect(() => parseStepSpec('linkedin:connect:soon', 0)).toThrow('not a number');
+  });
+
+  test('create posts the whole branching plan', async () => {
+    const { client: api, calls } = client({ cadenceId: 'cad_1' });
+
+    const output = await commandByName('cadences')!.run({
+      client: api,
+      args: ['create'],
+      flags: {
+        name: 'Visit, invite, DM or email',
+        step: [
+          'linkedin:view_profile',
+          'linkedin:connect:24::168',
+          'linkedin:send_dm:0:if_connected',
+          'email:send_email:0:if_not_connected',
+        ] as never,
+        active: true,
+      },
+    });
+
+    expect(output).toBe('Created cad_1 (active)');
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/cadences');
+    expect(calls[0]?.body).toMatchObject({
+      name: 'Visit, invite, DM or email',
+      status: 'active',
+      steps: [
+        { position: 0, network: 'linkedin', action: 'view_profile', delayHours: 0 },
+        { position: 1, action: 'connect', delayHours: 24, waitForAcceptanceHours: 168 },
+        { position: 2, action: 'send_dm', condition: 'if_connected' },
+        { position: 3, network: 'email', condition: 'if_not_connected' },
+      ],
+    });
+  });
+
+  test('show prints each step’s condition', async () => {
+    const { client: api } = client({
+      cadence: { id: 'cad_1', name: 'Plan', status: 'active' },
+      steps: [
+        {
+          position: 0,
+          network: 'linkedin',
+          action: 'connect',
+          delay_hours: 0,
+          condition: 'always',
+          wait_for_acceptance_hours: 168,
+        },
+        {
+          position: 1,
+          network: 'linkedin',
+          action: 'send_dm',
+          delay_hours: 24,
+          condition: 'if_connected',
+          wait_for_acceptance_hours: null,
+        },
+      ],
+    });
+
+    const output = await commandByName('cadences')!.run({
+      client: api,
+      args: ['show', 'cad_1'],
+      flags: {},
+    });
+
+    expect(output).toContain('waits 168h for acceptance');
+    expect(output).toContain('if_connected');
   });
 });
 

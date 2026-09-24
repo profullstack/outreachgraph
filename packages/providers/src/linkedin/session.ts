@@ -14,12 +14,18 @@
  * a person. The pacing in `outreach-linkedin.ts` exists for that reason and is
  * not a performance knob.
  *
+ * The same is true of the rest of what a member does by hand — inviting,
+ * visiting a profile, following, messaging a connection. The official API
+ * offers none of them to a third party, so they go the same way, under the
+ * same opt-in, and are paced harder (see `social-delivery.ts`): LinkedIn
+ * watches invitation volume in particular, and caps it weekly.
+ *
  * Voyager is undocumented and changes without notice. Every failure here is
  * reported as a reason on the card, which falls back to a hand-off, rather
  * than retried blindly.
  */
 
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import type { FetchLike } from '../site/fetch';
 
 const VOYAGER = 'https://www.linkedin.com/voyager/api';
@@ -63,6 +69,149 @@ export function threadUrnFromUrl(url: string): string | undefined {
   return undefined;
 }
 
+/**
+ * LinkedIn's limit on an invitation note.
+ *
+ * 300 is what the Connect dialog enforces for Premium members. Free accounts
+ * have been capped at 200 characters, and at a handful of personalised
+ * invitations a month, since 2023; LinkedIn refuses the over-long or
+ * over-quota note itself, and that refusal comes back as the card's reason.
+ * Enforced here as well so a note that can only fail is never sent.
+ */
+export const INVITATION_NOTE_LIMIT = 300;
+
+/** LinkedIn's limit on one direct message. */
+export const MESSAGE_LIMIT = 8000;
+
+/** Where a person stands with the member whose session this is. */
+export type LinkedInConnectionStatus = 'connected' | 'pending' | 'none';
+
+export interface LinkedInProfile {
+  /** `urn:li:fsd_profile:ACoAA…`, what every write addresses. */
+  readonly profileUrn: string;
+  readonly publicIdentifier?: string;
+  readonly status: LinkedInConnectionStatus;
+}
+
+/**
+ * The member identity to look a profile up by, from whatever we stored.
+ *
+ * `social_identities` holds LinkedIn people three ways: a profile URL from a
+ * crawl or a search result, a bare vanity name, or an `fsd_profile` URN from a
+ * provider. All three reduce to the one string Voyager's `memberIdentity`
+ * query takes. A company page is not a person and returns undefined.
+ */
+export function memberIdentityFrom(ref: string): string | undefined {
+  const trimmed = ref.trim();
+  if (!trimmed) return undefined;
+
+  const urn = /urn:li:(?:fsd_profile|fs_miniProfile|fs_profile):([A-Za-z0-9_-]+)/.exec(trimmed);
+  if (urn) return urn[1];
+
+  if (/^https?:\/\//i.test(trimmed) || /linkedin\.com\//i.test(trimmed)) {
+    try {
+      const url = new URL(/^https?:/i.test(trimmed) ? trimmed : `https://${trimmed}`);
+      const [kind, id] = url.pathname.split('/').filter(Boolean);
+      if (kind !== 'in' || !id) return undefined;
+      return decodeURIComponent(id);
+    } catch {
+      return undefined;
+    }
+  }
+
+  return /^[A-Za-z0-9_%.-]{2,100}$/.test(trimmed) ? trimmed : undefined;
+}
+
+/**
+ * The entity to follow: a person's `fsd_profile` or a company's `fsd_company`.
+ *
+ * A company is accepted as its URN or as a `/company/<numeric id>/` URL. A
+ * company *vanity* URL (`/company/acme/`) needs a lookup this module does not
+ * make, and is refused rather than guessed.
+ */
+export function followTargetFrom(
+  ref: string,
+): { kind: 'company'; urn: string } | { kind: 'profile'; identity: string } | undefined {
+  const trimmed = ref.trim();
+  const company = /urn:li:(?:fsd_company|fs_normalized_company|company|organization):(\d+)/.exec(
+    trimmed,
+  );
+  if (company) return { kind: 'company', urn: `urn:li:fsd_company:${company[1]}` };
+  const companyUrl = /linkedin\.com\/company\/(\d+)(?:[/?#]|$)/i.exec(trimmed);
+  if (companyUrl) return { kind: 'company', urn: `urn:li:fsd_company:${companyUrl[1]}` };
+  if (/linkedin\.com\/company\//i.test(trimmed)) return undefined;
+
+  const identity = memberIdentityFrom(trimmed);
+  return identity ? { kind: 'profile', identity } : undefined;
+}
+
+/**
+ * Reads the connection state out of a top-card response.
+ *
+ * The profile read answers `{ data, included }`: `data['*elements']` names the
+ * subject, and `included` carries a `MemberRelationship` for it — and also a
+ * `Profile` for *us*, as the potential inviter, which is why the subject is
+ * picked by URN rather than by position. The union has three branches:
+ *
+ *   connection                                  -> connected
+ *   noConnection.invitationUnion.noInvitation   -> none
+ *   noConnection.invitationUnion.invitation     -> pending
+ *
+ * The first two shapes were captured from the web client in September 2026
+ * (OpenRecruiterTools/linkedin-toolkit, fixture `profileView.json`). The
+ * `invitation` branch is UNVERIFIED: it is the sibling the union implies, but
+ * it has not been watched on a live pending invite. `memberDistance:
+ * DISTANCE_1` is also read as connected, as a fallback.
+ */
+export function relationshipFromTopCard(body: unknown): LinkedInProfile | undefined {
+  const root = (body ?? {}) as {
+    data?: { '*elements'?: string[] };
+    included?: Record<string, unknown>[];
+  };
+  const included = Array.isArray(root.included) ? root.included : [];
+  const subjectUrn = root.data?.['*elements']?.find((urn) => urn.startsWith('urn:li:fsd_profile:'));
+  const subject = subjectUrn ? included.find((e) => e.entityUrn === subjectUrn) : undefined;
+  if (!subjectUrn) return undefined;
+
+  const profileId = subjectUrn.slice('urn:li:fsd_profile:'.length);
+  const relationship = included.find(
+    (e) => e.entityUrn === `urn:li:fsd_memberRelationship:${profileId}`,
+  );
+
+  return {
+    profileUrn: subjectUrn,
+    ...(typeof subject?.publicIdentifier === 'string'
+      ? { publicIdentifier: subject.publicIdentifier }
+      : {}),
+    status: statusOf(relationship),
+  };
+}
+
+function statusOf(relationship: Record<string, unknown> | undefined): LinkedInConnectionStatus {
+  if (!relationship) return 'none';
+  const union = (relationship.memberRelationshipUnion ?? {}) as Record<string, unknown>;
+  if (union.connection) return 'connected';
+
+  const no = (union.noConnection ?? {}) as Record<string, unknown>;
+  if (no.memberDistance === 'DISTANCE_1') return 'connected';
+
+  const invitationUnion = (no.invitationUnion ?? {}) as Record<string, unknown>;
+  const data = (relationship.memberRelationshipData ?? {}) as Record<string, unknown>;
+  if (invitationUnion.invitation || data.invitation) return 'pending';
+  return 'none';
+}
+
+/** `urn:li:fs_miniProfile:X` (what `/me` returns) as the `fsd_profile` URN writes use. */
+function fsdProfileUrn(urn: string): string {
+  const id = /:([A-Za-z0-9_-]+)$/.exec(urn)?.[1];
+  return id ? `urn:li:fsd_profile:${id}` : urn;
+}
+
+/** The decoration the web client's own profile page asks for. */
+const TOP_CARD = 'com.linkedin.voyager.dash.deco.identity.profile.WebTopCardCore-19';
+const INVITATION_RESULT =
+  'com.linkedin.voyager.dash.deco.relationships.InvitationCreationResultWithInvitee-2';
+
 export interface LinkedInSessionOptions {
   readonly fetchImpl?: FetchLike;
   readonly timeoutMs?: number;
@@ -73,6 +222,7 @@ export class LinkedInSession {
   readonly #csrf: string;
   readonly #fetch: FetchLike;
   readonly #timeoutMs: number;
+  #mailbox: string | undefined;
 
   constructor(liAt: string, options: LinkedInSessionOptions = {}) {
     this.#liAt = liAt.trim().replace(/^li_at=/, '');
@@ -120,6 +270,172 @@ export class LinkedInSession {
     )) as { data?: { entityUrn?: string }; value?: { entityUrn?: string } } | undefined;
     const urn = body?.data?.entityUrn ?? body?.value?.entityUrn;
     return urn ? { urn } : {};
+  }
+
+  /**
+   * Looks one person up: their profile URN and where they stand with us.
+   *
+   * `GET /identity/dash/profiles?q=memberIdentity` with the top-card
+   * decoration, which is what the profile page itself loads and the only read
+   * that still states the relationship. A third party captured it working in
+   * September 2026; it has not been watched live from here.
+   *
+   * LinkedIn meters it as a profile view for commercial-use limits, which is
+   * one more reason every caller paces it.
+   */
+  async lookupProfile(profile: string): Promise<LinkedInProfile> {
+    const identity = memberIdentityFrom(profile);
+    if (!identity) throw new LinkedInWriteError(`not a LinkedIn profile: ${profile}`, 400);
+
+    const query = new URLSearchParams({
+      q: 'memberIdentity',
+      memberIdentity: identity,
+      decorationId: TOP_CARD,
+    });
+    const body = await this.#request('GET', `/identity/dash/profiles?${query.toString()}`);
+    const found = relationshipFromTopCard(body);
+    if (!found) throw new LinkedInWriteError(`linkedin has no profile for ${identity}`, 404);
+    return found;
+  }
+
+  /** Where this person stands with the member: connected, invited, or neither. */
+  async connectionStatus(profile: string): Promise<LinkedInConnectionStatus> {
+    return (await this.lookupProfile(profile)).status;
+  }
+
+  /**
+   * Visits a profile, the way opening it in the browser does.
+   *
+   * UNVERIFIED as a *visit*: the read is the same top-card request the profile
+   * page makes, but whether it alone puts us in the member's "who viewed your
+   * profile" list, or whether that also needs the page's separate tracking
+   * beacon (which this deliberately does not forge), has not been observed.
+   * The older `identity/profiles/{id}/profileView` endpoint answers 410.
+   */
+  async viewProfile(profile: string): Promise<LinkedInProfile> {
+    return this.lookupProfile(profile);
+  }
+
+  /**
+   * Sends a connection invitation, with an optional note.
+   *
+   * `POST voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreateV2`,
+   * the Connect dialog's own request. A third party captured it succeeding on
+   * 2026-09-09 (success is `data.value['*invitation']`); it has not been sent
+   * from here, so it is UNVERIFIED against the live client.
+   *
+   * A note-less invitation omits `customMessage` entirely. An empty string is
+   * not the same thing to LinkedIn: it spends one of the free tier's few
+   * personalised invitations.
+   */
+  async connect(profile: string, note?: string): Promise<{ invitationUrn?: string }> {
+    const message = note?.trim() ?? '';
+    if (message.length > INVITATION_NOTE_LIMIT) {
+      throw new LinkedInWriteError(
+        `an invitation note may be at most ${INVITATION_NOTE_LIMIT} characters (this one is ${message.length})`,
+        400,
+      );
+    }
+
+    const profileUrn = await this.#profileUrn(profile);
+    const body = (await this.#request(
+      'POST',
+      `/voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreateV2&decorationId=${INVITATION_RESULT}`,
+      {
+        invitee: { inviteeUnion: { memberProfile: profileUrn } },
+        ...(message ? { customMessage: message } : {}),
+      },
+    )) as
+      { data?: { value?: Record<string, unknown>; code?: unknown; message?: unknown } } | undefined;
+
+    const value = body?.data?.value ?? {};
+    const invitationUrn = value['*invitation'] ?? value.invitationUrn;
+    if (typeof invitationUrn === 'string') return { invitationUrn };
+
+    // LinkedIn sometimes refuses with a 200 and no invitation: a duplicate, or
+    // an exhausted weekly allowance. Reported, never retried.
+    if (body?.data?.code !== undefined || body?.data?.message !== undefined) {
+      throw new LinkedInWriteError(
+        `linkedin refused the invitation: ${String(body.data.code ?? '')} ${String(body.data.message ?? '')}`.trim(),
+        200,
+      );
+    }
+    return {};
+  }
+
+  /**
+   * Follows a person or a company without connecting.
+   *
+   * `POST /feed/dash/followingStates/<urn:li:fsd_followingState:…>` with
+   * `{"patch":{"$set":{"following":true}}}`. The same request with `false` is
+   * the Following manager's Unfollow button, captured working in September
+   * 2026; the `true` direction is UNVERIFIED, inferred from it.
+   */
+  async follow(target: string): Promise<{ urn: string }> {
+    const parsed = followTargetFrom(target);
+    if (!parsed) throw new LinkedInWriteError(`cannot follow ${target}`, 400);
+    const urn =
+      parsed.kind === 'company'
+        ? parsed.urn
+        : (await this.lookupProfile(parsed.identity)).profileUrn;
+
+    const state = encodeURIComponent(`urn:li:fsd_followingState:${urn}`);
+    await this.#request('POST', `/feed/dash/followingStates/${state}`, {
+      patch: { $set: { following: true } },
+    });
+    return { urn };
+  }
+
+  /**
+   * Sends a direct message to a 1st-degree connection.
+   *
+   * `POST voyagerMessagingDashMessengerMessages?action=createMessage`,
+   * addressed from our own mailbox (`/me`, as an `fsd_profile` URN) to the
+   * recipient's. The body follows two independent September 2026 captures of
+   * the web client; a new conversation names its recipient in
+   * `hostRecipientUrns`. UNVERIFIED: no message has been sent from here.
+   *
+   * Only connections can be messaged without InMail credits, so the caller
+   * checks `connectionStatus` first; LinkedIn would refuse anyway.
+   */
+  async sendMessage(profile: string, text: string): Promise<{ urn?: string }> {
+    const body = text.trim();
+    if (!body) throw new LinkedInWriteError('there is no message to send', 400);
+    if (body.length > MESSAGE_LIMIT) {
+      throw new LinkedInWriteError(`a message may be at most ${MESSAGE_LIMIT} characters`, 400);
+    }
+
+    const recipient = await this.#profileUrn(profile);
+    const mailboxUrn = await this.#mailboxUrn();
+    const result = (await this.#request(
+      'POST',
+      '/voyagerMessagingDashMessengerMessages?action=createMessage',
+      {
+        message: {
+          body: { attributes: [], text: body },
+          renderContentUnions: [],
+          originToken: randomUUID(),
+        },
+        mailboxUrn,
+        trackingId: randomUUID().replace(/-/g, '').slice(0, 16),
+        dedupeByClientGeneratedToken: false,
+        hostRecipientUrns: [recipient],
+      },
+    )) as { data?: { value?: { entityUrn?: string } } } | undefined;
+
+    const urn = result?.data?.value?.entityUrn;
+    return urn ? { urn } : {};
+  }
+
+  /** A URN passes straight through; anything else costs a profile lookup. */
+  async #profileUrn(profile: string): Promise<string> {
+    if (/^urn:li:fsd_profile:[A-Za-z0-9_-]+$/.test(profile.trim())) return profile.trim();
+    return (await this.lookupProfile(profile)).profileUrn;
+  }
+
+  async #mailboxUrn(): Promise<string> {
+    this.#mailbox ??= fsdProfileUrn((await this.me()).entityUrn);
+    return this.#mailbox;
   }
 
   async #request(method: 'GET' | 'POST', path: string, json?: unknown): Promise<unknown> {

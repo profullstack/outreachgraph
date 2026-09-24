@@ -456,7 +456,15 @@ function modeRestriction(
     case 'customer_managed':
       // An API-permitted action still needs an account to act through;
       // without one the user must do it by hand.
-      return request.hasConnectedAccount || isResearchAction(request.action)
+      //
+      // A research action is normally exempt, because reading a public API
+      // needs no account. A `customer_managed` read is not a public read: a
+      // LinkedIn profile visit goes through the member's own session, shows up
+      // in the prospect's "who viewed" list, and is exactly as much automation
+      // as a comment. So the exemption does not extend to it, and a workspace
+      // without the session gets a hand-off here like every other action.
+      return request.hasConnectedAccount ||
+        (rule.mode !== 'customer_managed' && isResearchAction(request.action))
         ? ['capability_mode', 'allow', rule.reason]
         : [
             'no_connected_account',

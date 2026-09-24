@@ -181,6 +181,118 @@ async function runProfile({ client, args, flags }: CommandContext): Promise<stri
   return `Saved ${personId} at ${text(result, 'updatedAt')}${result.public ? ' (public)' : ''}\n\n${text(result, 'markdown').trimEnd()}`;
 }
 
+/**
+ * One step from the command line: `network:action[:delayHours[:condition[:waitHours]]]`.
+ *
+ * Positional rather than `key=value` because a plan is typed as a column of
+ * `--step` flags and read back the same way; empty fields keep their default,
+ * so `linkedin:connect:24::168` is "invite a day later, wait a week". Nothing
+ * is validated here beyond the shape — the server refuses a bad plan with the
+ * domain's own sentences, which are better than anything this could say.
+ */
+export function parseStepSpec(spec: string, position: number): Record<string, unknown> {
+  const [network, action, delay, condition, wait] = spec.split(':').map((part) => part.trim());
+  if (!network || !action) {
+    throw new Error(
+      `cannot read step "${spec}": use network:action[:delayHours[:condition[:waitHours]]]`,
+    );
+  }
+  const number = (value: string | undefined, name: string): number | undefined => {
+    if (!value) return undefined;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) throw new Error(`${name} in "${spec}" is not a number`);
+    return parsed;
+  };
+  const delayHours = number(delay, 'the delay');
+  const waitForAcceptanceHours = number(wait, 'the acceptance wait');
+  return {
+    position,
+    network,
+    action,
+    delayHours: delayHours ?? 0,
+    ...(condition ? { condition } : {}),
+    ...(waitForAcceptanceHours !== undefined ? { waitForAcceptanceHours } : {}),
+  };
+}
+
+/** `og cadences`, `og cadences show <id>`, `og cadences create …`. */
+async function runCadences({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb, id] = args;
+
+  if (!verb || verb === 'list') {
+    const cadences = rows(await client.get('/cadences'), 'cadences');
+    if (cadences.length === 0) return 'No plans yet. Try `og playbooks` or `og cadences create`.';
+    return cadences
+      .map((cadence) =>
+        [
+          pad(text(cadence, 'id'), 30),
+          pad(text(cadence, 'status'), 9),
+          pad(`${text(cadence, 'steps')} steps`, 9),
+          pad(`${text(cadence, 'active_enrollments', '0')} on it`, 10),
+          text(cadence, 'name'),
+        ].join(' '),
+      )
+      .join('\n');
+  }
+
+  if (verb === 'show') {
+    if (!id) throw new Error('a cadence id is required: og cadences show <id>');
+    const detail = (await client.get(`/cadences/${encodeURIComponent(id)}`)) as Record<
+      string,
+      unknown
+    >;
+    const cadence = (detail.cadence ?? {}) as Record<string, unknown>;
+    const lines = [`${text(cadence, 'name')} (${text(cadence, 'status')})`];
+    for (const step of rows(detail, 'steps')) {
+      const condition = text(step, 'condition', 'always');
+      const wait = text(step, 'wait_for_acceptance_hours');
+      lines.push(
+        [
+          pad(`${Number(text(step, 'position', '0')) + 1}.`, 4),
+          pad(`${text(step, 'network')}:${text(step, 'action')}`, 24),
+          pad(`+${text(step, 'delay_hours', '0')}h`, 7),
+          condition === 'always' ? '' : condition,
+          wait ? `waits ${wait}h for acceptance` : '',
+          text(step, 'intent'),
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+    }
+    return lines.join('\n');
+  }
+
+  if (verb === 'create') {
+    const name = flagString(flags, 'name');
+    if (!name) throw new Error('--name is required');
+
+    const file = flagString(flags, 'file');
+    // A file holds either the steps array or a whole `{ steps }` body.
+    const fromFile: unknown = file ? JSON.parse(await Bun.file(file).text()) : undefined;
+    const steps =
+      fromFile === undefined
+        ? asList(flags.step).map((spec, index) => parseStepSpec(spec, index))
+        : Array.isArray(fromFile)
+          ? fromFile
+          : (fromFile as { steps?: unknown }).steps;
+    if (!Array.isArray(steps) || steps.length === 0) {
+      throw new Error(
+        'at least one --step is required, e.g. --step linkedin:view_profile --step linkedin:connect:24::168',
+      );
+    }
+
+    const result = (await client.post('/cadences', {
+      name,
+      steps,
+      ...(flagString(flags, 'campaign') ? { campaignId: flagString(flags, 'campaign') } : {}),
+      ...(flags.active === true ? { status: 'active' } : {}),
+    })) as Record<string, unknown>;
+    return `Created ${text(result, 'cadenceId')}${flags.active === true ? ' (active)' : ' as a draft'}`;
+  }
+
+  throw new Error('og cadences [list] | og cadences show <id> | og cadences create --name …');
+}
+
 export const COMMANDS: readonly Command[] = [
   {
     name: 'today',
@@ -385,6 +497,15 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
+    name: 'cadences',
+    usage:
+      'og cadences | og cadences show <id> | og cadences create --name <name> ' +
+      '--step network:action[:delayHours[:condition[:waitHours]]]... [--campaign <id>] [--active] [--file plan.json]',
+    summary:
+      'Plans of touches over time; a step may run only if connected, not connected, clicked, or not replied.',
+    run: runCadences,
+  },
+  {
     name: 'grid',
     usage:
       'og grid --name <name> --ask <question> [--ask <question>] --person <id> [--person <id>]',
@@ -481,7 +602,9 @@ export const COMMANDS: readonly Command[] = [
         if (flags['accept-linkedin-risk'] !== true) {
           return [
             'Automating LinkedIn is against its User Agreement and can get the account restricted.',
-            'OutreachGraph paces comments (about 25 a day, minutes apart) to keep that risk low, not zero.',
+            'OutreachGraph paces every action minutes apart and caps each kind (20 invitations a day and 100 a week,',
+            '60 profile visits, 30 follows, 25 messages, 25 comments) to keep that risk low, not zero.',
+            'Every card still waits for your approval unless a campaign is on trusted automation.',
             '',
             'To go ahead: og connect linkedin --accept-linkedin-risk',
             'You will be asked for the li_at cookie: in a browser signed in to LinkedIn, open',
@@ -494,7 +617,7 @@ export const COMMANDS: readonly Command[] = [
           liAt,
           acknowledgeTerms: true,
         })) as { account?: { publicIdentifier?: string } };
-        return `Connected LinkedIn as ${result.account?.publicIdentifier ?? '?'}. LinkedIn comments will now send, paced.`;
+        return `Connected LinkedIn as ${result.account?.publicIdentifier ?? '?'}. Approved LinkedIn comments, invitations, visits, follows and messages will now go out, paced.`;
       }
 
       throw new Error(`og connect ${CONNECTABLE.join(' | ')}`);

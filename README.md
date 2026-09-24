@@ -169,8 +169,13 @@ crawl or enrichment; this change does not run a production backfill.
 passes through `packages/policy`. It is a pure function with no model in the
 loop, it fails closed on anything the capability matrix does not describe, and
 each gate may only tighten a decision — so gate ordering can never accidentally
-re-permit something. LinkedIn automation is not "discouraged", it is
-structurally unreachable.
+re-permit something. LinkedIn automation is not "discouraged", it is gated:
+it runs only through the member's own session, which exists only after the
+workspace owner explicitly accepts LinkedIn's terms risk
+(`og connect linkedin --accept-linkedin-risk`), and even then every invitation,
+visit, follow, message and comment is paced, capped per kind, and approved by a
+human unless a campaign opts into trusted automation. Without that session,
+every LinkedIn action is a hand-off.
 
 **Policy is re-checked when you approve, not when the card was made.** A
 recommendation stores the decision it was generated under, but
