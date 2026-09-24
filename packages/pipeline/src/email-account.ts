@@ -9,9 +9,10 @@
  * email account, so this must be done manually." The product drafted messages
  * it had already decided it could never send.
  *
- * This is the write side. A workspace connects one sending mailbox; the
- * password is verified against the real server before it is stored, encrypted
- * with `SECRET_ENCRYPTION_KEY`, and decrypted only to build a transport.
+ * This is the write side. A workspace connects one or more sending mailboxes
+ * (a pool, see `sender-pool.ts`); each password is verified against the real
+ * server before it is stored, encrypted with `SECRET_ENCRYPTION_KEY`, and
+ * decrypted only to build a transport.
  *
  * Two rows, because the schema separates them and the separation is useful:
  *
@@ -32,6 +33,7 @@ import {
   type SmtpCredentials,
 } from '@outreachgraph/email';
 import { decryptSecret, encryptSecret, SecretDecryptError } from '@outreachgraph/secrets';
+import { chooseSender, describeDeferral, upsertPoolAccount } from './sender-pool';
 
 /** The kind recorded on the `integrations` row. */
 const KIND = 'smtp';
@@ -81,6 +83,10 @@ export interface EmailAccountSummary {
   readonly imapSecure?: boolean;
   readonly status?: string;
   readonly connectedAt?: string;
+  /** The pool account this describes. */
+  readonly accountId?: string;
+  /** How many mailboxes the workspace has connected in all. */
+  readonly accounts?: number;
 }
 
 export class EmailAccountError extends Error {
@@ -184,10 +190,16 @@ export async function connectEmailAccount(
   };
 
   const stamp = now();
-  const existing = await loadRow(db, input.workspaceId);
-  const integrationId = existing?.integration_id ?? newId('integration');
+  const integration = await queryOne<{ id: string }>(
+    db,
+    `SELECT id FROM integrations WHERE workspace_id = ? AND kind = ? AND network = ?`,
+    [input.workspaceId, KIND, NETWORK],
+  );
+  const integrationId = integration?.id ?? newId('integration');
 
-  if (existing) {
+  // The integration row still carries the most recent configuration, for
+  // anything that reads it; each mailbox's own lives on its account row.
+  if (integration) {
     await db.execute({
       sql: `UPDATE integrations SET status = 'connected', config_json = ?, updated_at = ?
              WHERE id = ?`,
@@ -202,28 +214,18 @@ export async function connectEmailAccount(
     });
   }
 
-  // Replaced rather than updated: a reconnection is a new credential, and
-  // leaving the old ciphertext behind would keep a revoked password readable.
-  await db.execute({
-    sql: `DELETE FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
-    args: [input.workspaceId, NETWORK],
-  });
-
-  await db.execute({
-    sql: `INSERT INTO integration_accounts (id, integration_id, workspace_id, network,
-          external_account_id, handle, access_token_enc, scopes, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, '["send"]', 'active', ?, ?)`,
-    args: [
-      newId('integrationAccount'),
-      integrationId,
-      input.workspaceId,
-      NETWORK,
-      input.account.username,
-      input.account.fromEmail,
-      encryptSecret(input.account.password, input.encryptionKey),
-      stamp,
-      stamp,
-    ],
+  // Added to the pool, or refreshed when this login is already in it. The
+  // credential itself is always replaced: a reconnection is a new password,
+  // and leaving the old ciphertext behind would keep a revoked one readable.
+  const account = await upsertPoolAccount(db, {
+    workspaceId: input.workspaceId,
+    integrationId,
+    network: NETWORK,
+    identity: input.account.username,
+    handle: input.account.fromEmail,
+    accessTokenEnc: encryptSecret(input.account.password, input.encryptionKey),
+    scopes: '["send"]',
+    configJson: JSON.stringify(config),
   });
 
   return {
@@ -231,6 +233,7 @@ export async function connectEmailAccount(
     ...config,
     status: 'active',
     connectedAt: stamp,
+    accountId: account.id,
   };
 }
 
@@ -245,11 +248,19 @@ export async function emailAccountSummary(
   const config = parseConfig(row.config_json);
   if (!config) return { connected: false };
 
+  const count = await queryOne<{ n: number }>(
+    db,
+    `SELECT COUNT(*) AS n FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
+    [workspaceId, NETWORK],
+  );
+
   return {
     connected: row.status === 'active',
     ...config,
     status: row.status,
     connectedAt: row.created_at,
+    accountId: row.account_id,
+    accounts: Number(count?.n ?? 1),
   };
 }
 
@@ -265,10 +276,12 @@ export async function loadEmailCredentials(
   db: Client,
   workspaceId: string,
   encryptionKey: Buffer | undefined,
+  /** One mailbox in the pool. Omitted, the workspace's first active one. */
+  accountId?: string,
 ): Promise<(SmtpCredentials & { readonly replyTo?: string }) | undefined> {
   if (!encryptionKey) return undefined;
 
-  const row = await loadRow(db, workspaceId);
+  const row = await loadRow(db, workspaceId, accountId);
   if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
 
   const config = parseConfig(row.config_json);
@@ -307,10 +320,12 @@ export async function loadImapCredentials(
   db: Client,
   workspaceId: string,
   encryptionKey: Buffer | undefined,
+  /** One mailbox in the pool. Omitted, the workspace's first active one. */
+  accountId?: string,
 ): Promise<ImapCredentials | undefined> {
   if (!encryptionKey) return undefined;
 
-  const row = await loadRow(db, workspaceId);
+  const row = await loadRow(db, workspaceId, accountId);
   if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
 
   const config = parseConfig(row.config_json);
@@ -366,6 +381,92 @@ export async function mailerForWorkspace(
   return undefined;
 }
 
+/** What `mailerForSend` hands back. */
+export type SendingMailbox =
+  | {
+      readonly kind: 'ready';
+      readonly mailer: Mailer;
+      readonly ownMailbox: boolean;
+      readonly replyTo?: string;
+      /** The pool account chosen. Absent for the platform sender. */
+      readonly accountId?: string;
+    }
+  /** Every mailbox that could send this is at today's cap. Try `retryAt`. */
+  | {
+      readonly kind: 'deferred';
+      readonly reason: string;
+      /** `all_capped` means no mailbox has room for anyone, not just this person. */
+      readonly code: 'all_capped' | 'continuity_capped' | 'continuity_paused';
+      readonly retryAt: string;
+    }
+  /** Nothing can send: no active mailbox and no platform sender. */
+  | { readonly kind: 'none' };
+
+/**
+ * The mailbox one message to this person should leave from.
+ *
+ * `mailerForWorkspace` answered "the workspace's mailbox"; with a pool the
+ * answer depends on who the message is for — the mailbox already talking to
+ * them, else the one with the most room today — and can be "not today". The
+ * fallbacks are the ones it always had: with no active mailbox at all, the
+ * platform sender; with a mailbox whose password no longer decrypts, the same.
+ * What is new is `deferred`, which never falls back: a full pool waits for
+ * tomorrow rather than spilling onto a sender the caps were meant to protect.
+ */
+export async function mailerForSend(
+  db: Client,
+  workspaceId: string,
+  options: {
+    readonly encryptionKey: Buffer | undefined;
+    readonly fallback?: Mailer | undefined;
+    readonly personId?: string | undefined;
+    readonly at?: Date;
+    /** Injected by tests so no socket is opened. */
+    readonly mailerFor?: (credentials: SmtpCredentials) => Mailer;
+  },
+): Promise<SendingMailbox> {
+  const platform = (): SendingMailbox =>
+    options.fallback
+      ? { kind: 'ready', mailer: options.fallback, ownMailbox: false }
+      : { kind: 'none' };
+
+  // No key means no mailbox can be read, which is the same as having none.
+  if (!options.encryptionKey) return platform();
+
+  const selection = await chooseSender(db, {
+    workspaceId,
+    network: NETWORK,
+    personId: options.personId,
+    ...(options.at ? { at: options.at } : {}),
+  });
+
+  if (selection.choice.kind === 'deferred') {
+    return {
+      kind: 'deferred',
+      reason: describeDeferral(selection.choice),
+      code: selection.choice.reason,
+      retryAt: selection.retryAt!,
+    };
+  }
+  if (!selection.account) return platform();
+
+  const credentials = await loadEmailCredentials(
+    db,
+    workspaceId,
+    options.encryptionKey,
+    selection.account.id,
+  );
+  if (!credentials) return platform();
+
+  return {
+    kind: 'ready',
+    mailer: options.mailerFor?.(credentials) ?? new SmtpMailer(credentials),
+    ownMailbox: true,
+    accountId: selection.account.id,
+    ...(credentials.replyTo ? { replyTo: credentials.replyTo } : {}),
+  };
+}
+
 /**
  * Revokes the account.
  *
@@ -377,6 +478,9 @@ export async function mailerForWorkspace(
 export async function disconnectEmailAccount(db: Client, workspaceId: string): Promise<boolean> {
   const row = await loadRow(db, workspaceId);
   if (!row) return false;
+
+  // Every mailbox in the pool: this is "disconnect email", not "remove one
+  // sender", which `removeSender` does.
 
   await db.execute({
     sql: `DELETE FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
@@ -391,16 +495,31 @@ export async function disconnectEmailAccount(db: Client, workspaceId: string): P
   return true;
 }
 
-async function loadRow(db: Client, workspaceId: string): Promise<AccountRow | undefined> {
+/**
+ * One mailbox's row: the one asked for, or the workspace's first active one.
+ *
+ * "First active, oldest first" is what makes a pool of one read exactly as the
+ * single mailbox did, and what a caller that has not been taught about pools
+ * yet — the settings summary — sensibly shows. The account's own configuration
+ * wins over the integration's, which only ever described one mailbox.
+ */
+async function loadRow(
+  db: Client,
+  workspaceId: string,
+  accountId?: string,
+): Promise<AccountRow | undefined> {
   const row = await queryOne<AccountRow>(
     db,
-    `SELECT i.id AS integration_id, ia.id AS account_id, i.config_json,
+    `SELECT i.id AS integration_id, ia.id AS account_id,
+            COALESCE(ia.config_json, i.config_json) AS config_json,
             ia.access_token_enc, ia.status, ia.created_at
        FROM integrations i
        JOIN integration_accounts ia ON ia.integration_id = i.id
       WHERE i.workspace_id = ? AND i.kind = ? AND i.network = ?
+        ${accountId ? 'AND ia.id = ?' : ''}
+      ORDER BY (ia.status = 'active') DESC, ia.created_at ASC, ia.id ASC
       LIMIT 1`,
-    [workspaceId, KIND, NETWORK],
+    accountId ? [workspaceId, KIND, NETWORK, accountId] : [workspaceId, KIND, NETWORK],
   );
 
   return row ?? undefined;
@@ -429,6 +548,16 @@ function parseConfig(raw: string): StoredConfig | undefined {
       fromEmail: config.fromEmail,
       ...(config.fromName ? { fromName: config.fromName } : {}),
       ...(config.replyTo ? { replyTo: config.replyTo } : {}),
+      // Kept, not dropped: without these `loadImapCredentials` never found an
+      // IMAP host on a stored mailbox, so replies (and now bounces) were
+      // never read from any of them.
+      ...(typeof config.imapHost === 'string' && config.imapHost
+        ? {
+            imapHost: config.imapHost,
+            imapPort: typeof config.imapPort === 'number' ? config.imapPort : 993,
+            imapSecure: config.imapSecure !== false,
+          }
+        : {}),
     };
   } catch {
     return undefined;

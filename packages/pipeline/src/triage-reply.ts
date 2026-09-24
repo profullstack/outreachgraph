@@ -55,7 +55,7 @@ import {
 } from '@outreachgraph/policy';
 import { AUTO_APPROVE_ACTOR } from './auto-approve';
 import { actionCounts, addressCounts, countActionsToday } from './autopilot';
-import { mailerForWorkspace } from './email-account';
+import { mailerForSend, mailerForWorkspace } from './email-account';
 import { emitEvent } from './events';
 import { budgetStatus } from './metering';
 import { deliverEmailAction, type AuditActor } from './outreach-email';
@@ -574,16 +574,28 @@ async function sendUnattended(
 ): Promise<TriageResult> {
   const { db } = deps;
 
-  const sender = await mailerForWorkspace(db, workspaceId, {
+  // The answer leaves from the mailbox the conversation is on — the one they
+  // replied to — so it threads in their client and comes from the address
+  // they already know. If that mailbox has no room today, a human sends it.
+  const sender = await mailerForSend(db, workspaceId, {
     encryptionKey: deps.encryptionKey,
     fallback: deps.mailer,
+    personId: row.person_id,
   });
-  if (!sender) {
+  if (sender.kind === 'none') {
     return {
       outcome: 'copilot',
       label,
       recommendationId,
       reason: 'no mailbox is connected, so the draft waits for a human',
+    };
+  }
+  if (sender.kind === 'deferred') {
+    return {
+      outcome: 'copilot',
+      label,
+      recommendationId,
+      reason: `${sender.reason}, so the draft waits for a human`,
     };
   }
 
@@ -631,6 +643,7 @@ async function sendUnattended(
       mailer: sender.mailer,
       ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
       ...(deps.appUrl ? { appUrl: deps.appUrl } : {}),
+      ...(sender.accountId ? { senderAccountId: sender.accountId } : {}),
     },
     { workspaceId, actionId, actor: AUTO_REPLY_ACTOR, policyVersion: policy.policyVersion },
   );

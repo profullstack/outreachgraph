@@ -12,12 +12,22 @@
  * The numbers are conservative on purpose. LinkedIn restricts accounts at
  * volumes well below what its UI allows a person to click, and X's API caps
  * posts per user per day by access tier.
+ *
+ * With a pool of accounts (`sender-pool.ts`) the numbers become per account:
+ * the day's cap is what the pool's active accounts may send between them,
+ * after each one's warm-up, and the gap between posts shrinks by the number
+ * of accounts sharing the load — so each account still sees roughly the
+ * spacing above. Which account posts is decided when the job runs, not when
+ * it is scheduled, because that is when "who is already talking to this
+ * person" and "who has room today" have their final answers.
  */
 
 import { randomInt } from 'node:crypto';
+import { capGroupFor, LINKEDIN_ACTION_CAPS, type CapGroup } from '@outreachgraph/domain';
 import { queryOne, type Client } from '@outreachgraph/db';
 import type { XOAuthClient } from '@outreachgraph/providers';
 import { enqueue } from './queue';
+import { assignSender, chooseSender, describeDeferral, poolCapacity } from './sender-pool';
 import { xClientForWorkspace } from './x-account';
 import { deliverXAction } from './outreach-x';
 import { linkedInSessionForWorkspace } from './linkedin-account';
@@ -38,49 +48,10 @@ export function isPacedNetwork(network: string): network is PacedNetwork {
   return network === 'x' || network === 'linkedin';
 }
 
-/**
- * What a paced action is counted against.
- *
- * `post` is a public reply or comment, and is capped by `PACING[network].perDay`
- * as it always has been. Everything else a LinkedIn session can do has its own
- * budget, because LinkedIn watches each separately and at very different
- * volumes: a person visits many more profiles than they send invitations.
- */
-export type CapGroup = 'post' | 'connect' | 'view_profile' | 'follow' | 'send_dm';
-
-export function capGroupFor(kind: string | undefined): CapGroup {
-  if (kind === 'connect' || kind === 'view_profile' || kind === 'follow' || kind === 'send_dm') {
-    return kind;
-  }
-  return 'post';
-}
-
-/**
- * Per-kind caps on LinkedIn, per UTC day and per rolling seven days.
- *
- * Conservative on purpose, and well below what the UI lets a person click:
- *
- *   connect       20/day, 100/week — LinkedIn's weekly invitation limit sits
- *                 around 100 for most accounts, and an account that hits it
- *                 is warned and then restricted. The day cap spreads the week
- *                 so a Monday "approve all" is not the whole week at once.
- *   view_profile  60/day — visits are metered for commercial use, and a free
- *                 account that reads too many profiles is cut off for a month.
- *   follow        30/day.
- *   send_dm       25/day — only ever to connections, and still a message.
- *
- * All of them share the network's gap: the minutes between two actions belong
- * to the account whichever kind each one is, because what LinkedIn sees is one
- * member doing things too fast.
- */
-export const LINKEDIN_ACTION_CAPS: Readonly<
-  Record<Exclude<CapGroup, 'post'>, { readonly perDay: number; readonly perWeek?: number }>
-> = {
-  connect: { perDay: 20, perWeek: 100 },
-  view_profile: { perDay: 60 },
-  follow: { perDay: 30 },
-  send_dm: { perDay: 25 },
-};
+// The cap groups and LinkedIn's per-kind caps live in the domain package,
+// beside the warm-up ramp, because the sender pool applies them per account
+// too. Re-exported so existing importers keep one place to find them.
+export { capGroupFor, LINKEDIN_ACTION_CAPS, type CapGroup };
 
 /** The caps one action is scheduled under. */
 export function capsFor(
@@ -131,7 +102,10 @@ export async function scheduleSocialDelivery(
     [input.workspaceId, like],
   );
 
-  const gap = randomInt(pace.minGapMs, pace.maxGapMs + 1);
+  // Several accounts share the posting, so the workspace-wide gap shrinks by
+  // their number and each account keeps about the single-account spacing.
+  const pool = await poolCapacity(db, input.workspaceId, input.network, new Date(nowMs));
+  const gap = Math.round(randomInt(pace.minGapMs, pace.maxGapMs + 1) / Math.max(1, pool.accounts));
   let runAt = Math.max(nowMs, last ? Date.parse(last.run_after) + gap : nowMs);
 
   // Jobs in this cap group. A post is anything marked as one, plus every job
@@ -156,12 +130,18 @@ export async function scheduleSocialDelivery(
   // Cap per UTC day, and per rolling week where the kind has one, counting
   // everything already scheduled into that window. Bounded, so a corrupt
   // queue cannot spin this forever: a year out is still an answer.
+  //
+  // With accounts connected the limits are the pool's: each account's cap for
+  // this kind (after its warm-up) added up, so three sessions may schedule
+  // three times the invitations one could — and the job, when it runs, still
+  // holds every account to its own twenty a day and hundred a week.
   for (let attempt = 0; attempt < 366; attempt += 1) {
     const start = dayStart(runAt);
+    const limits = await poolLimits(db, input.workspaceId, input.network, start, input.kind, caps);
     const today = await scheduledBetween(start, start + DAY_MS);
     const week =
-      caps.perWeek === undefined ? 0 : await scheduledBetween(runAt - 7 * DAY_MS, runAt + 1);
-    if (today < caps.perDay && (caps.perWeek === undefined || week < caps.perWeek)) break;
+      limits.perWeek === undefined ? 0 : await scheduledBetween(runAt - 7 * DAY_MS, runAt + 1);
+    if (today < limits.perDay && (limits.perWeek === undefined || week < limits.perWeek)) break;
     // Next day, at a working hour with jitter rather than on the stroke of midnight.
     runAt = start + DAY_MS + 9 * 3_600_000 + randomInt(0, 3_600_000);
   }
@@ -185,6 +165,38 @@ export async function scheduleSocialDelivery(
   return { queued: queued.queued, runAt: new Date(runAt).toISOString() };
 }
 
+/**
+ * How many actions of one kind a network may schedule on the UTC day starting
+ * at `dayStartMs`, and in any seven days.
+ *
+ * The pool's combined capacity that day, warm-up included, when accounts are
+ * connected; the single-account figures when none are, which is what a
+ * workspace that has not connected anything always got. Never below one, so
+ * a pool whose caps are all zero still schedules and lets the job defer.
+ */
+async function poolLimits(
+  db: Client,
+  workspaceId: string,
+  network: PacedNetwork,
+  dayStartMs: number,
+  kind: string | undefined,
+  single: { readonly perDay: number; readonly perWeek?: number },
+): Promise<{ perDay: number; perWeek?: number }> {
+  // Measured at midday so a warm-up day boundary is never ambiguous.
+  const pool = await poolCapacity(
+    db,
+    workspaceId,
+    network,
+    new Date(dayStartMs + 43_200_000),
+    kind,
+  );
+  if (pool.accounts === 0) return single;
+  return {
+    perDay: Math.max(1, pool.capacity),
+    ...(pool.weeklyCapacity === undefined ? {} : { perWeek: pool.weeklyCapacity }),
+  };
+}
+
 export interface DeliverSocialDeps {
   readonly db: Client;
   readonly encryptionKey?: Buffer;
@@ -195,7 +207,7 @@ export interface DeliverSocialDeps {
 export async function runSocialDelivery(
   deps: DeliverSocialDeps,
   job: { workspaceId: string; payload: Record<string, unknown> },
-): Promise<{ sent: boolean; reason?: string; url?: string }> {
+): Promise<{ sent: boolean; reason?: string; url?: string; deferredUntil?: string }> {
   const { db } = deps;
   const actionId = String(job.payload.actionId ?? '');
   const network = String(job.payload.network ?? '');
@@ -208,9 +220,15 @@ export async function runSocialDelivery(
 
   // Stopped between approval and now: the card was dismissed, or the person
   // suppressed. Posting anyway would ignore the last word a human had.
-  const state = await queryOne<{ status: string; rec_status: string; person_status: string }>(
+  const state = await queryOne<{
+    status: string;
+    rec_status: string;
+    person_status: string;
+    person_id: string;
+    kind: string;
+  }>(
     db,
-    `SELECT a.status, r.status AS rec_status, p.status AS person_status
+    `SELECT a.status, r.status AS rec_status, p.status AS person_status, a.person_id, a.kind
        FROM actions a
        JOIN recommendations r ON r.id = a.recommendation_id
        JOIN people p ON p.id = a.person_id
@@ -229,22 +247,60 @@ export async function runSocialDelivery(
     ...(policyVersion ? { policyVersion } : {}),
   };
 
-  if (network === 'x') {
-    const client = await xClientForWorkspace(db, job.workspaceId, {
-      ...(deps.xOAuth ? { oauth: deps.xOAuth } : {}),
-      ...(deps.encryptionKey ? { encryptionKey: deps.encryptionKey } : {}),
+  if (!isPacedNetwork(network)) return { sent: false, reason: `no paced sender for ${network}` };
+
+  // Which account posts: the one already talking to this person, else the
+  // one with the most room today. Full is not failed — the job moves itself
+  // to tomorrow morning and the card stays approved.
+  const selection = await chooseSender(db, {
+    workspaceId: job.workspaceId,
+    network,
+    personId: state.person_id,
+    kind: state.kind,
+  });
+
+  if (selection.choice.kind === 'deferred') {
+    const retryAt = Date.parse(selection.retryAt!) + 9 * 3_600_000 + randomInt(0, 3_600_000);
+    await enqueue(db, {
+      workspaceId: job.workspaceId,
+      kind: 'deliver_social',
+      payload: job.payload,
+      delayMs: Math.max(0, retryAt - Date.now()),
+      maxAttempts: 1,
+      // A key of its own: this job is still `running` under the original one.
+      dedupeKey: `deliver_social:${actionId}:${new Date(retryAt).toISOString().slice(0, 10)}`,
     });
-    if (!client) return markUnsendable(db, actionId, 'no X account is connected');
-    return deliverXAction({ db, client }, input);
+    const deferredUntil = new Date(retryAt).toISOString();
+    return {
+      sent: false,
+      reason: `deferred to ${deferredUntil}: ${describeDeferral(selection.choice)}`,
+      deferredUntil,
+    };
   }
 
-  if (network === 'linkedin') {
-    const session = await linkedInSessionForWorkspace(db, job.workspaceId, deps.encryptionKey);
-    if (!session) return markUnsendable(db, actionId, 'no LinkedIn session is connected');
-    return deliverLinkedInAction({ db, session }, input);
+  const accountId = selection.account?.id;
+
+  if (network === 'x') {
+    const client = accountId
+      ? await xClientForWorkspace(db, job.workspaceId, {
+          ...(deps.xOAuth ? { oauth: deps.xOAuth } : {}),
+          ...(deps.encryptionKey ? { encryptionKey: deps.encryptionKey } : {}),
+          accountId,
+        })
+      : undefined;
+    if (!client || !accountId) return markUnsendable(db, actionId, 'no X account is connected');
+    await assignSender(db, actionId, accountId);
+    return deliverXAction({ db, client, accountId }, input);
   }
 
-  return { sent: false, reason: `no paced sender for ${network}` };
+  const session = accountId
+    ? await linkedInSessionForWorkspace(db, job.workspaceId, deps.encryptionKey, {}, accountId)
+    : undefined;
+  if (!session || !accountId) {
+    return markUnsendable(db, actionId, 'no LinkedIn session is connected');
+  }
+  await assignSender(db, actionId, accountId);
+  return deliverLinkedInAction({ db, session, accountId }, input);
 }
 
 async function markUnsendable(

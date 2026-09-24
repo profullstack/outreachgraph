@@ -56,6 +56,7 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 | §30 Metering                       | `packages/domain/src/plans.ts`, `pipeline/src/metering.ts`                            | 17 tests                           |
 | §28 Rules                          | `packages/domain/src/rules.ts`, `pipeline/src/rules.ts`, `0021`                       | 22 tests                           |
 | §28 Webhooks, Slack, CRM sync      | `pipeline/src/webhooks.ts`, `crm-sync.ts`, `providers/src/{webhooks,crm,net}`, `0041` | 92 tests; `docs/webhooks.md`       |
+| §18 Sender pools and warm-up       | `domain/src/sender-pool.ts`, `pipeline/src/sender-pool.ts`, `0044`                    | 19 + 15 + 5 + 3 tests              |
 | §23 MCP and CLI                    | `apps/mcp/`, `apps/cli/`                                                              | 13 + 17 tests                      |
 
 ## Partially implemented

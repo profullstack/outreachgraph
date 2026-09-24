@@ -38,6 +38,7 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { MailReader, IncomingMessage } from '@outreachgraph/email';
 import { enqueue } from './queue';
 import { recordStatus } from './stages';
+import { recordSenderBounce } from './sender-pool';
 import { emitWebhookEvent } from './webhooks';
 
 export interface ReceiveRepliesInput {
@@ -48,6 +49,14 @@ export interface ReceiveRepliesInput {
   readonly since?: Date;
   /** Messages to take from one poll. */
   readonly limit?: number;
+  /**
+   * The pool account this mailbox belongs to.
+   *
+   * When set, every bounce found in it counts against that account's health.
+   * The mailbox a bounce lands in is the one that sent the message, so this
+   * is the one attribution in the product that needs no guessing.
+   */
+  readonly senderAccountId?: string;
 }
 
 export interface ReceiveRepliesResult {
@@ -60,6 +69,8 @@ export interface ReceiveRepliesResult {
   readonly unmatched: number;
   /** Already recorded by an earlier poll. */
   readonly duplicates: number;
+  /** True when this poll's bounces stopped the account. */
+  readonly senderStopped?: boolean;
   /** Absence notices and bounces written to a thread, never counted as replies. */
   readonly automatedRecorded: number;
   /** Replies queued for triage (labelling and a drafted answer). */
@@ -87,6 +98,7 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
   let duplicates = 0;
   let automatedRecorded = 0;
   let triageQueued = 0;
+  let senderStopped = false;
 
   for (const message of messages) {
     if (message.automated === 'bulk') {
@@ -115,6 +127,21 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
 
     if (machine) {
       automated[machine] = (automated[machine] ?? 0) + 1;
+
+      // A bounce also counts against the mailbox it landed in, which is the
+      // one that sent the message — before the person match, because a
+      // bounce for an address we cannot place still costs the sender its
+      // reputation. Header-flagged and rule-detected bounces count alike.
+      if (machine === 'bounce' && input.senderAccountId) {
+        const bounce = await recordSenderBounce(input.db, {
+          workspaceId: input.workspaceId,
+          accountId: input.senderAccountId,
+          externalId: bounceId(message),
+          detail: message.subject,
+          at: message.receivedAt.toISOString(),
+        });
+        senderStopped = senderStopped || bounce.stopped;
+      }
 
       // A bounce comes from the mailer daemon, which we never wrote to; the
       // report names who it was about, and that is the thread it belongs to.
@@ -166,6 +193,7 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
     duplicates,
     automatedRecorded,
     triageQueued,
+    ...(senderStopped ? { senderStopped } : {}),
   };
 }
 
@@ -187,6 +215,16 @@ export async function queueTriage(
     dedupeKey: `triage_reply_${interactionId}`,
   });
   return result.queued;
+}
+
+/**
+ * A stable id for a bounce, so a week-long lookback polled every few minutes
+ * counts it once. The message id when there is one; otherwise what the
+ * message says about itself, which is the same on every poll.
+ */
+function bounceId(message: IncomingMessage): string {
+  if (message.messageId) return message.messageId;
+  return `${message.receivedAt.toISOString()}|${message.fromAddress}|${message.subject ?? ''}`;
 }
 
 /**
@@ -391,9 +429,32 @@ export async function workspacesWithReadableMailbox(db: Client): Promise<string[
     `SELECT ia.workspace_id FROM integration_accounts ia
        JOIN integrations i ON i.id = ia.integration_id
       WHERE ia.network = 'email' AND ia.status = 'active'
-        AND i.config_json LIKE '%"imapHost"%'`,
+        AND COALESCE(ia.config_json, i.config_json) LIKE '%"imapHost"%'`,
     [],
   );
 
   return rows.map((row) => row.workspace_id);
+}
+
+/**
+ * Every mailbox we can read, one entry per pool account.
+ *
+ * Per account rather than per workspace because a pool's replies and bounces
+ * arrive in whichever mailbox sent the message, and reading only the first
+ * would miss the rest — and would pin every bounce on the wrong account.
+ */
+export async function readableMailboxes(
+  db: Client,
+): Promise<{ workspaceId: string; accountId: string }[]> {
+  const rows = await queryAll<{ workspace_id: string; id: string }>(
+    db,
+    `SELECT ia.workspace_id, ia.id FROM integration_accounts ia
+       JOIN integrations i ON i.id = ia.integration_id
+      WHERE ia.network = 'email' AND ia.status = 'active'
+        AND COALESCE(ia.config_json, i.config_json) LIKE '%"imapHost"%'
+      ORDER BY ia.workspace_id, ia.created_at`,
+    [],
+  );
+
+  return rows.map((row) => ({ workspaceId: row.workspace_id, accountId: row.id }));
 }

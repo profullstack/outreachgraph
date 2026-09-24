@@ -748,7 +748,7 @@ export const COMMANDS: readonly Command[] = [
           ct0,
           acknowledgeTerms: true,
         })) as { account?: { username?: string } };
-        return `Connected X as @${result.account?.username ?? '?'} through your session. X cards will now send, paced.`;
+        return `Connected X as @${result.account?.username ?? '?'} through your session. X cards will now send, paced. A different account adds to your pool: og senders.`;
       }
 
       if (network === 'linkedin') {
@@ -770,7 +770,7 @@ export const COMMANDS: readonly Command[] = [
           liAt,
           acknowledgeTerms: true,
         })) as { account?: { publicIdentifier?: string } };
-        return `Connected LinkedIn as ${result.account?.publicIdentifier ?? '?'}. Approved LinkedIn comments, invitations, visits, follows and messages will now go out, paced.`;
+        return `Connected LinkedIn as ${result.account?.publicIdentifier ?? '?'}. Approved LinkedIn comments, invitations, visits, follows and messages will now go out, paced. A different member adds to your pool: og senders.`;
       }
 
       throw new Error(`og connect ${CONNECTABLE.join(' | ')}`);
@@ -779,14 +779,15 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'disconnect',
     usage: 'og disconnect x | linkedin | hubspot | pipedrive',
-    summary: 'Remove a connected X account, LinkedIn session or CRM.',
+    summary: 'Remove every connected X account or LinkedIn session (one: og senders), or a CRM.',
     async run({ client, args }) {
       const network = args[0];
       if (!network || !(CONNECTABLE as readonly string[]).includes(network)) {
         throw new Error(`og disconnect ${CONNECTABLE.join(' | ')}`);
       }
       if (!client.delete) throw new Error('this client cannot disconnect');
-      // One X account per workspace, however it was connected.
+      // Every X account in the pool, however each was connected. Removing
+      // just one is `DELETE /senders/:id`.
       const path =
         network === 'x-session'
           ? 'x'
@@ -797,6 +798,82 @@ export const COMMANDS: readonly Command[] = [
       return result.disconnected
         ? `Disconnected ${network}.`
         : `No ${network} account was connected.`;
+    },
+  },
+  {
+    name: 'senders',
+    usage:
+      'og senders | og senders pause <id> | og senders resume <id> | og senders cap <id> <n|default> | og senders warmup <id> on|off | og senders label <id> <text> | og senders remove <id>',
+    summary: 'Sending accounts: what each may send today, warm-up, pause and caps.',
+    async run({ client, args }) {
+      const [sub, id, value] = args;
+
+      if (!sub) {
+        const result = (await client.get('/senders')) as Record<string, unknown>;
+        const list = rows(result, 'senders');
+        if (list.length === 0) {
+          return 'No sending accounts connected. og connect linkedin | og connect x-session, or add a mailbox in Settings.';
+        }
+        return list
+          .map((sender) => {
+            const warmup = sender.warmup as Record<string, unknown> | undefined;
+            const warming =
+              warmup?.enabled === true && warmup.complete !== true
+                ? `  warm-up day ${text(warmup, 'day')}`
+                : '';
+            const name = text(sender, 'label') || text(sender, 'handle') || '?';
+            const reason = text(sender, 'statusReason');
+            return (
+              `${text(sender, 'id')}  ${pad(text(sender, 'network'), 8)} ${pad(name, 28)} ` +
+              `${pad(text(sender, 'status'), 7)} ` +
+              `${text(sender, 'sentToday')}/${text(sender, 'effectiveCapToday')} today ` +
+              `(cap ${text(sender, 'configuredCap')})${warming}` +
+              (reason && text(sender, 'status') !== 'active' ? `  — ${reason}` : '')
+            );
+          })
+          .join('\n');
+      }
+
+      if (!id) throw new Error(`og senders ${sub} <id>`);
+
+      if (sub === 'remove') {
+        if (!client.delete) throw new Error('this client cannot remove senders');
+        await client.delete(`/senders/${id}`);
+        return `Removed ${id}. Conversations it started move to the rest of the pool.`;
+      }
+
+      if (!client.patch) throw new Error('this client cannot change senders');
+
+      let body: Record<string, unknown>;
+      if (sub === 'pause') body = { paused: true };
+      else if (sub === 'resume') body = { paused: false };
+      else if (sub === 'cap') {
+        if (value === 'default') body = { dailyCap: null };
+        else {
+          const cap = Number(value);
+          if (!value || !Number.isInteger(cap) || cap < 0) {
+            throw new Error('og senders cap <id> <n>, a whole number, or "default"');
+          }
+          body = { dailyCap: cap };
+        }
+      } else if (sub === 'warmup') {
+        if (value !== 'on' && value !== 'off') throw new Error('og senders warmup <id> on|off');
+        body = { warmup: value === 'on' };
+      } else if (sub === 'label') {
+        body = { label: args.slice(2).join(' ') || null };
+      } else {
+        throw new Error('og senders [pause|resume|cap|warmup|label|remove] <id> …');
+      }
+
+      const result = (await client.patch(`/senders/${id}`, body)) as {
+        sender?: Record<string, unknown>;
+      };
+      const sender = result.sender ?? {};
+      return (
+        `${text(sender, 'id', id)} is ${text(sender, 'status', '?')}: ` +
+        `${text(sender, 'sentToday', '0')}/${text(sender, 'effectiveCapToday', '?')} today, ` +
+        `cap ${text(sender, 'configuredCap', '?')}.`
+      );
     },
   },
   {

@@ -56,7 +56,12 @@ interface ActionRow {
 }
 
 export async function deliverLinkedInAction(
-  deps: { readonly db: Client; readonly session: LinkedInSession },
+  deps: {
+    readonly db: Client;
+    readonly session: LinkedInSession;
+    /** The pool account `session` belongs to, so a sign-out stops only it. */
+    readonly accountId?: string;
+  },
   input: {
     readonly workspaceId: string;
     readonly actionId: string;
@@ -92,10 +97,12 @@ export async function deliverLinkedInAction(
     }
     return { sent: false, reason: `${row.kind} on LinkedIn stays a hand-off` };
   } catch (error) {
-    if (error instanceof LinkedInSessionError) {
-      await markLinkedInSessionRevoked(db, input.workspaceId);
-    }
     const message = error instanceof Error ? error.message : String(error);
+    // Only the session that failed, when we know it: one member being signed
+    // out says nothing about the others in the pool.
+    if (error instanceof LinkedInSessionError) {
+      await markLinkedInSessionRevoked(db, input.workspaceId, deps.accountId, message);
+    }
     return fail(db, input, row.action_id, message);
   }
 }

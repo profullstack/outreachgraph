@@ -330,6 +330,13 @@ export function MailboxForm({ initial }: { initial: EmailIntegrationView }) {
           </p>
         ) : null}
 
+        {account.connected ? (
+          <p className="text-ink-muted text-xs">
+            The same login updates this mailbox. A different one is added beside it, and sending is
+            shared between them — see Sending accounts below.
+          </p>
+        ) : null}
+
         <div className="flex gap-2">
           <button
             type="submit"

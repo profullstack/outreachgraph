@@ -46,7 +46,12 @@ interface ActionRow {
 }
 
 export async function deliverXAction(
-  deps: { readonly db: Client; readonly client: XPoster },
+  deps: {
+    readonly db: Client;
+    readonly client: XPoster;
+    /** The pool account `client` belongs to, so a sign-out stops only it. */
+    readonly accountId?: string;
+  },
   input: DeliverXInput,
 ): Promise<DeliverXResult> {
   const { db, client } = deps;
@@ -132,11 +137,18 @@ export async function deliverXAction(
   } catch (error) {
     // A logged-out or locked session must not be tried again on the next
     // card; revoking it turns the rest of the X queue back into hand-offs.
+    // Only the account that failed, when we know it: one session being
+    // logged out says nothing about the others in the pool.
     if (error instanceof XSessionError) {
       await db.execute({
-        sql: `UPDATE integration_accounts SET status = 'revoked', updated_at = ?
-               WHERE workspace_id = ? AND network = 'x'`,
-        args: [new Date().toISOString(), input.workspaceId],
+        sql: `UPDATE integration_accounts SET status = 'revoked', status_reason = ?, updated_at = ?
+               WHERE workspace_id = ? AND network = 'x' ${deps.accountId ? 'AND id = ?' : ''}`,
+        args: [
+          'X signed this session out; reconnect it',
+          new Date().toISOString(),
+          input.workspaceId,
+          ...(deps.accountId ? [deps.accountId] : []),
+        ],
       });
     }
 

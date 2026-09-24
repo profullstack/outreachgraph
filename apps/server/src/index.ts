@@ -70,9 +70,10 @@ import {
   runListening,
   sendDailyDigest,
   sendLeadAlerts,
-  workspacesWithReadableMailbox,
+  readableMailboxes,
   type ListeningTargets,
   type QueuedJob,
+  runEmailDelivery,
   runSocialDelivery,
   triageReply,
   checkLinkedInAcceptances,
@@ -708,6 +709,22 @@ async function runJob(job: QueuedJob): Promise<void> {
       );
       return;
     }
+    case 'deliver_email': {
+      const result = await runEmailDelivery(
+        {
+          db,
+          ...(encryptionKey ? { encryptionKey } : {}),
+          ...(mailer ? { mailer } : {}),
+          ...(appUrl ? { appUrl } : {}),
+        },
+        job,
+      );
+      console.log(
+        `deliver_email ${String(job.payload.actionId)}: ` +
+          (result.sent ? `sent to ${result.to ?? ''}` : `not sent (${result.reason ?? 'unknown'})`),
+      );
+      return;
+    }
     case 'enrich_contact': {
       const { personId } = job.payload as { personId?: string };
       if (!personId) throw new Error('enrich_contact needs personId');
@@ -1019,13 +1036,17 @@ async function tick(): Promise<void> {
   // Polled on its own, slower clock. The worker tick is a minute; opening an
   // IMAP connection per workspace per minute is a lot of login traffic for a
   // mailbox that gets a handful of replies a day.
-  for (const workspaceId of await workspacesWithReadableMailbox(db)) {
-    const last = lastPolledAt.get(workspaceId) ?? 0;
+  //
+  // One poll per mailbox, not per workspace: in a pool, a reply or a bounce
+  // lands in whichever mailbox sent the message, and each bounce counts
+  // against that mailbox's health.
+  for (const { workspaceId, accountId } of await readableMailboxes(db)) {
+    const last = lastPolledAt.get(accountId) ?? 0;
     if (Date.now() - last < RECEIVE_POLL_MS) continue;
-    lastPolledAt.set(workspaceId, Date.now());
+    lastPolledAt.set(accountId, Date.now());
 
     try {
-      const credentials = await loadImapCredentials(db, workspaceId, encryptionKey);
+      const credentials = await loadImapCredentials(db, workspaceId, encryptionKey, accountId);
       // Undefined covers "no mailbox", "no IMAP host" and "the key changed so
       // the password no longer decrypts". All three mean the same thing here.
       if (!credentials) continue;
@@ -1034,7 +1055,12 @@ async function tick(): Promise<void> {
         db,
         workspaceId,
         reader: new ImapReader(credentials),
+        senderAccountId: accountId,
       });
+
+      if (received.senderStopped) {
+        console.log(`replies ${workspaceId}: mailbox ${accountId} stopped for its bounce rate`);
+      }
 
       if (received.recorded > 0) {
         console.log(

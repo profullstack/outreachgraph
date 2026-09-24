@@ -392,6 +392,24 @@ export const connectEmailAccountSchema = z.object({
   skipVerification: z.boolean().optional(),
 });
 
+/**
+ * Changing one sending account in the pool.
+ *
+ * Every field optional, and only what is sent changes. `dailyCap: null`
+ * restores the network default rather than meaning "no limit" — there is no
+ * way to ask for an uncapped account, on purpose. `status` and `paused` are
+ * two spellings of one switch, for the CLI (`pause`/`resume`) and the form.
+ */
+export const updateSenderSchema = z
+  .object({
+    label: z.string().max(80).nullable().optional(),
+    dailyCap: z.number().int().min(0).max(10_000).nullable().optional(),
+    paused: z.boolean().optional(),
+    status: z.enum(['active', 'paused']).optional(),
+    warmup: z.boolean().optional(),
+  })
+  .strict();
+
 /** Health payload shared by every service (PRD §1.1 Docker requirements). */
 export const healthSchema = z.object({
   status: z.enum(['ok', 'degraded', 'error']),

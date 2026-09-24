@@ -34,7 +34,9 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluateAddressLimits, evaluatePolicy, isExecutable } from '@outreachgraph/policy';
 import type { Mailer } from '@outreachgraph/email';
 import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
-import { mailerForWorkspace } from './email-account';
+import { mailerForSend, mailerForWorkspace } from './email-account';
+import { SmtpMailer, type SmtpCredentials } from '@outreachgraph/email';
+import { noteSendFailure } from './sender-pool';
 import { emitEvent } from './events';
 import {
   defaultEmailSubject,
@@ -276,6 +278,15 @@ export function describeHold(reason: string): string {
   if (/giving up after/i.test(reason)) return 'sending failed repeatedly';
   if (/requires human approval/i.test(reason)) return 'waiting for your approval';
   if (/no mailbox is connected/i.test(reason)) return 'no mailbox connected';
+  if (/every sending account has reached/i.test(reason)) {
+    return "every mailbox had reached today's cap";
+  }
+  if (/talking to this person has reached/i.test(reason)) {
+    return "the mailbox already talking to them had reached today's cap";
+  }
+  if (/talking to this person is paused/i.test(reason)) {
+    return 'the mailbox already talking to them is paused';
+  }
   if (/budget/i.test(reason)) return "over the plan's monthly allowance";
   return reason;
 }
@@ -307,10 +318,26 @@ export async function runAutopilot(
   // The workspace's own mailbox when it has connected one, the platform sender
   // otherwise. Resolved once per run rather than per message so a workspace
   // with a hundred queued leads opens one SMTP connection, not a hundred.
+  //
+  // With a pool of mailboxes this answers only "can anything send at all",
+  // which is the question the policy engine asks. Which mailbox sends each
+  // message is decided per person below, by `mailerForSend`.
   const sender = await mailerForWorkspace(db, workspaceId, {
     encryptionKey: deps.encryptionKey,
     fallback: deps.mailer,
   });
+
+  // One transport per mailbox per run, however many messages it carries.
+  const transports = new Map<string, SmtpMailer>();
+  const transportFor = (credentials: SmtpCredentials): SmtpMailer => {
+    const key = `${credentials.host}:${credentials.port}:${credentials.username}`;
+    let transport = transports.get(key);
+    if (!transport) {
+      transport = new SmtpMailer(credentials);
+      transports.set(key, transport);
+    }
+    return transport;
+  };
 
   let today = await countActionsToday(db, workspaceId, at);
   if (today >= cap) {
@@ -599,21 +626,60 @@ export async function runAutopilot(
       continue;
     }
 
+    // ------------------------------------------------------------- mailbox
+    //
+    // Which mailbox in the pool: the one already talking to this person, else
+    // the one with the most room today. A full pool holds the card for
+    // tomorrow rather than failing it — the recommendation stays pending and
+    // a later tick picks it up once the caps reset.
+    const mailbox = await mailerForSend(db, workspaceId, {
+      encryptionKey: deps.encryptionKey,
+      fallback: deps.mailer,
+      personId: row.person_id,
+      at,
+      mailerFor: transportFor,
+    });
+
+    if (mailbox.kind === 'deferred') {
+      await note(mailbox.reason);
+      // Nobody else can be sent to either, so there is no point reading on.
+      if (mailbox.code === 'all_capped') {
+        completed = false;
+        break;
+      }
+      continue;
+    }
+    if (mailbox.kind === 'none') {
+      await note('no mailbox is connected, so nothing can be sent');
+      continue;
+    }
+
     // --------------------------------------------------------------- send
     const actionId = newId('action');
     const stamp = now();
     const subject = row.subject?.trim() || defaultEmailSubject(row.company_name);
 
+    // The mailbox is recorded with the action, before the send: it is what
+    // keeps the next message to this person on the same mailbox, and what
+    // today's count for that mailbox is read from.
     await db.execute({
       sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
-            mode, status, body, created_at)
-            VALUES (?, ?, ?, ?, 'send_email', 'email', 'customer_managed', 'queued', ?, ?)`,
-      args: [actionId, workspaceId, row.recommendation_id, row.person_id, row.body, stamp],
+            mode, status, body, created_at, sender_account_id)
+            VALUES (?, ?, ?, ?, 'send_email', 'email', 'customer_managed', 'queued', ?, ?, ?)`,
+      args: [
+        actionId,
+        workspaceId,
+        row.recommendation_id,
+        row.person_id,
+        row.body,
+        stamp,
+        mailbox.accountId ?? null,
+      ],
     });
 
     // The workspace's own reply-to wins over the platform default, because a
     // customer who connected their own mailbox meant replies to reach it.
-    const replyTo = deps.replyTo ?? sender.replyTo ?? settings.reply_to_email ?? undefined;
+    const replyTo = deps.replyTo ?? mailbox.replyTo ?? settings.reply_to_email ?? undefined;
 
     // The same builder as the approval path, so an autopilot send carries the
     // same opt-out, link tracking and pixel as one a human approved.
@@ -629,7 +695,7 @@ export async function runAutopilot(
     });
 
     try {
-      const result = await sender.mailer.send({
+      const result = await mailbox.mailer.send({
         to: recipient.address,
         subject,
         text: outgoing.text,
@@ -665,7 +731,8 @@ export async function runAutopilot(
           to: recipient.address,
           subject,
           sharedInbox: recipient.shared,
-          via: sender.ownMailbox ? 'workspace' : 'platform',
+          via: mailbox.ownMailbox ? 'workspace' : 'platform',
+          ...(mailbox.accountId ? { senderAccountId: mailbox.accountId } : {}),
         },
       });
 
@@ -705,6 +772,12 @@ export async function runAutopilot(
         actor: AUTOPILOT_ACTOR,
       });
 
+      // What the rejection says about the mailbox itself: a refused login
+      // stops it, a refused recipient counts as a bounce against it.
+      if (mailbox.accountId) {
+        await noteSendFailure(db, { workspaceId, accountId: mailbox.accountId, message });
+      }
+
       // The most important line this whole system produces. A send that fails
       // silently is indistinguishable from one that never had a reason to
       // happen, and telling those apart used to require reading container logs.
@@ -719,13 +792,15 @@ export async function runAutopilot(
           to: recipient.address,
           error: message.slice(0, 500),
           attempt: row.failed_attempts + 1,
-          via: sender.ownMailbox ? 'workspace' : 'platform',
+          via: mailbox.ownMailbox ? 'workspace' : 'platform',
         },
       });
     }
   }
 
   if (completed) ledger.retain(workspaceId, seen);
+  for (const transport of transports.values()) transport.close();
+  if (sender?.mailer instanceof SmtpMailer) sender.mailer.close();
 
   return { sent, skipped, failed };
 }
