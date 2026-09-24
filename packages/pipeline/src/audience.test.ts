@@ -359,6 +359,39 @@ describe('when the network refuses', () => {
 });
 
 describe('the sweep', () => {
+  test('leaves the watches past the cap for the next tick, oldest first', async () => {
+    const client = await db('audience-sweep-cap');
+    for (const account of ['a.bsky.social', 'b.bsky.social', 'c.bsky.social']) {
+      await saveAudienceWatch(client, { ...WATCH, account });
+    }
+
+    const read: string[] = [];
+    const sweepDeps = {
+      db: client,
+      resolveReader: async (watch: AudienceWatch) => {
+        read.push(watch.account);
+        return readerOf({ ok: true, engagements: [] });
+      },
+    };
+
+    // Two a tick: a watch is thirty round trips, and the queue drain and the
+    // send sweep are behind this in the same minute.
+    const first = await sweepAudienceWatches(sweepDeps, {
+      workspaceId: SEED.workspaceId,
+      limit: 2,
+    });
+    expect(first.ran).toBe(2);
+    expect(read).toEqual(['a.bsky.social', 'b.bsky.social']);
+
+    // The one left over is still due, and is now the longest waiting.
+    const second = await sweepAudienceWatches(sweepDeps, {
+      workspaceId: SEED.workspaceId,
+      limit: 2,
+    });
+    expect(second.ran).toBe(1);
+    expect(read).toEqual(['a.bsky.social', 'b.bsky.social', 'c.bsky.social']);
+  });
+
   test('runs every due watch and survives one that throws', async () => {
     const client = await db('audience-sweep');
     await saveAudienceWatch(client, WATCH);

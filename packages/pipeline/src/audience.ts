@@ -279,7 +279,8 @@ export async function recordEngagements(
     readonly source: string;
   },
 ): Promise<RecordResult> {
-  const { db, watch } = { ...deps, watch: input.watch };
+  const { db } = deps;
+  const watch = input.watch;
   const at = deps.now ?? new Date();
   const stamp = at.toISOString();
 
@@ -548,7 +549,20 @@ export interface AudienceSweepResult {
 }
 
 /**
- * Runs every due watch in one workspace.
+ * Watches one sweep may read before leaving the rest to the next tick.
+ *
+ * One watch is not one request. A Bluesky watch reading likes, reposts and
+ * replies over ten posts is around thirty round trips, so a workspace with
+ * twenty watches all falling due together is six hundred sequential calls
+ * inside a tick that is supposed to take a minute — the queue drain and the
+ * send sweep sit behind it. Bounding the sweep keeps a tick a tick; the
+ * watches that do not get a turn are still due on the next one, and
+ * `dueAudienceWatches` returns the longest-waiting first, so nothing starves.
+ */
+const WATCHES_PER_SWEEP = 5;
+
+/**
+ * Runs the due watches in one workspace, oldest first, up to the cap.
  *
  * Sequential on purpose. These are reads against two rate-limited APIs on
  * behalf of one account, and the thing an audience watcher must never do is
@@ -556,10 +570,13 @@ export interface AudienceSweepResult {
  */
 export async function sweepAudienceWatches(
   deps: RunWatchDeps,
-  input: { readonly workspaceId: string },
+  input: { readonly workspaceId: string; readonly limit?: number },
 ): Promise<AudienceSweepResult> {
   const at = deps.now ?? new Date();
-  const due = await dueAudienceWatches(deps.db, input.workspaceId, at);
+  const due = (await dueAudienceWatches(deps.db, input.workspaceId, at)).slice(
+    0,
+    input.limit ?? WATCHES_PER_SWEEP,
+  );
 
   let ran = 0;
   let recorded = 0;
