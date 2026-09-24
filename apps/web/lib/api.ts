@@ -312,6 +312,7 @@ export interface SettingsView {
   readonly replyToEmail: string | null;
   readonly trackLinks: boolean;
   readonly trackingOrigin: string | null;
+  readonly trackOpens: boolean;
   /** Where tracked links would point if switched on. */
   readonly effectiveTrackingOrigin: string | null;
   readonly lastDigestSentOn: string | null;
@@ -464,6 +465,19 @@ export interface CadenceStepView {
   readonly delay_hours: number;
   readonly stop_on_reply: number;
   readonly intent: string | null;
+  /** Alternate intents being tested against `intent` (variant A). */
+  readonly variants?: string[];
+}
+
+export interface VariantResultView {
+  readonly step: number;
+  readonly variant: string;
+  readonly assigned: number;
+  readonly sent: number;
+  readonly opened: number;
+  readonly clicked: number;
+  readonly replied: number;
+  readonly replyRate: number | null;
 }
 
 export interface CadenceDetailView {
@@ -506,6 +520,13 @@ export async function fetchCadences(): Promise<CadenceRowView[]> {
 
 export async function fetchCadence(id: string): Promise<CadenceDetailView> {
   return request<CadenceDetailView>(`/cadences/${encodeURIComponent(id)}`);
+}
+
+export async function fetchCadenceVariants(cadenceId: string): Promise<VariantResultView[]> {
+  const body = await request<{ variants: VariantResultView[] }>(
+    `/cadences/${encodeURIComponent(cadenceId)}/variants`,
+  );
+  return body.variants;
 }
 
 export async function fetchEnrollments(cadenceId: string): Promise<EnrollmentRowView[]> {

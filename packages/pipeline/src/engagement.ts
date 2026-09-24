@@ -17,6 +17,7 @@
 import {
   classifyFetch,
   newId,
+  openPixelUrl,
   rewriteUrls,
   trackedLinkUrl,
   type AutomatedFetch,
@@ -300,5 +301,117 @@ export function relationshipInputFrom(facts: EngagementFacts): RelationshipInput
   return {
     ...(facts.previouslyReplied ? { previouslyReplied: true } : {}),
     ...(facts.clickedLink ? { clickedLink: true } : {}),
+  };
+}
+
+// -------------------------------------------------------------------- opens
+
+export interface IssuePixelInput {
+  readonly workspaceId: string;
+  readonly personId: string;
+  readonly campaignId?: string | undefined;
+  readonly actionId?: string | undefined;
+  /** Origin the pixel is served from, e.g. `https://app.example.com`. */
+  readonly origin: string;
+}
+
+/**
+ * Writes the row one message's open pixel resolves to, and returns its URL.
+ *
+ * Returns `undefined` when the row cannot be written, and the caller sends the
+ * message without a pixel. The same trade as a link that cannot be tracked:
+ * losing the measurement is acceptable, an image pointing at a token that
+ * resolves to nothing is not worth the broken-image icon.
+ */
+export async function issueOpenPixel(
+  db: Client,
+  input: IssuePixelInput,
+): Promise<string | undefined> {
+  const token = newId('openPixel');
+
+  try {
+    await db.execute({
+      sql: `INSERT INTO open_pixels (id, workspace_id, person_id, campaign_id, action_id,
+            created_at)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [
+        token,
+        input.workspaceId,
+        input.personId,
+        input.campaignId ?? null,
+        input.actionId ?? null,
+        now(),
+      ],
+    });
+  } catch {
+    return undefined;
+  }
+
+  return openPixelUrl(input.origin, token);
+}
+
+export interface RecordOpenInput {
+  readonly token: string;
+  readonly userAgent?: string | undefined;
+  readonly at?: Date;
+}
+
+export interface RecordOpenResult {
+  readonly personId: string;
+  readonly workspaceId: string;
+  /** Set when the fetch was not counted as a person. */
+  readonly automated?: AutomatedFetch;
+}
+
+/**
+ * Records one fetch of an open pixel.
+ *
+ * Deliberately writes no `interactions` row, unlike a click. An open is the
+ * weakest fact this product records — Apple Mail fetches every image on
+ * delivery through a proxy that looks exactly like a reader — and an
+ * interaction is what scoring and the policy engine read. Counting opens there
+ * would let a mail client's prefetcher warm a prospect up.
+ */
+export async function recordEmailOpen(
+  db: Client,
+  input: RecordOpenInput,
+): Promise<RecordOpenResult | undefined> {
+  const pixel = await queryOne<{
+    id: string;
+    workspace_id: string;
+    person_id: string;
+    created_at: string;
+  }>(db, 'SELECT id, workspace_id, person_id, created_at FROM open_pixels WHERE id = ?', [
+    input.token,
+  ]);
+
+  if (!pixel) return undefined;
+
+  const fetchedAt = input.at ?? new Date();
+  const automated = classifyFetch({
+    userAgent: input.userAgent,
+    sentAt: new Date(pixel.created_at),
+    fetchedAt,
+  });
+
+  await db.execute({
+    sql: `INSERT INTO email_opens (id, pixel_id, workspace_id, person_id, automated,
+          user_agent, occurred_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      newId('emailOpen'),
+      pixel.id,
+      pixel.workspace_id,
+      pixel.person_id,
+      automated ?? null,
+      input.userAgent?.slice(0, 500) ?? null,
+      fetchedAt.toISOString(),
+    ],
+  });
+
+  return {
+    personId: pixel.person_id,
+    workspaceId: pixel.workspace_id,
+    ...(automated ? { automated } : {}),
   };
 }

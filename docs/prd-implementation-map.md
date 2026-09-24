@@ -48,6 +48,7 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 | §34 Email verification             | `packages/email/`, `apps/api/src/auth.ts`, migration `0006`                           | 7 + 11 tests                       |
 | §12.5 Relationship score           | `packages/pipeline/src/engagement.ts`, migration `0018`                               | 17 tests                           |
 | §13 Cadences                       | `packages/domain/src/cadence.ts`, `pipeline/src/cadence*.ts`, `0019`                  | 19 + 21 + 6 tests                  |
+| Cadence A/B variants + open pixel  | `domain/src/cadence.ts` (`guidanceFor`), `pipeline/src/engagement.ts`, `0040`         | 12 + 8 + 7 tests                   |
 | §16.4 Bluesky writes               | `providers/src/bluesky/agent.ts`, `pipeline/src/outreach-bluesky.ts`                  | 21 + 7 tests                       |
 | §26 Term expansion                 | `packages/ai/src/synonyms.ts`, `pipeline/src/term-expansion.ts`, `0020`               | 11 + 8 tests                       |
 | §20 Research grid                  | `packages/ai/src/grid.ts`, `pipeline/src/research-grid.ts`                            | 8 + 15 tests                       |

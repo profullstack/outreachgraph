@@ -194,6 +194,8 @@ export {
 export {
   trackLinksInBody,
   recordLinkClick,
+  issueOpenPixel,
+  recordEmailOpen,
   engagementFor,
   relationshipInputFrom,
   type TrackLinksInput,
@@ -219,6 +221,8 @@ export {
   deliverEmailAction,
   defaultEmailSubject,
   loadOutreachSettings,
+  prepareOutgoingEmail,
+  htmlTwin,
   pickEmailRecipient,
   recordEmailFailure,
   recordEmailSent,

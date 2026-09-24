@@ -161,3 +161,13 @@ export function classifyFetch(context: FetchContext): AutomatedFetch | undefined
 export function trackedLinkUrl(origin: string, token: string): string {
   return `${origin.replace(/\/+$/, '')}/t/${token}`;
 }
+
+/**
+ * The public URL an open pixel is served from.
+ *
+ * The `.gif` suffix is for the mail clients that decide whether to fetch an
+ * image by its extension; the handler accepts the token with or without it.
+ */
+export function openPixelUrl(origin: string, token: string): string {
+  return `${origin.replace(/\/+$/, '')}/o/${token}.gif`;
+}

@@ -45,10 +45,15 @@ interface DraftStep {
   action: string;
   delayHours: number;
   intent: string;
+  /** Alternate angles to A/B test against `intent`, which is variant A. */
+  variants: string[];
 }
 
+/** Alternates a step may carry besides its intent — mirrors `MAX_STEP_VARIANTS`. */
+const MAX_VARIANTS = 3;
+
 function blankStep(): DraftStep {
-  return { network: 'email', action: 'send_email', delayHours: 72, intent: '' };
+  return { network: 'email', action: 'send_email', delayHours: 72, intent: '', variants: [] };
 }
 
 export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) {
@@ -56,9 +61,7 @@ export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) 
 
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
-  const [steps, setSteps] = useState<DraftStep[]>([
-    { network: 'email', action: 'send_email', delayHours: 0, intent: '' },
-  ]);
+  const [steps, setSteps] = useState<DraftStep[]>([{ ...blankStep(), delayHours: 0 }]);
   const [busy, setBusy] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
@@ -109,6 +112,9 @@ export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) 
             delayHours: Number(step.delayHours),
             stopOnReply: true,
             ...(step.intent ? { intent: step.intent } : {}),
+            ...(step.variants.some((v) => v.trim())
+              ? { variants: step.variants.map((v) => v.trim()).filter(Boolean) }
+              : {}),
           })),
         }),
       });
@@ -128,7 +134,7 @@ export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) 
       }
 
       setName('');
-      setSteps([{ network: 'email', action: 'send_email', delayHours: 0, intent: '' }]);
+      setSteps([{ ...blankStep(), delayHours: 0 }]);
       setOpen(false);
       router.refresh();
     } catch {
@@ -257,6 +263,46 @@ export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) 
                     placeholder="what this touch is for — “reference their talk”"
                     className="border-border bg-surface mt-2 w-full rounded-xl border px-3 py-2 text-sm"
                   />
+
+                  {step.variants.map((variant, v) => (
+                    <div key={v} className="mt-2 flex items-center gap-2">
+                      <span className="text-ink-muted w-5 shrink-0 text-xs font-medium">
+                        {String.fromCharCode(66 + v)}
+                      </span>
+                      <input
+                        value={variant}
+                        aria-label={`Step ${index + 1} variant ${String.fromCharCode(66 + v)}`}
+                        onChange={(e) =>
+                          update(index, {
+                            variants: step.variants.map((old, i) =>
+                              i === v ? e.target.value : old,
+                            ),
+                          })
+                        }
+                        placeholder="another angle to test — “ask for a short call”"
+                        className="border-border bg-surface w-full rounded-xl border px-3 py-2 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          update(index, { variants: step.variants.filter((_, i) => i !== v) })
+                        }
+                        className="text-ink-muted shrink-0 text-xs underline"
+                      >
+                        Drop
+                      </button>
+                    </div>
+                  ))}
+
+                  {step.intent.trim() && step.variants.length < MAX_VARIANTS ? (
+                    <button
+                      type="button"
+                      onClick={() => update(index, { variants: [...step.variants, ''] })}
+                      className="text-ink-muted mt-2 mr-3 text-xs underline"
+                    >
+                      A/B test another angle
+                    </button>
+                  ) : null}
 
                   {steps.length > 1 ? (
                     <button
