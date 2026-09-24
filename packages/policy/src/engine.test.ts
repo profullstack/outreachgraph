@@ -58,15 +58,7 @@ describe('fail-closed behaviour', () => {
 });
 
 describe('LinkedIn (PRD §16.3)', () => {
-  const automationAttempts: ActionKind[] = [
-    'send_dm',
-    'connect',
-    'like',
-    'comment',
-    'reply',
-    'follow',
-    'view_profile',
-  ];
+  const automationAttempts: ActionKind[] = ['send_dm', 'connect', 'like', 'follow', 'view_profile'];
 
   test.each(automationAttempts)('never auto-executes %s', (action) => {
     const result = evaluatePolicy(
@@ -77,6 +69,33 @@ describe('LinkedIn (PRD §16.3)', () => {
     expect(result.decision).toBe('manual_only');
     expect(isExecutable(result.decision, true)).toBe(false);
   });
+
+  // Comments and replies run through the member's own session, opted into on
+  // 2026-09-24, and only when that session is connected.
+  test.each(['comment', 'reply'] as ActionKind[])(
+    '%s runs only through a connected session',
+    (action) => {
+      const without = evaluatePolicy(
+        request({
+          network: 'linkedin',
+          action,
+          approvalMode: 'trusted_automation',
+          hasConnectedAccount: false,
+        }),
+      );
+      expect(without.decision).toBe('manual_only');
+
+      const withSession = evaluatePolicy(
+        request({
+          network: 'linkedin',
+          action,
+          approvalMode: 'trusted_automation',
+          hasConnectedAccount: true,
+        }),
+      );
+      expect(isExecutable(withSession.decision, true)).toBe(true);
+    },
+  );
 
   test('permits research', () => {
     const result = evaluatePolicy(request({ network: 'linkedin', action: 'observe' }));

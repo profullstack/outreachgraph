@@ -58,6 +58,15 @@ export const JOB_KINDS = [
    * links to, records what they corroborate, then re-decides the person.
    */
   'openprofile',
+  /**
+   * Post one approved X or LinkedIn action, at a human pace.
+   *
+   * Approving a hundred cards at once must not become a hundred posts in the
+   * same second: that is the pattern both networks restrict accounts for. So
+   * approval schedules these a few minutes apart, capped per day, and the
+   * worker sends each when its time comes.
+   */
+  'deliver_social',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];

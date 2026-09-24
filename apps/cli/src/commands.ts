@@ -75,6 +75,41 @@ function handleFromUrl(url: string): string | undefined {
   return nested?.replace(/^@/, '');
 }
 
+/** Opens a URL in the person's browser; the URL is printed either way. */
+function openInBrowser(url: string): void {
+  const opener =
+    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  try {
+    Bun.spawn([opener, url], { stdio: ['ignore', 'ignore', 'ignore'] });
+  } catch {
+    // Headless box: the printed URL is the fallback.
+  }
+}
+
+/** Reads one line from stdin without echoing it, so a cookie never lands in scrollback. */
+async function readSecret(prompt: string): Promise<string> {
+  process.stderr.write(prompt);
+  const tty = process.stdin.isTTY;
+  if (tty) process.stdin.setRawMode(true);
+  let value = '';
+  try {
+    for await (const chunk of process.stdin) {
+      for (const ch of String(chunk)) {
+        if (ch === '\r' || ch === '\n') return value.trim();
+        if (ch === '\u0003') throw new Error('cancelled');
+        if (ch === '\u007f') value = value.slice(0, -1);
+        else value += ch;
+      }
+    }
+    return value.trim();
+  } finally {
+    if (tty) process.stdin.setRawMode(false);
+    process.stderr.write('\n');
+  }
+}
+
+const CONNECTABLE = ['x', 'linkedin'] as const;
+
 /**
  * Opens the person's editor on a file and returns what they saved. Injected
  * through `edit` on the context so tests never spawn anything.
@@ -386,6 +421,75 @@ export const COMMANDS: readonly Command[] = [
       })) as Record<string, unknown>;
 
       return `${text(result, 'answered')} answered, ${text(result, 'noEvidence')} with no evidence, ${text(result, 'remaining')} remaining (${text(result, 'status')})`;
+    },
+  },
+  {
+    name: 'connect',
+    usage: 'og connect x | og connect linkedin --accept-linkedin-risk',
+    summary: 'Connect an X account (OAuth 2.1) or a LinkedIn session, so those cards send.',
+    async run({ client, args, flags }) {
+      const network = args[0];
+      if (network === 'x') {
+        const started = (await client.post('/integrations/x/oauth/start', {})) as Record<
+          string,
+          unknown
+        >;
+        const url = text(started, 'authorizeUrl');
+        process.stderr.write(`Opening X to approve access:\n  ${url}\n\nWaiting`);
+        openInBrowser(url);
+
+        const deadline = Date.parse(text(started, 'expiresAt')) || Date.now() + 15 * 60_000;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          process.stderr.write('.');
+          const status = (await client.get('/integrations/x')) as {
+            account?: { connected?: boolean; username?: string; pending?: boolean };
+          };
+          if (status.account?.connected && !status.account.pending) {
+            process.stderr.write('\n');
+            return `Connected X as @${status.account.username ?? '?'}. X cards will now send, paced.`;
+          }
+        }
+        throw new Error('timed out waiting for X; run og connect x again');
+      }
+
+      if (network === 'linkedin') {
+        if (flags['accept-linkedin-risk'] !== true) {
+          return [
+            'Automating LinkedIn is against its User Agreement and can get the account restricted.',
+            'OutreachGraph paces comments (about 25 a day, minutes apart) to keep that risk low, not zero.',
+            '',
+            'To go ahead: og connect linkedin --accept-linkedin-risk',
+            'You will be asked for the li_at cookie: in a browser signed in to LinkedIn, open',
+            'DevTools > Application > Cookies > https://www.linkedin.com and copy the li_at value.',
+          ].join('\n');
+        }
+        const liAt = await readSecret('li_at cookie (input hidden): ');
+        if (!liAt) throw new Error('no cookie entered');
+        const result = (await client.put('/integrations/linkedin', {
+          liAt,
+          acknowledgeTerms: true,
+        })) as { account?: { publicIdentifier?: string } };
+        return `Connected LinkedIn as ${result.account?.publicIdentifier ?? '?'}. LinkedIn comments will now send, paced.`;
+      }
+
+      throw new Error(`og connect ${CONNECTABLE.join(' | ')}`);
+    },
+  },
+  {
+    name: 'disconnect',
+    usage: 'og disconnect x | og disconnect linkedin',
+    summary: 'Remove a connected X account or LinkedIn session.',
+    async run({ client, args }) {
+      const network = args[0];
+      if (!network || !(CONNECTABLE as readonly string[]).includes(network)) {
+        throw new Error(`og disconnect ${CONNECTABLE.join(' | ')}`);
+      }
+      if (!client.delete) throw new Error('this client cannot disconnect');
+      const result = (await client.delete(`/integrations/${network}`)) as Record<string, unknown>;
+      return result.disconnected
+        ? `Disconnected ${network}.`
+        : `No ${network} account was connected.`;
     },
   },
   {

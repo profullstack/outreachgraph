@@ -112,7 +112,19 @@ import {
   workspaceAnalytics,
   EmailAccountError,
   LISTEN_SOURCE_SLUGS,
+  completeXConnect,
+  connectLinkedInSession,
+  disconnectLinkedInSession,
+  disconnectXAccount,
+  isPacedNetwork,
+  linkedInAccountSummary,
+  LinkedInAccountError,
+  scheduleSocialDelivery,
+  startXConnect,
+  xAccountSummary,
+  XAccountError,
 } from '@outreachgraph/pipeline';
+import type { XOAuthClient } from '@outreachgraph/providers';
 import {
   archiveCampaign,
   createCampaignFromIntake,
@@ -257,6 +269,11 @@ export interface AppOptions {
    * already-stored mailbox reads as disconnected.
    */
   readonly encryptionKey?: Buffer | undefined;
+  /**
+   * The X app this deployment connects accounts through (OAuth 2.1). Without
+   * it `og connect x` is refused and X cards stay hand-offs.
+   */
+  readonly xOAuth?: XOAuthClient | undefined;
   /**
    * Suggests the communities a campaign should listen to.
    *
@@ -742,6 +759,67 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
    * moving it silently breaks payments that have already been taken — the
    * failure arrives as credits that never appear, long after the deploy.
    */
+  /**
+   * Where X sends the browser back after the member approves (OAuth 2.1).
+   *
+   * Above the session guard because the request comes from X's redirect, not
+   * from a signed-in page; the single-use `state` is what ties it to the
+   * workspace that started it. The path follows the house shape,
+   * `/api/v1/<provider>/oauth/callback`, and must match the X app's
+   * registered callback exactly.
+   */
+  api.get('/x/oauth/callback', async (c) => {
+    const page = (title: string, detail: string, status: 200 | 400 | 503) =>
+      c.html(
+        `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">` +
+          `<title>${title}</title><body style="font:16px system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem">` +
+          `<h1 style="font-size:1.25rem">${title}</h1><p>${detail}</p></body>`,
+        status,
+      );
+
+    if (!options.xOAuth || !options.encryptionKey) {
+      return page('X is not configured here', 'This deployment has no X app.', 503);
+    }
+
+    const error = c.req.query('error');
+    if (error)
+      return page(
+        'X sign-in was cancelled',
+        'Nothing was connected. Run og connect x to try again.',
+        400,
+      );
+
+    const state = c.req.query('state') ?? '';
+    const code = c.req.query('code') ?? '';
+    if (!state || !code) return page('X sign-in failed', 'The link from X was incomplete.', 400);
+
+    try {
+      const connected = await completeXConnect(options.db, {
+        state,
+        code,
+        oauth: options.xOAuth,
+        encryptionKey: options.encryptionKey,
+      });
+      await repo.audit(options.db, {
+        workspaceId: connected.workspaceId,
+        actorKind: 'system',
+        actorId: 'x_oauth',
+        eventType: 'integration.connected',
+        entityKind: 'workspace',
+        entityId: connected.workspaceId,
+        detail: { network: 'x', username: connected.username },
+      });
+      return page(
+        `Connected @${escapeHtml(connected.username)}`,
+        'You can close this tab. The terminal will pick it up.',
+        200,
+      );
+    } catch (err) {
+      const detail = err instanceof XAccountError ? err.message : 'X did not accept the sign-in.';
+      return page('X sign-in failed', escapeHtml(detail), 400);
+    }
+  });
+
   api.post('/coinpay/callback', async (c) => {
     if (!options.coinpay) {
       throw new ApiError(503, 'payments_unconfigured', 'This deployment cannot take payments.');
@@ -2971,6 +3049,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     let approved = 0;
     let sent = 0;
+    let scheduled = 0;
     let researchQueued = 0;
     const holds = new Map<string, { reason: string; count: number }>();
 
@@ -3002,6 +3081,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
       approved += 1;
       if (outcome.delivery?.sent) sent += 1;
+      if (outcome.scheduled?.queued) scheduled += 1;
       if (outcome.research?.queued) researchQueued += 1;
     }
 
@@ -3025,6 +3105,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       approved,
       held,
       sent,
+      // X and LinkedIn posts queued to go out a few minutes apart.
+      scheduled,
       researchQueued,
       // Grouped rather than one row per card: two hundred cards behind four
       // shared inboxes is four facts, not two hundred.
@@ -3079,6 +3161,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       actionId: outcome.actionId,
       policy: { decision: outcome.decision, policyVersion: outcome.policyVersion },
       ...(outcome.delivery ? { delivery: outcome.delivery } : {}),
+      ...(outcome.scheduled ? { scheduled: outcome.scheduled } : {}),
       ...(outcome.research ? { research: outcome.research } : {}),
     });
   });
@@ -4139,6 +4222,99 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     }
   });
 
+  /** The workspace's X account, and a sign-in in progress if there is one. */
+  api.get('/integrations/x', async (c) => {
+    const actor = c.get('actor');
+    return c.json({
+      canConnect: Boolean(options.xOAuth && options.encryptionKey),
+      account: await xAccountSummary(c.get('db'), actor.workspaceId),
+    });
+  });
+
+  /**
+   * Starts connecting an X account: returns the URL to open. `og connect x`
+   * opens it and polls `GET /integrations/x` until the callback lands.
+   */
+  api.post('/integrations/x/oauth/start', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting an X account');
+    if (!options.xOAuth || !options.encryptionKey) {
+      throw new ApiError(503, 'x_unconfigured', 'This deployment has no X app (X_CLIENT_ID).');
+    }
+    const started = await startXConnect(c.get('db'), {
+      workspaceId: actor.workspaceId,
+      oauth: options.xOAuth,
+      encryptionKey: options.encryptionKey,
+    });
+    return c.json({ authorizeUrl: started.authorizeUrl, expiresAt: started.expiresAt });
+  });
+
+  api.delete('/integrations/x', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('disconnecting an X account');
+    return c.json({ disconnected: await disconnectXAccount(c.get('db'), actor.workspaceId) });
+  });
+
+  /** The workspace's LinkedIn session, if one is connected. */
+  api.get('/integrations/linkedin', async (c) => {
+    const actor = c.get('actor');
+    return c.json({
+      canConnect: Boolean(options.encryptionKey),
+      account: await linkedInAccountSummary(c.get('db'), actor.workspaceId),
+    });
+  });
+
+  /**
+   * Connects a LinkedIn session from the member's `li_at` cookie.
+   *
+   * There is no OAuth route to commenting on someone else's post, so this is
+   * the one connect that takes a pasted credential. `acknowledgeTerms` must be
+   * true: automating LinkedIn is against its terms and risks the account, and
+   * that choice is recorded against the person who made it.
+   */
+  api.put('/integrations/linkedin', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting a LinkedIn session');
+    if (!options.encryptionKey) {
+      throw new ApiError(503, 'no_key', 'This deployment has no SECRET_ENCRYPTION_KEY.');
+    }
+    const body = await parseBody(
+      c.req.raw,
+      z.object({ liAt: z.string().min(20), acknowledgeTerms: z.literal(true) }),
+    );
+    try {
+      const account = await connectLinkedInSession(db, {
+        workspaceId: actor.workspaceId,
+        liAt: body.liAt,
+        encryptionKey: options.encryptionKey,
+      });
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'integration.connected',
+        entityKind: 'workspace',
+        entityId: actor.workspaceId,
+        detail: { network: 'linkedin', sessionAutomation: true, acknowledgedTerms: true },
+      });
+      return c.json({ account });
+    } catch (error) {
+      if (error instanceof LinkedInAccountError) {
+        throw ApiError.badRequest(`LinkedIn refused that cookie: ${error.message}`);
+      }
+      throw error;
+    }
+  });
+
+  api.delete('/integrations/linkedin', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('disconnecting a LinkedIn session');
+    return c.json({
+      disconnected: await disconnectLinkedInSession(c.get('db'), actor.workspaceId),
+    });
+  });
+
   api.delete('/integrations/bluesky', async (c) => {
     const actor = c.get('actor');
     if (!canApprove(actor)) throw ApiError.forbidden('disconnecting a Bluesky account');
@@ -4700,6 +4876,7 @@ export type ApproveOutcome =
       readonly decision: string;
       readonly policyVersion: string;
       readonly delivery?: { sent: boolean; to?: string; reason?: string };
+      readonly scheduled?: { queued: boolean; runAt: string };
       readonly research?: { queued: boolean; url?: string; reason?: string };
     };
 
@@ -4816,6 +4993,20 @@ async function approveRecommendation(
       ? await sendEmailAction(db, options, actor, actionId, decision.policyVersion)
       : undefined;
 
+  // Approving an X or LinkedIn card is the same instruction, carried out at a
+  // human pace: scheduled behind the workspace's other approved posts rather
+  // than sent inline, so "approve all" is not a hundred posts in one second.
+  const scheduled =
+    mode !== 'manual' && isPacedNetwork(recommendation.network)
+      ? await scheduleSocialDelivery(db, {
+          workspaceId: actor.workspaceId,
+          actionId,
+          network: recommendation.network,
+          actor: { actorKind: 'user', actorId: actor.userId },
+          policyVersion: decision.policyVersion,
+        })
+      : undefined;
+
   // Approving research is the instruction to go and research.
   //
   // `refresh_research` had no executor anywhere — the job runner knows four
@@ -4865,6 +5056,7 @@ async function approveRecommendation(
     decision: decision.decision,
     policyVersion: decision.policyVersion,
     ...(delivery ? { delivery } : {}),
+    ...(scheduled ? { scheduled } : {}),
     ...(research ? { research } : {}),
   };
 }
@@ -5028,6 +5220,8 @@ function modeForNetwork(network: Network): 'official_api' | 'manual' | 'crm' | '
   // Sent through a mailbox the customer owns, which is what the capability
   // matrix has always called this channel.
   if (network === 'email') return 'customer_managed';
+  // The member's own session, which is what the capability matrix calls it.
+  if (network === 'linkedin') return 'customer_managed';
   if (network === 'x' || network === 'bluesky' || network === 'github') return 'official_api';
   return 'manual';
 }

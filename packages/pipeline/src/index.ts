@@ -315,3 +315,30 @@ export {
   type ApplyResult,
   type CampaignBudget,
 } from './project-budgets';
+
+export {
+  completeXConnect,
+  disconnectXAccount,
+  startXConnect,
+  xAccountSummary,
+  xClientForWorkspace,
+  XAccountError,
+  type XAccountSummary,
+} from './x-account';
+export { deliverXAction, type DeliverXInput, type DeliverXResult } from './outreach-x';
+export {
+  connectLinkedInSession,
+  disconnectLinkedInSession,
+  linkedInAccountSummary,
+  linkedInSessionForWorkspace,
+  LinkedInAccountError,
+  type LinkedInAccountSummary,
+} from './linkedin-account';
+export { deliverLinkedInAction, type DeliverLinkedInResult } from './outreach-linkedin';
+export {
+  isPacedNetwork,
+  PACING,
+  runSocialDelivery,
+  scheduleSocialDelivery,
+  type PacedNetwork,
+} from './social-delivery';

@@ -107,6 +107,7 @@ describe('choosing an action', () => {
       input({
         signals: [signal({ network: 'linkedin' })],
         reachableNetworks: ['linkedin', 'bluesky'],
+        connectedNetworks: ['bluesky'],
       }),
     );
 
@@ -120,7 +121,11 @@ describe('choosing an action', () => {
 
   test('still offers the manual card when nothing else can run', () => {
     const result = generateRecommendation(
-      input({ signals: [signal({ network: 'linkedin' })], reachableNetworks: ['linkedin'] }),
+      input({
+        signals: [signal({ network: 'linkedin' })],
+        reachableNetworks: ['linkedin'],
+        connectedNetworks: [],
+      }),
     );
 
     expect(result.ok).toBe(true);
