@@ -16,6 +16,7 @@
 
 import {
   dueAtFor,
+  guidanceFor,
   newId,
   validateCadence,
   type ActionKind,
@@ -273,9 +274,10 @@ async function loadSteps(db: Client, cadenceId: string): Promise<readonly Cadenc
     delay_hours: number;
     stop_on_reply: number;
     intent: string | null;
+    variants_json: string | null;
   }>(
     db,
-    `SELECT position, network, action, delay_hours, stop_on_reply, intent
+    `SELECT position, network, action, delay_hours, stop_on_reply, intent, variants_json
        FROM cadence_steps WHERE cadence_id = ? ORDER BY position`,
     [cadenceId],
   );
@@ -287,7 +289,22 @@ async function loadSteps(db: Client, cadenceId: string): Promise<readonly Cadenc
     delayHours: row.delay_hours,
     stopOnReply: row.stop_on_reply === 1,
     ...(row.intent ? { intent: row.intent } : {}),
+    ...variantsFrom(row.variants_json),
   }));
+}
+
+function variantsFrom(json: string | null): { variants?: readonly string[] } {
+  if (!json) return {};
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return {};
+    const variants = parsed.filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+    return variants.length > 0 ? { variants } : {};
+  } catch {
+    // A column this module wrote cannot be malformed unless someone edited it
+    // by hand; a step that loses its variants still runs as plain variant A.
+    return {};
+  }
 }
 
 async function hasReplied(db: Client, enrollment: DueEnrollment): Promise<boolean> {
@@ -357,8 +374,8 @@ async function record(
   await db.execute({
     sql: `INSERT INTO cadence_step_runs (id, enrollment_id, workspace_id, step_position,
           network, action, outcome, policy_decision, policy_gate, recommendation_id,
-          detail, occurred_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          detail, variant, occurred_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       newId('cadenceRun'),
       enrollment.id,
@@ -371,6 +388,7 @@ async function record(
       resolution.gate ?? null,
       recommendationId ?? null,
       resolution.reason.slice(0, 500),
+      guidanceFor(enrollment.id, step).variant ?? null,
       stamp,
     ],
   });
@@ -426,8 +444,8 @@ export async function createCadence(
   for (const step of [...input.steps].sort((a, b) => a.position - b.position)) {
     await db.execute({
       sql: `INSERT INTO cadence_steps (id, cadence_id, position, network, action,
-            delay_hours, stop_on_reply, intent)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            delay_hours, stop_on_reply, intent, variants_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         newId('cadenceStep'),
         id,
@@ -437,6 +455,9 @@ export async function createCadence(
         step.delayHours,
         step.stopOnReply ? 1 : 0,
         step.intent ?? null,
+        step.variants && step.variants.length > 0
+          ? JSON.stringify(step.variants.map((v) => v.trim()))
+          : null,
       ],
     });
   }
