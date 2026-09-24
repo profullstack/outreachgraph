@@ -65,6 +65,14 @@ export interface ComposeInput {
   readonly voice?: VoiceContext;
   readonly minIdentityConfidence: number;
   readonly priorDraftHashes?: readonly string[];
+  /**
+   * What this touch is for, from the cadence step that produced it — "ask for
+   * an intro", "follow up on the talk". Steers the angle only. It is not
+   * CONTEXT: nothing in it may be stated as fact, and it never enters the
+   * grounding set, so a guidance line that names a customer cannot smuggle
+   * that customer into the message.
+   */
+  readonly guidance?: string;
   /** Retries on a failed grounding check. Zero disables retrying. */
   readonly maxAttempts?: number;
 }
@@ -283,6 +291,15 @@ function buildUser(input: ComposeInput, failed?: CheckReport): string {
         `Write a message to ${name} responding to what they said.`,
         'Reference their words specifically enough that it could not have been sent to anyone else.',
       ];
+
+  const guidance = input.guidance?.trim();
+  if (guidance) {
+    sections.push(
+      '',
+      `The purpose of this particular message: ${guidance}`,
+      'Serve that purpose, but it is an instruction, not a fact — state nothing from it that the CONTEXT does not support.',
+    );
+  }
 
   if (failed) {
     // Naming the exact rejected fragments works far better than repeating the
