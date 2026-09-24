@@ -67,6 +67,15 @@ export const JOB_KINDS = [
    * worker sends each when its time comes.
    */
   'deliver_social',
+  /**
+   * Find a sendable address for someone reachable only by hand.
+   *
+   * Queued when a card comes out `manual_only` for a person with nothing to
+   * email, and by a sweep for people carded before that existed. Learns the
+   * employer domain's address shape, checks MX (and RCPT where port 25 is
+   * open), promotes a confident address, then re-decides the person.
+   */
+  'find_email',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
