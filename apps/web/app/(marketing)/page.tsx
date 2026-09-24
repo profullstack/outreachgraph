@@ -34,6 +34,7 @@ export default async function LandingPage() {
       <SiteNav />
       <Hero />
       <EvidenceSection />
+      <CapabilitiesSection />
       <RefusalSection />
       <ClosingCta />
       <SiteFooter />
@@ -202,9 +203,66 @@ function EvidenceSection() {
   );
 }
 
-function RefusalSection() {
+/**
+ * What the product runs once a prospect is worth writing to.
+ *
+ * Every line names something that exists and is switched on or one opt-in
+ * away. A sequencer page that lists features it does not have is the fastest
+ * way to lose the audience this one is for.
+ */
+function CapabilitiesSection() {
+  const capabilities = [
+    [
+      'Sequences that branch',
+      'Visit, connect with a note, then a DM if they accept or an email if they don’t. Every step can wait on a condition, and a reply ends the plan.',
+    ],
+    [
+      'LinkedIn, through your own session',
+      'Connection requests, profile visits, follows, messages and comments, paced and capped under LinkedIn’s own weekly limits. Off until you accept the risk.',
+    ],
+    [
+      'A/B test the angle, not a template',
+      'Give a step two or three reasons to write. Each prospect gets one, every message is still written from their own words, and reply rate is reported per arm.',
+    ],
+    [
+      'One inbox, triaged',
+      'Replies are labelled interested, question, referral, out of office or unsubscribe. An unsubscribe suppresses at once; a question gets a drafted answer to approve, or send unattended if you allow it.',
+    ],
+    [
+      'More sending accounts, warmed up',
+      'Connect several mailboxes and profiles. A conversation stays on the account that started it, new accounts ramp their daily cap, and a bouncing one pauses itself.',
+    ],
+    [
+      'Webhooks, Slack and your CRM',
+      'Signed events to Zapier, Make, n8n or your own endpoint, messages in Slack, and replies and approvals written to HubSpot or Pipedrive.',
+    ],
+  ];
+
   return (
     <Band className="py-16 sm:py-20">
+      <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-balance sm:text-[34px]">
+        Then it runs the outreach for you.
+      </h2>
+      <p className="text-ink-muted mt-4 max-w-[42em] text-[17px] leading-relaxed">
+        Email, LinkedIn, Bluesky and X in one plan, with click tracking and optional open tracking.
+        Human approval stays the default everywhere.
+      </p>
+
+      <ul className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {capabilities.map(([title, detail]) => (
+          <li key={title} className="border-border bg-surface-raised rounded-2xl border p-5">
+            <div className="text-[15px] font-semibold">{title}</div>
+            <p className="text-ink-muted mt-1.5 text-[13.5px] leading-relaxed">{detail}</p>
+          </li>
+        ))}
+      </ul>
+    </Band>
+  );
+}
+
+function RefusalSection() {
+  return (
+    <Band className="border-border border-t py-16 sm:py-20">
       <div className="grid gap-10 lg:grid-cols-2 lg:gap-12">
         <div>
           <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-balance sm:text-[34px]">
