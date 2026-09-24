@@ -76,6 +76,7 @@ export const ID_PREFIXES = {
   rule: 'rul',
   ruleRun: 'rrn',
   invitation: 'inv',
+  linkedinConnection: 'lic',
   // Outbound webhooks. The event id travels in every delivery so a receiver
   // can drop the duplicate a retry produces; the endpoint and delivery ids
   // are ours, for the log.

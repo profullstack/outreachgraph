@@ -34,10 +34,25 @@ const ACTIONS = [
   { id: 'reply', label: 'Reply publicly' },
   { id: 'comment', label: 'Comment' },
   { id: 'send_dm', label: 'Send a direct message' },
+  { id: 'connect', label: 'Send a connection request' },
   { id: 'like', label: 'Like something' },
   { id: 'follow', label: 'Follow' },
   { id: 'view_profile', label: 'Look at their profile' },
   { id: 'observe', label: 'Just watch' },
+] as const;
+
+/**
+ * When a step runs. Evaluated as the step falls due, from what has already
+ * happened; a step whose condition is false is skipped and the plan carries
+ * on, so two neighbouring steps with opposite conditions are a branch.
+ */
+const CONDITIONS = [
+  { id: 'always', label: 'Always' },
+  { id: 'if_connected', label: 'Only if connected on LinkedIn' },
+  { id: 'if_not_connected', label: 'Only if not connected on LinkedIn' },
+  { id: 'if_no_reply', label: 'Only if they have not replied' },
+  { id: 'if_clicked', label: 'Only if they clicked a link' },
+  { id: 'if_not_clicked', label: 'Only if they have not clicked' },
 ] as const;
 
 interface DraftStep {
@@ -45,6 +60,9 @@ interface DraftStep {
   action: string;
   delayHours: number;
   intent: string;
+  condition: string;
+  /** Hours; only meaningful on a LinkedIn connection request. 0 means do not wait. */
+  waitForAcceptanceHours: number;
   /** Alternate angles to A/B test against `intent`, which is variant A. */
   variants: string[];
 }
@@ -53,7 +71,19 @@ interface DraftStep {
 const MAX_VARIANTS = 3;
 
 function blankStep(): DraftStep {
-  return { network: 'email', action: 'send_email', delayHours: 72, intent: '', variants: [] };
+  return {
+    network: 'email',
+    action: 'send_email',
+    delayHours: 72,
+    intent: '',
+    condition: 'always',
+    waitForAcceptanceHours: 0,
+    variants: [],
+  };
+}
+
+function isInvite(step: DraftStep): boolean {
+  return step.network === 'linkedin' && step.action === 'connect';
 }
 
 export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) {
@@ -112,6 +142,10 @@ export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) 
             delayHours: Number(step.delayHours),
             stopOnReply: true,
             ...(step.intent ? { intent: step.intent } : {}),
+            ...(step.condition !== 'always' ? { condition: step.condition } : {}),
+            ...(isInvite(step) && step.waitForAcceptanceHours > 0
+              ? { waitForAcceptanceHours: Number(step.waitForAcceptanceHours) }
+              : {}),
             ...(step.variants.some((v) => v.trim())
               ? { variants: step.variants.map((v) => v.trim()).filter(Boolean) }
               : {}),
@@ -257,6 +291,41 @@ export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) 
                     </label>
                   </div>
 
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <select
+                      aria-label={`Step ${index + 1} condition`}
+                      value={step.condition}
+                      onChange={(e) => update(index, { condition: e.target.value })}
+                      className="border-border bg-surface min-h-[44px] rounded-xl border px-3 text-sm"
+                    >
+                      {CONDITIONS.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    {isInvite(step) ? (
+                      <label className="text-ink-muted flex items-center gap-2 text-xs">
+                        wait up to
+                        <input
+                          type="number"
+                          min={0}
+                          max={30}
+                          aria-label={`Step ${index + 1} days to wait for acceptance`}
+                          value={Math.round(step.waitForAcceptanceHours / 24)}
+                          onChange={(e) =>
+                            update(index, {
+                              waitForAcceptanceHours: Math.max(0, Number(e.target.value)) * 24,
+                            })
+                          }
+                          className="border-border bg-surface min-h-[44px] w-16 rounded-xl border px-3 tabular-nums"
+                        />
+                        days for them to accept
+                      </label>
+                    ) : null}
+                  </div>
+
                   <input
                     value={step.intent}
                     onChange={(e) => update(index, { intent: e.target.value })}
@@ -344,6 +413,11 @@ export function CadenceBuilder({ playbooks }: { playbooks: PlaybookRowView[] }) 
             <p className="text-ink-muted mt-3 text-xs">
               Whether a step runs by itself or becomes something you do by hand is decided when it
               falls due, by what the network allows and what you have connected — not here.
+            </p>
+            <p className="text-ink-muted mt-2 text-xs">
+              A step with a condition is skipped when it is not met, and the plan carries on. To
+              branch, follow a LinkedIn connection request that waits a week with a message “only if
+              connected” and an email “only if not connected”.
             </p>
           </div>
         ) : null}

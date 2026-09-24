@@ -281,10 +281,17 @@ export {
 } from './crm';
 
 export {
+  followTargetFrom,
+  INVITATION_NOTE_LIMIT,
   LinkedInSession,
   LinkedInSessionError,
   LinkedInWriteError,
+  memberIdentityFrom,
+  MESSAGE_LIMIT as LINKEDIN_MESSAGE_LIMIT,
+  relationshipFromTopCard,
   threadUrnFromUrl,
+  type LinkedInConnectionStatus,
   type LinkedInMember,
+  type LinkedInProfile,
   type LinkedInSessionOptions,
 } from './linkedin/session';

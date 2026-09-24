@@ -146,7 +146,7 @@ describe('runCadences', () => {
   test('records a manual step for a network we may not automate', async () => {
     seeded = await seedDatabase('runner-manual');
     const { db } = seeded;
-    await planAndEnrol(db, [step({ network: 'linkedin', action: 'send_dm' })]);
+    await planAndEnrol(db, [step({ network: 'x', action: 'send_dm' })]);
 
     const result = await runCadences(
       { db, platformEmailEnabled: true, now: DUE },

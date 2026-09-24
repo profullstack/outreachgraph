@@ -74,6 +74,9 @@ import {
   type ListeningTargets,
   type QueuedJob,
   runSocialDelivery,
+  checkLinkedInAcceptances,
+  linkedInSessionForWorkspace,
+  workspacesWithLinkedInSession,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
@@ -1024,6 +1027,30 @@ async function tick(): Promise<void> {
     }
   }
 
+  // ------------------------------------------------ LinkedIn acceptances
+  //
+  // Whether anyone accepted an invitation the workspace's session sent.
+  // LinkedIn notifies nobody but the member, so this looks: each pending
+  // invitation once a day, at most one profile per few minutes per workspace,
+  // so a hundred pending invitations drain over hours rather than as a burst.
+  // Before cadences, so an acceptance seen this tick can open the "if
+  // connected" branch of a step that falls due on the same tick.
+  if (encryptionKey) {
+    for (const workspaceId of await workspacesWithLinkedInSession(db)) {
+      try {
+        const session = await linkedInSessionForWorkspace(db, workspaceId, encryptionKey);
+        if (!session) continue;
+        const checked = await checkLinkedInAcceptances({ db, session }, workspaceId);
+        if (checked.accepted > 0) {
+          console.log(`linkedin ${workspaceId}: ${checked.accepted} invitation(s) accepted`);
+        }
+        if (checked.error) console.warn(`linkedin ${workspaceId}: ${checked.error}`);
+      } catch (error) {
+        console.error(`linkedin acceptance check failed for ${workspaceId}`, error);
+      }
+    }
+  }
+
   // ------------------------------------------------------------- autopilot
   //
   // Sending, alerting and the digest, per workspace. Each is wrapped
@@ -1045,7 +1072,8 @@ async function tick(): Promise<void> {
       if (cadence.considered > 0) {
         console.log(
           `cadences ${workspace.id}: ${cadence.automated} queued, ${cadence.manual} for a human, ` +
-            `${cadence.skipped} skipped, ${cadence.completed} finished, ${cadence.stopped} stopped`,
+            `${cadence.skipped} skipped, ${cadence.completed} finished, ${cadence.stopped} stopped, ` +
+            `${cadence.waiting ?? 0} waiting on an invitation`,
         );
       }
     } catch (error) {

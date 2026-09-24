@@ -465,6 +465,10 @@ export interface CadenceStepView {
   readonly delay_hours: number;
   readonly stop_on_reply: number;
   readonly intent: string | null;
+  /** `always` unless the step runs only if connected, clicked, and so on. */
+  readonly condition?: string;
+  /** On a LinkedIn connect step: hours a later step waits for acceptance. */
+  readonly wait_for_acceptance_hours?: number | null;
   /** Alternate intents being tested against `intent` (variant A). */
   readonly variants?: string[];
 }

@@ -29,6 +29,7 @@ import {
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluatePolicy, type PolicyDecision, type PolicyRequest } from '@outreachgraph/policy';
 import { emitEvent } from './events';
+import { resolveStepCondition, saveBranching, withBranching } from './cadence-conditions';
 import { emitWebhookEvent } from './webhooks';
 
 export interface CadenceRow {
@@ -42,7 +43,8 @@ export interface CadenceRow {
 /** How a due step was resolved, and why. */
 export interface StepResolution {
   readonly outcome: StepOutcome;
-  readonly decision: PolicyDecision;
+  /** Absent when the step never reached the policy engine: its condition was false. */
+  readonly decision?: PolicyDecision;
   readonly gate?: string;
   readonly reason: string;
 }
@@ -103,6 +105,8 @@ export interface AdvanceResult {
   readonly skipped: number;
   readonly completed: number;
   readonly stopped: number;
+  /** Due, but held back by an acceptance window that is still open. */
+  readonly waiting?: number;
 }
 
 const DEFAULT_LIMIT = 200;
@@ -146,6 +150,7 @@ export async function advanceCadences(
   let skipped = 0;
   let completed = 0;
   let stopped = 0;
+  let waiting = 0;
 
   for (const enrollment of due) {
     const steps = await loadSteps(db, enrollment.cadence_id);
@@ -178,6 +183,51 @@ export async function advanceCadences(
         stamp,
       );
       stopped += 1;
+      continue;
+    }
+
+    // The step's own condition, before policy: a step that should not run for
+    // this person is not a request to evaluate. A false condition is a skip on
+    // the record, naming the condition, and the plan moves on — which is what
+    // makes two neighbouring steps with opposite conditions a branch. An open
+    // acceptance window holds the step instead, and it is looked at again
+    // later without anything being recorded.
+    const condition = await resolveStepCondition(db, enrollment, step, steps, at);
+    if (condition.kind === 'wait') {
+      await db.execute({
+        sql: `UPDATE cadence_enrollments SET next_due_at = ?, updated_at = ? WHERE id = ?`,
+        args: [condition.until.toISOString(), stamp, enrollment.id],
+      });
+      waiting += 1;
+      continue;
+    }
+    if (condition.kind === 'skip') {
+      await record(
+        db,
+        enrollment,
+        step,
+        { outcome: 'skipped', gate: 'condition', reason: condition.reason },
+        undefined,
+        stamp,
+      );
+      skipped += 1;
+      if (await moveOn(db, enrollment, steps, stamp)) completed += 1;
+      await emitEvent(db, {
+        workspaceId: enrollment.workspace_id,
+        campaignId: enrollment.campaign_id,
+        personId: enrollment.person_id,
+        phase: 'social',
+        level: 'info',
+        message: describe(step, 'skipped', condition.reason),
+        detail: {
+          cadenceId: enrollment.cadence_id,
+          step: step.position,
+          network: step.network,
+          action: step.action,
+          outcome: 'skipped',
+          condition: step.condition,
+        },
+      });
       continue;
     }
 
@@ -257,7 +307,7 @@ export async function advanceCadences(
     });
   }
 
-  return { considered: due.length, automated, manual, skipped, completed, stopped };
+  return { considered: due.length, automated, manual, skipped, completed, stopped, waiting };
 }
 
 function describe(step: CadenceStep, outcome: StepOutcome, reason: string): string {
@@ -283,7 +333,7 @@ async function loadSteps(db: Client, cadenceId: string): Promise<readonly Cadenc
     [cadenceId],
   );
 
-  return rows.map((row) => ({
+  const steps = rows.map((row) => ({
     position: row.position,
     network: row.network as Network,
     action: row.action as ActionKind,
@@ -292,6 +342,9 @@ async function loadSteps(db: Client, cadenceId: string): Promise<readonly Cadenc
     ...(row.intent ? { intent: row.intent } : {}),
     ...variantsFrom(row.variants_json),
   }));
+
+  // Conditions and acceptance windows live in their own columns (0042).
+  return withBranching(db, cadenceId, steps);
 }
 
 function variantsFrom(json: string | null): { variants?: readonly string[] } {
@@ -398,7 +451,7 @@ async function record(
       step.network,
       step.action,
       resolution.outcome,
-      resolution.decision,
+      resolution.decision ?? null,
       resolution.gate ?? null,
       recommendationId ?? null,
       resolution.reason.slice(0, 500),
@@ -475,6 +528,8 @@ export async function createCadence(
       ],
     });
   }
+
+  await saveBranching(db, id, input.steps);
 
   return { created: true, cadenceId: id };
 }

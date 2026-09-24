@@ -202,6 +202,24 @@ describe('tools', () => {
     }
   });
 
+  test('create_cadence sends step conditions through untouched, for the server to judge', async () => {
+    const { fetchImpl, calls } = recorder(ok({ cadenceId: 'cad_1' }));
+    const steps = [
+      { network: 'linkedin', action: 'connect', waitForAcceptanceHours: 168 },
+      { network: 'linkedin', action: 'send_dm', condition: 'if_connected' },
+      { network: 'email', action: 'send_email', condition: 'if_not_connected' },
+    ];
+
+    await runTool(toolByName('create_cadence')!, createClient(CONFIG, fetchImpl), {
+      name: 'Invite then DM or email',
+      steps,
+    });
+
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/cadences');
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.body).toEqual({ name: 'Invite then DM or email', steps });
+  });
+
   test('share_link is what the manual networks route through', async () => {
     const { fetchImpl, calls } = recorder(ok({ shareUrl: 'https://linkedin.com/…' }));
     const tool = toolByName('share_link')!;

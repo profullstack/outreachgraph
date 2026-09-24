@@ -4120,7 +4120,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     const rows = await queryAll<Record<string, unknown> & { variants_json: string | null }>(
       db,
-      `SELECT position, network, action, delay_hours, stop_on_reply, intent, variants_json
+      `SELECT position, network, action, delay_hours, stop_on_reply, intent, variants_json,
+              coalesce(run_condition, 'always') AS condition,
+              wait_for_acceptance_hours
          FROM cadence_steps WHERE cadence_id = ? ORDER BY position`,
       [id],
     );
@@ -4241,6 +4243,15 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         // has answered is the most bot-like thing this product could do.
         stopOnReply: raw.stopOnReply !== false,
         ...(typeof raw.intent === 'string' ? { intent: raw.intent } : {}),
+        // Passed through as given; `validateCadence` refuses an unknown
+        // condition or a bad window with a sentence, which is more use to
+        // the caller than a silently dropped field.
+        ...(typeof raw.condition === 'string' && raw.condition !== ''
+          ? { condition: raw.condition }
+          : {}),
+        ...(raw.waitForAcceptanceHours !== undefined && raw.waitForAcceptanceHours !== null
+          ? { waitForAcceptanceHours: Number(raw.waitForAcceptanceHours) }
+          : {}),
         ...(Array.isArray(raw.variants) ? { variants: raw.variants.map(String) } : {}),
       })) as never,
     });
@@ -5462,6 +5473,9 @@ async function approveRecommendation(
           workspaceId: actor.workspaceId,
           actionId,
           network: recommendation.network,
+          // Counted against its own cap: invitations, visits and follows each
+          // have a LinkedIn budget of their own.
+          kind: recommendation.action,
           actor: { actorKind: 'user', actorId: actor.userId },
           policyVersion: decision.policyVersion,
         })
