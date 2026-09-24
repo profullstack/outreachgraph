@@ -37,6 +37,7 @@ import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { rescoreProspect } from './jobs';
 import { recordDiscovered, recordStatus } from './stages';
 import { storeDiscoveredPhoto } from './photos';
+import { enqueueFindEmail } from './find-email-queue';
 
 export interface PipelineOptions {
   readonly db: Client;
@@ -1099,6 +1100,15 @@ async function createRecommendation(
       recommendation.expiresAt ?? null,
     ],
   });
+
+  // A card a human has to carry out, for someone we could email if only we
+  // knew where, is the case `find_email` exists for. Queued here so an import
+  // converges on email without anyone asking; the job re-decides the person
+  // itself when it finds an address. Keyed on the person and gated on the
+  // last search, so re-deciding the same held card does not search again.
+  if (recommendation.policyDecision === 'manual_only' && !reachable.includes('email')) {
+    await enqueueFindEmail(db, { workspaceId, personId });
+  }
 
   return id;
 }

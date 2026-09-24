@@ -41,6 +41,9 @@ import {
   listeningCampaigns,
   autoApproveInternal,
   enrichContact,
+  findEmail,
+  sweepFindEmail,
+  workspacesAwaitingEmailSearch,
   sweepContactEnrichment,
   workspacesAwaitingEnrichment,
   processDeletion,
@@ -70,6 +73,7 @@ import {
 import {
   BlueskyFeedSource,
   BlueskyProvider,
+  createSmtpProber,
   NostrSource,
   RedditSource,
   RssSource,
@@ -260,6 +264,27 @@ const photoLookupsPerDay = Number(process.env.PHOTO_LOOKUPS_PER_DAY ?? 300);
 
 if (!photoFinder)
   console.log('no VALUESERP_API_KEY: lead photos come from public profiles and crawls');
+
+// ------------------------------------------------------------- find_email
+/**
+ * The RCPT prober for `find_email`, unless turned off.
+ *
+ * On by default because it degrades on its own: Railway, like most cloud
+ * hosts, blocks outbound port 25, and the prober notices after three failed
+ * connections and stops asking for an hour. The job then verifies by MX and
+ * the learned domain pattern alone. `FIND_EMAIL_SMTP_PROBE=off` skips even
+ * those three attempts, for a host where the answer is already known.
+ *
+ * The EHLO name should be a domain we own, because a server that checks it
+ * will refuse a stranger's.
+ */
+const smtpProber =
+  process.env.FIND_EMAIL_SMTP_PROBE === 'off'
+    ? undefined
+    : createSmtpProber({
+        ...(process.env.SMTP_PROBE_HELO ? { helo: process.env.SMTP_PROBE_HELO } : {}),
+        ...(process.env.SMTP_PROBE_FROM !== undefined ? { from: process.env.SMTP_PROBE_FROM } : {}),
+      });
 
 /**
  * The feed clients for one campaign's own targets.
@@ -662,6 +687,32 @@ async function runJob(job: QueuedJob): Promise<void> {
       }
       return;
     }
+    case 'find_email': {
+      const { personId } = job.payload as { personId?: string };
+      if (!personId) throw new Error('find_email needs personId');
+
+      const result = await findEmail(
+        {
+          db,
+          ...(smtpProber && !smtpProber.blocked() ? { smtp: smtpProber } : {}),
+          emailSendingEnabled: mailer !== undefined,
+        },
+        { workspaceId: job.workspaceId, personId },
+      );
+
+      // Every outcome is logged: there are dozens of these, not thousands, and
+      // the SMTP column is how anyone learns whether port 25 is open here.
+      console.log(
+        `find_email ${personId}: ${result.outcome}` +
+          (result.domain ? ` at ${result.domain}` : '') +
+          (result.address ? `, ${result.address} (${result.confidence})` : '') +
+          (result.smtp ? `, smtp ${result.smtp}` : '') +
+          (result.recommendationIds.length > 0
+            ? `, re-decided into ${result.recommendationIds.join(', ')}`
+            : ''),
+      );
+      return;
+    }
     default:
       throw new Error(`no handler for job kind ${job.kind}`);
   }
@@ -732,6 +783,20 @@ async function tick(): Promise<void> {
           `${swept.found} had a profile, ${swept.identities} identities, ` +
           `${swept.remaining} left`,
       );
+    }
+  }
+
+  // People held on a hand-carried card with nothing to email get a search for
+  // one. New cards queue their own; this catches everyone carded before that,
+  // a bounded handful per tick so the drain below still has room for crawls.
+  for (const workspaceId of await workspacesAwaitingEmailSearch(db)) {
+    try {
+      const swept = await sweepFindEmail(db, { workspaceId });
+      if (swept.queued > 0) {
+        console.log(`find_email: queued ${swept.queued} search(es) in ${workspaceId}`);
+      }
+    } catch (error) {
+      console.error(`find_email sweep failed for ${workspaceId}`, error);
     }
   }
 

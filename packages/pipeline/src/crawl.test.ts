@@ -105,12 +105,18 @@ describe('URL to approval card', () => {
       const site = new SiteProvider({ fetchImpl: stubNetwork() });
 
       // The real drain, claiming the real row and calling the real handler.
+      // Only the crawl is under test. A person carded on a hand-carried
+      // channel with nothing to email also queues a `find_email` follow-up,
+      // which the same drain claims; it is counted, not run.
+      let crawls = 0;
       const summary = await drainQueue(db, async (job: QueuedJob) => {
+        if (job.kind !== 'crawl_site') return;
+        crawls += 1;
         await runCrawlJob({ db, site, providers: [] }, job);
       });
 
-      expect(summary.processed).toBe(1);
-      expect(summary.succeeded).toBe(1);
+      expect(crawls).toBe(1);
+      expect(summary.dead + summary.retried).toBe(0);
 
       const person = await queryOne<{
         id: string;

@@ -58,6 +58,15 @@ export const JOB_KINDS = [
    * links to, records what they corroborate, then re-decides the person.
    */
   'openprofile',
+  /**
+   * Find a sendable address for someone reachable only by hand.
+   *
+   * Queued when a card comes out `manual_only` for a person with nothing to
+   * email, and by a sweep for people carded before that existed. Learns the
+   * employer domain's address shape, checks MX (and RCPT where port 25 is
+   * open), promotes a confident address, then re-decides the person.
+   */
+  'find_email',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];

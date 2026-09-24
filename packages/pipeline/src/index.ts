@@ -55,6 +55,22 @@ export {
 } from './photos';
 export { reseedIdleCampaigns, type ReseedResult } from './reseed';
 export {
+  findEmail,
+  scoreCandidate,
+  PROMOTE_THRESHOLD,
+  type FindEmailDeps,
+  type FindEmailOutcome,
+  type FindEmailResult,
+} from './find-email';
+export {
+  enqueueFindEmail,
+  findEmailDedupeKey,
+  sweepFindEmail,
+  workspacesAwaitingEmailSearch,
+  FIND_EMAIL_RETRY_MS,
+  type FindEmailSweepResult,
+} from './find-email-queue';
+export {
   runListening,
   listeningCampaigns,
   campaignTerms,

@@ -140,6 +140,19 @@ export {
 } from './email/patterns';
 
 export {
+  createSmtpProber,
+  TransientDnsError,
+  verifyDomainCandidates,
+  type AddressVerdict,
+  type DomainVerification,
+  type MxRecord,
+  type SmtpProbeResult,
+  type SmtpProber,
+  type SmtpProberOptions,
+  type VerifierDeps,
+} from './email/verify';
+
+export {
   BlueskyProvider,
   BlueskyRateLimitError,
   BLUESKY_API,
