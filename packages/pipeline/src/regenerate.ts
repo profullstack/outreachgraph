@@ -53,7 +53,11 @@ const DEFAULT_LIMIT = 200;
  *   - have at least one signal that has not expired, and
  *   - are holding a *pending internal* card — research, observe, wait,
  *
- * are considered. An outbound card is never touched: it may already carry a
+ * are considered, along with anyone holding a *held* (`manual_only`) outbound
+ * card. A held card cannot be approved, so re-deciding it discards nothing a
+ * reviewer could act on — and it is how a person first carded on LinkedIn gets
+ * moved to a channel the product can send on once one is known or connected.
+ * An outbound card that can run is never touched: it may already carry a
  * drafted message and a half-made human decision, and re-deciding it behind
  * the reviewer's back would discard real work. A person with no card at all is
  * also left alone — they were excluded for a reason the engine will reach
@@ -74,7 +78,8 @@ export async function regenerateRecommendations(input: RegenerateInput): Promise
       WHERE r.workspace_id = ?
         AND r.campaign_id = ?
         AND r.status = 'pending'
-        AND r.action IN ('refresh_research', 'observe', 'wait')
+        AND (r.action IN ('refresh_research', 'observe', 'wait')
+             OR r.policy_status = 'manual_only')
         AND p.status = 'active'
         AND p.outreach_eligible = 1
         AND EXISTS (
