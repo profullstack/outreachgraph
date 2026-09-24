@@ -445,3 +445,53 @@ describe('og senders', () => {
     await expect(run(['cap', 'ita_1', 'lots'])).rejects.toThrow('whole number');
   });
 });
+
+describe('audience', () => {
+  test('watch takes network:handle or a profile URL', async () => {
+    const { client: api, calls } = client({ watch: { id: 'awt_1', kinds: ['follow'] } });
+    const run = (args: string[], flags = {}) =>
+      commandByName('audience')!.run({ client: api, args, flags });
+
+    await run(['watch', 'bluesky:acme.bsky.social'], { campaign: 'cmp_1', kinds: 'follow,like' });
+    await run(['watch', 'https://x.com/acme']);
+
+    expect(calls[0]?.body).toEqual({
+      network: 'bluesky',
+      account: 'acme.bsky.social',
+      campaignId: 'cmp_1',
+      kinds: ['follow', 'like'],
+    });
+    // The URL is passed through: the API normalises it, and doing it twice is
+    // two places for the rule to drift.
+    expect(calls[1]?.body).toEqual({ network: 'x', account: 'https://x.com/acme' });
+  });
+
+  test('a refused run reports the reason rather than pretending it worked', async () => {
+    const { client: api } = client({
+      result: { outcome: 'disabled', detail: 'needs a paid X API tier' },
+    });
+
+    const output = await commandByName('audience')!.run({
+      client: api,
+      args: ['run', 'awt_1'],
+      flags: {},
+    });
+
+    expect(output).toContain('needs a paid X API tier');
+  });
+
+  test('an empty list says how to make one', async () => {
+    const { client: api } = client({ watches: [] });
+
+    const output = await commandByName('audience')!.run({ client: api, args: ['list'], flags: {} });
+    expect(output).toContain('og audience watch');
+  });
+
+  test('an unknown verb names the ones that exist', async () => {
+    const { client: api } = client({});
+
+    await expect(
+      commandByName('audience')!.run({ client: api, args: ['frobnicate'], flags: {} }),
+    ).rejects.toThrow('og audience list');
+  });
+});

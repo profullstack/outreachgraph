@@ -213,6 +213,10 @@ function EvidenceSection() {
 function CapabilitiesSection() {
   const capabilities = [
     [
+      'The people who engage with you',
+      'Watch your own Bluesky or X account. Whoever follows, likes, reposts or replies becomes a prospect in a campaign, with what they engaged with kept as the reason to write.',
+    ],
+    [
       'Sequences that branch',
       'Visit, connect with a note, then a DM if they accept or an email if they don’t. Every step can wait on a condition, and a reply ends the plan.',
     ],

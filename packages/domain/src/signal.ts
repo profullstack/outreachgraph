@@ -28,6 +28,13 @@ export const SIGNAL_TYPES = [
   'event',
   'community_activity',
   'content_topic',
+  /**
+   * Somebody engaged with the workspace's own account: a follow, like, repost,
+   * reply or mention. Written by the audience watcher (`packages/pipeline/src/audience.ts`),
+   * never by a classifier — the network named both parties, so there is
+   * nothing to infer.
+   */
+  'audience_engagement',
 ] as const;
 
 export type SignalType = (typeof SIGNAL_TYPES)[number];
@@ -95,6 +102,13 @@ export const HIGH_INTENT_SIGNAL_TYPES = [
   'competitor_mention',
   'public_complaint',
   'pain',
+  /**
+   * Not "intent" in the sense the others are — nobody asked for a vendor by
+   * liking a post. It is here because it decays like one: engagement is
+   * something the person remembers for days, and a message that opens by
+   * recalling a like from three weeks ago reads worse than a cold one.
+   */
+  'audience_engagement',
 ] as const satisfies readonly SignalType[];
 
 export function isHighIntentSignal(type: SignalType): boolean {

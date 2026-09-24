@@ -414,6 +414,62 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'list_audience_watches',
+    title: 'List the accounts whose audience is being read',
+    description:
+      "The workspace's own accounts that are watched for engagement, and what each one reads. A " +
+      'watch that stopped carries the reason it stopped.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { campaignId: { type: 'string' } },
+    },
+    run: (client, args) =>
+      client.get(
+        str(args, 'campaignId')
+          ? `/audience?campaignId=${encodeURIComponent(str(args, 'campaignId') as string)}`
+          : '/audience',
+      ),
+  },
+  {
+    name: 'watch_audience',
+    title: 'Watch an account of your own for engagement',
+    description:
+      'Turn the people who follow, like, repost, reply to or mention one of your own accounts into ' +
+      'prospects in a campaign. Bluesky is read from the public API; X needs a connected account on ' +
+      'a plan that permits the reads; LinkedIn is hand-off only. Nothing is sent: each engager lands ' +
+      'as a person with the engagement as evidence, and an automation rule is what may enrol them.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        network: { type: 'string', description: 'bluesky, x or linkedin' },
+        account: {
+          type: 'string',
+          description: 'Your handle on that network, or your profile URL. Not the prospect.',
+        },
+        campaignId: { type: 'string', description: "Defaults to the workspace's active campaign." },
+        kinds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'follow, like, repost, reply, mention. All of them when omitted.',
+        },
+        pollMinutes: { type: 'number', description: 'How often to read. 5 at the fastest.' },
+        enabled: { type: 'boolean' },
+      },
+      required: ['network', 'account'],
+    },
+    run: (client, args) =>
+      client.post('/audience', {
+        network: require(args, 'network'),
+        account: require(args, 'account'),
+        ...(str(args, 'campaignId') ? { campaignId: str(args, 'campaignId') } : {}),
+        ...(Array.isArray(args.kinds) ? { kinds: args.kinds } : {}),
+        ...(typeof args.pollMinutes === 'number' ? { pollMinutes: args.pollMinutes } : {}),
+        ...(typeof args.enabled === 'boolean' ? { enabled: args.enabled } : {}),
+      }),
+  },
+  {
     name: 'get_openprofile',
     title: "Get a person's OpenProfile.md",
     description:

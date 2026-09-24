@@ -86,6 +86,9 @@ export const ID_PREFIXES = {
   webhookEndpoint: 'whk',
   webhookDelivery: 'whd',
   webhookEvent: 'evt',
+  // Watching the workspace's own audience: the watch, and one recorded act.
+  audienceWatch: 'awt',
+  audienceEngagement: 'aen',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

@@ -212,15 +212,67 @@ export async function completeXConnect(
 export async function xClientForWorkspace(
   db: Client,
   workspaceId: string,
-  deps: {
-    oauth?: XOAuthClient;
-    encryptionKey?: Buffer;
-    fetchImpl?: FetchLike;
-    sessionOptions?: XSessionOptions;
-    /** One account in the pool. Omitted, the workspace's first active one. */
-    accountId?: string;
-  },
+  deps: XCredentialDeps,
 ): Promise<XPoster | undefined> {
+  const credentials = await xCredentialsForWorkspace(db, workspaceId, deps);
+  if (!credentials) return undefined;
+
+  const clientOptions = deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {};
+  return credentials.kind === 'session'
+    ? new XSession(credentials.cookies, { ...clientOptions, ...deps.sessionOptions })
+    : new XClient(credentials.accessToken, clientOptions);
+}
+
+/** A live way to reach X for one workspace, and what it is allowed to do. */
+export type XCredentials =
+  | {
+      readonly kind: 'bearer';
+      readonly accountId: string;
+      readonly accessToken: string;
+      /** Exactly what X granted, which is not the same as what we asked for. */
+      readonly scopes: readonly string[];
+    }
+  | {
+      readonly kind: 'session';
+      readonly accountId: string;
+      readonly cookies: { readonly authToken: string; readonly ct0: string };
+    };
+
+/** Stored as a JSON array; a row written by an older version may not parse. */
+function parseScopes(raw: string): readonly string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map((value) => String(value)) : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface XCredentialDeps {
+  oauth?: XOAuthClient;
+  encryptionKey?: Buffer;
+  fetchImpl?: FetchLike;
+  sessionOptions?: XSessionOptions;
+  /** One account in the pool. Omitted, the workspace's first active one. */
+  accountId?: string;
+}
+
+/**
+ * What the workspace can reach X with: a live bearer and the scopes it was
+ * granted, or the member's browser cookies.
+ *
+ * Split out of `xClientForWorkspace` when the audience reader appeared, which
+ * needs the scopes as well as the token — a grant made before the read scopes
+ * existed can post but cannot list followers, and the only way to tell a user
+ * that is to look at what they actually granted. Two copies of X's rotating
+ * refresh is the one thing that must not happen here, so both callers share
+ * this.
+ */
+export async function xCredentialsForWorkspace(
+  db: Client,
+  workspaceId: string,
+  deps: XCredentialDeps,
+): Promise<XCredentials | undefined> {
   if (!deps.encryptionKey) return undefined;
 
   const row = await queryOne<{
@@ -240,7 +292,7 @@ export async function xClientForWorkspace(
   );
   if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
 
-  const clientOptions = deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {};
+  const scopes = parseScopes(row.scopes);
 
   // A browser session rather than an API grant: no expiry to refresh, and
   // the stored secret is the cookie pair.
@@ -250,7 +302,7 @@ export async function xClientForWorkspace(
         authToken: string;
         ct0: string;
       };
-      return new XSession(cookies, { ...clientOptions, ...deps.sessionOptions });
+      return { kind: 'session', accountId: row.id, cookies };
     } catch {
       return undefined;
     }
@@ -264,7 +316,9 @@ export async function xClientForWorkspace(
   }
 
   const expiresAt = row.expires_at ? Date.parse(row.expires_at) : 0;
-  if (expiresAt - Date.now() > REFRESH_MARGIN_MS) return new XClient(accessToken, clientOptions);
+  if (expiresAt - Date.now() > REFRESH_MARGIN_MS) {
+    return { kind: 'bearer', accountId: row.id, accessToken, scopes };
+  }
 
   if (!deps.oauth || !row.refresh_token_enc) return undefined;
 
@@ -283,7 +337,12 @@ export async function xClientForWorkspace(
         row.id,
       ],
     });
-    return new XClient(tokens.accessToken, clientOptions);
+    return {
+      kind: 'bearer',
+      accountId: row.id,
+      accessToken: tokens.accessToken,
+      scopes: tokens.scopes,
+    };
   } catch (error) {
     if (error instanceof XAuthError) {
       await db.execute({

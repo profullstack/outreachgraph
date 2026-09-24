@@ -18,6 +18,7 @@ export * from './intake';
 export * from './funnel';
 export * from './share-links';
 export * from './engagement';
+export * from './audience';
 export * from './cadence';
 export * from './playbooks';
 export * from './plans';
