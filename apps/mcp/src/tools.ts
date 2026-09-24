@@ -436,6 +436,50 @@ export const TOOLS: readonly ToolDefinition[] = [
         reason: str(args, 'reason') ?? 'requested by an agent',
       }),
   },
+  {
+    name: 'list_webhooks',
+    title: 'List webhook endpoints',
+    description:
+      'The endpoints this workspace sends events to (generic signed JSON, or Slack), which events ' +
+      'each receives, and how its last delivery went. URLs are shown only as a hint and signing ' +
+      'secrets are never returned. Also lists every event type that can be subscribed to.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/webhooks'),
+  },
+  {
+    name: 'add_webhook',
+    title: 'Add a webhook endpoint',
+    description:
+      'Send workspace events (reply.received, link.clicked, prospect.created, ' +
+      'recommendation.approved, action.sent, cadence.completed, person.suppressed) to an https ' +
+      'URL: a Zapier, Make or n8n catch hook, your own server, or a Slack incoming webhook with ' +
+      'kind "slack". Private and internal addresses are refused. The response carries the signing ' +
+      'secret exactly once; deliveries are signed X-OutreachGraph-Signature: t=<unix>,v1=<hex> ' +
+      'over "<t>.<raw body>" with HMAC-SHA256.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'An https URL.' },
+        kind: { type: 'string', enum: ['generic', 'slack'], description: 'Default generic.' },
+        events: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Event types to receive. Omit for all.',
+        },
+        description: { type: 'string' },
+      },
+      required: ['url'],
+    },
+    run: (client, args) =>
+      client.post('/webhooks', {
+        url: require(args, 'url'),
+        kind: str(args, 'kind') === 'slack' ? 'slack' : 'generic',
+        ...(Array.isArray(args.events) ? { events: args.events.map(String) } : {}),
+        ...(str(args, 'description') ? { description: str(args, 'description') } : {}),
+      }),
+  },
 ];
 
 export function toolByName(name: string): ToolDefinition | undefined {

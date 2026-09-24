@@ -21,6 +21,7 @@
 
 import { newId } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { emitWebhookEvent } from './webhooks';
 
 export interface IssueUnsubscribeInput {
   readonly workspaceId: string;
@@ -145,6 +146,17 @@ export async function applyUnsubscribe(
       args: [stamp, token],
     },
   ]);
+
+  // One event per person, because a receiver keys on the person: a CRM
+  // marking contacts as opted out needs each of them, not the mailbox.
+  for (const personId of personIds) {
+    await emitWebhookEvent(db, row.workspace_id, 'person.suppressed', {
+      personId,
+      reason: 'customer_request',
+      source: 'unsubscribe',
+      suppressionId,
+    });
+  }
 
   return {
     address: row.contact_address,

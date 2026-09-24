@@ -650,3 +650,49 @@ export interface BlueskyIntegrationView {
 export async function fetchBlueskyIntegration(): Promise<BlueskyIntegrationView> {
   return request<BlueskyIntegrationView>('/integrations/bluesky');
 }
+
+// ------------------------------------------------------------------ webhooks
+
+export interface WebhookEndpointView {
+  readonly id: string;
+  readonly kind: 'generic' | 'slack';
+  /** The origin and the last few characters; the full URL is never returned. */
+  readonly urlHint: string;
+  readonly events: readonly string[];
+  readonly description: string | null;
+  readonly active: boolean;
+  readonly createdAt: string;
+  readonly lastDelivery?: {
+    readonly status: string;
+    readonly statusCode: number | null;
+    readonly at: string;
+  };
+}
+
+export interface WebhooksView {
+  readonly endpoints: readonly WebhookEndpointView[];
+  readonly events: readonly string[];
+  readonly canCreate: boolean;
+}
+
+export async function fetchWebhooks(): Promise<WebhooksView> {
+  return request<WebhooksView>('/webhooks');
+}
+
+export interface CrmConnectionView {
+  readonly provider: 'hubspot' | 'pipedrive';
+  readonly connected: boolean;
+  readonly status?: string;
+  readonly connectedAt?: string;
+  readonly lastSyncAt?: string;
+  readonly lastError?: string;
+}
+
+export interface CrmIntegrationView {
+  readonly providers: readonly CrmConnectionView[];
+  readonly canConnect: boolean;
+}
+
+export async function fetchCrmIntegration(): Promise<CrmIntegrationView> {
+  return request<CrmIntegrationView>('/integrations/crm');
+}

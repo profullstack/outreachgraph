@@ -127,7 +127,11 @@ import {
   xAccountSummary,
   XAccountError,
 } from '@outreachgraph/pipeline';
-import type { XOAuthClient } from '@outreachgraph/providers';
+import type {
+  FetchLike as ProviderFetchLike,
+  HostLookup,
+  XOAuthClient,
+} from '@outreachgraph/providers';
 import {
   archiveCampaign,
   createCampaignFromIntake,
@@ -168,6 +172,7 @@ import {
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import {
   batchStatus,
+  emitWebhookEvent,
   enqueue,
   nichedbDiscoveryStatus,
   nichedbFirstDedupeKey,
@@ -221,6 +226,7 @@ import {
   UnknownProductError,
 } from './workspace-profile';
 import { autogtmRoutes } from './autogtm';
+import { crmRoutes, webhookRoutes } from './webhooks';
 import { llmsText, openApiDocument } from './autogtm-docs';
 import {
   actorFromApiKey,
@@ -278,6 +284,14 @@ export interface AppOptions {
    * it `og connect x` is refused and X cards stay hand-offs.
    */
   readonly xOAuth?: XOAuthClient | undefined;
+  /**
+   * Resolves a webhook URL's host for the SSRF check. Tests pass a fake so a
+   * route test does not depend on real DNS; production uses the system
+   * resolver.
+   */
+  readonly webhookLookup?: HostLookup | undefined;
+  /** The network a CRM token is verified over. Tests pass a fake. */
+  readonly crmFetch?: ProviderFetchLike | undefined;
   /**
    * Suggests the communities a campaign should listen to.
    *
@@ -1286,6 +1300,21 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       requireVerifiedEmail: (db, actor) => requireVerifiedEmail(db, actor),
     }),
   );
+
+  // ------------------------------------------------ webhooks and CRM sync
+  //
+  // Where a workspace's events go once they leave the product. In a module of
+  // its own; the emitting happens in the pipeline, where the events occur.
+  {
+    const webhookDeps = {
+      encryptionKey: options.encryptionKey,
+      requireVerifiedEmail: (db: Client, actor: RequestActor) => requireVerifiedEmail(db, actor),
+      lookup: options.webhookLookup,
+      crmFetch: options.crmFetch,
+    };
+    api.route('/webhooks', webhookRoutes(webhookDeps));
+    api.route('/integrations/crm', crmRoutes(webhookDeps));
+  }
 
   // ----------------------------------------------------------------- team
   //
@@ -2609,6 +2638,15 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       detail: { address },
     });
 
+    await emitWebhookEvent(db, actor.workspaceId, 'reply.received', {
+      personId,
+      network: 'email',
+      ...(address ? { fromAddress: address } : {}),
+      ...(body.body ? { body: body.body.slice(0, 2000) } : {}),
+      occurredAt: at,
+      recordedBy: 'user',
+    });
+
     return c.json({ recorded: true, personId, conversationOpen: true });
   });
 
@@ -3713,6 +3751,17 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       entityKind: 'action',
       entityId: action.id,
       detail: { mode: body.mode },
+    });
+
+    await emitWebhookEvent(db, actor.workspaceId, 'action.sent', {
+      actionId: action.id,
+      recommendationId: action.recommendation_id,
+      personId: action.person_id,
+      campaignId: manualRecommendation?.campaign_id ?? null,
+      network: action.network,
+      mode: body.mode,
+      ...(body.externalUrl ? { url: body.externalUrl } : {}),
+      sentAt: stamp,
     });
 
     return c.json({ executed: true, actionId: action.id });
@@ -4977,6 +5026,18 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       detail: { reason: body.reason, scope: body.scope, keys: body.matchKeys.length },
     });
 
+    // Announced per person. A key that is an address or a domain names nobody
+    // in particular yet, and inventing a person for it would be a guess.
+    for (const key of body.matchKeys) {
+      if (!key.startsWith('person:')) continue;
+      await emitWebhookEvent(db, actor.workspaceId, 'person.suppressed', {
+        personId: key.slice('person:'.length),
+        reason: body.reason,
+        source: 'user',
+        suppressionId: id,
+      });
+    }
+
     return c.json({ suppressionId: id }, 201);
   });
 
@@ -5362,6 +5423,21 @@ async function approveRecommendation(
       edited: Boolean(input.editedBody),
       ...(handoff ? { handoff: true, gate: decision.gate } : {}),
     },
+  });
+
+  await emitWebhookEvent(db, actor.workspaceId, 'recommendation.approved', {
+    recommendationId: recommendation.id,
+    actionId,
+    personId: recommendation.person_id,
+    campaignId: recommendation.campaign_id,
+    action: recommendation.action,
+    network: recommendation.network,
+    mode,
+    handoff,
+    // Research and other internal cards are approvals too, but they start no
+    // conversation; a CRM uses this to ignore them.
+    outbound: isOutboundAction(recommendation.action as ActionKind),
+    approvedBy: actor.userId,
   });
 
   // Approving an email is the instruction to send it.

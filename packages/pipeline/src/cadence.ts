@@ -29,6 +29,7 @@ import {
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluatePolicy, type PolicyDecision, type PolicyRequest } from '@outreachgraph/policy';
 import { emitEvent } from './events';
+import { emitWebhookEvent } from './webhooks';
 
 export interface CadenceRow {
   readonly id: string;
@@ -152,7 +153,7 @@ export async function advanceCadences(
 
     // The pointer is past the end: the plan is finished.
     if (!step) {
-      await finish(db, enrollment.id, 'completed', undefined, stamp);
+      await finish(db, enrollment, 'completed', undefined, stamp);
       completed += 1;
       continue;
     }
@@ -162,7 +163,7 @@ export async function advanceCadences(
     // leave the enrollment alive and generating a refused card every time the
     // next step fell due, for as long as the cadence ran.
     if (step.stopOnReply && (await hasReplied(db, enrollment))) {
-      await finish(db, enrollment.id, 'stopped', 'they replied', stamp);
+      await finish(db, enrollment, 'stopped', 'they replied', stamp);
       await record(
         db,
         enrollment,
@@ -334,7 +335,7 @@ async function moveOn(
   const dueAt = dueAtFor(new Date(enrollment.enrolled_at), steps, next);
 
   if (!dueAt) {
-    await finish(db, enrollment.id, 'completed', undefined, stamp);
+    await finish(db, enrollment, 'completed', undefined, stamp);
     return true;
   }
 
@@ -350,7 +351,7 @@ async function moveOn(
 
 async function finish(
   db: Client,
-  enrollmentId: string,
+  enrollment: DueEnrollment,
   status: 'completed' | 'stopped',
   reason: string | undefined,
   stamp: string,
@@ -359,8 +360,21 @@ async function finish(
     sql: `UPDATE cadence_enrollments
              SET status = ?, next_due_at = NULL, stopped_reason = ?, updated_at = ?
            WHERE id = ?`,
-    args: [status, reason ?? null, stamp, enrollmentId],
+    args: [status, reason ?? null, stamp, enrollment.id],
   });
+
+  // Only a plan that ran out of steps. One stopped by a reply has already
+  // announced itself as `reply.received`, and saying it twice under two names
+  // is how a Zap ends up creating two deals.
+  if (status === 'completed') {
+    await emitWebhookEvent(db, enrollment.workspace_id, 'cadence.completed', {
+      enrollmentId: enrollment.id,
+      cadenceId: enrollment.cadence_id,
+      campaignId: enrollment.campaign_id,
+      personId: enrollment.person_id,
+      completedAt: stamp,
+    });
+  }
 }
 
 async function record(
