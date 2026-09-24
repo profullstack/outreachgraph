@@ -125,6 +125,111 @@ const CRM_TOKEN_HELP: Readonly<Record<(typeof CRMS)[number], string>> = {
  * `add` prints the signing secret, because it is the only time anyone will
  * see it; everything else prints one endpoint per line, id first.
  */
+/**
+ * `og audience` — the workspace's own followers, likers and repliers.
+ *
+ * The verbs read as sentences because the thing being configured is one:
+ * watch this account of ours into that campaign, for these kinds of
+ * engagement. `run` exists because the first question anybody asks after
+ * setting one up is whether it works, and waiting half an hour for the
+ * interval to come round is not an answer.
+ */
+async function runAudience({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', target] = args;
+
+  if (verb === 'list' || verb === 'ls') {
+    const result = (await client.get('/audience')) as Record<string, unknown>;
+    const watches = rows(result, 'watches');
+    if (watches.length === 0) {
+      return 'No audience watches. Add one: og audience watch bluesky:you.bsky.social';
+    }
+
+    return watches
+      .map((watch) => {
+        const kinds = Array.isArray(watch.kinds) ? (watch.kinds as string[]).join(',') : '';
+        const error = text(watch, 'lastError');
+        return [
+          pad(text(watch, 'id'), 32),
+          pad(text(watch, 'enabled') === 'true' ? 'on' : 'off', 4),
+          pad(`${text(watch, 'network')}:${text(watch, 'account')}`, 34),
+          pad(text(watch, 'mode'), 8),
+          pad(kinds, 30),
+          `every ${text(watch, 'pollMinutes')}m`,
+          error ? `  stopped: ${error}` : '',
+        ].join(' ');
+      })
+      .join('\n');
+  }
+
+  if (verb === 'watch' || verb === 'add') {
+    if (!target) {
+      throw new Error(
+        'og audience watch <network:handle | profile url> [--campaign <id>] [--kinds follow,like]',
+      );
+    }
+
+    const url = /^https?:\/\//i.test(target) ? target : undefined;
+    const colon = url ? -1 : target.indexOf(':');
+    const network = url ? networkFromUrl(url) : colon > 0 ? target.slice(0, colon) : undefined;
+    const account = url ?? (colon > 0 ? target.slice(colon + 1) : target);
+    if (!network) throw new Error(`cannot place ${target}: use network:handle or a profile url`);
+
+    const kinds = flagString(flags, 'kinds')
+      ?.split(',')
+      .map((kind) => kind.trim())
+      .filter(Boolean);
+
+    const result = (await client.post('/audience', {
+      network,
+      account,
+      ...(flagString(flags, 'campaign') ? { campaignId: flagString(flags, 'campaign') } : {}),
+      ...(kinds ? { kinds } : {}),
+      ...(flagString(flags, 'mode') ? { mode: flagString(flags, 'mode') } : {}),
+      ...(flagString(flags, 'every') ? { pollMinutes: Number(flagString(flags, 'every')) } : {}),
+      ...(flags.off === true ? { enabled: false } : {}),
+    })) as { watch?: Record<string, unknown> };
+
+    const watch = result.watch ?? {};
+    const kindList = Array.isArray(watch.kinds) ? (watch.kinds as string[]).join(', ') : '';
+    return [
+      `Watching ${text(watch, 'network')}:${text(watch, 'account')} (${text(watch, 'id')})`,
+      `Reading ${kindList} into campaign ${text(watch, 'campaignId')},` +
+        ` every ${text(watch, 'pollMinutes')} minutes.`,
+      text(watch, 'mode') === 'handoff'
+        ? 'Hand-off only: post what you saw to /audience/engagements.'
+        : `Try it now: og audience run ${text(watch, 'id')}`,
+    ].join('\n');
+  }
+
+  if (verb === 'unwatch' || verb === 'rm' || verb === 'remove') {
+    if (!target) throw new Error('og audience unwatch <watchId>');
+    if (!client.delete) throw new Error('this client cannot delete');
+    await client.delete(`/audience/${encodeURIComponent(target)}`);
+    return `Stopped watching ${target}.`;
+  }
+
+  if (verb === 'run') {
+    if (!target) throw new Error('og audience run <watchId>');
+    const response = (await client.post(`/audience/${encodeURIComponent(target)}/run`, {})) as {
+      result?: Record<string, unknown>;
+    };
+    const result = response.result ?? {};
+
+    // A refusal is the answer, not an error: the network said no and the
+    // reason is what the user has to act on.
+    if (text(result, 'outcome') !== 'ok') {
+      return `${text(result, 'outcome')}: ${text(result, 'detail', 'no reason given')}`;
+    }
+
+    return (
+      `Read ${text(result, 'read', '0')} engagement(s): ` +
+      `${text(result, 'recorded', '0')} new, ${text(result, 'peopleCreated', '0')} new people.`
+    );
+  }
+
+  throw new Error('og audience list | watch <account> | unwatch <id> | run <id>');
+}
+
 async function runWebhooks({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target] = args;
 
@@ -931,6 +1036,13 @@ export const COMMANDS: readonly Command[] = [
         })
         .join('\n');
     },
+  },
+  {
+    name: 'audience',
+    usage:
+      'og audience list | watch <network:handle | url> [--campaign <id>] [--kinds follow,like] [--every <minutes>] | unwatch <id> | run <id>',
+    summary: 'Turn the people who engage with your own accounts into prospects.',
+    run: runAudience,
   },
   {
     name: 'webhooks',

@@ -122,6 +122,7 @@ import {
   workspaceAnalytics,
   EmailAccountError,
   LISTEN_SOURCE_SLUGS,
+  audienceReaderFor,
   completeXConnect,
   connectLinkedInSession,
   connectXSession,
@@ -237,6 +238,7 @@ import {
 import { autogtmRoutes } from './autogtm';
 import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
+import { audienceRoutes } from './audience';
 import { llmsText, openApiDocument } from './autogtm-docs';
 import {
   actorFromApiKey,
@@ -302,6 +304,13 @@ export interface AppOptions {
   readonly webhookLookup?: HostLookup | undefined;
   /** The network a CRM token is verified over. Tests pass a fake. */
   readonly crmFetch?: ProviderFetchLike | undefined;
+  /**
+   * The networks an audience watch is read over: X's API and the public
+   * Bluesky AppView. Both are test seams — a route test must not reach either
+   * network — and both are left unset in production.
+   */
+  readonly xFetch?: ProviderFetchLike | undefined;
+  readonly blueskyFetch?: ProviderFetchLike | undefined;
   /**
    * Suggests the communities a campaign should listen to.
    *
@@ -1342,6 +1351,26 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     api.route('/webhooks', webhookRoutes(webhookDeps));
     api.route('/integrations/crm', crmRoutes(webhookDeps));
   }
+
+  // ------------------------------------------------------------- audience
+  //
+  // The workspace's own followers, likers, reposters and repliers as an
+  // intake source. The reader is resolved from the workspace's connected
+  // accounts in the pipeline, so this module decides who may ask and not how
+  // to reach a network.
+  api.route(
+    '/audience',
+    audienceRoutes({
+      resolveReader: (db, watch) =>
+        audienceReaderFor(db, watch, {
+          ...(options.xOAuth ? { oauth: options.xOAuth } : {}),
+          ...(options.encryptionKey ? { encryptionKey: options.encryptionKey } : {}),
+          ...(options.xFetch ? { fetchImpl: options.xFetch } : {}),
+          ...(options.blueskyFetch ? { blueskyFetch: options.blueskyFetch } : {}),
+        }),
+      requireVerifiedEmail: (db, actor) => requireVerifiedEmail(db, actor),
+    }),
+  );
 
   // ----------------------------------------------------------------- team
   //

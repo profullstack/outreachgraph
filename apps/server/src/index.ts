@@ -39,14 +39,17 @@ import {
   drainQueue,
   emitEvent,
   expireSignals,
+  audienceReaderFor,
   listeningCampaigns,
   autoApproveInternal,
   enrichContact,
   findEmail,
   sweepFindEmail,
   workspacesAwaitingEmailSearch,
+  sweepAudienceWatches,
   sweepContactEnrichment,
   workspacesAwaitingEnrichment,
+  workspacesWithAudienceWatches,
   processDeletion,
   workspacesWithInternalBacklog,
   pruneWorkflowEvents,
@@ -1023,6 +1026,40 @@ async function tick(): Promise<void> {
       }
     } catch (error) {
       console.error(`listening failed for ${workspace.id}`, error);
+    }
+  }
+
+  // -------------------------------------------------------------- audience
+  //
+  // The workspace's own followers, likers, reposters and repliers. Unlike
+  // listening, which searches public feeds for strangers, this reads the
+  // audience an account already has: people who engaged with it in public,
+  // which is both the cheapest grounded claim the product can make and the
+  // fastest-decaying one. Each watch has its own interval, so a workspace
+  // watching one Bluesky handle costs one query per tick and nothing else.
+  for (const workspaceId of await workspacesWithAudienceWatches(db)) {
+    try {
+      const swept = await sweepAudienceWatches(
+        {
+          db,
+          resolveReader: (watch) =>
+            audienceReaderFor(db, watch, {
+              ...(xOAuth ? { oauth: xOAuth } : {}),
+              ...(encryptionKey ? { encryptionKey } : {}),
+            }),
+        },
+        { workspaceId },
+      );
+
+      if (swept.ran > 0) {
+        console.log(
+          `audience: read ${swept.ran} watch(es) in ${workspaceId}, ` +
+            `${swept.recorded} new engagement(s), ${swept.peopleCreated} new people` +
+            `${swept.stopped > 0 ? `, ${swept.stopped} stopped` : ''}`,
+        );
+      }
+    } catch (error) {
+      console.error(`audience sweep failed for ${workspaceId}`, error);
     }
   }
 

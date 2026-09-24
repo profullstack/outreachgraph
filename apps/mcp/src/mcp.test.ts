@@ -148,6 +148,7 @@ describe('tools', () => {
           questions: ['q'],
           personIds: ['per_1'],
           text: 'Thanks, Thursday works.',
+          account: 'acme.bsky.social',
         })
         .catch(() => undefined);
 

@@ -173,6 +173,18 @@ export {
   type PostRef,
 } from './bluesky/agent';
 
+export { BlueskyAudienceReader, postUrlFor, type BlueskyAudienceOptions } from './bluesky/audience';
+
+export { XAudienceReader, X_AUDIENCE_SCOPES, type XAudienceOptions } from './x/audience';
+
+export type {
+  AudienceActor,
+  AudienceEngagement,
+  AudienceReader,
+  AudienceReadInput,
+  AudienceReadResult,
+} from './audience';
+
 export { findIdentities, type FanOutAttempt, type FanOutResult } from './fan-out';
 
 export {

@@ -383,8 +383,11 @@ export {
   startXConnect,
   xAccountSummary,
   xClientForWorkspace,
+  xCredentialsForWorkspace,
   XAccountError,
   type XAccountSummary,
+  type XCredentialDeps,
+  type XCredentials,
 } from './x-account';
 export { deliverXAction, type DeliverXInput, type DeliverXResult } from './outreach-x';
 export {
@@ -451,3 +454,21 @@ export {
   type AcceptanceCheckResult,
 } from './linkedin-connections';
 export { resolveStepCondition, type ConditionVerdict } from './cadence-conditions';
+export {
+  deleteAudienceWatch,
+  dueAudienceWatches,
+  getAudienceWatch,
+  listAudienceWatches,
+  recordEngagements,
+  runAudienceWatch,
+  saveAudienceWatch,
+  sweepAudienceWatches,
+  workspacesWithAudienceWatches,
+  type AudienceWatch,
+  type RecordResult,
+  type RunWatchDeps,
+  type RunWatchResult,
+  type SaveWatchInput,
+  type AudienceSweepResult,
+} from './audience';
+export { audienceReaderFor, type AudienceReaderDeps } from './audience-readers';
