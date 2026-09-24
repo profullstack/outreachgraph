@@ -41,6 +41,7 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
           // to be sent every time. Omitting `trackLinks` would silently turn
           // tracking off whenever anybody saved an unrelated preference.
           trackLinks: form.trackLinks,
+          trackOpens: form.trackOpens,
           trackingOrigin: form.trackingOrigin || null,
         }),
       });
@@ -226,11 +227,24 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
           </>
         ) : null}
 
-        <p className="text-ink-muted mt-4 text-xs">
-          We never track opens. A tracking pixel measures Apple Mail Privacy Protection and the
-          Gmail image proxy rather than people, and a number that is wrong in a direction nobody can
-          correct is worse than not having one.
-        </p>
+        <label className="mt-4 flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.trackOpens}
+            onChange={(e) => update('trackOpens', e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-medium">Count opens with a tracking pixel</span>
+            <span className="text-ink-muted block text-[13px] leading-relaxed">
+              Off by default. Turning it on sends an HTML copy of each message carrying one
+              invisible image. Treat the number as an upper bound: Apple Mail Privacy Protection
+              fetches every image on delivery, so an “open” is often a mail server rather than a
+              person. Opens are reported next to each A/B variant and never raise a prospect’s
+              score.
+            </span>
+          </span>
+        </label>
       </section>
 
       <div className="flex items-center gap-3">

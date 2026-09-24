@@ -15,6 +15,7 @@
  */
 
 import { ImapFlow } from 'imapflow';
+import { failedRecipientFromSource, plainTextFromSource } from './mime';
 
 export interface ImapCredentials {
   readonly host: string;
@@ -41,6 +42,19 @@ export interface IncomingMessage {
    * something" is unactionable without knowing what.
    */
   readonly automated?: 'auto_reply' | 'bounce' | 'bulk' | undefined;
+  /**
+   * What they wrote, as plain text, quoted history included.
+   *
+   * Included whole rather than trimmed to the new text here: deciding where
+   * their words end and ours begin is the classifier's job (`newReplyText`),
+   * and a reader that threw the quote away would leave nothing to check that
+   * decision against.
+   */
+  readonly bodyText?: string | undefined;
+  /** The References header, which an answer must extend to stay in the thread. */
+  readonly references?: string | undefined;
+  /** For a bounce: the address the report says could not be reached. */
+  readonly failedRecipient?: string | undefined;
 }
 
 /** The seam tests replace, so no socket is opened. */
@@ -65,7 +79,14 @@ const WANTED_HEADERS = [
   'x-auto-response-suppress',
   'return-path',
   'content-type',
+  'references',
 ];
+
+/**
+ * Bytes of raw source fetched per message. A reply is a few kilobytes; the
+ * cap is what stops a 20 MB attachment from being pulled to read one line.
+ */
+const MAX_SOURCE_BYTES = 256 * 1024;
 
 /** Local-parts that never belong to a person worth recording a reply from. */
 const MACHINE_LOCAL_PARTS = new Set([
@@ -156,7 +177,11 @@ export class ImapReader implements MailReader {
       try {
         for await (const message of client.fetch(
           { since },
-          { envelope: true, headers: WANTED_HEADERS },
+          {
+            envelope: true,
+            headers: WANTED_HEADERS,
+            source: { start: 0, maxLength: MAX_SOURCE_BYTES },
+          },
         )) {
           const from = message.envelope?.from?.[0];
           const address = from?.address?.trim().toLowerCase();
@@ -170,6 +195,12 @@ export class ImapReader implements MailReader {
               : (message.headers?.toString() ?? ''),
           );
 
+          const source = message.source ? message.source.toString('utf8') : '';
+          const automated = classifyAutomated(address, headers);
+          const bodyText = source ? plainTextFromSource(source) : '';
+          const failedRecipient =
+            automated === 'bounce' && source ? failedRecipientFromSource(source) : undefined;
+
           messages.push({
             fromAddress: address,
             ...(from?.name ? { fromName: from.name } : {}),
@@ -177,9 +208,10 @@ export class ImapReader implements MailReader {
             ...(message.envelope?.messageId ? { messageId: message.envelope.messageId } : {}),
             ...(message.envelope?.inReplyTo ? { inReplyTo: message.envelope.inReplyTo } : {}),
             receivedAt: message.envelope?.date ?? new Date(),
-            ...(classifyAutomated(address, headers)
-              ? { automated: classifyAutomated(address, headers) }
-              : {}),
+            ...(automated ? { automated } : {}),
+            ...(bodyText ? { bodyText } : {}),
+            ...(headers['references'] ? { references: headers['references'] } : {}),
+            ...(failedRecipient ? { failedRecipient } : {}),
           });
         }
       } finally {

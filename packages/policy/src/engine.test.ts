@@ -58,11 +58,9 @@ describe('fail-closed behaviour', () => {
 });
 
 describe('LinkedIn (PRD §16.3)', () => {
-  const automationAttempts: ActionKind[] = ['send_dm', 'connect', 'like', 'follow', 'view_profile'];
-
-  test.each(automationAttempts)('never auto-executes %s', (action) => {
+  test('never auto-executes a like: nothing sends one', () => {
     const result = evaluatePolicy(
-      request({ network: 'linkedin', action, approvalMode: 'trusted_automation' }),
+      request({ network: 'linkedin', action: 'like', approvalMode: 'trusted_automation' }),
     );
 
     // Manual-only means the product may draft it, but the human acts.
@@ -70,32 +68,68 @@ describe('LinkedIn (PRD §16.3)', () => {
     expect(isExecutable(result.decision, true)).toBe(false);
   });
 
-  // Comments and replies run through the member's own session, opted into on
-  // 2026-09-24, and only when that session is connected.
-  test.each(['comment', 'reply'] as ActionKind[])(
-    '%s runs only through a connected session',
-    (action) => {
-      const without = evaluatePolicy(
-        request({
-          network: 'linkedin',
-          action,
-          approvalMode: 'trusted_automation',
-          hasConnectedAccount: false,
-        }),
-      );
-      expect(without.decision).toBe('manual_only');
+  // Everything the member does by hand runs through their own session, opted
+  // into on 2026-09-24, and only when that session is connected. Without it
+  // each one is a hand-off, never an attempt.
+  const sessionActions: ActionKind[] = [
+    'comment',
+    'reply',
+    'connect',
+    'send_dm',
+    'follow',
+    'view_profile',
+  ];
 
-      const withSession = evaluatePolicy(
-        request({
-          network: 'linkedin',
-          action,
-          approvalMode: 'trusted_automation',
-          hasConnectedAccount: true,
-        }),
+  test.each(sessionActions)('%s is a hand-off without a connected session', (action) => {
+    const without = evaluatePolicy(
+      request({
+        network: 'linkedin',
+        action,
+        approvalMode: 'trusted_automation',
+        hasConnectedAccount: false,
+      }),
+    );
+    expect(without.decision).toBe('manual_only');
+    expect(without.gate).toBe('no_connected_account');
+    expect(isExecutable(without.decision, true)).toBe(false);
+  });
+
+  test.each(sessionActions)('%s runs through a connected session', (action) => {
+    const withSession = evaluatePolicy(
+      request({
+        network: 'linkedin',
+        action,
+        approvalMode: 'trusted_automation',
+        hasConnectedAccount: true,
+      }),
+    );
+    expect(isExecutable(withSession.decision, true)).toBe(true);
+    expect(withSession.mode).toBe('customer_managed');
+  });
+
+  test.each(['connect', 'send_dm'] as ActionKind[])(
+    '%s still waits for a human by default',
+    (action) => {
+      const result = evaluatePolicy(
+        request({ network: 'linkedin', action, hasConnectedAccount: true }),
       );
-      expect(isExecutable(withSession.decision, true)).toBe(true);
+      expect(result.decision).toBe('allow_with_approval');
     },
   );
+
+  test('a profile visit is not exempt as research when it goes through the session', () => {
+    // Bluesky's public profile read needs no account; LinkedIn's does.
+    expect(
+      evaluatePolicy(
+        request({ network: 'bluesky', action: 'view_profile', hasConnectedAccount: false }),
+      ).decision,
+    ).toBe('allow');
+    expect(
+      evaluatePolicy(
+        request({ network: 'linkedin', action: 'view_profile', hasConnectedAccount: false }),
+      ).decision,
+    ).toBe('manual_only');
+  });
 
   test('permits research', () => {
     const result = evaluatePolicy(request({ network: 'linkedin', action: 'observe' }));
@@ -440,6 +474,9 @@ describe('a contact who has replied', () => {
       request({
         conversationOpen: true,
         isFollowUp: true,
+        // Shared: answering a personal address that wrote to us is not paced
+        // (see below), but a shared inbox still is.
+        addressShared: true,
         actionsToThisAddressThisWeek: 5,
       }),
     );

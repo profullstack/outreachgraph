@@ -147,6 +147,7 @@ describe('tools', () => {
           name: 'grid',
           questions: ['q'],
           personIds: ['per_1'],
+          text: 'Thanks, Thursday works.',
         })
         .catch(() => undefined);
 
@@ -172,6 +173,27 @@ describe('tools', () => {
     expect(calls[1]?.body).toEqual({});
   });
 
+  test('add_webhook posts the endpoint; list_webhooks only reads', async () => {
+    const { fetchImpl, calls } = recorder(ok());
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('add_webhook')!, client, {
+      url: 'https://hooks.example.com/in',
+      kind: 'slack',
+      events: ['reply.received'],
+    });
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/webhooks');
+    expect(calls[0]?.body).toEqual({
+      url: 'https://hooks.example.com/in',
+      kind: 'slack',
+      events: ['reply.received'],
+    });
+
+    expect(toolByName('list_webhooks')?.readOnly).toBe(true);
+    await runTool(toolByName('list_webhooks')!, client, {});
+    expect(calls[1]?.method).toBe('GET');
+  });
+
   test('there is no tool that posts to a network directly', () => {
     // A tool named "post_to_linkedin" would be a way around the policy engine
     // whatever its implementation did today.
@@ -179,6 +201,24 @@ describe('tools', () => {
       expect(tool.name).not.toContain('linkedin');
       expect(tool.name).not.toContain('dm');
     }
+  });
+
+  test('create_cadence sends step conditions through untouched, for the server to judge', async () => {
+    const { fetchImpl, calls } = recorder(ok({ cadenceId: 'cad_1' }));
+    const steps = [
+      { network: 'linkedin', action: 'connect', waitForAcceptanceHours: 168 },
+      { network: 'linkedin', action: 'send_dm', condition: 'if_connected' },
+      { network: 'email', action: 'send_email', condition: 'if_not_connected' },
+    ];
+
+    await runTool(toolByName('create_cadence')!, createClient(CONFIG, fetchImpl), {
+      name: 'Invite then DM or email',
+      steps,
+    });
+
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/cadences');
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.body).toEqual({ name: 'Invite then DM or email', steps });
   });
 
   test('share_link is what the manual networks route through', async () => {
@@ -233,5 +273,32 @@ describe('describe', () => {
 
   test('passes an ordinary error through', () => {
     expect(describeError(new Error('boom'))).toBe('boom');
+  });
+});
+
+describe('inbox tools', () => {
+  test('list_inbox and get_thread only read', async () => {
+    const { fetchImpl, calls } = recorder(ok({ conversations: [] }));
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('list_inbox')!, client, { filter: 'need_reply', label: 'question' });
+    await runTool(toolByName('get_thread')!, client, { personId: 'per_1' });
+
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'GET']);
+    expect(calls[0]?.url).toContain('/inbox?filter=need_reply&label=question');
+    expect(calls[1]?.url).toBe('https://api.test/api/v1/inbox/per_1');
+  });
+
+  test('reply_to_thread goes through the API reply route, and needs words', async () => {
+    const { fetchImpl, calls } = recorder(ok({ sent: true }));
+    const client = createClient(CONFIG, fetchImpl);
+    const tool = toolByName('reply_to_thread')!;
+
+    await runTool(tool, client, { personId: 'per_1', text: 'Thursday?' });
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/inbox/per_1/reply');
+    expect(calls[0]?.body).toEqual({ text: 'Thursday?' });
+
+    expect(runTool(tool, client, { personId: 'per_1' })).rejects.toThrow('text is required');
   });
 });

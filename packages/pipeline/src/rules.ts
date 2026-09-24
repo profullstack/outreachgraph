@@ -28,6 +28,7 @@ import { now, queryAll, type Client } from '@outreachgraph/db';
 import { enrollInCadence } from './cadence';
 import { recordStatus } from './stages';
 import { emitEvent } from './events';
+import { emitWebhookEvent } from './webhooks';
 
 export interface RunRulesResult {
   readonly considered: number;
@@ -141,6 +142,13 @@ async function apply(db: Client, rule: AutomationRule, event: RuleEvent): Promis
         sql: `INSERT INTO suppression_keys (match_key, suppression_id, scope, workspace_id)
               VALUES (?, ?, 'workspace', ?)`,
         args: [`person:${event.personId}`, suppressionId, rule.workspaceId],
+      });
+
+      await emitWebhookEvent(db, rule.workspaceId, 'person.suppressed', {
+        personId: event.personId,
+        reason: rule.config.reason ?? `rule: ${rule.name}`,
+        source: 'automation_rule',
+        suppressionId,
       });
 
       return { applied: true, detail: 'suppressed' };

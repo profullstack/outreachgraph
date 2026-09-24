@@ -64,42 +64,35 @@ function rule(
  * LinkedIn (PRD §16.3).
  *
  * LinkedIn's User Agreement prohibits unauthorized bots and automated methods
- * for scraping, messaging, adding contacts and engagement. V1 therefore treats
- * LinkedIn as a research and draft surface only: the user performs any action
- * themselves, in LinkedIn's own interface.
+ * for scraping, messaging, adding contacts and engagement, and its official API
+ * offers none of these to a third party. Without a connected session LinkedIn
+ * is therefore a research and draft surface: every action is a hand-off the
+ * user performs in LinkedIn's own interface.
+ *
+ * The exception is `customer_managed`: actions run through the member's own
+ * logged-in session, which exists only after the workspace owner explicitly
+ * accepted the terms risk (`og connect linkedin --accept-linkedin-risk`, first
+ * on 2026-09-24). The mode still requires that connection, so an unconnected
+ * workspace gets `manual_only` — a hand-off — rather than an attempt; approval
+ * still defaults to a human; and the sender paces and caps every kind, because
+ * LinkedIn restricts accounts that act faster than a person.
+ *
+ * `like` stays manual: nothing sends it yet, and a mode that promises
+ * automation nothing performs would approve cards that then fail.
  */
+const SESSION_REASON =
+  'Done through your own connected LinkedIn session, paced and capped; LinkedIn’s terms forbid automation, so the account risk is yours.';
+
 const LINKEDIN: readonly CapabilityRule[] = [
   rule('linkedin', 'observe', 'research_only', 'Licensed provider data and public research only.'),
   rule('linkedin', 'refresh_research', 'research_only', 'Licensed provider data only.'),
-  rule(
-    'linkedin',
-    'view_profile',
-    'manual_only',
-    'Automated profile visiting is prohibited; open the profile yourself.',
-  ),
-  rule('linkedin', 'connect', 'manual_only', 'Automated connection requests are prohibited.'),
-  rule('linkedin', 'send_dm', 'manual_only', 'Automated messaging is prohibited.'),
+  rule('linkedin', 'view_profile', 'customer_managed', SESSION_REASON, 'product_decision'),
+  rule('linkedin', 'connect', 'customer_managed', SESSION_REASON, 'product_decision'),
+  rule('linkedin', 'send_dm', 'customer_managed', SESSION_REASON, 'product_decision'),
   rule('linkedin', 'like', 'manual_only', 'Automated engagement is prohibited.'),
-  // Comments and replies run through the member's own logged-in session when
-  // one is connected (`customer_managed` still requires the connection, so an
-  // unconnected workspace gets a hand-off, not an attempt). LinkedIn's terms
-  // forbid it; the workspace owner opted in knowingly on 2026-09-24, and the
-  // sender paces itself because LinkedIn restricts accounts that act fast.
-  rule(
-    'linkedin',
-    'comment',
-    'customer_managed',
-    'Posted through your own connected LinkedIn session, paced; LinkedIn’s terms forbid automation, so the account risk is yours.',
-    'product_decision',
-  ),
-  rule(
-    'linkedin',
-    'reply',
-    'customer_managed',
-    'Posted through your own connected LinkedIn session, paced; LinkedIn’s terms forbid automation, so the account risk is yours.',
-    'product_decision',
-  ),
-  rule('linkedin', 'follow', 'manual_only', 'Automated engagement is prohibited.'),
+  rule('linkedin', 'comment', 'customer_managed', SESSION_REASON, 'product_decision'),
+  rule('linkedin', 'reply', 'customer_managed', SESSION_REASON, 'product_decision'),
+  rule('linkedin', 'follow', 'customer_managed', SESSION_REASON, 'product_decision'),
 ];
 
 /**
@@ -330,4 +323,15 @@ export function indexRules(
  */
 export function featureFlagKey(network: Network, capability: ActionKind): string {
   return `network.${network}.${capability}`;
+}
+
+/**
+ * The kill switch for unattended answers to inbound replies on one network.
+ *
+ * Separate from `featureFlagKey(network, 'send_email')` on purpose: turning off
+ * autonomous replies must not also turn off the human-approved ones, which are
+ * the product working as intended.
+ */
+export function autoReplyFlagKey(network: Network): string {
+  return `automation.${network}.auto_reply`;
 }

@@ -131,6 +131,87 @@ export function warmupComplete(input: SenderCapInput, at: Date): boolean {
   return warmupCap(input.network, warmupDay(input.warmupStartedAt, at)) >= configuredCap(input);
 }
 
+// ------------------------------------------------------------------ per kind
+
+/**
+ * What a paced action is counted against.
+ *
+ * `post` is a public reply or comment — and, on email and X, everything — and
+ * is what an account's daily cap and warm-up ramp have always meant. The rest
+ * are the things a LinkedIn session can do to a person, each with its own
+ * budget, because LinkedIn watches each separately and at very different
+ * volumes: a person visits many more profiles than they send invitations.
+ */
+export type CapGroup = 'post' | 'connect' | 'view_profile' | 'follow' | 'send_dm';
+
+export function capGroupFor(kind: string | undefined): CapGroup {
+  if (kind === 'connect' || kind === 'view_profile' || kind === 'follow' || kind === 'send_dm') {
+    return kind;
+  }
+  return 'post';
+}
+
+/**
+ * Per-kind caps on LinkedIn, per account, per UTC day and per rolling seven
+ * days.
+ *
+ * Conservative on purpose, and well below what the UI lets a person click:
+ *
+ *   connect       20/day, 100/week — LinkedIn's weekly invitation limit sits
+ *                 around 100 for most accounts, and an account that hits it
+ *                 is warned and then restricted. The day cap spreads the week
+ *                 so a Monday "approve all" is not the whole week at once.
+ *   view_profile  60/day — visits are metered for commercial use, and a free
+ *                 account that reads too many profiles is cut off for a month.
+ *   follow        30/day.
+ *   send_dm       25/day — only ever to connections, and still a message.
+ *
+ * These are LinkedIn's limits on one member, so in a pool every session has
+ * its own; three sessions may send sixty invitations a day between them, and
+ * never twenty-one from one.
+ */
+export const LINKEDIN_ACTION_CAPS: Readonly<
+  Record<Exclude<CapGroup, 'post'>, { readonly perDay: number; readonly perWeek?: number }>
+> = {
+  connect: { perDay: 20, perWeek: 100 },
+  view_profile: { perDay: 60 },
+  follow: { perDay: 30 },
+  send_dm: { perDay: 25 },
+};
+
+/**
+ * What one account may do of one kind on the day `at` falls on.
+ *
+ * Posts get the account's cap and warm-up, exactly as before per-kind caps.
+ * The person-directed LinkedIn kinds get LinkedIn's per-kind cap, tightened
+ * by two things that belong to the account rather than the kind:
+ *
+ *   - the warm-up ramp, because a new session that visits sixty profiles on
+ *     its first day is the pattern the ramp exists to prevent;
+ *   - a cap a human set explicitly. The network default (25) is *not*
+ *     applied here — it describes posts, and applying it to visits would
+ *     quietly cut an existing single session's 60 a day to 25.
+ */
+export function groupDailyCap(input: SenderCapInput, group: CapGroup, at: Date): number {
+  if (group === 'post' || input.network !== 'linkedin') return effectiveDailyCap(input, at);
+  if (input.status !== 'active') return 0;
+
+  let cap = LINKEDIN_ACTION_CAPS[group].perDay;
+  if (typeof input.dailyCap === 'number' && Number.isFinite(input.dailyCap)) {
+    cap = Math.min(cap, Math.max(0, Math.floor(input.dailyCap)));
+  }
+  if (input.warmupEnabled && input.warmupStartedAt) {
+    cap = Math.min(cap, warmupCap(input.network, warmupDay(input.warmupStartedAt, at)));
+  }
+  return cap;
+}
+
+/** The rolling seven-day allowance for one kind on one account, if it has one. */
+export function groupWeeklyCap(network: SenderNetwork, group: CapGroup): number | undefined {
+  if (network !== 'linkedin' || group === 'post') return undefined;
+  return LINKEDIN_ACTION_CAPS[group].perWeek;
+}
+
 // ------------------------------------------------------------------ choice
 
 export interface PoolCandidate {

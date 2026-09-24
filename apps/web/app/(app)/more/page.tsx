@@ -12,6 +12,11 @@ export const metadata = { title: 'More · OutreachGraph' };
 /** Real destinations, listed above the things that are still placeholders. */
 const LINKS = [
   {
+    href: '/inbox',
+    label: 'Inbox',
+    hint: 'Every reply, labelled, with the answer already drafted for the ones worth one',
+  },
+  {
     href: '/products',
     label: 'Products',
     hint: 'Everything you sell — each with its own buyers, voice and campaign',
@@ -57,7 +62,6 @@ const LINKS = [
 ] as const;
 
 const SECTIONS = [
-  { label: 'Conversations', hint: 'Replies are read and scored; no threaded view yet' },
   { label: 'CRM integrations', hint: 'Website and GitHub are sources; the mailbox is in Settings' },
   { label: 'Scheduling links', hint: 'Needs a calendar connection we do not have yet' },
 ] as const;

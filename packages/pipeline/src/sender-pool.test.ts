@@ -82,7 +82,7 @@ async function send(
   db: Client,
   accountId: string,
   at: string,
-  options: { personId?: string; status?: string; network?: string } = {},
+  options: { personId?: string; status?: string; network?: string; kind?: string } = {},
 ): Promise<string> {
   seq += 1;
   const id = `act_${seq}`;
@@ -95,12 +95,13 @@ async function send(
   await db.execute({
     sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
           mode, status, created_at, executed_at, sender_account_id)
-          VALUES (?, ?, ?, ?, 'send_email', ?, 'customer_managed', ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, 'customer_managed', ?, ?, ?, ?)`,
     args: [
       id,
       SEED.workspaceId,
       SEED.recommendationId,
       options.personId ?? SEED.personId,
+      options.kind ?? 'send_email',
       options.network ?? 'email',
       options.status ?? 'completed',
       at,
@@ -495,9 +496,10 @@ describe('paced social delivery', () => {
     await account(db, 'ita_a', { network: 'linkedin', dailyCap: 2 });
     await account(db, 'ita_b', { network: 'linkedin', dailyCap: 1 });
 
-    const start = Date.UTC(2026, 8, 24, 10);
+    // Real time: the queue stores `run_after` from the clock, not from `start`.
+    const start = Date.now();
     const days: string[] = [];
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < 7; i += 1) {
       const scheduled = await scheduleSocialDelivery(
         db,
         {
@@ -510,7 +512,114 @@ describe('paced social delivery', () => {
       );
       days.push(scheduled.runAt.slice(0, 10));
     }
-    // Three a day between the two accounts; the fourth starts tomorrow.
-    expect(days).toEqual(['2026-09-24', '2026-09-24', '2026-09-24', '2026-09-25']);
+    // Three a day between the two accounts (2 + 1), never more, and a full
+    // day of three — which neither account could schedule alone.
+    const perDay = new Map<string, number>();
+    for (const day of days) perDay.set(day, (perDay.get(day) ?? 0) + 1);
+    expect(Math.max(...perDay.values())).toBe(3);
+  });
+});
+
+describe('LinkedIn per-kind caps, per account', () => {
+  test('each session keeps its own 20 invitations a day, apart from its post budget', async () => {
+    seeded = await seedDatabase('pool-li-kinds');
+    const { db } = seeded;
+    await account(db, 'ita_a', { network: 'linkedin' });
+    await account(db, 'ita_b', { network: 'linkedin' });
+
+    // A has spent its day of invitations; B has spent its day of comments.
+    for (let i = 0; i < 20; i += 1) {
+      await send(db, 'ita_a', TODAY, { network: 'linkedin', kind: 'connect', personId: `p_${i}` });
+    }
+    for (let i = 0; i < 25; i += 1) {
+      await send(db, 'ita_b', TODAY, { network: 'linkedin', kind: 'comment', personId: `q_${i}` });
+    }
+
+    const pick = (kind: string) =>
+      chooseSender(db, { workspaceId: SEED.workspaceId, network: 'linkedin', kind, at: AT });
+
+    expect((await pick('connect')).account?.id).toBe('ita_b');
+    expect((await pick('comment')).account?.id).toBe('ita_a');
+    // Visits are a third budget neither has touched.
+    expect((await pick('view_profile')).choice.kind).toBe('picked');
+
+    for (let i = 0; i < 20; i += 1) {
+      await send(db, 'ita_b', TODAY, { network: 'linkedin', kind: 'connect', personId: `r_${i}` });
+    }
+    expect((await pick('connect')).choice).toEqual({ kind: 'deferred', reason: 'all_capped' });
+  });
+
+  test('a session that has sent 100 invitations this week has no room for another', async () => {
+    seeded = await seedDatabase('pool-li-week');
+    const { db } = seeded;
+    await account(db, 'ita_a', { network: 'linkedin' });
+    for (let d = 1; d <= 5; d += 1) {
+      const day = `2026-09-${String(24 - d).padStart(2, '0')}T09:00:00.000Z`;
+      for (let i = 0; i < 20; i += 1) {
+        await send(db, 'ita_a', day, {
+          network: 'linkedin',
+          kind: 'connect',
+          personId: `w${d}_${i}`,
+        });
+      }
+    }
+    const selection = await chooseSender(db, {
+      workspaceId: SEED.workspaceId,
+      network: 'linkedin',
+      kind: 'connect',
+      at: AT,
+    });
+    expect(selection.choice).toEqual({ kind: 'deferred', reason: 'all_capped' });
+  });
+
+  test('a warming session is held to its ramp for every kind', async () => {
+    seeded = await seedDatabase('pool-li-warm');
+    const { db } = seeded;
+    await account(db, 'ita_new', { network: 'linkedin', warmupStartedAt: TODAY });
+    for (let i = 0; i < 5; i += 1) {
+      await send(db, 'ita_new', TODAY, {
+        network: 'linkedin',
+        kind: 'view_profile',
+        personId: `v_${i}`,
+      });
+    }
+    const selection = await chooseSender(db, {
+      workspaceId: SEED.workspaceId,
+      network: 'linkedin',
+      kind: 'view_profile',
+      at: AT,
+    });
+    expect(selection.choice.kind).toBe('deferred');
+  });
+
+  test('the invitation schedule grows with the number of sessions', async () => {
+    seeded = await seedDatabase('pool-li-schedule');
+    const { db } = seeded;
+    await account(db, 'ita_a', { network: 'linkedin' });
+    await account(db, 'ita_b', { network: 'linkedin' });
+
+    // Real time: the queue stores `run_after` from the clock, not from `start`.
+    const start = Date.now();
+    const days = new Map<string, number>();
+    for (let i = 0; i < 45; i += 1) {
+      const scheduled = await scheduleSocialDelivery(
+        db,
+        {
+          workspaceId: SEED.workspaceId,
+          actionId: `act_inv_${i}`,
+          network: 'linkedin',
+          actor: { actorKind: 'user', actorId: 'u' },
+          kind: 'connect',
+        },
+        start,
+      );
+      const day = scheduled.runAt.slice(0, 10);
+      days.set(day, (days.get(day) ?? 0) + 1);
+    }
+    // Two sessions, twenty each: never more than forty in a day, and more
+    // than one session's twenty on at least one of them.
+    const counts = [...days.values()];
+    expect(Math.max(...counts)).toBeLessThanOrEqual(40);
+    expect(Math.max(...counts)).toBeGreaterThan(20);
   });
 });

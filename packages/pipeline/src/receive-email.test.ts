@@ -246,3 +246,134 @@ describe('a shared company inbox', () => {
     expect(rows[0]?.shared_inbox).toBe(1);
   });
 });
+
+describe('robots are filed, not counted', () => {
+  test('an out-of-office lands in the thread as automated, and nothing moves', async () => {
+    seeded = await seedDatabase('receive-ooo-filed');
+    await sentTo(seeded.db, 'jane@acme.com');
+
+    const result = await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([message({ automated: 'auto_reply', subject: 'Automatic reply: payouts' })]),
+    });
+
+    expect(result.recorded).toBe(0);
+    expect(result.automatedRecorded).toBe(1);
+    expect(result.triageQueued).toBe(0);
+
+    const row = await queryOne<{ direction: string; state: string; reply_label: string }>(
+      seeded.db,
+      'SELECT direction, state, reply_label FROM interactions WHERE external_id = ?',
+      ['<reply-1@acme.com>'],
+    );
+    expect(row).toEqual({
+      direction: 'automated',
+      state: 'auto_replied',
+      reply_label: 'out_of_office',
+    });
+
+    const member = await queryOne<{ interaction_state: string }>(
+      seeded.db,
+      'SELECT interaction_state FROM campaign_people WHERE person_id = ?',
+      [SEED.personId],
+    );
+    expect(member?.interaction_state).toBe('never_contacted');
+  });
+
+  test('an autoresponder that forgot its headers is caught by its subject', async () => {
+    seeded = await seedDatabase('receive-ooo-subject');
+    await sentTo(seeded.db, 'jane@acme.com');
+
+    const result = await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([message({ subject: 'Out of Office: payouts', bodyText: 'Back on Monday.' })]),
+    });
+
+    expect(result.recorded).toBe(0);
+    expect(await inboundCount(seeded.db)).toBe(0);
+  });
+
+  test('a bounce is filed to the person the report names', async () => {
+    seeded = await seedDatabase('receive-bounce-filed');
+    await sentTo(seeded.db, 'jane@acme.com');
+
+    const result = await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([
+        message({
+          fromAddress: 'mailer-daemon@googlemail.com',
+          automated: 'bounce',
+          failedRecipient: 'jane@acme.com',
+          subject: 'Delivery Status Notification (Failure)',
+        }),
+      ]),
+    });
+
+    expect(result.automatedRecorded).toBe(1);
+    const row = await queryOne<{ person_id: string; state: string }>(
+      seeded.db,
+      `SELECT person_id, state FROM interactions WHERE direction = 'automated'`,
+    );
+    expect(row).toEqual({ person_id: SEED.personId, state: 'bounced' });
+  });
+});
+
+describe('a human reply', () => {
+  test('keeps its words and subject, and is queued for triage', async () => {
+    seeded = await seedDatabase('receive-words');
+    await sentTo(seeded.db, 'jane@acme.com');
+
+    const result = await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([
+        message({ bodyText: 'Sure, tell me more.', references: '<ours@examplepay.com>' }),
+      ]),
+    });
+
+    expect(result.triageQueued).toBe(1);
+
+    const row = await queryOne<{
+      id: string;
+      body: string;
+      subject: string;
+      references_header: string;
+      reply_label: string | null;
+    }>(
+      seeded.db,
+      `SELECT id, body, subject, references_header, reply_label FROM interactions
+        WHERE direction = 'inbound'`,
+    );
+    expect(row?.body).toBe('Sure, tell me more.');
+    expect(row?.subject).toBe('Re: cross-border settlement');
+    expect(row?.references_header).toBe('<ours@examplepay.com>');
+    // No rule placed it; the model gets it in triage.
+    expect(row?.reply_label).toBeNull();
+
+    const job = await queryOne<{ kind: string; payload_json: string }>(
+      seeded.db,
+      `SELECT kind, payload_json FROM jobs WHERE kind = 'triage_reply'`,
+    );
+    expect(JSON.parse(job?.payload_json ?? '{}').interactionId).toBe(row?.id);
+  });
+
+  test('a rule-matched stop request is labelled on arrival', async () => {
+    seeded = await seedDatabase('receive-unsub-label');
+    await sentTo(seeded.db, 'jane@acme.com');
+
+    await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([message({ bodyText: 'Please remove me from your list.' })]),
+    });
+
+    const row = await queryOne<{ reply_label: string; reply_label_source: string }>(
+      seeded.db,
+      `SELECT reply_label, reply_label_source FROM interactions WHERE direction = 'inbound'`,
+    );
+    expect(row).toEqual({ reply_label: 'unsubscribe_request', reply_label_source: 'rule' });
+  });
+});

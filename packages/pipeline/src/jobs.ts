@@ -84,6 +84,30 @@ export const JOB_KINDS = [
    * open), promotes a confident address, then re-decides the person.
    */
   'find_email',
+  /**
+   * Label one recorded reply and act on the label.
+   *
+   * Queued when a reply is recorded — by the mailbox poll or by a human saying
+   * "they replied". Rules label it first and a model only labels what no rule
+   * could; a rule-matched "take me off your list" suppresses; an interested,
+   * question or referral reply gets a drafted answer, sent unattended only when
+   * `decideAutoReply` says every condition held and otherwise left as a card.
+   */
+  'triage_reply',
+  /**
+   * POST one event to one customer webhook endpoint.
+   *
+   * One job per (endpoint, event) so a dead Zapier hook retries on its own
+   * schedule without holding up the Slack channel beside it, and so the
+   * queue's backoff is the retry policy rather than a second one in here.
+   */
+  'deliver_webhook',
+  /**
+   * Push one person and one note into a connected CRM (HubSpot, Pipedrive).
+   *
+   * Queued by the same event bus as webhooks, only for replies and approvals.
+   */
+  'sync_crm',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];

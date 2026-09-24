@@ -21,6 +21,7 @@ import {
   type Network,
 } from '@outreachgraph/domain';
 import {
+  autoReplyFlagKey,
   capabilityKey,
   DEFAULT_CAPABILITY_RULES,
   featureFlagKey,
@@ -129,6 +130,19 @@ export interface PolicyRequest {
    * bypassing it.
    */
   readonly isFollowUp?: boolean;
+  /**
+   * This follow-up answers an inbound message, and its campaign asked for such
+   * answers to be sent without a human (`auto_reply_mode = 'autonomous'`).
+   *
+   * The only thing that can lift gate 7b's "a human approves every message on
+   * an open thread", and deliberately not enough on its own: the campaign must
+   * also be `trusted_automation`, the `automation.<network>.auto_reply` flag
+   * must not be switched off, and gate 9 still requires a capability the
+   * platform lets us automate. Whether the *reply* deserves an unattended
+   * answer — its label, the classifier's confidence — is decided before this
+   * request is built, by `decideAutoReply`, which is as deterministic as this.
+   */
+  readonly autonomousReply?: boolean;
 
   /** Explicit flag overrides. A missing key means enabled (PRD §37). */
   readonly featureFlags?: Readonly<Record<string, boolean>>;
@@ -362,19 +376,29 @@ export function evaluatePolicy(request: PolicyRequest): PolicyResult {
     //
     // Shared with the approval queue, which runs the same two rules ahead of
     // time so a card that would be refused here says so before it is clicked.
-    for (const breach of evaluateAddressLimits({
-      ...(request.actionsToThisAddressThisWeek === undefined
-        ? {}
-        : { actionsThisWeek: request.actionsToThisAddressThisWeek }),
-      ...(request.maxActionsPerAddressPerWeek === undefined
-        ? {}
-        : { maxPerWeek: request.maxActionsPerAddressPerWeek }),
-      ...(request.addressShared === undefined ? {} : { shared: request.addressShared }),
-      ...(request.hoursSinceLastActionToAddress === undefined
-        ? {}
-        : { hoursSinceLast: request.hoursSinceLastActionToAddress }),
-      cooldownHours: cooldown,
-    })) {
+    //
+    // Answering a personal address that wrote to us is exempt, for the same
+    // reason as the per-prospect gates above: one email out, one reply in, and
+    // the answer used to be "only 20h since this address was last contacted".
+    // A shared inbox is not exempt — `support@` replying for one colleague is
+    // not an invitation to write to the other thirteen behind it.
+    const answeringPersonally = answering && request.addressShared !== true;
+
+    for (const breach of answeringPersonally
+      ? []
+      : evaluateAddressLimits({
+          ...(request.actionsToThisAddressThisWeek === undefined
+            ? {}
+            : { actionsThisWeek: request.actionsToThisAddressThisWeek }),
+          ...(request.maxActionsPerAddressPerWeek === undefined
+            ? {}
+            : { maxPerWeek: request.maxActionsPerAddressPerWeek }),
+          ...(request.addressShared === undefined ? {} : { shared: request.addressShared }),
+          ...(request.hoursSinceLastActionToAddress === undefined
+            ? {}
+            : { hoursSinceLast: request.hoursSinceLastActionToAddress }),
+          cooldownHours: cooldown,
+        })) {
       restrict(breach.gate, 'deny', breach.reason);
     }
   }
@@ -385,11 +409,21 @@ export function evaluatePolicy(request: PolicyRequest): PolicyResult {
   //     continue.
   if (isOutboundAction(request.action) && request.conversationOpen === true) {
     if (request.isFollowUp === true) {
-      restrict(
-        'conversation_open',
-        'allow_with_approval',
-        'This contact has replied. A follow-up needs a human to approve it.',
-      );
+      // The one exception, and every part of it is required. The kill switch
+      // reads a missing flag as enabled (PRD §37), so switching it off is the
+      // way to stop every autonomous reply on a network at once.
+      const unattended =
+        request.autonomousReply === true &&
+        request.approvalMode === 'trusted_automation' &&
+        request.featureFlags?.[autoReplyFlagKey(request.network)] !== false;
+
+      if (!unattended) {
+        restrict(
+          'conversation_open',
+          'allow_with_approval',
+          'This contact has replied. A follow-up needs a human to approve it.',
+        );
+      }
     } else {
       restrict(
         'conversation_open',
@@ -456,7 +490,15 @@ function modeRestriction(
     case 'customer_managed':
       // An API-permitted action still needs an account to act through;
       // without one the user must do it by hand.
-      return request.hasConnectedAccount || isResearchAction(request.action)
+      //
+      // A research action is normally exempt, because reading a public API
+      // needs no account. A `customer_managed` read is not a public read: a
+      // LinkedIn profile visit goes through the member's own session, shows up
+      // in the prospect's "who viewed" list, and is exactly as much automation
+      // as a comment. So the exemption does not extend to it, and a workspace
+      // without the session gets a hand-off here like every other action.
+      return request.hasConnectedAccount ||
+        (rule.mode !== 'customer_managed' && isResearchAction(request.action))
         ? ['capability_mode', 'allow', rule.reason]
         : [
             'no_connected_account',

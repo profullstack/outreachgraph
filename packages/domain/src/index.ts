@@ -31,3 +31,5 @@ export * from './video';
 export * from './compliance';
 export * from './autogtm';
 export * from './sender-pool';
+export * from './replies';
+export * from './webhooks';

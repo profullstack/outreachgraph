@@ -42,11 +42,11 @@ import {
   defaultEmailSubject,
   loadOutreachSettings,
   pickEmailRecipient,
+  prepareOutgoingEmail,
   recordEmailFailure,
   recordEmailSent,
   AUTOPILOT_ACTOR,
 } from './outreach-email';
-import { trackLinksInBody } from './engagement';
 import { budgetStatus } from './metering';
 
 export interface AutopilotDeps {
@@ -382,6 +382,14 @@ export async function runAutopilot(
         AND r.action = 'send_email'
         AND r.network = 'email'
         AND p.status = 'active'
+        -- An answer to someone who wrote back is never autopilot's to send.
+        -- Reply cards are \`send_email\` too, and this sweep asks the engine
+        -- nothing about open conversations, so without this a copilot draft
+        -- on a trusted-automation campaign would leave on the next tick with
+        -- nobody having read it. Unattended answers have their own gate
+        -- (\`decideAutoReply\`) and their own sender (\`triage_reply\`).
+        AND r.expected_goal != 'continue_conversation'
+        AND r.reply_to_interaction_id IS NULL
       ORDER BY r.priority DESC, (person_email IS NULL) ASC, r.created_at ASC
       LIMIT ?`,
     [workspaceId, CANDIDATE_CEILING],
@@ -673,30 +681,27 @@ export async function runAutopilot(
     // customer who connected their own mailbox meant replies to reach it.
     const replyTo = deps.replyTo ?? mailbox.replyTo ?? settings.reply_to_email ?? undefined;
 
-    // Same rule as the approval path: rewrite after the body is settled, so
-    // what the gates checked and what the reviewer would read back is the
-    // approved wording, and only the link destinations differ on the wire.
-    const trackingOrigin = settings.track_links
-      ? (settings.tracking_origin ?? deps.appUrl ?? undefined)
-      : undefined;
-
-    const outgoing = trackingOrigin
-      ? await trackLinksInBody(db, {
-          workspaceId,
-          personId: row.person_id,
-          campaignId: row.campaign_id,
-          actionId,
-          body,
-          origin: trackingOrigin,
-        })
-      : { body, tracked: 0 };
+    // The same builder as the approval path, so an autopilot send carries the
+    // same opt-out, link tracking and pixel as one a human approved.
+    const outgoing = await prepareOutgoingEmail(db, {
+      workspaceId,
+      personId: row.person_id,
+      campaignId: row.campaign_id,
+      actionId,
+      body,
+      recipient: recipient.address,
+      settings,
+      appUrl: deps.appUrl,
+    });
 
     try {
       const result = await mailbox.mailer.send({
         to: recipient.address,
         subject,
-        text: outgoing.body,
+        text: outgoing.text,
+        ...(outgoing.html ? { html: outgoing.html } : {}),
         ...(replyTo ? { replyTo } : {}),
+        ...(outgoing.headers ? { headers: outgoing.headers } : {}),
       });
 
       await recordEmailSent(db, {
@@ -800,7 +805,7 @@ export async function runAutopilot(
   return { sent, skipped, failed };
 }
 
-interface AddressUsage {
+export interface AddressUsage {
   readonly thisWeek: number;
   readonly hoursSinceLast?: number;
 }
@@ -841,7 +846,11 @@ function dayStart(at: Date): string {
  */
 const COUNTABLE_KINDS = `kind NOT IN (${INTERNAL_ACTION_KINDS.map(() => '?').join(', ')})`;
 
-async function countActionsToday(db: Client, workspaceId: string, at: Date): Promise<number> {
+export async function countActionsToday(
+  db: Client,
+  workspaceId: string,
+  at: Date,
+): Promise<number> {
   const row = await queryOne<{ n: number }>(
     db,
     // Hand-offs are exempt from the daily limit: a person paces those.
@@ -853,7 +862,7 @@ async function countActionsToday(db: Client, workspaceId: string, at: Date): Pro
   return row?.n ?? 0;
 }
 
-async function actionCounts(
+export async function actionCounts(
   db: Client,
   workspaceId: string,
   personId: string,
@@ -890,7 +899,7 @@ async function actionCounts(
  * approval queue counts against the automated path, and vice versa. A mailbox
  * does not care which half of the product wrote to it.
  */
-async function addressCounts(
+export async function addressCounts(
   db: Client,
   workspaceId: string,
   address: string,

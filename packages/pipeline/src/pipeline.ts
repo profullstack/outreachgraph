@@ -1075,7 +1075,10 @@ async function createRecommendation(
              WHERE workspace_id = ? AND campaign_id = ? AND person_id = ?
                AND status = 'pending'
                AND (policy_status = 'manual_only' OR NOT ${CONNECTED_NETWORK})
-               AND action NOT IN ('refresh_research', 'observe', 'wait')`,
+               AND action NOT IN ('refresh_research', 'observe', 'wait')
+               -- A card answering something they wrote is not a cold
+               -- decision a newer signal can replace.
+               AND reply_to_interaction_id IS NULL`,
       args: [workspaceId, campaignId, personId],
     });
   }

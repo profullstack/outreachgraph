@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { newId, type CadenceStep } from '@outreachgraph/domain';
+import { guidanceFor, newId, type CadenceStep } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { createCadence, enrollInCadence } from './cadence';
@@ -146,7 +146,7 @@ describe('runCadences', () => {
   test('records a manual step for a network we may not automate', async () => {
     seeded = await seedDatabase('runner-manual');
     const { db } = seeded;
-    await planAndEnrol(db, [step({ network: 'linkedin', action: 'send_dm' })]);
+    await planAndEnrol(db, [step({ network: 'x', action: 'send_dm' })]);
 
     const result = await runCadences(
       { db, platformEmailEnabled: true, now: DUE },
@@ -174,5 +174,50 @@ describe('runCadences', () => {
     );
 
     expect(result.considered).toBe(0);
+  });
+
+  test('hands the composer this enrollment’s arm of a tested step', async () => {
+    seeded = await seedDatabase('runner-variant');
+    const { db } = seeded;
+    const tested = step({
+      intent: 'reference their settlement post',
+      variants: ['ask who owns onboarding'],
+    });
+    await planAndEnrol(db, [tested]);
+
+    const enrollment = await queryOne<{ id: string }>(db, 'SELECT id FROM cadence_enrollments');
+    const expected = guidanceFor(enrollment!.id, tested);
+
+    await runCadences({ db, platformEmailEnabled: true, now: DUE }, SEED.workspaceId);
+
+    const card = await queryOne<{ guidance: string; variant: string; reason: string }>(
+      db,
+      `SELECT guidance, variant, reason FROM recommendations
+        WHERE reason LIKE 'Cadence step%'`,
+    );
+    expect(card?.variant).toBe(expected.variant!);
+    expect(card?.guidance).toBe(expected.intent!);
+    expect(card?.reason).toContain(`(variant ${expected.variant})`);
+
+    const run = await queryOne<{ variant: string }>(
+      db,
+      'SELECT variant FROM cadence_step_runs LIMIT 1',
+    );
+    expect(run?.variant).toBe(expected.variant!);
+  });
+
+  test('carries an untested step’s intent to the composer with no variant', async () => {
+    seeded = await seedDatabase('runner-guidance');
+    const { db } = seeded;
+    await planAndEnrol(db, [step({ intent: 'reference their settlement post' })]);
+
+    await runCadences({ db, platformEmailEnabled: true, now: DUE }, SEED.workspaceId);
+
+    const card = await queryOne<{ guidance: string; variant: string | null }>(
+      db,
+      `SELECT guidance, variant FROM recommendations WHERE reason LIKE 'Cadence step%'`,
+    );
+    expect(card?.guidance).toBe('reference their settlement post');
+    expect(card?.variant).toBeNull();
   });
 });

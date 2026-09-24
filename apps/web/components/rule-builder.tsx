@@ -25,6 +25,7 @@ const TRIGGERS = [
   { id: 'score_crossed', label: 'Their score crosses a threshold' },
   { id: 'reply_received', label: 'They reply' },
   { id: 'stage_changed', label: 'They move in the funnel' },
+  { id: 'connection_accepted', label: 'They accept a LinkedIn invitation' },
 ] as const;
 
 const SIGNAL_TYPES = [

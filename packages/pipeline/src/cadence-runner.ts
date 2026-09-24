@@ -13,7 +13,7 @@
  * action, and the failure mode is a cadence that quietly ignores the daily cap.
  */
 
-import { newId, type CadenceStep, type Network } from '@outreachgraph/domain';
+import { guidanceFor, newId, type CadenceStep, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { matchKeysForPerson } from './suppression-keys';
 import type { PolicyDecision, PolicyRequest } from '@outreachgraph/policy';
@@ -163,6 +163,7 @@ async function writeCadenceRecommendation(
   if (existing) return existing.id;
 
   const id = newId('recommendation');
+  const guidance = guidanceFor(enrollment.id, step);
   const score = await queryOne<{ opportunity: number }>(
     db,
     'SELECT opportunity FROM scores WHERE campaign_id = ? AND person_id = ?',
@@ -171,8 +172,9 @@ async function writeCadenceRecommendation(
 
   await db.execute({
     sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
-          priority, reason, policy_status, policy_version, expected_goal, status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'start_conversation', 'pending', ?)`,
+          priority, reason, guidance, variant, policy_status, policy_version, expected_goal,
+          status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'start_conversation', 'pending', ?)`,
     args: [
       id,
       enrollment.workspace_id,
@@ -181,9 +183,9 @@ async function writeCadenceRecommendation(
       step.action,
       step.network,
       Number(score?.opportunity ?? 0),
-      step.intent?.trim()
-        ? `Cadence step ${step.position + 1}: ${step.intent.trim()}`
-        : `Cadence step ${step.position + 1}.`,
+      cadenceReason(step.position, guidance),
+      guidance.intent ?? null,
+      guidance.variant ?? null,
       input.decision,
       input.policyVersion,
       now(),
@@ -191,6 +193,21 @@ async function writeCadenceRecommendation(
   });
 
   return id;
+}
+
+/**
+ * The label a reviewer reads on the card.
+ *
+ * Names the arm when the step is being tested, so somebody approving a batch
+ * can see the split is real rather than taking the report's word for it.
+ */
+function cadenceReason(
+  position: number,
+  guidance: { readonly variant?: string; readonly intent?: string },
+): string {
+  const step = `Cadence step ${position + 1}`;
+  const arm = guidance.variant ? ` (variant ${guidance.variant})` : '';
+  return guidance.intent ? `${step}${arm}: ${guidance.intent}` : `${step}.`;
 }
 
 // ------------------------------------------------------------------ reads
@@ -260,10 +277,15 @@ async function conversationOpen(
   workspaceId: string,
   personId: string,
 ): Promise<boolean> {
+  // Both spellings of a human reply: the mailbox poll has always written
+  // `responded` and the manual route `replied`, and reading only the second
+  // meant a reply noticed by the poll never stopped a plan. An absence notice
+  // or a bounce is `direction = 'automated'` and is deliberately not here.
   const row = await queryOne<{ n: number }>(
     db,
     `SELECT count(*) AS n FROM interactions
-      WHERE workspace_id = ? AND person_id = ? AND direction = 'inbound' AND state = 'replied'`,
+      WHERE workspace_id = ? AND person_id = ? AND direction = 'inbound'
+        AND state IN ('replied', 'responded')`,
     [workspaceId, personId],
   );
 

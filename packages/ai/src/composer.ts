@@ -16,7 +16,14 @@
  *      rejected — including on a retry — rather than shown with a warning.
  */
 
-import type { ActionKind, Network, OutreachStyle, PersonKind } from '@outreachgraph/domain';
+import {
+  newReplyText,
+  type ActionKind,
+  type Network,
+  type OutreachStyle,
+  type PersonKind,
+  type ReplyLabel,
+} from '@outreachgraph/domain';
 import { runChecks, type CheckReport, type GroundingContext } from './checks';
 import type { TextModel } from './model';
 
@@ -65,6 +72,14 @@ export interface ComposeInput {
   readonly voice?: VoiceContext;
   readonly minIdentityConfidence: number;
   readonly priorDraftHashes?: readonly string[];
+  /**
+   * What this touch is for, from the cadence step that produced it — "ask for
+   * an intro", "follow up on the talk". Steers the angle only. It is not
+   * CONTEXT: nothing in it may be stated as fact, and it never enters the
+   * grounding set, so a guidance line that names a customer cannot smuggle
+   * that customer into the message.
+   */
+  readonly guidance?: string;
   /** Retries on a failed grounding check. Zero disables retrying. */
   readonly maxAttempts?: number;
 }
@@ -284,6 +299,15 @@ function buildUser(input: ComposeInput, failed?: CheckReport): string {
         'Reference their words specifically enough that it could not have been sent to anyone else.',
       ];
 
+  const guidance = input.guidance?.trim();
+  if (guidance) {
+    sections.push(
+      '',
+      `The purpose of this particular message: ${guidance}`,
+      'Serve that purpose, but it is an instruction, not a fact — state nothing from it that the CONTEXT does not support.',
+    );
+  }
+
   if (failed) {
     // Naming the exact rejected fragments works far better than repeating the
     // rule — the model can see what it invented.
@@ -314,4 +338,221 @@ function stripWrapper(text: string): string {
     out = out.slice(1, -1);
   }
   return out.trim();
+}
+
+// ------------------------------------------------------------------ replies
+
+/** One message in a conversation, as the reply composer sees it. */
+export interface ThreadMessage {
+  readonly from: 'them' | 'us';
+  readonly body: string;
+}
+
+export interface ReplyComposeInput {
+  readonly network: Network;
+  readonly offering: OfferingContext;
+  readonly prospect: ProspectContext;
+  readonly voice?: VoiceContext;
+  /** Everything before the message being answered, oldest first. */
+  readonly thread: readonly ThreadMessage[];
+  /** The message being answered. */
+  readonly inbound: { readonly body: string; readonly subject?: string | undefined };
+  /** What triage called it; steers the answer, never the facts. */
+  readonly label: ReplyLabel;
+  readonly minIdentityConfidence: number;
+  readonly priorDraftHashes?: readonly string[];
+  readonly maxAttempts?: number;
+}
+
+const REPLY_GUIDANCE: Partial<Record<ReplyLabel, string>> = {
+  interested:
+    'They want to continue. Answer what they asked for as far as the CONTEXT allows, and propose one concrete next step.',
+  question:
+    'Answer their question using only the CONTEXT. If the CONTEXT does not contain the answer, say you will find out rather than inventing one.',
+  referral:
+    'They named someone else as the right person. Thank them briefly and ask whether they would be willing to introduce you. Do not write to the other person.',
+};
+
+/**
+ * Answering a message somebody sent us — the composer's reply mode.
+ *
+ * The same contract as `composeDraft`, applied to a conversation instead of a
+ * public post: the model sees only the thread and the customer's own
+ * offering, and its output runs the same §14.2 gates before anyone reads it.
+ * What counts as grounded changes in one way that matters. The evidence is
+ * *their* words — this message and their earlier ones — plus the last thing
+ * we sent, which is what their "yes" was a yes to. A reply that answers a
+ * pricing question with a number that appears nowhere in the thread or the
+ * offering is rejected exactly like an invented fact in a cold message.
+ */
+export async function composeReply(
+  model: TextModel,
+  input: ReplyComposeInput,
+): Promise<ComposeResult> {
+  const fresh = newReplyText(input.inbound.body);
+  if (!fresh) return { ok: false, reason: 'no_evidence', attempts: 0 };
+
+  const theirs = input.thread.filter((m) => m.from === 'them').map((m) => newReplyText(m.body));
+  const ours = input.thread.filter((m) => m.from === 'us').map((m) => m.body);
+  const lastOurs = ours.at(-1);
+
+  const grounding: GroundingContext = {
+    evidence: [fresh, ...theirs, ...(lastOurs ? [lastOurs] : [])].filter(Boolean),
+    facts: [
+      input.prospect.displayName,
+      input.prospect.firstName ?? '',
+      input.prospect.title ?? '',
+      input.prospect.companyName ?? '',
+      ...(input.inbound.subject ? [input.inbound.subject] : []),
+      // Everything we already said is ours to repeat: it passed these gates
+      // on its way out.
+      ...ours,
+    ].filter(Boolean),
+    offering: [
+      input.offering.name,
+      input.offering.category,
+      ...input.offering.valuePropositions,
+      ...input.offering.likelyPains,
+      ...input.offering.competitors,
+    ],
+  };
+
+  const maxAttempts = Math.max(1, input.maxAttempts ?? 2);
+  let lastReport: CheckReport | undefined;
+  let lastBody: string | undefined;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const generated = await model.generate({
+      cachedPrefix: buildReplyPrefix(input),
+      system: buildReplySystem(input),
+      user: buildReplyUser(input, fresh, attempt > 1 ? lastReport : undefined),
+      maxTokens: 1024,
+    });
+
+    if (generated.refused) return { ok: false, reason: 'model_refused', attempts: attempt };
+
+    const body = stripWrapper(generated.text);
+    if (!body) return { ok: false, reason: 'empty', attempts: attempt };
+    lastBody = body;
+
+    const report = runChecks({
+      body,
+      grounding,
+      identityConfidence: input.prospect.identityConfidence,
+      minIdentityConfidence: input.minIdentityConfidence,
+      ...(input.priorDraftHashes ? { priorDraftHashes: input.priorDraftHashes } : {}),
+      ...(LENGTH_LIMITS[input.network] === undefined
+        ? {}
+        : { maxLength: LENGTH_LIMITS[input.network]! }),
+      ...(input.voice?.prohibitedClaims ? { prohibitedClaims: input.voice.prohibitedClaims } : {}),
+    });
+    lastReport = report;
+
+    if (report.passed) {
+      return {
+        ok: true,
+        body,
+        report,
+        // A reply is grounded in a conversation, not a signal.
+        groundedSignalIds: [],
+        model: generated.model,
+        attempts: attempt,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    reason: 'failed_checks',
+    ...(lastReport ? { report: lastReport } : {}),
+    ...(lastBody ? { lastBody } : {}),
+    attempts: maxAttempts,
+  };
+}
+
+function buildReplyPrefix(input: ReplyComposeInput): string {
+  const voice = input.voice;
+
+  return [
+    'You write replies on behalf of a business to people who wrote back to it.',
+    '',
+    'Absolute rules:',
+    '- Only state things supported by the CONTEXT you are given. If a fact is not there, it does not exist.',
+    '- Never invent prices, numbers, dates, customers, product names, features or availability.',
+    '- If they asked something the CONTEXT cannot answer, say you will check and come back to them.',
+    '- You may quote their own words back to them.',
+    '- No flattery, no urgency, no manufactured enthusiasm.',
+    '- Output only the message body. No subject line, no signature, no preamble, no quotation marks.',
+    '',
+    `About the business: ${input.offering.name}, ${input.offering.category}.`,
+    input.offering.valuePropositions.length > 0
+      ? `What it does: ${input.offering.valuePropositions.join('; ')}.`
+      : '',
+    input.offering.likelyPains.length > 0
+      ? `Problems it addresses: ${input.offering.likelyPains.join('; ')}.`
+      : '',
+    '',
+    `Style: ${STYLE_GUIDANCE[voice?.style ?? 'relationship_first']}`,
+    voice?.instructions ? `Additional voice guidance: ${voice.instructions}` : '',
+    voice?.prohibitedClaims?.length ? `Never claim: ${voice.prohibitedClaims.join('; ')}.` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildReplySystem(input: ReplyComposeInput): string {
+  const limit = LENGTH_LIMITS[input.network];
+  const words = input.voice?.maxWords;
+
+  return [
+    `Channel: ${input.network}. This is a reply in a conversation they started answering.`,
+    limit ? `Hard limit: ${limit} characters.` : '',
+    words ? `Aim for at most ${words} words.` : 'Aim for at most 90 words.',
+    REPLY_GUIDANCE[input.label] ?? '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildReplyUser(input: ReplyComposeInput, fresh: string, failed?: CheckReport): string {
+  const name = input.prospect.firstName ?? input.prospect.displayName;
+  const history = input.thread
+    .slice(-6)
+    .map(
+      (m) =>
+        `${m.from === 'us' ? 'We wrote' : 'They wrote'}:\n"""\n${
+          m.from === 'us' ? m.body.slice(0, 1500) : newReplyText(m.body).slice(0, 1500)
+        }\n"""`,
+    );
+
+  const sections = [
+    'CONTEXT — the only facts you may use:',
+    `Person: ${input.prospect.displayName}${input.prospect.title ? `, ${input.prospect.title}` : ''}${
+      input.prospect.companyName ? ` at ${input.prospect.companyName}` : ''
+    }`,
+    ...(history.length > 0 ? ['Earlier in this conversation:', ...history] : []),
+    `Their latest message${input.inbound.subject ? ` (subject: ${input.inbound.subject})` : ''}:`,
+    `"""\n${fresh.slice(0, 4000)}\n"""`,
+    '',
+    `Write the reply to ${name}.`,
+  ];
+
+  if (failed) {
+    const problems = failed.results
+      .filter((r) => !r.passed && r.detail)
+      .map((r) => `- ${r.detail}`)
+      .join('\n');
+
+    sections.push(
+      '',
+      'Your previous attempt was rejected:',
+      problems,
+      failed.unsupported.length > 0
+        ? `Remove these entirely — nothing supports them: ${failed.unsupported.join(', ')}.`
+        : '',
+      'Rewrite using only the CONTEXT above.',
+    );
+  }
+
+  return sections.filter(Boolean).join('\n');
 }

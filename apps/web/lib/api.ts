@@ -312,6 +312,7 @@ export interface SettingsView {
   readonly replyToEmail: string | null;
   readonly trackLinks: boolean;
   readonly trackingOrigin: string | null;
+  readonly trackOpens: boolean;
   /** Where tracked links would point if switched on. */
   readonly effectiveTrackingOrigin: string | null;
   readonly lastDigestSentOn: string | null;
@@ -464,6 +465,23 @@ export interface CadenceStepView {
   readonly delay_hours: number;
   readonly stop_on_reply: number;
   readonly intent: string | null;
+  /** `always` unless the step runs only if connected, clicked, and so on. */
+  readonly condition?: string;
+  /** On a LinkedIn connect step: hours a later step waits for acceptance. */
+  readonly wait_for_acceptance_hours?: number | null;
+  /** Alternate intents being tested against `intent` (variant A). */
+  readonly variants?: string[];
+}
+
+export interface VariantResultView {
+  readonly step: number;
+  readonly variant: string;
+  readonly assigned: number;
+  readonly sent: number;
+  readonly opened: number;
+  readonly clicked: number;
+  readonly replied: number;
+  readonly replyRate: number | null;
 }
 
 export interface CadenceDetailView {
@@ -506,6 +524,13 @@ export async function fetchCadences(): Promise<CadenceRowView[]> {
 
 export async function fetchCadence(id: string): Promise<CadenceDetailView> {
   return request<CadenceDetailView>(`/cadences/${encodeURIComponent(id)}`);
+}
+
+export async function fetchCadenceVariants(cadenceId: string): Promise<VariantResultView[]> {
+  const body = await request<{ variants: VariantResultView[] }>(
+    `/cadences/${encodeURIComponent(cadenceId)}/variants`,
+  );
+  return body.variants;
 }
 
 export async function fetchEnrollments(cadenceId: string): Promise<EnrollmentRowView[]> {
@@ -660,4 +685,130 @@ export interface BlueskyIntegrationView {
 
 export async function fetchBlueskyIntegration(): Promise<BlueskyIntegrationView> {
   return request<BlueskyIntegrationView>('/integrations/bluesky');
+}
+
+// ------------------------------------------------------------------ inbox
+
+export type InboxFilter = 'need_reply' | 'replied' | 'sent' | 'all';
+
+export interface ReplyLabelView {
+  readonly label: string;
+  readonly confidence: number | null;
+  readonly source?: string | null;
+  readonly reason?: string | null;
+}
+
+export interface InboxConversationView {
+  readonly person_id: string;
+  readonly name: string;
+  readonly title: string | null;
+  readonly company: string | null;
+  readonly avatar_url: string | null;
+  readonly networks: readonly string[];
+  readonly status: 'need_reply' | 'replied' | 'sent';
+  readonly suppressed: boolean;
+  readonly messages: {
+    readonly inbound: number;
+    readonly outbound: number;
+    readonly automated: number;
+  };
+  readonly last_message_at: string;
+  readonly last_message_from: 'them' | 'us' | 'automated';
+  readonly last_message_preview: string | null;
+  readonly label: ReplyLabelView | null;
+  readonly pending_reply_id: string | null;
+}
+
+export interface InboxMessageView {
+  readonly id: string;
+  readonly from: 'them' | 'us' | 'automated';
+  readonly network: string;
+  readonly state: string;
+  readonly subject: string | null;
+  readonly body: string | null;
+  readonly address: string | null;
+  readonly at: string;
+  readonly original: boolean;
+  readonly label: ReplyLabelView | null;
+}
+
+export interface PendingReplyView {
+  readonly recommendation_id: string;
+  readonly action: string;
+  readonly reason: string;
+  readonly subject: string | null;
+  readonly body: string | null;
+}
+
+export interface InboxThreadView {
+  readonly person: {
+    readonly id: string;
+    readonly name: string;
+    readonly title: string | null;
+    readonly company: string | null;
+    readonly avatar_url: string | null;
+  };
+  readonly status: 'need_reply' | 'replied' | 'sent';
+  readonly suppressed: boolean;
+  readonly messages: readonly InboxMessageView[];
+  readonly pending_reply: PendingReplyView | null;
+}
+
+export async function fetchInbox(
+  filter: InboxFilter = 'all',
+  label?: string,
+): Promise<{ conversations: InboxConversationView[] }> {
+  const query = new URLSearchParams({ filter, limit: '100' });
+  if (label) query.set('label', label);
+  return request<{ conversations: InboxConversationView[] }>(`/inbox?${query.toString()}`);
+}
+
+export async function fetchThread(personId: string): Promise<InboxThreadView> {
+  return request<InboxThreadView>(`/inbox/${encodeURIComponent(personId)}`);
+}
+
+// ------------------------------------------------------------------ webhooks
+
+export interface WebhookEndpointView {
+  readonly id: string;
+  readonly kind: 'generic' | 'slack';
+  /** The origin and the last few characters; the full URL is never returned. */
+  readonly urlHint: string;
+  readonly events: readonly string[];
+  readonly description: string | null;
+  readonly active: boolean;
+  readonly createdAt: string;
+  readonly lastDelivery?: {
+    readonly status: string;
+    readonly statusCode: number | null;
+    readonly at: string;
+  };
+}
+
+export interface WebhooksView {
+  readonly endpoints: readonly WebhookEndpointView[];
+  readonly events: readonly string[];
+  readonly canCreate: boolean;
+}
+
+export async function fetchWebhooks(): Promise<WebhooksView> {
+  return request<WebhooksView>('/webhooks');
+}
+
+export interface CrmConnectionView {
+  readonly provider: 'hubspot' | 'pipedrive';
+  readonly connected: boolean;
+  readonly status?: string;
+  readonly connectedAt?: string;
+  readonly lastSyncAt?: string;
+  readonly lastError?: string;
+}
+
+export interface CrmIntegrationView {
+  readonly providers: readonly CrmConnectionView[];
+  readonly canConnect: boolean;
+}
+
+export async function fetchCrmIntegration(): Promise<CrmIntegrationView> {
+  return request<CrmIntegrationView>('/integrations/crm');
 }

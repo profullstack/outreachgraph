@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { ApiError, createClient, type FetchLike } from '@outreachgraph/mcp/src/client';
-import { commandByName, usage } from './commands';
+import { commandByName, parseStepSpec, usage } from './commands';
 import { explain, parseArgv } from './index';
 
 const CONFIG = {
@@ -198,6 +198,155 @@ describe('commands', () => {
 
     expect(output).toContain('4 answered');
     expect(output).toContain('7 remaining');
+  });
+
+  test('webhooks add posts the url and filter, and prints the secret once', async () => {
+    const { client: api, calls } = client({
+      endpoint: { id: 'whk_1', urlHint: 'https://hooks.slack.com/…abcd' },
+      secret: 'whsec_abc',
+    });
+
+    const output = await commandByName('webhooks')!.run({
+      client: api,
+      args: ['add', 'https://hooks.slack.com/services/T/B/abcd'],
+      flags: { slack: true, events: 'reply.received, action.sent' },
+    });
+
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/webhooks');
+    expect(calls[0]?.body).toEqual({
+      url: 'https://hooks.slack.com/services/T/B/abcd',
+      kind: 'slack',
+      events: ['reply.received', 'action.sent'],
+    });
+    expect(output).toContain('whk_1');
+    expect(output).toContain('whsec_abc');
+  });
+
+  test('webhooks list prints one endpoint per line, id first; rm and test hit the id', async () => {
+    const { client: api, calls } = client({
+      endpoints: [
+        { id: 'whk_1', kind: 'generic', active: true, events: [], urlHint: 'https://a.example' },
+      ],
+    });
+    const webhooks = commandByName('webhooks')!;
+
+    const listed = await webhooks.run({ client: api, args: ['list'], flags: {} });
+    expect(listed.startsWith('whk_1')).toBe(true);
+    expect(listed).toContain('all events');
+
+    await webhooks.run({ client: api, args: ['test', 'whk_1'], flags: {} });
+    await webhooks.run({ client: api, args: ['rm', 'whk_1'], flags: {} });
+    expect(calls[1]).toMatchObject({
+      method: 'POST',
+      url: 'https://api.test/api/v1/webhooks/whk_1/test',
+    });
+    expect(calls[2]).toMatchObject({
+      method: 'DELETE',
+      url: 'https://api.test/api/v1/webhooks/whk_1',
+    });
+  });
+
+  test('connect hubspot sends the token to the CRM route', async () => {
+    const { client: api, calls } = client({ connection: { provider: 'hubspot', connected: true } });
+
+    const output = await commandByName('connect')!.run({
+      client: api,
+      args: ['hubspot'],
+      flags: { token: 'pat-123' },
+    });
+
+    expect(calls[0]).toMatchObject({
+      method: 'PUT',
+      url: 'https://api.test/api/v1/integrations/crm/hubspot',
+      body: { token: 'pat-123' },
+    });
+    expect(output).toContain('HubSpot');
+  });
+});
+
+describe('cadences', () => {
+  test('a step spec carries its delay, condition and acceptance wait', () => {
+    expect(parseStepSpec('linkedin:connect:24::168', 1)).toEqual({
+      position: 1,
+      network: 'linkedin',
+      action: 'connect',
+      delayHours: 24,
+      waitForAcceptanceHours: 168,
+    });
+    expect(parseStepSpec('email:send_email:0:if_not_connected', 3)).toEqual({
+      position: 3,
+      network: 'email',
+      action: 'send_email',
+      delayHours: 0,
+      condition: 'if_not_connected',
+    });
+    expect(() => parseStepSpec('linkedin', 0)).toThrow('network:action');
+    expect(() => parseStepSpec('linkedin:connect:soon', 0)).toThrow('not a number');
+  });
+
+  test('create posts the whole branching plan', async () => {
+    const { client: api, calls } = client({ cadenceId: 'cad_1' });
+
+    const output = await commandByName('cadences')!.run({
+      client: api,
+      args: ['create'],
+      flags: {
+        name: 'Visit, invite, DM or email',
+        step: [
+          'linkedin:view_profile',
+          'linkedin:connect:24::168',
+          'linkedin:send_dm:0:if_connected',
+          'email:send_email:0:if_not_connected',
+        ] as never,
+        active: true,
+      },
+    });
+
+    expect(output).toBe('Created cad_1 (active)');
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/cadences');
+    expect(calls[0]?.body).toMatchObject({
+      name: 'Visit, invite, DM or email',
+      status: 'active',
+      steps: [
+        { position: 0, network: 'linkedin', action: 'view_profile', delayHours: 0 },
+        { position: 1, action: 'connect', delayHours: 24, waitForAcceptanceHours: 168 },
+        { position: 2, action: 'send_dm', condition: 'if_connected' },
+        { position: 3, network: 'email', condition: 'if_not_connected' },
+      ],
+    });
+  });
+
+  test('show prints each step’s condition', async () => {
+    const { client: api } = client({
+      cadence: { id: 'cad_1', name: 'Plan', status: 'active' },
+      steps: [
+        {
+          position: 0,
+          network: 'linkedin',
+          action: 'connect',
+          delay_hours: 0,
+          condition: 'always',
+          wait_for_acceptance_hours: 168,
+        },
+        {
+          position: 1,
+          network: 'linkedin',
+          action: 'send_dm',
+          delay_hours: 24,
+          condition: 'if_connected',
+          wait_for_acceptance_hours: null,
+        },
+      ],
+    });
+
+    const output = await commandByName('cadences')!.run({
+      client: api,
+      args: ['show', 'cad_1'],
+      flags: {},
+    });
+
+    expect(output).toContain('waits 168h for acceptance');
+    expect(output).toContain('if_connected');
   });
 });
 

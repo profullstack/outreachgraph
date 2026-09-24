@@ -23,6 +23,7 @@
  */
 
 import { randomInt } from 'node:crypto';
+import { capGroupFor, LINKEDIN_ACTION_CAPS, type CapGroup } from '@outreachgraph/domain';
 import { queryOne, type Client } from '@outreachgraph/db';
 import type { XOAuthClient } from '@outreachgraph/providers';
 import { enqueue } from './queue';
@@ -47,14 +48,33 @@ export function isPacedNetwork(network: string): network is PacedNetwork {
   return network === 'x' || network === 'linkedin';
 }
 
+// The cap groups and LinkedIn's per-kind caps live in the domain package,
+// beside the warm-up ramp, because the sender pool applies them per account
+// too. Re-exported so existing importers keep one place to find them.
+export { capGroupFor, LINKEDIN_ACTION_CAPS, type CapGroup };
+
+/** The caps one action is scheduled under. */
+export function capsFor(
+  network: PacedNetwork,
+  group: CapGroup,
+): { readonly perDay: number; readonly perWeek?: number } {
+  if (network === 'linkedin' && group !== 'post') return LINKEDIN_ACTION_CAPS[group];
+  return { perDay: PACING[network].perDay };
+}
+
 function dayStart(ms: number): number {
   const d = new Date(ms);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
+const DAY_MS = 86_400_000;
+
 /**
  * Queues one action to be sent after the ones already scheduled.
  * Returns when it is expected to go out.
+ *
+ * `kind` picks the cap the action counts against. Omitted, it is a post, which
+ * is also how every job queued before per-kind caps existed is counted.
  */
 export async function scheduleSocialDelivery(
   db: Client,
@@ -64,11 +84,14 @@ export async function scheduleSocialDelivery(
     network: PacedNetwork;
     actor: AuditActor;
     policyVersion?: string;
+    kind?: string;
   },
   nowMs: number = Date.now(),
 ): Promise<{ queued: boolean; runAt: string }> {
   const pace = PACING[input.network];
   const like = `%"network":"${input.network}"%`;
+  const group = capGroupFor(input.kind);
+  const caps = capsFor(input.network, group);
 
   const last = await queryOne<{ run_after: string }>(
     db,
@@ -85,27 +108,42 @@ export async function scheduleSocialDelivery(
   const gap = Math.round(randomInt(pace.minGapMs, pace.maxGapMs + 1) / Math.max(1, pool.accounts));
   let runAt = Math.max(nowMs, last ? Date.parse(last.run_after) + gap : nowMs);
 
-  // Cap per UTC day, counting everything already scheduled into that day.
-  // Bounded, so a pool whose caps are all zero cannot spin this forever: a
-  // year out, the job is scheduled anyway and defers itself when it runs.
-  for (let days = 0; days < 366; days += 1) {
-    const start = dayStart(runAt);
-    const perDay = await dailyLimit(db, input.workspaceId, input.network, start);
-    const count = await queryOne<{ n: number }>(
+  // Jobs in this cap group. A post is anything marked as one, plus every job
+  // queued before groups existed (no `capGroup` in its payload at all).
+  const inGroup =
+    group === 'post'
+      ? `(payload_json LIKE '%"capGroup":"post"%' OR payload_json NOT LIKE '%"capGroup":%')`
+      : `payload_json LIKE '%"capGroup":"${group}"%'`;
+
+  const scheduledBetween = async (from: number, to: number): Promise<number> => {
+    const row = await queryOne<{ n: number }>(
       db,
       `SELECT count(*) AS n FROM jobs
         WHERE workspace_id = ? AND kind = 'deliver_social' AND payload_json LIKE ?
+          AND ${inGroup}
           AND run_after >= ? AND run_after < ?`,
-      [
-        input.workspaceId,
-        like,
-        new Date(start).toISOString(),
-        new Date(start + 86_400_000).toISOString(),
-      ],
+      [input.workspaceId, like, new Date(from).toISOString(), new Date(to).toISOString()],
     );
-    if ((count?.n ?? 0) < perDay) break;
+    return Number(row?.n ?? 0);
+  };
+
+  // Cap per UTC day, and per rolling week where the kind has one, counting
+  // everything already scheduled into that window. Bounded, so a corrupt
+  // queue cannot spin this forever: a year out is still an answer.
+  //
+  // With accounts connected the limits are the pool's: each account's cap for
+  // this kind (after its warm-up) added up, so three sessions may schedule
+  // three times the invitations one could — and the job, when it runs, still
+  // holds every account to its own twenty a day and hundred a week.
+  for (let attempt = 0; attempt < 366; attempt += 1) {
+    const start = dayStart(runAt);
+    const limits = await poolLimits(db, input.workspaceId, input.network, start, input.kind, caps);
+    const today = await scheduledBetween(start, start + DAY_MS);
+    const week =
+      limits.perWeek === undefined ? 0 : await scheduledBetween(runAt - 7 * DAY_MS, runAt + 1);
+    if (today < limits.perDay && (limits.perWeek === undefined || week < limits.perWeek)) break;
     // Next day, at a working hour with jitter rather than on the stroke of midnight.
-    runAt = start + 86_400_000 + 9 * 3_600_000 + randomInt(0, 3_600_000);
+    runAt = start + DAY_MS + 9 * 3_600_000 + randomInt(0, 3_600_000);
   }
 
   const queued = await enqueue(db, {
@@ -114,6 +152,7 @@ export async function scheduleSocialDelivery(
     payload: {
       actionId: input.actionId,
       network: input.network,
+      capGroup: group,
       actor: input.actor,
       ...(input.policyVersion ? { policyVersion: input.policyVersion } : {}),
     },
@@ -127,22 +166,35 @@ export async function scheduleSocialDelivery(
 }
 
 /**
- * How many posts a network may make on the UTC day starting at `dayStartMs`.
+ * How many actions of one kind a network may schedule on the UTC day starting
+ * at `dayStartMs`, and in any seven days.
  *
  * The pool's combined capacity that day, warm-up included, when accounts are
- * connected; the old single-account figure when none are, which is what a
+ * connected; the single-account figures when none are, which is what a
  * workspace that has not connected anything always got. Never below one, so
  * a pool whose caps are all zero still schedules and lets the job defer.
  */
-async function dailyLimit(
+async function poolLimits(
   db: Client,
   workspaceId: string,
   network: PacedNetwork,
   dayStartMs: number,
-): Promise<number> {
+  kind: string | undefined,
+  single: { readonly perDay: number; readonly perWeek?: number },
+): Promise<{ perDay: number; perWeek?: number }> {
   // Measured at midday so a warm-up day boundary is never ambiguous.
-  const pool = await poolCapacity(db, workspaceId, network, new Date(dayStartMs + 43_200_000));
-  return pool.accounts > 0 ? Math.max(1, pool.capacity) : PACING[network].perDay;
+  const pool = await poolCapacity(
+    db,
+    workspaceId,
+    network,
+    new Date(dayStartMs + 43_200_000),
+    kind,
+  );
+  if (pool.accounts === 0) return single;
+  return {
+    perDay: Math.max(1, pool.capacity),
+    ...(pool.weeklyCapacity === undefined ? {} : { perWeek: pool.weeklyCapacity }),
+  };
 }
 
 export interface DeliverSocialDeps {
@@ -173,9 +225,10 @@ export async function runSocialDelivery(
     rec_status: string;
     person_status: string;
     person_id: string;
+    kind: string;
   }>(
     db,
-    `SELECT a.status, r.status AS rec_status, p.status AS person_status, a.person_id
+    `SELECT a.status, r.status AS rec_status, p.status AS person_status, a.person_id, a.kind
        FROM actions a
        JOIN recommendations r ON r.id = a.recommendation_id
        JOIN people p ON p.id = a.person_id
@@ -203,6 +256,7 @@ export async function runSocialDelivery(
     workspaceId: job.workspaceId,
     network,
     personId: state.person_id,
+    kind: state.kind,
   });
 
   if (selection.choice.kind === 'deferred') {

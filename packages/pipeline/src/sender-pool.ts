@@ -27,7 +27,10 @@
 import {
   choosePoolSender,
   configuredCap,
+  capGroupFor,
   effectiveDailyCap,
+  groupDailyCap,
+  groupWeeklyCap,
   isAuthFailure,
   isRecipientBounce,
   newId,
@@ -38,6 +41,7 @@ import {
   warmupCap,
   warmupComplete,
   warmupDay,
+  type CapGroup,
   type PoolChoice,
   type SenderNetwork,
 } from '@outreachgraph/domain';
@@ -149,10 +153,48 @@ async function sentOn(
   db: Client,
   accountIds: readonly string[],
   at: Date,
+  scope: KindScope = { network: 'email', group: 'post' },
+): Promise<Map<string, number>> {
+  const [start, end] = dayBounds(at);
+  return sentBetween(db, accountIds, start, end, scope);
+}
+
+/** Which of an account's actions count against one cap group. */
+interface KindScope {
+  readonly network: SenderNetwork;
+  readonly group: CapGroup;
+}
+
+const PERSON_KINDS = ['connect', 'view_profile', 'follow', 'send_dm'] as const;
+
+/**
+ * The SQL that narrows actions to one cap group.
+ *
+ * Only LinkedIn has groups. Its posts are everything that is not one of the
+ * person-directed kinds, so a comment and a reply share the post budget as
+ * they always did, and an invitation never eats into it.
+ */
+function kindFilter(scope: KindScope): { sql: string; args: string[] } {
+  if (scope.network !== 'linkedin') return { sql: '', args: [] };
+  if (scope.group === 'post') {
+    return {
+      sql: `AND kind NOT IN (${PERSON_KINDS.map(() => '?').join(', ')})`,
+      args: [...PERSON_KINDS],
+    };
+  }
+  return { sql: 'AND kind = ?', args: [scope.group] };
+}
+
+async function sentBetween(
+  db: Client,
+  accountIds: readonly string[],
+  start: string,
+  end: string,
+  scope: KindScope,
 ): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   if (accountIds.length === 0) return counts;
-  const [start, end] = dayBounds(at);
+  const filter = kindFilter(scope);
 
   const rows = await queryAll<{ sender_account_id: string; n: number }>(
     db,
@@ -160,8 +202,9 @@ async function sentOn(
       WHERE sender_account_id IN (${accountIds.map(() => '?').join(', ')})
         AND status != 'failed'
         AND COALESCE(executed_at, created_at) >= ? AND COALESCE(executed_at, created_at) < ?
+        ${filter.sql}
       GROUP BY sender_account_id`,
-    [...accountIds, start, end],
+    [...accountIds, start, end, ...filter.args],
   );
   for (const row of rows) counts.set(row.sender_account_id, Number(row.n));
   return counts;
@@ -228,14 +271,31 @@ export async function chooseSender(
     readonly network: SenderNetwork;
     readonly personId?: string | undefined;
     readonly at?: Date;
+    /**
+     * The action kind, for networks with per-kind caps (LinkedIn). Each
+     * account is judged on its own budget for that kind — its twenty
+     * invitations a day, its hundred a week — as well as its warm-up.
+     */
+    readonly kind?: string | undefined;
   },
 ): Promise<SenderSelection> {
   const at = input.at ?? new Date();
   const pool = await loadPool(db, input.workspaceId, input.network);
   const ids = pool.map((account) => account.id);
+  const scope: KindScope = { network: input.network, group: capGroupFor(input.kind) };
+  const perWeek = groupWeeklyCap(input.network, scope.group);
 
-  const [sent, used, sticky] = await Promise.all([
-    sentOn(db, ids, at),
+  const [sent, week, used, sticky] = await Promise.all([
+    sentOn(db, ids, at, scope),
+    perWeek === undefined
+      ? Promise.resolve(undefined)
+      : sentBetween(
+          db,
+          ids,
+          new Date(at.getTime() - 7 * 86_400_000).toISOString(),
+          new Date(at.getTime() + 1).toISOString(),
+          scope,
+        ),
     lastUsed(db, ids),
     input.personId
       ? lastSenderFor(db, input.workspaceId, input.network, input.personId)
@@ -243,13 +303,20 @@ export async function chooseSender(
   ]);
 
   const choice = choosePoolSender(
-    pool.map((account) => ({
-      id: account.id,
-      status: account.status,
-      effectiveCap: effectiveDailyCap(capInput(account), at),
-      sentToday: sent.get(account.id) ?? 0,
-      lastUsedAt: used.get(account.id) ?? null,
-    })),
+    pool.map((account) => {
+      const effectiveCap = groupDailyCap(capInput(account), scope.group, at);
+      const sentToday = sent.get(account.id) ?? 0;
+      // A spent week reads as a full day: the account has no room for this
+      // kind until old invitations age out of the window.
+      const weekFull = perWeek !== undefined && (week?.get(account.id) ?? 0) >= perWeek;
+      return {
+        id: account.id,
+        status: account.status,
+        effectiveCap,
+        sentToday: weekFull ? Math.max(sentToday, effectiveCap) : sentToday,
+        lastUsedAt: used.get(account.id) ?? null,
+      };
+    }),
     sticky,
   );
 
@@ -318,13 +385,18 @@ export async function poolCapacity(
   workspaceId: string,
   network: SenderNetwork,
   at: Date,
-): Promise<{ accounts: number; capacity: number }> {
+  /** The action kind; its per-kind cap applies to each account in the pool. */
+  kind?: string,
+): Promise<{ accounts: number; capacity: number; weeklyCapacity?: number }> {
   const pool = (await loadPool(db, workspaceId, network)).filter(
     (account) => account.status === 'active',
   );
+  const group = capGroupFor(kind);
+  const perWeek = groupWeeklyCap(network, group);
   return {
     accounts: pool.length,
-    capacity: pool.reduce((sum, account) => sum + effectiveDailyCap(capInput(account), at), 0),
+    capacity: pool.reduce((sum, account) => sum + groupDailyCap(capInput(account), group, at), 0),
+    ...(perWeek === undefined ? {} : { weeklyCapacity: perWeek * pool.length }),
   };
 }
 

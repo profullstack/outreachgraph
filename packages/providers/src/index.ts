@@ -243,10 +243,55 @@ export {
 } from './x/oauth';
 
 export {
+  assertPublicUrl,
+  isPrivateAddress,
+  systemLookup,
+  UnsafeUrlError,
+  type HostLookup,
+  type PublicUrlOptions,
+} from './net/public-url';
+
+export {
+  newWebhookSecret,
+  signWebhook,
+  verifyWebhookSignature,
+  DEFAULT_TOLERANCE_SECONDS,
+  SIGNATURE_HEADER,
+} from './webhooks/sign';
+export { formatSlackMessage, type SlackMessage } from './webhooks/slack';
+export {
+  postWebhook,
+  WEBHOOK_TIMEOUT_MS,
+  WEBHOOK_USER_AGENT,
+  type PostWebhookInput,
+  type PostWebhookOutcome,
+} from './webhooks/deliver';
+
+export {
+  crmClientFor,
+  CrmError,
+  HubSpotClient,
+  HUBSPOT_API,
+  PipedriveClient,
+  PIPEDRIVE_API,
+  type CrmClient,
+  type CrmClientOptions,
+  type CrmContactInput,
+  type CrmContactRef,
+} from './crm';
+
+export {
+  followTargetFrom,
+  INVITATION_NOTE_LIMIT,
   LinkedInSession,
   LinkedInSessionError,
   LinkedInWriteError,
+  memberIdentityFrom,
+  MESSAGE_LIMIT as LINKEDIN_MESSAGE_LIMIT,
+  relationshipFromTopCard,
   threadUrnFromUrl,
+  type LinkedInConnectionStatus,
   type LinkedInMember,
+  type LinkedInProfile,
   type LinkedInSessionOptions,
 } from './linkedin/session';

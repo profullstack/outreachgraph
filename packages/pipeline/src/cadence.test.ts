@@ -273,12 +273,12 @@ describe('advanceCadences', () => {
   });
 
   test('turns a step we may not automate into a human one', async () => {
-    // The whole point. LinkedIn messaging is `manual_only` in the capability
+    // The whole point. X direct messaging is `manual_only` in the capability
     // matrix, so the same plan shape produces a human touch here rather than
     // being refused or, worse, automated.
     seeded = await seedDatabase('cadence-manual');
     const { db } = seeded;
-    const id = await plan(db, [step({ network: 'linkedin', action: 'send_dm' })]);
+    const id = await plan(db, [step({ network: 'x', action: 'send_dm' })]);
     await enroll(db, id, new Date('2026-08-18T09:00:00.000Z'));
 
     const { result } = await advance(db, { at: new Date('2026-08-18T09:00:01.000Z') });
@@ -295,7 +295,7 @@ describe('advanceCadences', () => {
     const { db } = seeded;
     const id = await plan(db, [
       step({ position: 0, network: 'email', action: 'send_email' }),
-      step({ position: 1, network: 'linkedin', action: 'send_dm', delayHours: 24 }),
+      step({ position: 1, network: 'x', action: 'send_dm', delayHours: 24 }),
     ]);
     await enroll(db, id, new Date('2026-08-18T09:00:00.000Z'));
 
@@ -352,6 +352,47 @@ describe('advanceCadences', () => {
     expect(row?.stopped_reason).toBe('they replied');
     // And it stays stopped rather than producing a refused card every tick.
     expect(row?.next_due_at).toBeNull();
+  });
+
+  test('a reply read from the mailbox stops it too', async () => {
+    // The poll has always written `responded`; the stop used to read only
+    // `replied`, so a reply the product noticed by itself never stopped a plan.
+    seeded = await seedDatabase('cadence-responded');
+    const { db } = seeded;
+    const id = await plan(db, [step(), step({ position: 1, delayHours: 24 })]);
+    await enroll(db, id, new Date('2026-08-18T09:00:00.000Z'));
+
+    await db.execute({
+      sql: `INSERT INTO interactions (id, workspace_id, person_id, network, direction,
+            state, occurred_at, recorded_at)
+            VALUES (?, ?, ?, 'email', 'inbound', 'responded', ?, ?)`,
+      args: [newId('interaction'), SEED.workspaceId, SEED.personId, now(), now()],
+    });
+
+    const { result } = await advance(db, { at: new Date('2026-08-18T09:00:01.000Z') });
+    expect(result.stopped).toBe(1);
+  });
+
+  test('an out-of-office or a bounce does not stop it', async () => {
+    seeded = await seedDatabase('cadence-ooo');
+    const { db } = seeded;
+    const id = await plan(db, [step(), step({ position: 1, delayHours: 24 })]);
+    await enroll(db, id, new Date('2026-08-18T09:00:00.000Z'));
+
+    for (const state of ['auto_replied', 'bounced']) {
+      await db.execute({
+        sql: `INSERT INTO interactions (id, workspace_id, person_id, network, direction,
+              state, reply_label, occurred_at, recorded_at)
+              VALUES (?, ?, ?, 'email', 'automated', ?, 'out_of_office', ?, ?)`,
+        args: [newId('interaction'), SEED.workspaceId, SEED.personId, state, now(), now()],
+      });
+    }
+
+    const { result } = await advance(db, { at: new Date('2026-08-18T09:00:01.000Z') });
+
+    expect(result.stopped).toBe(0);
+    const row = await enrollment(db);
+    expect(row?.status).not.toBe('stopped');
   });
 
   test('completes an enrollment at the end of the plan', async () => {
