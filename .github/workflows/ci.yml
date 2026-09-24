@@ -12,7 +12,14 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Format, typecheck, 2000-plus tests and a Next build. The ceiling was 15
+    # and the suite grew into it: a run that does the same work in five and a
+    # half minutes locally took 15m16s here and was killed at the mark, with
+    # two unrelated tests timing out on the way as the runner starved. Raised
+    # rather than left to flake, because a job cancelled at its ceiling
+    # reports as a test failure and sends the next person reading it hunting
+    # through a suite that is fine. `image` has had 25 all along.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
