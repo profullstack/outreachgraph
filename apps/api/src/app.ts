@@ -323,6 +323,14 @@ const STARTED_AT = Date.now();
 const BULK_APPROVE_MAX = 200;
 
 /**
+ * How far one bulk-approve call may read past held cards, in rows and in time.
+ * Every card is a full policy recheck (about a second against production), so
+ * the clock is the limit that matters; the row cap is a backstop.
+ */
+const BULK_APPROVE_SCAN_MAX = 2_000;
+const BULK_APPROVE_TIME_BUDGET_MS = 90_000;
+
+/**
  * Rows accepted in one import chunk.
  *
  * Small enough that a chunk is a fast request and a retry is cheap, large
@@ -3034,20 +3042,35 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         dryRun: z.boolean().optional(),
         limit: z.number().int().positive().max(BULK_APPROVE_MAX).optional(),
         note: z.string().optional(),
+        /**
+         * Where the previous call stopped: how many still-pending cards, in
+         * queue order, to step over. Returned as `cursor` by every call.
+         */
+        cursor: z.number().int().min(0).optional(),
       }),
     );
 
     const filter = repo.isApprovalFilter(body.filter) ? body.filter : 'all';
     const channel = repo.isChannelFilter(body.channel) ? body.channel : 'all';
     const limit = body.limit ?? BULK_APPROVE_MAX;
+    const started = Date.now();
 
-    const rows = await repo.listPendingRecommendations(db, actor.workspaceId, limit, filter);
-
-    const selected = rows.filter((row) => {
-      if (channel === 'all') return true;
-      const network = (row as { network?: unknown }).network;
-      return isNetwork(network) && channelForNetwork(network) === channel;
-    });
+    // Held cards stay pending and keep their place at the top of the queue.
+    // Reading one page of `limit` rows meant that once ~190 of the first 200
+    // were held (cooldowns, shared inboxes), every press re-checked the same
+    // held cards and never reached the ones below: production's queue did
+    // exactly that on 2026-09-24. So this reads on past them, page by page,
+    // until it has acted on `limit` cards, the queue ends, or the budget is
+    // spent, and says where it stopped.
+    //
+    // The offset only advances over rows that are still pending afterwards.
+    // An approved card leaves the pending set, so counting it would skip the
+    // row that slid up into its place.
+    let offset = body.cursor ?? 0;
+    let scanned = 0;
+    let exhausted = false;
+    let acted = 0;
+    const selected: Record<string, unknown>[] = [];
 
     let approved = 0;
     let sent = 0;
@@ -3061,43 +3084,94 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     let handoffs = 0;
     const holds = new Map<string, { reason: string; count: number }>();
 
-    for (const row of selected) {
-      const recommendation = row as unknown as repo.RecommendationRow;
+    const outOfBudget = () =>
+      acted >= limit ||
+      scanned >= BULK_APPROVE_SCAN_MAX ||
+      Date.now() - started >= BULK_APPROVE_TIME_BUDGET_MS;
 
-      if (body.dryRun) {
-        const decision = await handoffAwareDecision(
-          db,
-          actor,
-          recommendation,
-          options.mailer !== undefined,
-        );
-
-        if (isExecutable(decision.decision, true)) approved += 1;
-        else if (isHandoffDecision(decision)) handoffs += 1;
-        else tallyHold(holds, decision.gate, decision.reason);
-
-        continue;
+    pages: while (!outOfBudget()) {
+      const rows = await repo.listPendingRecommendations(
+        db,
+        actor.workspaceId,
+        limit,
+        filter,
+        offset,
+      );
+      if (rows.length === 0) {
+        exhausted = true;
+        break;
       }
 
-      const outcome = await approveRecommendation(db, options, actor, recommendation, {
-        ...(body.note ? { note: body.note } : {}),
-        allowHandoff: true,
-      });
+      // Rows of this page that will still be pending when it is done.
+      let stayed = 0;
 
-      if (!outcome.ok) {
-        tallyHold(holds, outcome.gate, outcome.reason);
-        continue;
+      for (const row of rows) {
+        if (outOfBudget()) {
+          // Everything not reached on this page is still pending, and the
+          // next call starts at the first of them.
+          offset += stayed;
+          break pages;
+        }
+        scanned += 1;
+
+        const network = (row as { network?: unknown }).network;
+        if (channel !== 'all' && !(isNetwork(network) && channelForNetwork(network) === channel)) {
+          stayed += 1;
+          continue;
+        }
+
+        selected.push(row as Record<string, unknown>);
+        const recommendation = row as unknown as repo.RecommendationRow;
+
+        if (body.dryRun) {
+          const decision = await handoffAwareDecision(
+            db,
+            actor,
+            recommendation,
+            options.mailer !== undefined,
+          );
+
+          // Nothing leaves the queue in a preview.
+          stayed += 1;
+          if (isExecutable(decision.decision, true)) {
+            approved += 1;
+            acted += 1;
+          } else if (isHandoffDecision(decision)) {
+            handoffs += 1;
+            acted += 1;
+          } else tallyHold(holds, decision.gate, decision.reason);
+
+          continue;
+        }
+
+        const outcome = await approveRecommendation(db, options, actor, recommendation, {
+          ...(body.note ? { note: body.note } : {}),
+          allowHandoff: true,
+        });
+
+        if (!outcome.ok) {
+          stayed += 1;
+          tallyHold(holds, outcome.gate, outcome.reason);
+          continue;
+        }
+
+        acted += 1;
+        if (outcome.handoff) {
+          handoffs += 1;
+          continue;
+        }
+
+        approved += 1;
+        if (outcome.delivery?.sent) sent += 1;
+        if (outcome.scheduled?.queued) scheduled += 1;
+        if (outcome.research?.queued) researchQueued += 1;
       }
 
-      if (outcome.handoff) {
-        handoffs += 1;
-        continue;
+      offset += stayed;
+      if (rows.length < limit) {
+        exhausted = true;
+        break;
       }
-
-      approved += 1;
-      if (outcome.delivery?.sent) sent += 1;
-      if (outcome.scheduled?.queued) scheduled += 1;
-      if (outcome.research?.queued) researchQueued += 1;
     }
 
     const held = [...holds.values()].reduce((total, entry) => total + entry.count, 0);
@@ -3131,7 +3205,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         .sort((a, b) => b.count - a.count),
       // The queue is read a page at a time, so a full queue may need more than
       // one press. Saying so beats a button that looks like it did nothing.
-      more: selected.length === limit,
+      more: !exhausted,
+      // Pass back as `cursor` to carry on from here rather than re-checking
+      // the held cards at the top.
+      cursor: offset,
+      scanned,
     });
   });
 
