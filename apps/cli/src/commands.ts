@@ -108,7 +108,7 @@ async function readSecret(prompt: string): Promise<string> {
   }
 }
 
-const CONNECTABLE = ['x', 'linkedin'] as const;
+const CONNECTABLE = ['x', 'x-session', 'linkedin'] as const;
 
 /**
  * Opens the person's editor on a file and returns what they saved. Injected
@@ -425,8 +425,10 @@ export const COMMANDS: readonly Command[] = [
   },
   {
     name: 'connect',
-    usage: 'og connect x | og connect linkedin --accept-linkedin-risk',
-    summary: 'Connect an X account (OAuth 2.1) or a LinkedIn session, so those cards send.',
+    usage:
+      'og connect x-session --accept-x-risk | og connect linkedin --accept-linkedin-risk | og connect x',
+    summary:
+      'Connect X or LinkedIn through your browser session (free), or X over OAuth 2.1 (paid API).',
     async run({ client, args, flags }) {
       const network = args[0];
       if (network === 'x') {
@@ -451,6 +453,28 @@ export const COMMANDS: readonly Command[] = [
           }
         }
         throw new Error('timed out waiting for X; run og connect x again');
+      }
+
+      if (network === 'x-session') {
+        if (flags['accept-x-risk'] !== true) {
+          return [
+            'Automating X through your session is against its terms, and X locks accounts that post like a bot.',
+            'OutreachGraph paces it (about 20 a day, 3 to 8 minutes apart) to keep that risk low, not zero.',
+            '',
+            'To go ahead: og connect x-session --accept-x-risk',
+            'You will be asked for two cookies: in a browser signed in to x.com, open',
+            'DevTools > Application > Cookies > https://x.com and copy auth_token and ct0.',
+          ].join('\n');
+        }
+        const authToken = await readSecret('auth_token cookie (input hidden): ');
+        const ct0 = await readSecret('ct0 cookie (input hidden): ');
+        if (!authToken || !ct0) throw new Error('both cookies are needed');
+        const result = (await client.put('/integrations/x/session', {
+          authToken,
+          ct0,
+          acknowledgeTerms: true,
+        })) as { account?: { username?: string } };
+        return `Connected X as @${result.account?.username ?? '?'} through your session. X cards will now send, paced.`;
       }
 
       if (network === 'linkedin') {
@@ -486,7 +510,9 @@ export const COMMANDS: readonly Command[] = [
         throw new Error(`og disconnect ${CONNECTABLE.join(' | ')}`);
       }
       if (!client.delete) throw new Error('this client cannot disconnect');
-      const result = (await client.delete(`/integrations/${network}`)) as Record<string, unknown>;
+      // One X account per workspace, however it was connected.
+      const path = network === 'x-session' ? 'x' : network;
+      const result = (await client.delete(`/integrations/${path}`)) as Record<string, unknown>;
       return result.disconnected
         ? `Disconnected ${network}.`
         : `No ${network} account was connected.`;

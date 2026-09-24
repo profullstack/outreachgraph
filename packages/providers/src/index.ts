@@ -215,8 +215,19 @@ export {
   X_API,
   X_POST_LIMIT,
   type XClientOptions,
+  type XPoster,
   type XUser,
 } from './x/client';
+
+export {
+  XSession,
+  XSessionError,
+  XSessionWriteError,
+  X_DEFAULT_QUERY_IDS,
+  X_WEB_BEARER,
+  type XSessionCookies,
+  type XSessionOptions,
+} from './x/session';
 
 export {
   exchangeXCode,

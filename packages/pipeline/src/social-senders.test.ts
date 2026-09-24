@@ -13,10 +13,11 @@ import {
   tweetIdFromUrl,
   xAuthorizeUrl,
   XClient,
+  XSession,
 } from '@outreachgraph/providers';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
-import { completeXConnect, startXConnect, xClientForWorkspace } from './x-account';
+import { completeXConnect, connectXSession, startXConnect, xClientForWorkspace } from './x-account';
 import { deliverXAction } from './outreach-x';
 import { connectLinkedInSession } from './linkedin-account';
 import { deliverLinkedInAction } from './outreach-linkedin';
@@ -245,6 +246,95 @@ describe('X over OAuth 2.1', () => {
     expect(tweetIdFromUrl('https://twitter.com/a/status/12')).toBe('12');
     expect(tweetIdFromUrl('https://x.com/a/status/34?s=20')).toBe('34');
     expect(tweetIdFromUrl('https://x.com/a')).toBeUndefined();
+  });
+});
+
+describe('X through a session', () => {
+  const COOKIES = { authToken: 'a'.repeat(40), ct0: 'c'.repeat(64) };
+
+  test('a stored session loads as a session client, not an API bearer', async () => {
+    seeded = await seedDatabase('x-session-load');
+    const { db } = seeded;
+    await connectXSession(db, {
+      workspaceId: SEED.workspaceId,
+      ...COOKIES,
+      encryptionKey: KEY,
+      verify: false,
+    });
+
+    const client = await xClientForWorkspace(db, SEED.workspaceId, { encryptionKey: KEY });
+    expect(client).toBeInstanceOf(XSession);
+
+    const row = await queryOne<{ access_token_enc: string; scopes: string }>(
+      db,
+      `SELECT access_token_enc, scopes FROM integration_accounts WHERE network = 'x'`,
+      [],
+    );
+    expect(row?.scopes).toBe('["session"]');
+    expect(row?.access_token_enc).not.toContain(COOKIES.ct0);
+  });
+
+  test('a reply goes through CreateTweet with the CSRF pair and the signal’s post', async () => {
+    seeded = await seedDatabase('x-session-reply');
+    const { db } = seeded;
+    const actionId = await seedAction(db, 'x', 'reply', 'https://x.com/jane/status/1234567890');
+
+    const requests: { url: string; headers: Headers; body: unknown }[] = [];
+    const client = new XSession(COOKIES, {
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers);
+        requests.push({ url, headers, body: init?.body ? JSON.parse(String(init.body)) : null });
+        if (url.includes('/CreateTweet')) {
+          return json(200, {
+            data: { create_tweet: { tweet_results: { result: { rest_id: '777' } } } },
+          });
+        }
+        return json(200, { id_str: '99', screen_name: 'me' });
+      },
+    });
+
+    const result = await deliverXAction(
+      { db, client },
+      { workspaceId: SEED.workspaceId, actionId, actor: ACTOR },
+    );
+    expect(result).toEqual({ sent: true, url: 'https://x.com/me/status/777' });
+
+    const post = requests.find((r) => r.url.includes('/CreateTweet'))!;
+    expect(post.headers.get('x-csrf-token')).toBe(COOKIES.ct0);
+    expect(post.headers.get('cookie')).toContain(`ct0=${COOKIES.ct0}`);
+    expect(post.body).toMatchObject({
+      variables: { reply: { in_reply_to_tweet_id: '1234567890' } },
+    });
+  });
+
+  test('a logged-out session is revoked instead of retried', async () => {
+    seeded = await seedDatabase('x-session-revoked');
+    const { db } = seeded;
+    await connectXSession(db, {
+      workspaceId: SEED.workspaceId,
+      ...COOKIES,
+      encryptionKey: KEY,
+      verify: false,
+    });
+    const actionId = await seedAction(db, 'x', 'reply', 'https://x.com/jane/status/1234567890');
+    const client = new XSession(COOKIES, {
+      fetchImpl: async () =>
+        json(401, { errors: [{ code: 32, message: 'Could not authenticate' }] }),
+    });
+
+    const result = await deliverXAction(
+      { db, client },
+      { workspaceId: SEED.workspaceId, actionId, actor: ACTOR },
+    );
+    expect(result.sent).toBe(false);
+
+    const account = await queryOne<{ status: string }>(
+      db,
+      `SELECT status FROM integration_accounts WHERE network = 'x'`,
+      [],
+    );
+    expect(account?.status).toBe('revoked');
   });
 });
 
