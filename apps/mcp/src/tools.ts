@@ -436,6 +436,77 @@ export const TOOLS: readonly ToolDefinition[] = [
         reason: str(args, 'reason') ?? 'requested by an agent',
       }),
   },
+  {
+    name: 'list_inbox',
+    title: 'List conversations',
+    description:
+      'Every conversation in the workspace, newest first, across campaigns and networks. Each ' +
+      'says whether it is waiting on us (need_reply), what the latest reply was labelled ' +
+      '(interested, question, referral, not_interested, out_of_office, unsubscribe_request, ' +
+      'bounce, other) and whether a drafted answer is waiting. Out-of-office notices and bounces ' +
+      'never count as a reply.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filter: {
+          type: 'string',
+          enum: ['need_reply', 'replied', 'sent', 'all'],
+          description: 'Default all.',
+        },
+        label: {
+          type: 'string',
+          description: 'Only conversations whose latest reply has this label.',
+        },
+        limit: { type: 'number' },
+      },
+    },
+    run: (client, args) =>
+      client.get('/inbox', {
+        filter: str(args, 'filter') ?? 'all',
+        ...(str(args, 'label') ? { label: str(args, 'label') } : {}),
+        limit: String(typeof args.limit === 'number' ? Math.min(args.limit, 200) : 50),
+      }),
+  },
+  {
+    name: 'get_thread',
+    title: 'Read one conversation',
+    description:
+      'One conversation, oldest message first: what we sent (the original outbound is marked), ' +
+      'what they wrote with its label and how sure the classifier was, and the drafted answer ' +
+      'waiting for approval, if any. Quote their words from here, not from memory.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { personId: { type: 'string' } },
+      required: ['personId'],
+    },
+    run: (client, args) => client.get(`/inbox/${require(args, 'personId')}`),
+  },
+  {
+    name: 'reply_to_thread',
+    title: 'Reply to a conversation',
+    description:
+      'Send a reply by email to someone who wrote to us. It answers their latest message in the ' +
+      'same thread, and goes through the same policy re-check and approval record as a card ' +
+      'approved by a human — so a suppressed person, an exhausted budget or a daily limit ' +
+      'refuses it here too. Write only what the thread and the offering support.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        personId: { type: 'string' },
+        text: { type: 'string', description: 'The message body.' },
+        subject: { type: 'string', description: 'Defaults to theirs with "Re:".' },
+      },
+      required: ['personId', 'text'],
+    },
+    run: (client, args) =>
+      client.post(`/inbox/${require(args, 'personId')}/reply`, {
+        text: require(args, 'text'),
+        ...(str(args, 'subject') ? { subject: str(args, 'subject') } : {}),
+      }),
+  },
 ];
 
 export function toolByName(name: string): ToolDefinition | undefined {

@@ -181,6 +181,49 @@ async function runProfile({ client, args, flags }: CommandContext): Promise<stri
   return `Saved ${personId} at ${text(result, 'updatedAt')}${result.public ? ' (public)' : ''}\n\n${text(result, 'markdown').trimEnd()}`;
 }
 
+/**
+ * One conversation as a terminal reads it: oldest first, who spoke, the label
+ * a reply was given, and the drafted answer last — because the next command
+ * after reading a thread is usually `og inbox reply`.
+ */
+export function renderThread(thread: Record<string, unknown>): string {
+  const person = (thread.person ?? {}) as Record<string, unknown>;
+  const lines = [
+    `${text(person, 'name')}${person.company ? ` · ${text(person, 'company')}` : ''} — ${text(thread, 'status')}${thread.suppressed ? ' (suppressed)' : ''}`,
+    '',
+  ];
+
+  for (const message of rows(thread, 'messages')) {
+    const from = text(message, 'from');
+    const who = from === 'them' ? 'THEM' : from === 'automated' ? 'AUTO' : 'US  ';
+    const label = message.label as { label?: string; confidence?: number; source?: string } | null;
+    const tag = label?.label
+      ? ` [${label.label}${typeof label.confidence === 'number' ? ` ${Math.round(label.confidence * 100)}%` : ''}${label.source ? ` ${label.source}` : ''}]`
+      : '';
+    lines.push(
+      `${text(message, 'at')} ${who} ${text(message, 'network')}${message.original ? ' (original)' : ''}${tag}`,
+    );
+    if (message.subject) lines.push(`  Subject: ${text(message, 'subject')}`);
+    for (const line of text(message, 'body').split('\n')) lines.push(`  ${line}`);
+    lines.push('');
+  }
+
+  const pending = thread.pending_reply as Record<string, unknown> | null | undefined;
+  if (pending) {
+    lines.push(`Drafted reply waiting (${text(pending, 'recommendation_id')}):`);
+    lines.push(
+      pending.body
+        ? text(pending, 'body')
+            .split('\n')
+            .map((line) => `  ${line}`)
+            .join('\n')
+        : '  (no draft yet; write one with og inbox reply)',
+    );
+  }
+
+  return lines.join('\n').trimEnd();
+}
+
 export const COMMANDS: readonly Command[] = [
   {
     name: 'today',
@@ -516,6 +559,62 @@ export const COMMANDS: readonly Command[] = [
       return result.disconnected
         ? `Disconnected ${network}.`
         : `No ${network} account was connected.`;
+    },
+  },
+  {
+    name: 'inbox',
+    usage:
+      'og inbox [--filter need_reply|replied|sent|all] [--label <label>] | og inbox show <personId> | og inbox reply <personId> "text"',
+    summary: 'Every conversation, what each reply was labelled, and answering one.',
+    async run({ client, args, flags }) {
+      const [sub, personId, ...rest] = args;
+
+      if (sub === 'show') {
+        if (!personId) throw new Error('a person id is required: og inbox show <personId>');
+        return renderThread((await client.get(`/inbox/${personId}`)) as Record<string, unknown>);
+      }
+
+      if (sub === 'reply') {
+        const message = rest.join(' ').trim() || flagString(flags, 'text');
+        if (!personId || !message) {
+          throw new Error('usage: og inbox reply <personId> "what to say"');
+        }
+        const result = (await client.post(`/inbox/${personId}/reply`, {
+          text: message,
+          ...(flagString(flags, 'subject') ? { subject: flagString(flags, 'subject') } : {}),
+        })) as Record<string, unknown>;
+
+        // Sending is the outcome that matters; "approved but not sent" must
+        // not read like success in a terminal any more than on a card.
+        return result.sent
+          ? `Sent to ${text(result, 'to')} — ${text(result, 'subject')}`
+          : `Not sent: ${text(result, 'reason', text(result, 'note', 'unknown reason'))}`;
+      }
+
+      if (sub !== undefined && sub !== 'list') {
+        throw new Error(`unknown inbox command "${sub}": use show or reply`);
+      }
+
+      const result = await client.get('/inbox', {
+        filter: flagString(flags, 'filter') ?? 'all',
+        ...(flagString(flags, 'label') ? { label: flagString(flags, 'label') } : {}),
+        limit: flagString(flags, 'limit') ?? '25',
+      });
+      const conversations = rows(result, 'conversations');
+      if (conversations.length === 0) return 'No conversations here yet.';
+
+      return conversations
+        .map((conv) => {
+          const label = conv.label as { label?: string; confidence?: number } | null;
+          return [
+            pad(text(conv, 'person_id'), 22),
+            pad(text(conv, 'status'), 11),
+            pad(label?.label ?? '-', 20),
+            pad(conv.pending_reply_id ? 'draft' : '', 6),
+            text(conv, 'name'),
+          ].join(' ');
+        })
+        .join('\n');
     },
   },
   {

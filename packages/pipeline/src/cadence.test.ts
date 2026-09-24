@@ -354,6 +354,47 @@ describe('advanceCadences', () => {
     expect(row?.next_due_at).toBeNull();
   });
 
+  test('a reply read from the mailbox stops it too', async () => {
+    // The poll has always written `responded`; the stop used to read only
+    // `replied`, so a reply the product noticed by itself never stopped a plan.
+    seeded = await seedDatabase('cadence-responded');
+    const { db } = seeded;
+    const id = await plan(db, [step(), step({ position: 1, delayHours: 24 })]);
+    await enroll(db, id, new Date('2026-08-18T09:00:00.000Z'));
+
+    await db.execute({
+      sql: `INSERT INTO interactions (id, workspace_id, person_id, network, direction,
+            state, occurred_at, recorded_at)
+            VALUES (?, ?, ?, 'email', 'inbound', 'responded', ?, ?)`,
+      args: [newId('interaction'), SEED.workspaceId, SEED.personId, now(), now()],
+    });
+
+    const { result } = await advance(db, { at: new Date('2026-08-18T09:00:01.000Z') });
+    expect(result.stopped).toBe(1);
+  });
+
+  test('an out-of-office or a bounce does not stop it', async () => {
+    seeded = await seedDatabase('cadence-ooo');
+    const { db } = seeded;
+    const id = await plan(db, [step(), step({ position: 1, delayHours: 24 })]);
+    await enroll(db, id, new Date('2026-08-18T09:00:00.000Z'));
+
+    for (const state of ['auto_replied', 'bounced']) {
+      await db.execute({
+        sql: `INSERT INTO interactions (id, workspace_id, person_id, network, direction,
+              state, reply_label, occurred_at, recorded_at)
+              VALUES (?, ?, ?, 'email', 'automated', ?, 'out_of_office', ?, ?)`,
+        args: [newId('interaction'), SEED.workspaceId, SEED.personId, state, now(), now()],
+      });
+    }
+
+    const { result } = await advance(db, { at: new Date('2026-08-18T09:00:01.000Z') });
+
+    expect(result.stopped).toBe(0);
+    const row = await enrollment(db);
+    expect(row?.status).not.toBe('stopped');
+  });
+
   test('completes an enrollment at the end of the plan', async () => {
     seeded = await seedDatabase('cadence-complete');
     const { db } = seeded;

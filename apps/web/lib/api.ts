@@ -629,3 +629,83 @@ export interface BlueskyIntegrationView {
 export async function fetchBlueskyIntegration(): Promise<BlueskyIntegrationView> {
   return request<BlueskyIntegrationView>('/integrations/bluesky');
 }
+
+// ------------------------------------------------------------------ inbox
+
+export type InboxFilter = 'need_reply' | 'replied' | 'sent' | 'all';
+
+export interface ReplyLabelView {
+  readonly label: string;
+  readonly confidence: number | null;
+  readonly source?: string | null;
+  readonly reason?: string | null;
+}
+
+export interface InboxConversationView {
+  readonly person_id: string;
+  readonly name: string;
+  readonly title: string | null;
+  readonly company: string | null;
+  readonly avatar_url: string | null;
+  readonly networks: readonly string[];
+  readonly status: 'need_reply' | 'replied' | 'sent';
+  readonly suppressed: boolean;
+  readonly messages: {
+    readonly inbound: number;
+    readonly outbound: number;
+    readonly automated: number;
+  };
+  readonly last_message_at: string;
+  readonly last_message_from: 'them' | 'us' | 'automated';
+  readonly last_message_preview: string | null;
+  readonly label: ReplyLabelView | null;
+  readonly pending_reply_id: string | null;
+}
+
+export interface InboxMessageView {
+  readonly id: string;
+  readonly from: 'them' | 'us' | 'automated';
+  readonly network: string;
+  readonly state: string;
+  readonly subject: string | null;
+  readonly body: string | null;
+  readonly address: string | null;
+  readonly at: string;
+  readonly original: boolean;
+  readonly label: ReplyLabelView | null;
+}
+
+export interface PendingReplyView {
+  readonly recommendation_id: string;
+  readonly action: string;
+  readonly reason: string;
+  readonly subject: string | null;
+  readonly body: string | null;
+}
+
+export interface InboxThreadView {
+  readonly person: {
+    readonly id: string;
+    readonly name: string;
+    readonly title: string | null;
+    readonly company: string | null;
+    readonly avatar_url: string | null;
+  };
+  readonly status: 'need_reply' | 'replied' | 'sent';
+  readonly suppressed: boolean;
+  readonly messages: readonly InboxMessageView[];
+  readonly pending_reply: PendingReplyView | null;
+}
+
+export async function fetchInbox(
+  filter: InboxFilter = 'all',
+  label?: string,
+): Promise<{ conversations: InboxConversationView[] }> {
+  const query = new URLSearchParams({ filter, limit: '100' });
+  if (label) query.set('label', label);
+  return request<{ conversations: InboxConversationView[] }>(`/inbox?${query.toString()}`);
+}
+
+export async function fetchThread(personId: string): Promise<InboxThreadView> {
+  return request<InboxThreadView>(`/inbox/${encodeURIComponent(personId)}`);
+}

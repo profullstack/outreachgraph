@@ -331,3 +331,14 @@ export function indexRules(
 export function featureFlagKey(network: Network, capability: ActionKind): string {
   return `network.${network}.${capability}`;
 }
+
+/**
+ * The kill switch for unattended answers to inbound replies on one network.
+ *
+ * Separate from `featureFlagKey(network, 'send_email')` on purpose: turning off
+ * autonomous replies must not also turn off the human-approved ones, which are
+ * the product working as intended.
+ */
+export function autoReplyFlagKey(network: Network): string {
+  return `automation.${network}.auto_reply`;
+}

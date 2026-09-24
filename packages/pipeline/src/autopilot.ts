@@ -355,6 +355,14 @@ export async function runAutopilot(
         AND r.action = 'send_email'
         AND r.network = 'email'
         AND p.status = 'active'
+        -- An answer to someone who wrote back is never autopilot's to send.
+        -- Reply cards are \`send_email\` too, and this sweep asks the engine
+        -- nothing about open conversations, so without this a copilot draft
+        -- on a trusted-automation campaign would leave on the next tick with
+        -- nobody having read it. Unattended answers have their own gate
+        -- (\`decideAutoReply\`) and their own sender (\`triage_reply\`).
+        AND r.expected_goal != 'continue_conversation'
+        AND r.reply_to_interaction_id IS NULL
       ORDER BY r.priority DESC, (person_email IS NULL) ASC, r.created_at ASC
       LIMIT ?`,
     [workspaceId, CANDIDATE_CEILING],
@@ -725,7 +733,7 @@ export async function runAutopilot(
   return { sent, skipped, failed };
 }
 
-interface AddressUsage {
+export interface AddressUsage {
   readonly thisWeek: number;
   readonly hoursSinceLast?: number;
 }
@@ -766,7 +774,11 @@ function dayStart(at: Date): string {
  */
 const COUNTABLE_KINDS = `kind NOT IN (${INTERNAL_ACTION_KINDS.map(() => '?').join(', ')})`;
 
-async function countActionsToday(db: Client, workspaceId: string, at: Date): Promise<number> {
+export async function countActionsToday(
+  db: Client,
+  workspaceId: string,
+  at: Date,
+): Promise<number> {
   const row = await queryOne<{ n: number }>(
     db,
     // Hand-offs are exempt from the daily limit: a person paces those.
@@ -778,7 +790,7 @@ async function countActionsToday(db: Client, workspaceId: string, at: Date): Pro
   return row?.n ?? 0;
 }
 
-async function actionCounts(
+export async function actionCounts(
   db: Client,
   workspaceId: string,
   personId: string,
@@ -815,7 +827,7 @@ async function actionCounts(
  * approval queue counts against the automated path, and vice versa. A mailbox
  * does not care which half of the product wrote to it.
  */
-async function addressCounts(
+export async function addressCounts(
   db: Client,
   workspaceId: string,
   address: string,

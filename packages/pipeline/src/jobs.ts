@@ -76,6 +76,16 @@ export const JOB_KINDS = [
    * open), promotes a confident address, then re-decides the person.
    */
   'find_email',
+  /**
+   * Label one recorded reply and act on the label.
+   *
+   * Queued when a reply is recorded — by the mailbox poll or by a human saying
+   * "they replied". Rules label it first and a model only labels what no rule
+   * could; a rule-matched "take me off your list" suppresses; an interested,
+   * question or referral reply gets a drafted answer, sent unattended only when
+   * `decideAutoReply` says every condition held and otherwise left as a card.
+   */
+  'triage_reply',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];

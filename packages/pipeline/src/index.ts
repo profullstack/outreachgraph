@@ -205,16 +205,26 @@ export {
 export {
   applyUnsubscribe,
   issueUnsubscribeToken,
+  suppressAddress,
   unsubscribeUrl,
   type IssueUnsubscribeInput,
+  type SuppressAddressInput,
   type UnsubscribeResult,
 } from './unsubscribe';
 export {
+  queueTriage,
   receiveReplies,
   workspacesWithReadableMailbox,
   type ReceiveRepliesInput,
   type ReceiveRepliesResult,
 } from './receive-email';
+export {
+  triageReply,
+  type TriageDeps,
+  type TriageInput,
+  type TriageOutcome,
+  type TriageResult,
+} from './triage-reply';
 export {
   deliverEmailAction,
   defaultEmailSubject,

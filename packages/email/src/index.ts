@@ -40,6 +40,7 @@ export {
   type IncomingMessage,
   type MailReader,
 } from './imap';
+export { failedRecipientFromSource, plainTextFromSource } from './mime';
 export { invitationEmail, passwordResetEmail, verificationEmail } from './templates';
 export {
   dailyDigestEmail,

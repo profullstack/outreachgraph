@@ -440,6 +440,9 @@ describe('a contact who has replied', () => {
       request({
         conversationOpen: true,
         isFollowUp: true,
+        // Shared: answering a personal address that wrote to us is not paced
+        // (see below), but a shared inbox still is.
+        addressShared: true,
         actionsToThisAddressThisWeek: 5,
       }),
     );
