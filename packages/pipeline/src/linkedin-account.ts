@@ -17,6 +17,7 @@ import {
   type LinkedInSessionOptions,
 } from '@outreachgraph/providers';
 import { decryptSecret, encryptSecret } from '@outreachgraph/secrets';
+import { upsertPoolAccount } from './sender-pool';
 
 const KIND = 'social';
 const NETWORK = 'linkedin';
@@ -88,26 +89,16 @@ export async function connectLinkedInSession(
     });
   }
 
-  await db.execute({
-    sql: `DELETE FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
-    args: [input.workspaceId, NETWORK],
-  });
-
-  await db.execute({
-    sql: `INSERT INTO integration_accounts (id, integration_id, workspace_id, network,
-          external_account_id, handle, access_token_enc, scopes, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, '["comment"]', 'active', ?, ?)`,
-    args: [
-      newId('integrationAccount'),
-      integrationId,
-      input.workspaceId,
-      NETWORK,
-      entityUrn || publicIdentifier,
-      publicIdentifier,
-      encryptSecret(liAt, input.encryptionKey),
-      stamp,
-      stamp,
-    ],
+  // A different member joins the pool; the same member is a reconnect, and
+  // the old cookie is replaced rather than kept readable beside the new one.
+  await upsertPoolAccount(db, {
+    workspaceId: input.workspaceId,
+    integrationId,
+    network: NETWORK,
+    identity: entityUrn || publicIdentifier,
+    handle: publicIdentifier || null,
+    accessTokenEnc: encryptSecret(liAt, input.encryptionKey),
+    scopes: '["comment"]',
   });
 
   return { connected: true, publicIdentifier, name, connectedAt: stamp };
@@ -116,20 +107,25 @@ export async function connectLinkedInSession(
 /**
  * The session for this workspace, or undefined. A cookie LinkedIn has signed
  * out is marked revoked so its cards go back to being hand-offs.
+ *
+ * `accountId` picks one session out of the pool; omitted, the workspace's
+ * first active one, which for a pool of one is the session it always had.
  */
 export async function linkedInSessionForWorkspace(
   db: Client,
   workspaceId: string,
   encryptionKey: Buffer | undefined,
   options: LinkedInSessionOptions = {},
+  accountId?: string,
 ): Promise<LinkedInSession | undefined> {
   if (!encryptionKey) return undefined;
 
   const row = await queryOne<{ id: string; access_token_enc: string | null; status: string }>(
     db,
     `SELECT id, access_token_enc, status FROM integration_accounts
-      WHERE workspace_id = ? AND network = ?`,
-    [workspaceId, NETWORK],
+      WHERE workspace_id = ? AND network = ? ${accountId ? 'AND id = ?' : ''}
+      ORDER BY (status = 'active') DESC, created_at ASC LIMIT 1`,
+    accountId ? [workspaceId, NETWORK, accountId] : [workspaceId, NETWORK],
   );
   if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
 
@@ -140,11 +136,26 @@ export async function linkedInSessionForWorkspace(
   }
 }
 
-export async function markLinkedInSessionRevoked(db: Client, workspaceId: string): Promise<void> {
+/**
+ * Marks a signed-out session revoked. With `accountId`, only that one: one
+ * member's cookie expiring says nothing about the other sessions in the pool.
+ */
+export async function markLinkedInSessionRevoked(
+  db: Client,
+  workspaceId: string,
+  accountId?: string,
+  reason?: string,
+): Promise<void> {
   await db.execute({
-    sql: `UPDATE integration_accounts SET status = 'revoked', updated_at = ?
-           WHERE workspace_id = ? AND network = ?`,
-    args: [now(), workspaceId, NETWORK],
+    sql: `UPDATE integration_accounts SET status = 'revoked', status_reason = ?, updated_at = ?
+           WHERE workspace_id = ? AND network = ? ${accountId ? 'AND id = ?' : ''}`,
+    args: [
+      reason?.slice(0, 500) ?? 'LinkedIn signed this session out; reconnect it',
+      now(),
+      workspaceId,
+      NETWORK,
+      ...(accountId ? [accountId] : []),
+    ],
   });
 }
 
@@ -155,7 +166,8 @@ export async function linkedInAccountSummary(
   const row = await queryOne<{ handle: string | null; status: string; created_at: string }>(
     db,
     `SELECT handle, status, created_at FROM integration_accounts
-      WHERE workspace_id = ? AND network = ?`,
+      WHERE workspace_id = ? AND network = ?
+      ORDER BY (status = 'active') DESC, created_at ASC LIMIT 1`,
     [workspaceId, NETWORK],
   );
   if (!row) return { connected: false };

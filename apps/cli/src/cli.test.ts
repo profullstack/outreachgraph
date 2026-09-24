@@ -228,3 +228,71 @@ describe('explain', () => {
     expect(explain(new Error('network down'))).toBe('network down');
   });
 });
+
+describe('og senders', () => {
+  test('lists each account with today’s numbers and warm-up day', async () => {
+    const { client: api } = client({
+      senders: [
+        {
+          id: 'ita_1',
+          network: 'email',
+          label: null,
+          handle: 'ana@acme.com',
+          status: 'active',
+          statusReason: null,
+          configuredCap: 50,
+          effectiveCapToday: 8,
+          sentToday: 3,
+          warmup: { enabled: true, day: 1, complete: false },
+        },
+        {
+          id: 'ita_2',
+          network: 'linkedin',
+          label: 'Bo',
+          handle: 'bo',
+          status: 'error',
+          statusReason: 'LinkedIn signed this session out',
+          configuredCap: 25,
+          effectiveCapToday: 0,
+          sentToday: 0,
+          warmup: { enabled: false, day: null, complete: true },
+        },
+      ],
+    });
+
+    const output = await commandByName('senders')!.run({ client: api, args: [], flags: {} });
+    const [first, second] = output.split('\n');
+
+    expect(first).toStartWith('ita_1');
+    expect(first).toContain('3/8 today (cap 50)');
+    expect(first).toContain('warm-up day 1');
+    expect(second).toContain('Bo');
+    expect(second).toContain('LinkedIn signed this session out');
+  });
+
+  test('pause, resume and cap become one PATCH each', async () => {
+    const { client: api, calls } = client({
+      sender: {
+        id: 'ita_1',
+        status: 'paused',
+        sentToday: 0,
+        effectiveCapToday: 0,
+        configuredCap: 50,
+      },
+    });
+    const run = (args: string[]) => commandByName('senders')!.run({ client: api, args, flags: {} });
+
+    await run(['pause', 'ita_1']);
+    await run(['resume', 'ita_1']);
+    await run(['cap', 'ita_1', '12']);
+    await run(['cap', 'ita_1', 'default']);
+
+    expect(calls.map((call) => [call.method, call.url, call.body])).toEqual([
+      ['PATCH', 'https://api.test/api/v1/senders/ita_1', { paused: true }],
+      ['PATCH', 'https://api.test/api/v1/senders/ita_1', { paused: false }],
+      ['PATCH', 'https://api.test/api/v1/senders/ita_1', { dailyCap: 12 }],
+      ['PATCH', 'https://api.test/api/v1/senders/ita_1', { dailyCap: null }],
+    ]);
+    await expect(run(['cap', 'ita_1', 'lots'])).rejects.toThrow('whole number');
+  });
+});

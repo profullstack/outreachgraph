@@ -3,6 +3,7 @@ import { SettingsForm } from '../../../components/settings-form';
 import { MailboxForm } from '../../../components/mailbox-form';
 import { BlueskyForm } from '../../../components/bluesky-form';
 import { ApiKeysForm } from '../../../components/api-keys-form';
+import { SendersPanel } from '../../../components/senders-panel';
 import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
@@ -10,9 +11,11 @@ import {
   fetchApiKeys,
   fetchBlueskyIntegration,
   fetchEmailIntegration,
+  fetchSenders,
   fetchSettings,
   type ApiKeyView,
   type BlueskyIntegrationView,
+  type SenderView,
   type SettingsView,
 } from '../../../lib/api';
 import type { EmailIntegrationView } from '../../../lib/types';
@@ -34,14 +37,16 @@ export default async function SettingsPage() {
   let mailbox: EmailIntegrationView | undefined;
   let bluesky: BlueskyIntegrationView | undefined;
   let apiKeys: readonly ApiKeyView[] = [];
+  let senders: readonly SenderView[] = [];
   let offline = false;
 
   try {
-    [settings, mailbox, bluesky, apiKeys] = await Promise.all([
+    [settings, mailbox, bluesky, apiKeys, senders] = await Promise.all([
       fetchSettings(),
       fetchEmailIntegration(),
       fetchBlueskyIntegration(),
       fetchApiKeys(),
+      fetchSenders(),
     ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
@@ -68,6 +73,10 @@ export default async function SettingsPage() {
           {/* First, because nothing else on this page matters until outreach
               has a mailbox to leave through. */}
           {mailbox ? <MailboxForm initial={mailbox} /> : null}
+
+          {/* Right under the mailbox: once there is more than one account to
+              send from, how much each may send today is the next question. */}
+          <SendersPanel initial={senders} />
 
           {/* Second, because it is the only other place outreach can leave
               from — and the only network the product may post to at all. */}

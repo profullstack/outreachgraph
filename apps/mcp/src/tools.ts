@@ -416,6 +416,32 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'list_senders',
+    title: 'List sending accounts',
+    description:
+      'List every mailbox, LinkedIn session and X account this workspace sends from, with ' +
+      "each one's status, daily cap, today's cap after warm-up, how many it has sent today " +
+      'and its warm-up day. Use it to explain why a send was deferred to tomorrow: when every ' +
+      'account on a network is at its cap, approved messages wait rather than fail.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        network: {
+          type: 'string',
+          enum: ['email', 'linkedin', 'x'],
+          description: 'Only the accounts on this network.',
+        },
+      },
+    },
+    run: async (client, args) => {
+      const result = (await client.get('/senders')) as { senders?: { network?: string }[] };
+      const network = str(args, 'network');
+      if (!network) return result;
+      return { senders: (result.senders ?? []).filter((sender) => sender.network === network) };
+    },
+  },
+  {
     name: 'suppress',
     title: 'Never contact this person again',
     description:

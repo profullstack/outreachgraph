@@ -96,11 +96,40 @@ export {
   emailAccountSummary,
   loadEmailCredentials,
   loadImapCredentials,
+  mailerForSend,
   mailerForWorkspace,
   EmailAccountError,
   type EmailAccountInput,
   type EmailAccountSummary,
+  type SendingMailbox,
 } from './email-account';
+export {
+  assignSender,
+  chooseSender,
+  describeDeferral,
+  evaluateSenderHealth,
+  lastSenderFor,
+  listSenders,
+  loadPool,
+  markSenderError,
+  noteSendFailure,
+  pickSender,
+  poolCapacity,
+  recordSenderBounce,
+  removeSender,
+  senderView,
+  updateSender,
+  SenderPoolError,
+  type SenderAccount,
+  type SenderPatch,
+  type SenderSelection,
+  type SenderView,
+} from './sender-pool';
+export {
+  runEmailDelivery,
+  scheduleEmailDelivery,
+  type DeliverEmailJobDeps,
+} from './email-delivery';
 export { runCadences, type RunCadencesDeps } from './cadence-runner';
 export {
   createRule,
@@ -210,6 +239,7 @@ export {
   type UnsubscribeResult,
 } from './unsubscribe';
 export {
+  readableMailboxes,
   receiveReplies,
   workspacesWithReadableMailbox,
   type ReceiveRepliesInput,

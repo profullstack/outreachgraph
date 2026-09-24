@@ -26,6 +26,7 @@ import {
   privacyRequestSchema,
   registerSchema,
   snoozeRecommendationSchema,
+  updateSenderSchema,
   workspaceProfileSchema,
 } from '@outreachgraph/contracts';
 import {
@@ -106,8 +107,13 @@ import {
   leadTimeline,
   loadListeningTargets,
   loadNotifySettings,
-  mailerForWorkspace,
+  listSenders,
+  mailerForSend,
   normaliseTargets,
+  removeSender,
+  scheduleEmailDelivery,
+  SenderPoolError,
+  updateSender,
   notifyAddress,
   saveListeningTargets,
   workspaceAnalytics,
@@ -3165,6 +3171,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         approved += 1;
         if (outcome.delivery?.sent) sent += 1;
         if (outcome.scheduled?.queued) scheduled += 1;
+        // Every mailbox was full: the email waits for tomorrow, which is a
+        // schedule like any paced post rather than a failure.
+        if (outcome.delivery?.deferredUntil) scheduled += 1;
         if (outcome.research?.queued) researchQueued += 1;
       }
 
@@ -3575,6 +3584,21 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       }
 
       const delivery = await sendEmailAction(db, options, actor, action.id, decision.policyVersion);
+
+      // Accepted, not failed: every mailbox is at today's cap, and the send
+      // is queued for when they reset.
+      if (delivery.deferredUntil) {
+        return c.json(
+          {
+            executed: false,
+            actionId: action.id,
+            deferred: true,
+            deferredUntil: delivery.deferredUntil,
+            reason: delivery.reason,
+          },
+          202,
+        );
+      }
 
       if (!delivery.sent) {
         return c.json({ executed: false, actionId: action.id, reason: delivery.reason }, 502);
@@ -4296,10 +4320,88 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json({ saved: true });
   });
 
+  // --------------------------------------------------------------- senders
+  //
+  // Every sending account the workspace has connected — mailboxes, LinkedIn
+  // sessions, X accounts — with what each may send today and how far through
+  // its warm-up it is. Connecting happens through the per-network routes
+  // below; this is where a pool is watched and tuned.
+
+  api.get('/senders', async (c) => {
+    const actor = c.get('actor');
+    return c.json({ senders: await listSenders(c.get('db'), actor.workspaceId) });
+  });
+
+  /**
+   * Changes one account: its label, its daily cap, whether it is paused, and
+   * whether it is warming up. Approver-only, like connecting one, because a
+   * raised cap or a resumed mailbox changes what goes out under the
+   * workspace's name.
+   */
+  api.patch('/senders/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('changing a sending account');
+
+    const body = await parseBody(c.req.raw, updateSenderSchema);
+    const paused = body.status === undefined ? body.paused : body.status === 'paused';
+
+    try {
+      const sender = await updateSender(db, actor.workspaceId, c.req.param('id'), {
+        ...(body.label === undefined ? {} : { label: body.label }),
+        ...(body.dailyCap === undefined ? {} : { dailyCap: body.dailyCap }),
+        ...(paused === undefined ? {} : { paused }),
+        ...(body.warmup === undefined ? {} : { warmup: body.warmup }),
+      });
+
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'sender.updated',
+        entityKind: 'integration_account',
+        entityId: sender.id,
+        detail: { network: sender.network, changes: body },
+      });
+
+      return c.json({ sender });
+    } catch (error) {
+      if (error instanceof SenderPoolError) {
+        if (error.code === 'not_found') throw ApiError.notFound('sender');
+        throw ApiError.badRequest(error.message);
+      }
+      throw error;
+    }
+  });
+
+  /** Removes one account from the pool, leaving the others connected. */
+  api.delete('/senders/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('removing a sending account');
+
+    const removed = await removeSender(db, actor.workspaceId, c.req.param('id'));
+    if (!removed) throw ApiError.notFound('sender');
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'integration.disconnected',
+      entityKind: 'integration_account',
+      entityId: c.req.param('id'),
+      detail: { sender: true },
+    });
+
+    return c.json({ removed: true });
+  });
+
   // ---------------------------------------------------------- integrations
   //
-  // The mailbox outreach is sent from. One per workspace, and the only thing
-  // standing between a drafted message and a delivered one.
+  // The mailboxes outreach is sent from. Connecting a new address adds it to
+  // the workspace's pool; reconnecting one already there replaces its
+  // password. They are the only thing standing between a drafted message and
+  // a delivered one.
 
   api.get('/integrations/email', async (c) => {
     const actor = c.get('actor');
@@ -5082,7 +5184,7 @@ export type ApproveOutcome =
       readonly actionId: string;
       readonly decision: string;
       readonly policyVersion: string;
-      readonly delivery?: { sent: boolean; to?: string; reason?: string };
+      readonly delivery?: { sent: boolean; to?: string; reason?: string; deferredUntil?: string };
       readonly scheduled?: { queued: boolean; runAt: string };
       readonly research?: { queued: boolean; url?: string; reason?: string };
       /** Present when the approval produced a hand-off card for a human to act on. */
@@ -5482,10 +5584,15 @@ async function recheckPolicy(
 /**
  * Puts one approved email on the wire.
  *
- * Resolves the sender the same way autopilot does — the workspace's own
- * mailbox when it has connected one, the platform sender otherwise — so an
- * approved message and an unattended one leave from the same address and are
- * recorded identically.
+ * Resolves the sender the same way autopilot does — a mailbox from the
+ * workspace's pool when it has connected any (the one already talking to this
+ * person, else the one with the most room today), the platform sender
+ * otherwise — so an approved message and an unattended one leave from the
+ * same address and are recorded identically.
+ *
+ * When every mailbox that could send it is at today's cap, the send is queued
+ * for when the caps reset and `deferredUntil` says when. The approval stands;
+ * only the moment of sending moves.
  *
  * Returns a report rather than throwing. "No address published for this
  * person" and "the mail server rejected the password" are both things the
@@ -5497,13 +5604,35 @@ async function sendEmailAction(
   actor: RequestActor,
   actionId: string,
   policyVersion: string,
-): Promise<{ sent: boolean; to?: string; reason?: string }> {
-  const sender = await mailerForWorkspace(db, actor.workspaceId, {
+): Promise<{ sent: boolean; to?: string; reason?: string; deferredUntil?: string }> {
+  const action = await queryOne<{ person_id: string }>(
+    db,
+    'SELECT person_id FROM actions WHERE id = ? AND workspace_id = ?',
+    [actionId, actor.workspaceId],
+  );
+
+  const sender = await mailerForSend(db, actor.workspaceId, {
     encryptionKey: options.encryptionKey,
     fallback: options.mailer,
+    personId: action?.person_id,
   });
 
-  if (!sender) {
+  if (sender.kind === 'deferred') {
+    const queued = await scheduleEmailDelivery(db, {
+      workspaceId: actor.workspaceId,
+      actionId,
+      actor: { actorKind: 'user', actorId: actor.userId },
+      policyVersion,
+      retryAt: sender.retryAt,
+    });
+    return {
+      sent: false,
+      reason: `${sender.reason}; it will go out after ${queued.runAt}`,
+      deferredUntil: queued.runAt,
+    };
+  }
+
+  if (sender.kind === 'none') {
     return { sent: false, reason: 'no mailbox is connected, so nothing could be sent' };
   }
 
@@ -5513,6 +5642,7 @@ async function sendEmailAction(
       mailer: sender.mailer,
       ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
       ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+      ...(sender.accountId ? { senderAccountId: sender.accountId } : {}),
     },
     {
       workspaceId: actor.workspaceId,

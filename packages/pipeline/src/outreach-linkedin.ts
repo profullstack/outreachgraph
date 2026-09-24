@@ -22,7 +22,12 @@ export type DeliverLinkedInResult =
   { readonly sent: true; readonly url: string } | { readonly sent: false; readonly reason: string };
 
 export async function deliverLinkedInAction(
-  deps: { readonly db: Client; readonly session: LinkedInSession },
+  deps: {
+    readonly db: Client;
+    readonly session: LinkedInSession;
+    /** The pool account `session` belongs to, so a sign-out stops only it. */
+    readonly accountId?: string;
+  },
   input: {
     readonly workspaceId: string;
     readonly actionId: string;
@@ -92,10 +97,10 @@ export async function deliverLinkedInAction(
 
     return { sent: true, url };
   } catch (error) {
-    if (error instanceof LinkedInSessionError) {
-      await markLinkedInSessionRevoked(db, input.workspaceId);
-    }
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof LinkedInSessionError) {
+      await markLinkedInSessionRevoked(db, input.workspaceId, deps.accountId, message);
+    }
 
     await db.execute({
       sql: `UPDATE actions SET status = 'failed', error = ? WHERE id = ?`,

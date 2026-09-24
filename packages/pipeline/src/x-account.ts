@@ -32,6 +32,7 @@ import {
   type XTokens,
 } from '@outreachgraph/providers';
 import { decryptSecret, encryptSecret } from '@outreachgraph/secrets';
+import { upsertPoolAccount } from './sender-pool';
 
 const KIND = 'social';
 const NETWORK = 'x';
@@ -182,32 +183,18 @@ export async function completeXConnect(
     args: [JSON.stringify({ ...config, username, userId }), stamp, row.id],
   });
 
-  // Replaced rather than updated: a reconnection is a new grant, and keeping
-  // the old ciphertext would keep a revoked token readable.
-  await db.execute({
-    sql: `DELETE FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
-    args: [row.workspace_id, NETWORK],
-  });
-
-  await db.execute({
-    sql: `INSERT INTO integration_accounts (id, integration_id, workspace_id, network,
-          external_account_id, handle, access_token_enc, refresh_token_enc, scopes, expires_at,
-          status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-    args: [
-      newId('integrationAccount'),
-      row.id,
-      row.workspace_id,
-      NETWORK,
-      userId,
-      username,
-      encryptSecret(tokens.accessToken, input.encryptionKey),
-      encryptSecret(tokens.refreshToken, input.encryptionKey),
-      JSON.stringify(tokens.scopes),
-      tokens.expiresAt,
-      stamp,
-      stamp,
-    ],
+  // A different X user joins the pool; the same one is a reconnect, and its
+  // tokens are replaced so a revoked grant is not kept readable.
+  await upsertPoolAccount(db, {
+    workspaceId: row.workspace_id,
+    integrationId: row.id,
+    network: NETWORK,
+    identity: userId,
+    handle: username,
+    accessTokenEnc: encryptSecret(tokens.accessToken, input.encryptionKey),
+    refreshTokenEnc: encryptSecret(tokens.refreshToken, input.encryptionKey),
+    scopes: JSON.stringify(tokens.scopes),
+    expiresAt: tokens.expiresAt,
   });
 
   return { workspaceId: row.workspace_id, username };
@@ -230,6 +217,8 @@ export async function xClientForWorkspace(
     encryptionKey?: Buffer;
     fetchImpl?: FetchLike;
     sessionOptions?: XSessionOptions;
+    /** One account in the pool. Omitted, the workspace's first active one. */
+    accountId?: string;
   },
 ): Promise<XPoster | undefined> {
   if (!deps.encryptionKey) return undefined;
@@ -244,8 +233,10 @@ export async function xClientForWorkspace(
   }>(
     db,
     `SELECT id, access_token_enc, refresh_token_enc, expires_at, scopes, status
-       FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
-    [workspaceId, NETWORK],
+       FROM integration_accounts WHERE workspace_id = ? AND network = ?
+        ${deps.accountId ? 'AND id = ?' : ''}
+      ORDER BY (status = 'active') DESC, created_at ASC LIMIT 1`,
+    deps.accountId ? [workspaceId, NETWORK, deps.accountId] : [workspaceId, NETWORK],
   );
   if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
 
@@ -321,7 +312,8 @@ export async function xAccountSummary(db: Client, workspaceId: string): Promise<
   }>(
     db,
     `SELECT handle, external_account_id, status, created_at
-       FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
+       FROM integration_accounts WHERE workspace_id = ? AND network = ?
+      ORDER BY (status = 'active') DESC, created_at ASC LIMIT 1`,
     [workspaceId, NETWORK],
   );
 
@@ -356,7 +348,8 @@ export async function disconnectXAccount(db: Client, workspaceId: string): Promi
  * The free alternative to the paid API (see `providers/src/x/session.ts`).
  * Verified against X before storing, stored encrypted as one secret, and
  * marked `["session"]` in `scopes` so the loader knows which client to build.
- * It replaces any OAuth grant the workspace had: one X account per workspace.
+ * It replaces any OAuth grant the same X user had; a different user is added
+ * to the workspace's pool beside the accounts already there.
  */
 export async function connectXSession(
   db: Client,
@@ -407,25 +400,14 @@ export async function connectXSession(
     });
   }
 
-  await db.execute({
-    sql: `DELETE FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
-    args: [input.workspaceId, NETWORK],
-  });
-  await db.execute({
-    sql: `INSERT INTO integration_accounts (id, integration_id, workspace_id, network,
-          external_account_id, handle, access_token_enc, scopes, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, '["session"]', 'active', ?, ?)`,
-    args: [
-      newId('integrationAccount'),
-      integrationId,
-      input.workspaceId,
-      NETWORK,
-      userId || null,
-      username || null,
-      encryptSecret(JSON.stringify(cookies), input.encryptionKey),
-      stamp,
-      stamp,
-    ],
+  await upsertPoolAccount(db, {
+    workspaceId: input.workspaceId,
+    integrationId,
+    network: NETWORK,
+    identity: userId,
+    handle: username || null,
+    accessTokenEnc: encryptSecret(JSON.stringify(cookies), input.encryptionKey),
+    scopes: '["session"]',
   });
 
   return {

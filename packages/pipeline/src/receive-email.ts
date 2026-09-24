@@ -25,6 +25,7 @@ import { newId } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { MailReader, IncomingMessage } from '@outreachgraph/email';
 import { recordStatus } from './stages';
+import { recordSenderBounce } from './sender-pool';
 
 export interface ReceiveRepliesInput {
   readonly db: Client;
@@ -34,6 +35,14 @@ export interface ReceiveRepliesInput {
   readonly since?: Date;
   /** Messages to take from one poll. */
   readonly limit?: number;
+  /**
+   * The pool account this mailbox belongs to.
+   *
+   * When set, every bounce found in it counts against that account's health.
+   * The mailbox a bounce lands in is the one that sent the message, so this
+   * is the one attribution in the product that needs no guessing.
+   */
+  readonly senderAccountId?: string;
 }
 
 export interface ReceiveRepliesResult {
@@ -46,6 +55,8 @@ export interface ReceiveRepliesResult {
   readonly unmatched: number;
   /** Already recorded by an earlier poll. */
   readonly duplicates: number;
+  /** True when this poll's bounces stopped the account. */
+  readonly senderStopped?: boolean;
 }
 
 const DEFAULT_LOOKBACK_DAYS = 7;
@@ -67,10 +78,25 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
   let recorded = 0;
   let unmatched = 0;
   let duplicates = 0;
+  let senderStopped = false;
 
   for (const message of messages) {
     if (message.automated) {
       automated[message.automated] = (automated[message.automated] ?? 0) + 1;
+
+      // Still not a reply, but no longer ignored: a bounce is the provider
+      // telling this mailbox it wrote to an address that does not exist, and
+      // enough of them is how a sending reputation is lost.
+      if (message.automated === 'bounce' && input.senderAccountId) {
+        const bounce = await recordSenderBounce(input.db, {
+          workspaceId: input.workspaceId,
+          accountId: input.senderAccountId,
+          externalId: bounceId(message),
+          detail: message.subject,
+          at: message.receivedAt.toISOString(),
+        });
+        senderStopped = senderStopped || bounce.stopped;
+      }
       continue;
     }
 
@@ -85,7 +111,24 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
     else duplicates += 1;
   }
 
-  return { fetched: messages.length, recorded, automated, unmatched, duplicates };
+  return {
+    fetched: messages.length,
+    recorded,
+    automated,
+    unmatched,
+    duplicates,
+    ...(senderStopped ? { senderStopped } : {}),
+  };
+}
+
+/**
+ * A stable id for a bounce, so a week-long lookback polled every few minutes
+ * counts it once. The message id when there is one; otherwise what the
+ * message says about itself, which is the same on every poll.
+ */
+function bounceId(message: IncomingMessage): string {
+  if (message.messageId) return message.messageId;
+  return `${message.receivedAt.toISOString()}|${message.fromAddress}|${message.subject ?? ''}`;
 }
 
 /**
@@ -199,9 +242,32 @@ export async function workspacesWithReadableMailbox(db: Client): Promise<string[
     `SELECT ia.workspace_id FROM integration_accounts ia
        JOIN integrations i ON i.id = ia.integration_id
       WHERE ia.network = 'email' AND ia.status = 'active'
-        AND i.config_json LIKE '%"imapHost"%'`,
+        AND COALESCE(ia.config_json, i.config_json) LIKE '%"imapHost"%'`,
     [],
   );
 
   return rows.map((row) => row.workspace_id);
+}
+
+/**
+ * Every mailbox we can read, one entry per pool account.
+ *
+ * Per account rather than per workspace because a pool's replies and bounces
+ * arrive in whichever mailbox sent the message, and reading only the first
+ * would miss the rest — and would pin every bounce on the wrong account.
+ */
+export async function readableMailboxes(
+  db: Client,
+): Promise<{ workspaceId: string; accountId: string }[]> {
+  const rows = await queryAll<{ workspace_id: string; id: string }>(
+    db,
+    `SELECT ia.workspace_id, ia.id FROM integration_accounts ia
+       JOIN integrations i ON i.id = ia.integration_id
+      WHERE ia.network = 'email' AND ia.status = 'active'
+        AND COALESCE(ia.config_json, i.config_json) LIKE '%"imapHost"%'
+      ORDER BY ia.workspace_id, ia.created_at`,
+    [],
+  );
+
+  return rows.map((row) => ({ workspaceId: row.workspace_id, accountId: row.id }));
 }

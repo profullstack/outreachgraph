@@ -279,7 +279,11 @@ async function conversationOpen(
  * entry suppresses in every workspace, which is what makes an opt-out survive
  * the person being re-ingested by a later provider lookup.
  */
-async function isSuppressed(db: Client, workspaceId: string, personId: string): Promise<boolean> {
+export async function isSuppressed(
+  db: Client,
+  workspaceId: string,
+  personId: string,
+): Promise<boolean> {
   const keys = await matchKeysForPerson(db, personId);
 
   const placeholders = keys.map(() => '?').join(', ');

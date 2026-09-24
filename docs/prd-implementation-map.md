@@ -55,6 +55,7 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 | §30 Metering                       | `packages/domain/src/plans.ts`, `pipeline/src/metering.ts`               | 17 tests                           |
 | §28 Rules                          | `packages/domain/src/rules.ts`, `pipeline/src/rules.ts`, `0021`          | 22 tests                           |
 | §23 MCP and CLI                    | `apps/mcp/`, `apps/cli/`                                                 | 13 + 17 tests                      |
+| §18 Sender pools and warm-up       | `domain/src/sender-pool.ts`, `pipeline/src/sender-pool.ts`, `0044`       | 19 + 15 + 5 + 3 tests              |
 
 ## Partially implemented
 

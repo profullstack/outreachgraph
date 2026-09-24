@@ -37,6 +37,9 @@ export const ID_PREFIXES = {
   videoAsset: 'vid',
   integration: 'itg',
   integrationAccount: 'ita',
+  // One thing that happened to a sending account — a bounce, an auth failure —
+  // kept so its health can be judged over a window rather than on one event.
+  senderEvent: 'sev',
   suppression: 'sup',
   privacyRequest: 'pri',
   deletionJob: 'del',

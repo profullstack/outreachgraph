@@ -68,6 +68,14 @@ export const JOB_KINDS = [
    */
   'deliver_social',
   /**
+   * Send one approved email whose mailboxes were all at their daily cap.
+   *
+   * Approving an email sends it inline; this is only for the approvals that
+   * found every mailbox in the pool full. The card stays approved and the
+   * job runs when the caps reset, re-choosing a mailbox at that moment.
+   */
+  'deliver_email',
+  /**
    * Find a sendable address for someone reachable only by hand.
    *
    * Queued when a card comes out `manual_only` for a person with nothing to

@@ -614,6 +614,38 @@ export async function fetchUsage(): Promise<UsageView> {
   return request<UsageView>('/usage');
 }
 
+// ------------------------------------------------------------ sender pool
+
+/** One sending account, as `GET /senders` describes it. */
+export interface SenderView {
+  readonly id: string;
+  readonly network: 'email' | 'linkedin' | 'x';
+  readonly label: string | null;
+  readonly handle: string | null;
+  readonly status: string;
+  readonly statusReason: string | null;
+  /** As set; null means the network default. */
+  readonly dailyCap: number | null;
+  readonly configuredCap: number;
+  readonly effectiveCapToday: number;
+  readonly sentToday: number;
+  readonly remainingToday: number;
+  readonly warmup: {
+    readonly enabled: boolean;
+    readonly startedAt: string | null;
+    readonly day: number | null;
+    readonly rampCapToday: number | null;
+    readonly complete: boolean;
+  };
+  readonly lastUsedAt: string | null;
+  readonly connectedAt: string;
+}
+
+export async function fetchSenders(): Promise<readonly SenderView[]> {
+  const result = await request<{ senders: SenderView[] }>('/senders');
+  return result.senders;
+}
+
 // ------------------------------------------------------- bluesky integration
 
 export interface BlueskyIntegrationView {
