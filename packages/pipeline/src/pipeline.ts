@@ -11,6 +11,7 @@
  */
 
 import {
+  isOutboundAction,
   INTERNAL_ACTION_KINDS,
   isLikelyRoleAccount,
   newId,
@@ -994,10 +995,14 @@ async function createRecommendation(
     reachableNetworks: reachable,
     opportunity: score?.opportunity ?? 0,
     ...(options.now ? { now: options.now } : {}),
+    // Per network: a connected mailbox says nothing about X.
+    connectedNetworks: [
+      ...([...connected] as Network[]),
+      ...(options.emailSendingEnabled === true ? (['email'] as const) : []),
+    ],
     policy: {
       approvalMode: campaign.approval_mode as 'draft_and_approve',
-      // Resolved per-network below by the engine's own policy calls; this is
-      // the workspace-wide answer for the common case.
+      // Overridden per network by `connectedNetworks` above.
       hasConnectedAccount: connected.size > 0 || options.emailSendingEnabled === true,
       personSuppressed: person.status === 'suppressed',
       personBelievedMinor: person.believed_minor === 1,
@@ -1041,6 +1046,36 @@ async function createRecommendation(
              AND action IN ('refresh_research', 'observe', 'wait')`,
     args: [workspaceId, campaignId, personId],
   });
+
+  // One outbound card per person, not one per signal.
+  //
+  // Outbound cards were never reconciled either, so every new signal from the
+  // same person added another: 94 people held 461 LinkedIn cards in
+  // production. A card that can run is kept — a reviewer may be part-way
+  // through it — and the new one is dropped. A held (`manual_only`) card has
+  // no such claim: it cannot be approved, and the new decision was made on
+  // more evidence, so it replaces every held card this person has.
+  if (isOutboundAction(recommendation.action)) {
+    const runnable = await queryOne<{ id: string }>(
+      db,
+      `SELECT id FROM recommendations
+        WHERE workspace_id = ? AND campaign_id = ? AND person_id = ?
+          AND status = 'pending' AND policy_status != 'manual_only'
+          AND action NOT IN ('refresh_research', 'observe', 'wait')
+        LIMIT 1`,
+      [workspaceId, campaignId, personId],
+    );
+    if (runnable) return undefined;
+
+    await db.execute({
+      sql: `UPDATE recommendations
+               SET status = 'superseded'
+             WHERE workspace_id = ? AND campaign_id = ? AND person_id = ?
+               AND status = 'pending' AND policy_status = 'manual_only'
+               AND action NOT IN ('refresh_research', 'observe', 'wait')`,
+      args: [workspaceId, campaignId, personId],
+    });
+  }
 
   await db.execute({
     sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,

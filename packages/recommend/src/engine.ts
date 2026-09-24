@@ -44,6 +44,17 @@ export interface RecommendationInput {
   readonly opportunity: number;
   /** Policy inputs, minus the action and network this engine is choosing. */
   readonly policy: Omit<PolicyRequest, 'action' | 'network'>;
+  /**
+   * Networks the workspace can actually act through. When given, it replaces
+   * `policy.hasConnectedAccount` network by network.
+   *
+   * The workspace-wide boolean was the whole of this until it put 188 X
+   * replies in production's queue marked `allow`: email was connected, so
+   * "has a connected account" was true for X as well, and every one of them
+   * was held at approval with "No connected x account". The question is per
+   * network or it is wrong.
+   */
+  readonly connectedNetworks?: readonly Network[];
   readonly now?: Date;
 }
 
@@ -218,8 +229,33 @@ function chooseAction(
   networks: readonly Network[],
   candidates: readonly ActionKind[],
 ): Choice | undefined {
+  // Something the product can carry out beats something a human must, on any
+  // network. Taking the first non-denied choice put 461 LinkedIn cards in
+  // front of one reviewer — each unapprovable, for people who were also on X,
+  // Mastodon or Bluesky — because the signal happened on LinkedIn and
+  // `manual_only` is not a denial. Where they spoke is still preferred among
+  // choices that can run; it just no longer outranks being able to run.
+  return (
+    firstChoice(input, networks, candidates, (decision) => decision !== 'manual_only') ??
+    firstChoice(input, networks, candidates, () => true)
+  );
+}
+
+function firstChoice(
+  input: RecommendationInput,
+  networks: readonly Network[],
+  candidates: readonly ActionKind[],
+  accept: (decision: Choice['decision']) => boolean,
+): Choice | undefined {
   for (const network of networks) {
-    const permitted = allowedActions({ ...input.policy, network }, candidates);
+    const policy = {
+      ...input.policy,
+      network,
+      ...(input.connectedNetworks
+        ? { hasConnectedAccount: input.connectedNetworks.includes(network) }
+        : {}),
+    };
+    const permitted = allowedActions(policy, candidates);
     if (permitted.length === 0) continue;
 
     // Preserve the preference ordering; `allowedActions` preserves input order,
@@ -227,8 +263,8 @@ function chooseAction(
     for (const action of candidates) {
       if (!permitted.includes(action)) continue;
 
-      const result = evaluatePolicy({ ...input.policy, network, action });
-      if (result.decision === 'deny') continue;
+      const result = evaluatePolicy({ ...policy, action });
+      if (result.decision === 'deny' || !accept(result.decision)) continue;
 
       return {
         action,

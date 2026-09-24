@@ -112,10 +112,35 @@ describe('choosing an action', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // LinkedIn yields manual_only rather than deny, so it is still chosen —
-    // the human performs it in LinkedIn's own interface.
+    // LinkedIn yields manual_only; a card the product can run beats one it
+    // cannot, so the Bluesky reply wins.
+    expect(result.recommendation.network).toBe('bluesky');
+    expect(result.recommendation.policyDecision).toBe('allow_with_approval');
+  });
+
+  test('still offers the manual card when nothing else can run', () => {
+    const result = generateRecommendation(
+      input({ signals: [signal({ network: 'linkedin' })], reachableNetworks: ['linkedin'] }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
     expect(result.recommendation.network).toBe('linkedin');
     expect(result.recommendation.policyDecision).toBe('manual_only');
+  });
+
+  test('a connected mailbox does not make X connected', () => {
+    // Production held 188 X replies marked `allow`: the workspace-wide
+    // boolean was true because email was connected.
+    const result = generateRecommendation(
+      input({ reachableNetworks: ['x', 'email'], connectedNetworks: ['email'] }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.recommendation.network).toBe('email');
+    expect(result.recommendation.action).toBe('send_email');
+    expect(result.recommendation.policyDecision).not.toBe('manual_only');
   });
 
   test('never proposes an action GitHub forbids', () => {
