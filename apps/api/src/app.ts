@@ -2986,7 +2986,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       const recommendation = row as unknown as repo.RecommendationRow;
 
       if (body.dryRun) {
-        const decision = await recheckPolicy(
+        const decision = await handoffAwareDecision(
           db,
           actor,
           recommendation,
@@ -4826,7 +4826,10 @@ async function approveRecommendation(
     readonly allowHandoff?: boolean;
   },
 ): Promise<ApproveOutcome> {
-  const decision = await recheckPolicy(db, actor, recommendation, options.mailer !== undefined);
+  const decision =
+    input.allowHandoff === true
+      ? await handoffAwareDecision(db, actor, recommendation, options.mailer !== undefined)
+      : await recheckPolicy(db, actor, recommendation, options.mailer !== undefined);
 
   // `manual_only` from the capability matrix or a missing account is not a
   // refusal: it is permitted work a person has to do by hand. Production held
@@ -5028,6 +5031,35 @@ async function handoffFor(
  * PRD's "policy-gated outbound actions 100%" target true even when a
  * recommendation has been sitting in the queue for days.
  */
+/**
+ * The policy decision, with a hand-off let through a full day.
+ *
+ * The daily gate runs before the capability gate, so once the day's 50
+ * actions were spent every manual card read as `rate_limit_daily` and was
+ * held, though a hand-off is exempt from that limit (owner's call,
+ * 2026-09-24). When the day is the only thing in the way, ask again without
+ * it: if the answer is a hand-off, that is the answer.
+ */
+async function handoffAwareDecision(
+  db: Client,
+  actor: RequestActor,
+  recommendation: repo.RecommendationRow,
+  platformEmailEnabled: boolean,
+) {
+  const decision = await recheckPolicy(db, actor, recommendation, platformEmailEnabled);
+  if (decision.gate !== 'rate_limit_daily') return decision;
+
+  const withoutDay = await recheckPolicy(
+    db,
+    actor,
+    recommendation,
+    platformEmailEnabled,
+    undefined,
+    true,
+  );
+  return isHandoffDecision(withoutDay) ? withoutDay : decision;
+}
+
 async function recheckPolicy(
   db: Client,
   actor: RequestActor,
@@ -5047,6 +5079,8 @@ async function recheckPolicy(
   platformEmailEnabled = false,
   /** The action being executed, which must not count against its own limit. */
   excludeActionId?: string,
+  /** Evaluate as if nothing had been done today; see `handoffDecisionFor`. */
+  ignoreDailyLimit = false,
 ) {
   const [person, workspace, campaign, counts, flags, connected, contact] = await Promise.all([
     repo.getPerson(db, recommendation.person_id),
@@ -5094,8 +5128,10 @@ async function recheckPolicy(
     personDeleted: person.status === 'deleted',
     identityConfidence: person.identity_confidence,
     minIdentityConfidence: workspace?.min_outreach_confidence ?? 0.85,
-    actionsToday: counts.today,
-    maxActionsPerDay: numberOr(budget.maxActionsPerDay, 50),
+    actionsToday: ignoreDailyLimit ? 0 : counts.today,
+    maxActionsPerDay: ignoreDailyLimit
+      ? Number.POSITIVE_INFINITY
+      : numberOr(budget.maxActionsPerDay, 50),
     actionsToThisProspectThisWeek: counts.thisProspectThisWeek,
     maxActionsPerProspectPerWeek: numberOr(budget.maxActionsPerProspectPerWeek, 1),
     // The cooldown the campaign configured, not only the engine default.
