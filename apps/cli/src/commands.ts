@@ -108,7 +108,108 @@ async function readSecret(prompt: string): Promise<string> {
   }
 }
 
-const CONNECTABLE = ['x', 'x-session', 'linkedin'] as const;
+const CONNECTABLE = ['x', 'x-session', 'linkedin', 'hubspot', 'pipedrive'] as const;
+
+/** The CRMs `og connect` accepts a token for. */
+const CRMS = ['hubspot', 'pipedrive'] as const;
+
+const CRM_TOKEN_HELP: Readonly<Record<(typeof CRMS)[number], string>> = {
+  hubspot:
+    'HubSpot: Settings > Integrations > Private Apps > Create, with the crm.objects.contacts read and write scopes. Copy the access token.',
+  pipedrive: 'Pipedrive: Personal preferences > API. Copy your personal API token.',
+};
+
+/**
+ * `og webhooks list | add <url> | rm <id> | test <id>`.
+ *
+ * `add` prints the signing secret, because it is the only time anyone will
+ * see it; everything else prints one endpoint per line, id first.
+ */
+async function runWebhooks({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', target] = args;
+
+  if (verb === 'list' || verb === 'ls') {
+    const result = (await client.get('/webhooks')) as Record<string, unknown>;
+    const endpoints = rows(result, 'endpoints');
+    if (endpoints.length === 0) return 'No webhooks. Add one: og webhooks add <https-url>';
+    return endpoints
+      .map((endpoint) => {
+        const events = Array.isArray(endpoint.events) ? (endpoint.events as string[]) : [];
+        const last = endpoint.lastDelivery as { status?: string; statusCode?: number } | undefined;
+        return [
+          pad(text(endpoint, 'id'), 32),
+          pad(text(endpoint, 'kind'), 8),
+          pad(endpoint.active === false ? 'disabled' : 'active', 9),
+          pad(events.length === 0 ? 'all events' : events.join(','), 30),
+          text(endpoint, 'urlHint'),
+          last?.status
+            ? `  last: ${last.status}${last.statusCode ? ` ${last.statusCode}` : ''}`
+            : '',
+        ].join(' ');
+      })
+      .join('\n');
+  }
+
+  if (verb === 'add') {
+    if (!target)
+      throw new Error('og webhooks add <https-url> [--slack] [--events a,b] [--description text]');
+    const events = flagString(flags, 'events')
+      ?.split(',')
+      .map((e) => e.trim())
+      .filter(Boolean);
+    const description = flagString(flags, 'description');
+    const result = (await client.post('/webhooks', {
+      url: target,
+      kind: flags.slack === true ? 'slack' : 'generic',
+      ...(events ? { events } : {}),
+      ...(description ? { description } : {}),
+    })) as { endpoint?: Record<string, unknown>; secret?: string };
+    return [
+      `Added ${text(result.endpoint ?? {}, 'id')} -> ${text(result.endpoint ?? {}, 'urlHint')}`,
+      `Signing secret (shown once, store it now): ${result.secret ?? '?'}`,
+      'Verify X-OutreachGraph-Signature as HMAC-SHA256(secret, "<t>.<raw body>").',
+    ].join('\n');
+  }
+
+  if (verb === 'rm' || verb === 'remove' || verb === 'delete') {
+    if (!target) throw new Error('og webhooks rm <webhookId>');
+    if (!client.delete) throw new Error('this client cannot delete');
+    await client.delete(`/webhooks/${encodeURIComponent(target)}`);
+    return `Removed ${target}.`;
+  }
+
+  if (verb === 'test') {
+    if (!target) throw new Error('og webhooks test <webhookId>');
+    const result = (await client.post(
+      `/webhooks/${encodeURIComponent(target)}/test`,
+      {},
+    )) as Record<string, unknown>;
+    return `Queued a ping (${text(result, 'deliveryId')}). It goes out on the worker's next tick; see og webhooks deliveries ${target}.`;
+  }
+
+  if (verb === 'deliveries' || verb === 'log') {
+    const path = target
+      ? `/webhooks/${encodeURIComponent(target)}/deliveries`
+      : '/webhooks/deliveries';
+    const result = (await client.get(path)) as Record<string, unknown>;
+    const deliveries = rows(result, 'deliveries');
+    if (deliveries.length === 0) return 'No deliveries yet.';
+    return deliveries
+      .map((d) =>
+        [
+          pad(text(d, 'createdAt'), 25),
+          pad(text(d, 'eventType'), 24),
+          pad(text(d, 'status'), 10),
+          pad(text(d, 'statusCode', '-'), 4),
+          `attempt ${text(d, 'attempt')}`,
+          text(d, 'error') ? `  ${text(d, 'error')}` : '',
+        ].join(' '),
+      )
+      .join('\n');
+  }
+
+  throw new Error('og webhooks list | add <url> | rm <id> | test <id> | deliveries [id]');
+}
 
 /**
  * Opens the person's editor on a file and returns what they saved. Injected
@@ -426,11 +527,20 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'connect',
     usage:
-      'og connect x-session --accept-x-risk | og connect linkedin --accept-linkedin-risk | og connect x',
+      'og connect x-session --accept-x-risk | og connect linkedin --accept-linkedin-risk | og connect x | og connect hubspot|pipedrive [--token <token>]',
     summary:
-      'Connect X or LinkedIn through your browser session (free), or X over OAuth 2.1 (paid API).',
+      'Connect X or LinkedIn (session or OAuth 2.1), or a CRM (HubSpot, Pipedrive) that replies and approvals sync to.',
     async run({ client, args, flags }) {
       const network = args[0];
+      if (network === 'hubspot' || network === 'pipedrive') {
+        const token =
+          flagString(flags, 'token') ??
+          (process.stderr.write(`${CRM_TOKEN_HELP[network]}\n`),
+          await readSecret(`${network} token (input hidden): `));
+        if (!token) throw new Error('no token entered');
+        await client.put(`/integrations/crm/${network}`, { token });
+        return `Connected ${network === 'hubspot' ? 'HubSpot' : 'Pipedrive'}. Replies and approved outreach now sync as contacts with a note.`;
+      }
       if (network === 'x') {
         const started = (await client.post('/integrations/x/oauth/start', {})) as Record<
           string,
@@ -502,8 +612,8 @@ export const COMMANDS: readonly Command[] = [
   },
   {
     name: 'disconnect',
-    usage: 'og disconnect x | og disconnect linkedin',
-    summary: 'Remove a connected X account or LinkedIn session.',
+    usage: 'og disconnect x | linkedin | hubspot | pipedrive',
+    summary: 'Remove a connected X account, LinkedIn session or CRM.',
     async run({ client, args }) {
       const network = args[0];
       if (!network || !(CONNECTABLE as readonly string[]).includes(network)) {
@@ -511,12 +621,24 @@ export const COMMANDS: readonly Command[] = [
       }
       if (!client.delete) throw new Error('this client cannot disconnect');
       // One X account per workspace, however it was connected.
-      const path = network === 'x-session' ? 'x' : network;
+      const path =
+        network === 'x-session'
+          ? 'x'
+          : (CRMS as readonly string[]).includes(network)
+            ? `crm/${network}`
+            : network;
       const result = (await client.delete(`/integrations/${path}`)) as Record<string, unknown>;
       return result.disconnected
         ? `Disconnected ${network}.`
         : `No ${network} account was connected.`;
     },
+  },
+  {
+    name: 'webhooks',
+    usage:
+      'og webhooks list | add <https-url> [--slack] [--events a,b] | rm <id> | test <id> | deliveries [id]',
+    summary: 'Send events to Slack, Zapier, Make, n8n or your own endpoint.',
+    run: runWebhooks,
   },
   {
     name: 'status',

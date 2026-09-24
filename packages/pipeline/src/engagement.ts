@@ -23,6 +23,7 @@ import {
 } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import type { RelationshipInput } from '@outreachgraph/scoring';
+import { emitWebhookEvent } from './webhooks';
 
 // ------------------------------------------------------------------ sending
 
@@ -215,6 +216,20 @@ export async function recordLinkClick(
         ],
       });
     }
+  }
+
+  // A person, not a scanner: the same line that decides whether this counts
+  // as engagement decides whether anyone outside the product hears about it.
+  // Every human click, not only the first, with `firstClick` saying which.
+  if (!automated) {
+    await emitWebhookEvent(db, link.workspace_id, 'link.clicked', {
+      personId: link.person_id,
+      campaignId: link.campaign_id,
+      linkId: link.id,
+      url: link.target_url,
+      firstClick,
+      occurredAt: fetchedAt.toISOString(),
+    });
   }
 
   return {

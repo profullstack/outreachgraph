@@ -25,6 +25,7 @@ import { newId } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { MailReader, IncomingMessage } from '@outreachgraph/email';
 import { recordStatus } from './stages';
+import { emitWebhookEvent } from './webhooks';
 
 export interface ReceiveRepliesInput {
   readonly db: Client;
@@ -188,6 +189,15 @@ async function recordReply(
       at: stamp,
     });
   }
+
+  await emitWebhookEvent(db, workspaceId, 'reply.received', {
+    personId: person.personId,
+    network: 'email',
+    fromAddress: person.address,
+    sharedInbox: person.shared,
+    ...(message.subject ? { subject: message.subject } : {}),
+    occurredAt: message.receivedAt.toISOString(),
+  });
 
   return true;
 }

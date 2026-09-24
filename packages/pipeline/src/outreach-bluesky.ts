@@ -21,6 +21,7 @@ import { BlueskyAuthError, BlueskyWriteError, postUriFromUrl } from '@outreachgr
 import type { BlueskyAgent } from '@outreachgraph/providers';
 import { recordStatus } from './stages';
 import { auditAction, type AuditActor } from './outreach-email';
+import { emitWebhookEvent } from './webhooks';
 
 export interface DeliverBlueskyDeps {
   readonly db: Client;
@@ -256,6 +257,17 @@ export async function recordBlueskySent(db: Client, record: SentPostRecord): Pro
       url: record.url,
       ...(record.policyVersion ? { policyVersion: record.policyVersion } : {}),
     },
+  });
+
+  // Bluesky, X and LinkedIn all finish here, so all three announce here.
+  await emitWebhookEvent(db, record.workspaceId, 'action.sent', {
+    actionId: record.actionId,
+    recommendationId: record.recommendationId,
+    personId: record.personId,
+    campaignId: record.campaignId,
+    network,
+    url: record.url,
+    sentAt: at,
   });
 }
 

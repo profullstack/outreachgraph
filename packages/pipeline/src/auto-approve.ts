@@ -212,6 +212,11 @@ export async function autoApproveInternal(
 
     approved += 1;
 
+    // No `recommendation.approved` event here, deliberately. These are the
+    // product tidying its own queue — research nobody is contacted by — and
+    // announcing each one would bury the approvals a person actually made
+    // under a stream of housekeeping in every Slack channel and CRM listening.
+
     // Approving research is the instruction to go and research. Without this
     // the card closes and nothing re-reads the site, which is the state that
     // produced the same card again on the next tick.

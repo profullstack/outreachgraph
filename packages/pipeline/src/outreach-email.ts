@@ -29,6 +29,7 @@ import type { Mailer } from '@outreachgraph/email';
 import { recordStatus } from './stages';
 import { trackLinksInBody } from './engagement';
 import { issueUnsubscribeToken, unsubscribeUrl } from './unsubscribe';
+import { emitWebhookEvent } from './webhooks';
 
 export interface EmailRecipient {
   readonly address: string;
@@ -176,6 +177,17 @@ export async function recordEmailSent(db: Client, record: SentEmailRecord): Prom
       sharedInbox: record.sharedInbox,
       ...(record.policyVersion ? { policyVersion: record.policyVersion } : {}),
     },
+  });
+
+  await emitWebhookEvent(db, record.workspaceId, 'action.sent', {
+    actionId: record.actionId,
+    recommendationId: record.recommendationId,
+    personId: record.personId,
+    campaignId: record.campaignId,
+    network: 'email',
+    to: record.to,
+    sharedInbox: record.sharedInbox,
+    sentAt: at,
   });
 }
 

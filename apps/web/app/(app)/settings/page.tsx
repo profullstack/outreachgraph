@@ -3,17 +3,23 @@ import { SettingsForm } from '../../../components/settings-form';
 import { MailboxForm } from '../../../components/mailbox-form';
 import { BlueskyForm } from '../../../components/bluesky-form';
 import { ApiKeysForm } from '../../../components/api-keys-form';
+import { WebhooksForm } from '../../../components/webhooks-form';
+import { CrmForm } from '../../../components/crm-form';
 import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchApiKeys,
   fetchBlueskyIntegration,
+  fetchCrmIntegration,
   fetchEmailIntegration,
   fetchSettings,
+  fetchWebhooks,
   type ApiKeyView,
   type BlueskyIntegrationView,
+  type CrmIntegrationView,
   type SettingsView,
+  type WebhooksView,
 } from '../../../lib/api';
 import type { EmailIntegrationView } from '../../../lib/types';
 
@@ -34,14 +40,20 @@ export default async function SettingsPage() {
   let mailbox: EmailIntegrationView | undefined;
   let bluesky: BlueskyIntegrationView | undefined;
   let apiKeys: readonly ApiKeyView[] = [];
+  let webhooks: WebhooksView | undefined;
+  let crm: CrmIntegrationView | undefined;
   let offline = false;
 
   try {
-    [settings, mailbox, bluesky, apiKeys] = await Promise.all([
+    // Webhooks and CRM are approver-only, and a viewer's 403 must hide the
+    // two sections rather than bounce the whole page to the login screen.
+    [settings, mailbox, bluesky, apiKeys, webhooks, crm] = await Promise.all([
       fetchSettings(),
       fetchEmailIntegration(),
       fetchBlueskyIntegration(),
       fetchApiKeys(),
+      fetchWebhooks().catch(() => undefined),
+      fetchCrmIntegration().catch(() => undefined),
     ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
@@ -74,6 +86,10 @@ export default async function SettingsPage() {
           {bluesky ? <BlueskyForm initial={bluesky} /> : null}
 
           <SettingsForm initial={settings} />
+
+          {/* Where events go once they leave the product. */}
+          {webhooks ? <WebhooksForm initial={webhooks} /> : null}
+          {crm ? <CrmForm initial={crm} /> : null}
 
           {/* Last: for the agents that drive the product, once it has
               something to drive. */}
