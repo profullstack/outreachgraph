@@ -29,6 +29,7 @@ import type { Mailer } from '@outreachgraph/email';
 import { recordStatus } from './stages';
 import { issueOpenPixel, trackLinksInBody } from './engagement';
 import { issueUnsubscribeToken, unsubscribeUrl } from './unsubscribe';
+import { assignSender, noteSendFailure } from './sender-pool';
 import { emitWebhookEvent } from './webhooks';
 
 export interface EmailRecipient {
@@ -434,6 +435,16 @@ export interface DeliverEmailDeps {
    * link in an outbound message is worse than an unmeasured one.
    */
   readonly appUrl?: string | undefined;
+  /**
+   * The pool mailbox `mailer` belongs to, when it is one.
+   *
+   * Recorded on the action before the send, so the next message to this
+   * person leaves from the same mailbox and today's count for it is right
+   * even if this send fails halfway. A rejection is also read for what it
+   * says about the mailbox: a refused login stops it, a refused recipient is
+   * a bounce against it. Absent for the platform sender.
+   */
+  readonly senderAccountId?: string | undefined;
 }
 
 export interface DeliverEmailInput {
@@ -583,6 +594,8 @@ export async function deliverEmailAction(
   const allHeaders = { ...(outgoing.headers ?? {}), ...threading };
   const headers = Object.keys(allHeaders).length > 0 ? allHeaders : undefined;
 
+  if (deps.senderAccountId) await assignSender(db, row.action_id, deps.senderAccountId);
+
   try {
     const result = await deps.mailer.send({
       to: recipient.address,
@@ -629,6 +642,14 @@ export async function deliverEmailAction(
       error: message,
       actor: input.actor,
     });
+
+    if (deps.senderAccountId) {
+      await noteSendFailure(db, {
+        workspaceId: input.workspaceId,
+        accountId: deps.senderAccountId,
+        message,
+      });
+    }
 
     return { sent: false, reason: message.slice(0, 500) };
   }
