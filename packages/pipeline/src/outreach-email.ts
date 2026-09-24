@@ -27,8 +27,9 @@ import { newId, type ProspectStatus } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer } from '@outreachgraph/email';
 import { recordStatus } from './stages';
-import { trackLinksInBody } from './engagement';
+import { issueOpenPixel, trackLinksInBody } from './engagement';
 import { issueUnsubscribeToken, unsubscribeUrl } from './unsubscribe';
+import { emitWebhookEvent } from './webhooks';
 
 export interface EmailRecipient {
   readonly address: string;
@@ -65,6 +66,8 @@ export interface OutreachSettings {
   readonly track_links: boolean;
   /** Origin tracked links point at. NULL falls back to the service's APP_URL. */
   readonly tracking_origin: string | null;
+  /** Whether outbound mail carries an HTML part with an open pixel. */
+  readonly track_opens: boolean;
 }
 
 export async function loadOutreachSettings(
@@ -76,9 +79,10 @@ export async function loadOutreachSettings(
     reply_to_email: string | null;
     track_links: number | null;
     tracking_origin: string | null;
+    track_opens: number | null;
   }>(
     db,
-    `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin
+    `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin, track_opens
        FROM workspace_settings WHERE workspace_id = ?`,
     [workspaceId],
   );
@@ -90,7 +94,156 @@ export async function loadOutreachSettings(
     reply_to_email: row?.reply_to_email ?? null,
     track_links: (row?.track_links ?? 0) === 1,
     tracking_origin: row?.tracking_origin ?? null,
+    track_opens: (row?.track_opens ?? 0) === 1,
   };
+}
+
+export interface OutgoingEmailInput {
+  readonly workspaceId: string;
+  readonly personId: string;
+  readonly campaignId: string;
+  readonly actionId: string;
+  /** The approved wording, already through every gate. */
+  readonly body: string;
+  /** The address the message is going to, for the opt-out token. */
+  readonly recipient: string;
+  readonly settings: OutreachSettings;
+  /** The service's own origin, used when the workspace has not set one. */
+  readonly appUrl?: string | undefined;
+}
+
+export interface OutgoingEmail {
+  readonly text: string;
+  /** Present only when open tracking is on and a pixel could be issued. */
+  readonly html?: string;
+  readonly headers?: Record<string, string>;
+  readonly trackedLinks: number;
+  readonly openTracked: boolean;
+}
+
+/**
+ * Everything between the approved body and what goes on the wire.
+ *
+ * Link tracking, the opt-out and the open pixel, in that order and in one
+ * place. Autopilot used to build its own message and skipped the opt-out
+ * entirely — every autopilot send went out with no unsubscribe link and no
+ * `List-Unsubscribe` header, which is the one thing CAN-SPAM and Gmail's bulk
+ * sender rules both insist on. Two send paths with two copies of this logic
+ * had already drifted once; there is now one copy.
+ *
+ * Runs after the §14.2 gates, so what the checks read and what the reviewer
+ * signed off on is `body`; only link destinations, the footer and the HTML
+ * twin differ on the wire.
+ */
+export async function prepareOutgoingEmail(
+  db: Client,
+  input: OutgoingEmailInput,
+): Promise<OutgoingEmail> {
+  const { settings } = input;
+  const origin = settings.tracking_origin ?? input.appUrl ?? undefined;
+
+  const outgoing =
+    settings.track_links && origin
+      ? await trackLinksInBody(db, {
+          workspaceId: input.workspaceId,
+          personId: input.personId,
+          campaignId: input.campaignId,
+          actionId: input.actionId,
+          body: input.body,
+          origin,
+        })
+      : { body: input.body, tracked: 0 };
+
+  // Opt-out. Issued per message so a click can be traced to the mail that
+  // prompted it, and skipped only when we have no origin to point it at — a
+  // link to nowhere is worse than the header being absent, because a client
+  // will render the button and it will fail.
+  const optOutUrl = origin
+    ? unsubscribeUrl(
+        origin,
+        await issueUnsubscribeToken(db, {
+          workspaceId: input.workspaceId,
+          personId: input.personId,
+          campaignId: input.campaignId,
+          contactAddress: input.recipient,
+        }),
+      )
+    : undefined;
+
+  // Both the header and a line a human can see. The header is what providers
+  // and mail clients read; the visible line is what someone reading on a
+  // phone actually finds, and CAN-SPAM asks for the second one.
+  const text = optOutUrl
+    ? `${outgoing.body}\n\n--\nDon't want these? Unsubscribe: ${optOutUrl}`
+    : outgoing.body;
+
+  const headers = optOutUrl
+    ? {
+        'List-Unsubscribe': `<${optOutUrl}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      }
+    : undefined;
+
+  const pixel =
+    settings.track_opens && origin
+      ? await issueOpenPixel(db, {
+          workspaceId: input.workspaceId,
+          personId: input.personId,
+          campaignId: input.campaignId,
+          actionId: input.actionId,
+          origin,
+        })
+      : undefined;
+
+  return {
+    text,
+    ...(pixel ? { html: htmlTwin(text, pixel) } : {}),
+    ...(headers ? { headers } : {}),
+    trackedLinks: outgoing.tracked,
+    openTracked: pixel !== undefined,
+  };
+}
+
+/**
+ * The HTML half of a tracked message: the plain text, escaped, plus one image.
+ *
+ * No template, no styling, no logo. The message is meant to read as though a
+ * person typed it, and the HTML part is what most clients display once it
+ * exists — so it has to look like the plain text did, not like a newsletter.
+ */
+export function htmlTwin(text: string, pixelUrl: string): string {
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((block) => `<p>${linkify(escapeHtml(block)).replace(/\n/g, '<br>')}</p>`)
+    .join('\n');
+
+  const pixel = `<img src="${escapeHtml(pixelUrl)}" width="1" height="1" alt="" style="display:block;border:0;width:1px;height:1px">`;
+
+  return `<!doctype html><html><body>\n${paragraphs}\n${pixel}\n</body></html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Makes URLs in already-escaped text clickable.
+ *
+ * Plain-text clients linkify on their own; an HTML part is taken literally, so
+ * without this every link in a tracked message would stop working the moment
+ * the recipient's client preferred the HTML half. Trailing sentence
+ * punctuation is left outside the link, as a reader would expect.
+ */
+function linkify(escaped: string): string {
+  return escaped.replace(/https?:\/\/[^\s<]+/g, (match) => {
+    const url = match.replace(/[.,;:!?)\]]+$/, '');
+    const rest = match.slice(url.length);
+    return `<a href="${url}">${url}</a>${rest}`;
+  });
 }
 
 export interface SentEmailRecord {
@@ -176,6 +329,17 @@ export async function recordEmailSent(db: Client, record: SentEmailRecord): Prom
       sharedInbox: record.sharedInbox,
       ...(record.policyVersion ? { policyVersion: record.policyVersion } : {}),
     },
+  });
+
+  await emitWebhookEvent(db, record.workspaceId, 'action.sent', {
+    actionId: record.actionId,
+    recommendationId: record.recommendationId,
+    personId: record.personId,
+    campaignId: record.campaignId,
+    network: 'email',
+    to: record.to,
+    sharedInbox: record.sharedInbox,
+    sentAt: at,
   });
 }
 
@@ -343,63 +507,28 @@ export async function deliverEmailAction(
   const replyTo = deps.replyTo ?? settings.reply_to_email ?? undefined;
   const subject = row.draft_subject?.trim() || defaultEmailSubject(row.company_name);
 
-  // Link tracking happens here and nowhere earlier: `body` has already passed
-  // the §14.2 grounding gates, and rewriting before them would mean the checks
-  // ran against words we do not send. What goes on the wire differs from what
-  // was approved only in where a link points.
-  const trackingOrigin = settings.track_links
-    ? (settings.tracking_origin ?? deps.appUrl ?? undefined)
-    : undefined;
-
-  const outgoing = trackingOrigin
-    ? await trackLinksInBody(db, {
-        workspaceId: input.workspaceId,
-        personId: row.person_id,
-        campaignId: row.campaign_id,
-        actionId: row.action_id,
-        body,
-        origin: trackingOrigin,
-      })
-    : { body, tracked: 0 };
-
-  // Opt-out. Issued per message so a click can be traced to the mail that
-  // prompted it, and skipped only when we have no origin to point it at — a
-  // link to nowhere is worse than the header being absent, because a client
-  // will render the button and it will fail.
-  const optOutOrigin = settings.tracking_origin ?? deps.appUrl ?? undefined;
-  const optOutUrl = optOutOrigin
-    ? unsubscribeUrl(
-        optOutOrigin,
-        await issueUnsubscribeToken(db, {
-          workspaceId: input.workspaceId,
-          personId: row.person_id,
-          campaignId: row.campaign_id,
-          contactAddress: recipient.address,
-        }),
-      )
-    : undefined;
-
-  // Both the header and a line a human can see. The header is what providers
-  // and mail clients read; the visible line is what someone reading on a
-  // phone actually finds, and CAN-SPAM asks for the second one.
-  const text = optOutUrl
-    ? `${outgoing.body}\n\n--\nDon't want these? Unsubscribe: ${optOutUrl}`
-    : outgoing.body;
-
-  const headers = optOutUrl
-    ? {
-        'List-Unsubscribe': `<${optOutUrl}>`,
-        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-      }
-    : undefined;
+  // Link tracking, the opt-out and the pixel happen here and nowhere earlier:
+  // `body` has already passed the §14.2 grounding gates, and rewriting before
+  // them would mean the checks ran against words we do not send.
+  const outgoing = await prepareOutgoingEmail(db, {
+    workspaceId: input.workspaceId,
+    personId: row.person_id,
+    campaignId: row.campaign_id,
+    actionId: row.action_id,
+    body,
+    recipient: recipient.address,
+    settings,
+    appUrl: deps.appUrl,
+  });
 
   try {
     const result = await deps.mailer.send({
       to: recipient.address,
       subject,
-      text,
+      text: outgoing.text,
+      ...(outgoing.html ? { html: outgoing.html } : {}),
       ...(replyTo ? { replyTo } : {}),
-      ...(headers ? { headers } : {}),
+      ...(outgoing.headers ? { headers: outgoing.headers } : {}),
     });
 
     await recordEmailSent(db, {

@@ -61,6 +61,10 @@ export const ID_PREFIXES = {
   apiKey: 'key',
   unsubscribe: 'uns',
   linkClick: 'clk',
+  // Public for the same reason a tracked link's id is: it is the token in the
+  // image URL.
+  openPixel: 'opx',
+  emailOpen: 'eop',
   cadence: 'cad',
   cadenceStep: 'cst',
   enrollment: 'enr',
@@ -73,6 +77,12 @@ export const ID_PREFIXES = {
   ruleRun: 'rrn',
   invitation: 'inv',
   linkedinConnection: 'lic',
+  // Outbound webhooks. The event id travels in every delivery so a receiver
+  // can drop the duplicate a retry produces; the endpoint and delivery ids
+  // are ours, for the log.
+  webhookEndpoint: 'whk',
+  webhookDelivery: 'whd',
+  webhookEvent: 'evt',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

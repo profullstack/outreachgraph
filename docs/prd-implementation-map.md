@@ -8,53 +8,55 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 
 ## Implemented
 
-| PRD section                        | Implementation                                                           | Tests                              |
-| ---------------------------------- | ------------------------------------------------------------------------ | ---------------------------------- |
-| §8 Prospect pipeline               | `packages/domain/src/pipeline.ts`                                        | —                                  |
-| §9.1–9.3 Identity graph, evidence  | `packages/domain/src/person.ts`                                          | —                                  |
-| §9.4 Confidence bands, thresholds  | `packages/domain/src/confidence.ts`                                      | `identity/src/resolver.test.ts`    |
-| §9.5 Resolution model              | `packages/identity/src/resolver.ts`, `weights.ts`                        | 25 tests                           |
-| §10.1 Provider interface           | `packages/providers/src/provider.ts`                                     | —                                  |
-| §10.2 Waterfall                    | `packages/providers/src/waterfall.ts`                                    | 17 tests                           |
-| §10.3 Provenance                   | `packages/domain/src/provenance.ts`, `providers/src/waterfall.ts`        | included above                     |
-| §11.1–11.2 Signal schema and types | `packages/domain/src/signal.ts`                                          | —                                  |
-| §11.3 Signal decay                 | `packages/signals/src/decay.ts`                                          | 35 tests                           |
-| §12.1–12.6 Scoring                 | `packages/scoring/src/scores.ts`, `weights.ts`                           | 31 tests                           |
-| §13.1 Action kinds                 | `packages/domain/src/networks.ts`                                        | —                                  |
-| §13.2 Recommendation schema        | `packages/domain/src/outreach.ts`                                        | —                                  |
-| §14.1 Outreach composer            | `packages/ai/src/composer.ts`, `model.ts`, `draft.ts`                    | 29 tests                           |
-| §14.1 Model fallback chain         | `packages/ai/src/fallback.ts`, `openai.ts`, `gemini.ts`                  | `packages/ai/src/fallback.test.ts` |
-| §14.2 Quality checks               | `packages/ai/src/checks.ts`, `packages/domain/src/outreach.ts`           | 40 tests                           |
-| §14.3 Personalised video           | `packages/media/src/script.ts`, `renderer.ts`, `render.ts`               | 36 tests                           |
-| §15 Approval queue                 | `apps/api` `GET /recommendations`                                        | `apps/api/src/app.test.ts`         |
-| §16 Platform policy                | `packages/policy/src/capability-matrix.ts`                               | 46 tests                           |
-| §16.2 Policy modes                 | `packages/policy/src/capability-matrix.ts`                               | included above                     |
-| §16.3–16.6 Per-network rules       | `packages/policy/src/capability-matrix.ts`                               | included above                     |
-| §17.3 Suppression                  | `packages/domain/src/compliance.ts`, migration `0004`                    | `apps/api/src/app.test.ts`         |
-| §17.4 Sensitive categories         | `packages/domain/src/compliance.ts`                                      | —                                  |
-| §17.5 Minors                       | `evaluateEligibility`, policy `person_ineligible` gate                   | policy tests                       |
-| §17.6 Source deletion              | `packages/pipeline/src/jobs.ts` `markSourceUnavailable`                  | pipeline tests                     |
-| §18 Rate limits, cooldowns         | `packages/policy/src/engine.ts`                                          | policy tests                       |
-| §20.8 Policy engine                | `packages/policy/src/engine.ts`                                          | 46 tests                           |
-| §21 Database model                 | `migrations/0000`–`0007`                                                 | `packages/db/src/migrate.test.ts`  |
-| §23 API endpoints                  | `apps/api/src/app.ts`                                                    | 61 tests                           |
-| §34 Workspace isolation            | `apps/api/src/repository.ts`                                             | `apps/api/src/app.test.ts`         |
-| §37 Feature flags                  | `feature_flags` table, policy `feature_flag` gate                        | policy + API tests                 |
-| §13 Next-best-action               | `packages/recommend/src/engine.ts`                                       | 25 tests                           |
-| §20.6 Strategy agent               | `packages/recommend` — deterministic, chooses only from `allowedActions` | included above                     |
-| §16.6 GitHub as a signal source    | `packages/providers/src/github/`                                         | 27 tests                           |
-| §8 Pipeline, end to end            | `packages/pipeline/src/pipeline.ts`, `POST /prospects`                   | 11 + 8 tests, live GitHub run      |
-| §25.2 Prospect list and detail     | `apps/web/app/prospects/`, `GET /people`                                 | 2 API tests + build                |
-| §34 Email verification             | `packages/email/`, `apps/api/src/auth.ts`, migration `0006`              | 7 + 11 tests                       |
-| §12.5 Relationship score           | `packages/pipeline/src/engagement.ts`, migration `0018`                  | 17 tests                           |
-| §13 Cadences                       | `packages/domain/src/cadence.ts`, `pipeline/src/cadence*.ts`, `0019`     | 19 + 21 + 6 tests                  |
-| §16.4 Bluesky writes               | `providers/src/bluesky/agent.ts`, `pipeline/src/outreach-bluesky.ts`     | 21 + 7 tests                       |
-| §26 Term expansion                 | `packages/ai/src/synonyms.ts`, `pipeline/src/term-expansion.ts`, `0020`  | 11 + 8 tests                       |
-| §20 Research grid                  | `packages/ai/src/grid.ts`, `pipeline/src/research-grid.ts`               | 8 + 15 tests                       |
-| §7 Playbooks                       | `packages/domain/src/playbooks.ts`                                       | 8 tests                            |
-| §30 Metering                       | `packages/domain/src/plans.ts`, `pipeline/src/metering.ts`               | 17 tests                           |
-| §28 Rules                          | `packages/domain/src/rules.ts`, `pipeline/src/rules.ts`, `0021`          | 22 tests                           |
-| §23 MCP and CLI                    | `apps/mcp/`, `apps/cli/`                                                 | 13 + 17 tests                      |
+| PRD section                        | Implementation                                                                        | Tests                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------- |
+| §8 Prospect pipeline               | `packages/domain/src/pipeline.ts`                                                     | —                                  |
+| §9.1–9.3 Identity graph, evidence  | `packages/domain/src/person.ts`                                                       | —                                  |
+| §9.4 Confidence bands, thresholds  | `packages/domain/src/confidence.ts`                                                   | `identity/src/resolver.test.ts`    |
+| §9.5 Resolution model              | `packages/identity/src/resolver.ts`, `weights.ts`                                     | 25 tests                           |
+| §10.1 Provider interface           | `packages/providers/src/provider.ts`                                                  | —                                  |
+| §10.2 Waterfall                    | `packages/providers/src/waterfall.ts`                                                 | 17 tests                           |
+| §10.3 Provenance                   | `packages/domain/src/provenance.ts`, `providers/src/waterfall.ts`                     | included above                     |
+| §11.1–11.2 Signal schema and types | `packages/domain/src/signal.ts`                                                       | —                                  |
+| §11.3 Signal decay                 | `packages/signals/src/decay.ts`                                                       | 35 tests                           |
+| §12.1–12.6 Scoring                 | `packages/scoring/src/scores.ts`, `weights.ts`                                        | 31 tests                           |
+| §13.1 Action kinds                 | `packages/domain/src/networks.ts`                                                     | —                                  |
+| §13.2 Recommendation schema        | `packages/domain/src/outreach.ts`                                                     | —                                  |
+| §14.1 Outreach composer            | `packages/ai/src/composer.ts`, `model.ts`, `draft.ts`                                 | 29 tests                           |
+| §14.1 Model fallback chain         | `packages/ai/src/fallback.ts`, `openai.ts`, `gemini.ts`                               | `packages/ai/src/fallback.test.ts` |
+| §14.2 Quality checks               | `packages/ai/src/checks.ts`, `packages/domain/src/outreach.ts`                        | 40 tests                           |
+| §14.3 Personalised video           | `packages/media/src/script.ts`, `renderer.ts`, `render.ts`                            | 36 tests                           |
+| §15 Approval queue                 | `apps/api` `GET /recommendations`                                                     | `apps/api/src/app.test.ts`         |
+| §16 Platform policy                | `packages/policy/src/capability-matrix.ts`                                            | 46 tests                           |
+| §16.2 Policy modes                 | `packages/policy/src/capability-matrix.ts`                                            | included above                     |
+| §16.3–16.6 Per-network rules       | `packages/policy/src/capability-matrix.ts`                                            | included above                     |
+| §17.3 Suppression                  | `packages/domain/src/compliance.ts`, migration `0004`                                 | `apps/api/src/app.test.ts`         |
+| §17.4 Sensitive categories         | `packages/domain/src/compliance.ts`                                                   | —                                  |
+| §17.5 Minors                       | `evaluateEligibility`, policy `person_ineligible` gate                                | policy tests                       |
+| §17.6 Source deletion              | `packages/pipeline/src/jobs.ts` `markSourceUnavailable`                               | pipeline tests                     |
+| §18 Rate limits, cooldowns         | `packages/policy/src/engine.ts`                                                       | policy tests                       |
+| §20.8 Policy engine                | `packages/policy/src/engine.ts`                                                       | 46 tests                           |
+| §21 Database model                 | `migrations/0000`–`0007`                                                              | `packages/db/src/migrate.test.ts`  |
+| §23 API endpoints                  | `apps/api/src/app.ts`                                                                 | 61 tests                           |
+| §34 Workspace isolation            | `apps/api/src/repository.ts`                                                          | `apps/api/src/app.test.ts`         |
+| §37 Feature flags                  | `feature_flags` table, policy `feature_flag` gate                                     | policy + API tests                 |
+| §13 Next-best-action               | `packages/recommend/src/engine.ts`                                                    | 25 tests                           |
+| §20.6 Strategy agent               | `packages/recommend` — deterministic, chooses only from `allowedActions`              | included above                     |
+| §16.6 GitHub as a signal source    | `packages/providers/src/github/`                                                      | 27 tests                           |
+| §8 Pipeline, end to end            | `packages/pipeline/src/pipeline.ts`, `POST /prospects`                                | 11 + 8 tests, live GitHub run      |
+| §25.2 Prospect list and detail     | `apps/web/app/prospects/`, `GET /people`                                              | 2 API tests + build                |
+| §34 Email verification             | `packages/email/`, `apps/api/src/auth.ts`, migration `0006`                           | 7 + 11 tests                       |
+| §12.5 Relationship score           | `packages/pipeline/src/engagement.ts`, migration `0018`                               | 17 tests                           |
+| §13 Cadences                       | `packages/domain/src/cadence.ts`, `pipeline/src/cadence*.ts`, `0019`                  | 19 + 21 + 6 tests                  |
+| Cadence A/B variants + open pixel  | `domain/src/cadence.ts` (`guidanceFor`), `pipeline/src/engagement.ts`, `0040`         | 12 + 8 + 7 tests                   |
+| §16.4 Bluesky writes               | `providers/src/bluesky/agent.ts`, `pipeline/src/outreach-bluesky.ts`                  | 21 + 7 tests                       |
+| §26 Term expansion                 | `packages/ai/src/synonyms.ts`, `pipeline/src/term-expansion.ts`, `0020`               | 11 + 8 tests                       |
+| §20 Research grid                  | `packages/ai/src/grid.ts`, `pipeline/src/research-grid.ts`                            | 8 + 15 tests                       |
+| §7 Playbooks                       | `packages/domain/src/playbooks.ts`                                                    | 8 tests                            |
+| §30 Metering                       | `packages/domain/src/plans.ts`, `pipeline/src/metering.ts`                            | 17 tests                           |
+| §28 Rules                          | `packages/domain/src/rules.ts`, `pipeline/src/rules.ts`, `0021`                       | 22 tests                           |
+| §28 Webhooks, Slack, CRM sync      | `pipeline/src/webhooks.ts`, `crm-sync.ts`, `providers/src/{webhooks,crm,net}`, `0041` | 92 tests; `docs/webhooks.md`       |
+| §23 MCP and CLI                    | `apps/mcp/`, `apps/cli/`                                                              | 13 + 17 tests                      |
 
 ## Partially implemented
 
@@ -76,7 +78,9 @@ Where each part of the V1 PRD lives. Code comments cite section numbers
 - §10 Remaining provider adapters — Apollo, PDL, X.
 - §26 Natural-language search over the whole graph. Term expansion covers the
   campaign-matching half.
-- §28 CRM and Slack integrations. The rules engine covers the trigger half.
+- §28 CRM coverage beyond HubSpot and Pipedrive (Salesforce needs OAuth and a connected
+  app). Webhooks, Slack and HubSpot/Pipedrive push are built; Zapier, Make and n8n work
+  through the generic signed webhook.
 - §36 Admin surface.
 - Scheduling links. Blocked on a Google OAuth client this repository does not
   have; the rest of the work (availability, timezones, a booking page) is real

@@ -51,6 +51,15 @@ export interface CadenceStep {
    * decides the moment it falls due.
    */
   readonly waitForAcceptanceHours?: number;
+  /**
+   * Alternate intents to A/B test against `intent`, which is variant A.
+   *
+   * Each enrollment is assigned one variant per step by `pickVariant`, so the
+   * same person always gets the same angle however often the step is retried,
+   * and the split across a cadence is even without anything being stored in
+   * advance.
+   */
+  readonly variants?: readonly string[];
 }
 
 /**
@@ -135,6 +144,18 @@ export const MAX_STEP_DELAY_HOURS = 24 * 90;
 /** How many touches one plan may contain. */
 export const MAX_STEPS = 12;
 
+/**
+ * Alternates a step may carry on top of its own intent: A plus B, C and D.
+ *
+ * More arms than this and a cadence of realistic size never sends enough of
+ * any one of them to tell the angles apart, so the report would show noise
+ * dressed up as a winner.
+ */
+export const MAX_STEP_VARIANTS = 3;
+
+/** The longest one intent may be. It is guidance for a sentence, not a brief. */
+export const MAX_INTENT_LENGTH = 500;
+
 export interface CadenceProblem {
   readonly step?: number;
   readonly message: string;
@@ -189,6 +210,15 @@ export function validateCadence(steps: readonly CadenceStep[]): readonly Cadence
         message: `A gap of more than ${MAX_STEP_DELAY_HOURS / 24} days is not a cadence.`,
       });
     }
+
+    if (step.intent !== undefined && step.intent.length > MAX_INTENT_LENGTH) {
+      problems.push({
+        step: index,
+        message: `An intent may be at most ${MAX_INTENT_LENGTH} characters.`,
+      });
+    }
+
+    problems.push(...variantProblems(step, index));
   });
 
   // Conditions and acceptance windows. Checked here, where the plan is still
@@ -317,4 +347,116 @@ export function dueAtFor(
  */
 export function cadenceDurationHours(steps: readonly CadenceStep[]): number {
   return steps.reduce((total, step) => total + Math.max(0, step.delayHours), 0);
+}
+
+// ------------------------------------------------------------------ variants
+
+function variantProblems(step: CadenceStep, index: number): readonly CadenceProblem[] {
+  const variants = step.variants;
+  if (variants === undefined || variants.length === 0) return [];
+
+  const problems: CadenceProblem[] = [];
+
+  // Variant A is the step's own intent. Without one there is nothing for B to
+  // be compared against — "no guidance" versus "some guidance" is a test of
+  // whether guidance helps, which is not what anybody setting up an A/B means.
+  if (!step.intent?.trim()) {
+    problems.push({
+      step: index,
+      message: 'Give the step an intent before adding variants — the intent is variant A.',
+    });
+  }
+
+  if (variants.length > MAX_STEP_VARIANTS) {
+    problems.push({
+      step: index,
+      message: `A step may have at most ${MAX_STEP_VARIANTS} variants besides its intent.`,
+    });
+  }
+
+  const seen = new Set([step.intent?.trim().toLowerCase() ?? '']);
+  variants.forEach((variant, n) => {
+    const label = variantLabel(n + 1);
+    const text = typeof variant === 'string' ? variant.trim() : '';
+
+    if (!text) {
+      problems.push({ step: index, message: `Variant ${label} is empty.` });
+    } else if (text.length > MAX_INTENT_LENGTH) {
+      problems.push({
+        step: index,
+        message: `Variant ${label} may be at most ${MAX_INTENT_LENGTH} characters.`,
+      });
+    } else if (seen.has(text.toLowerCase())) {
+      // Two arms with the same words would split the sample in half and then
+      // report whatever difference chance produced as a finding.
+      problems.push({ step: index, message: `Variant ${label} repeats an earlier one.` });
+    }
+
+    seen.add(text.toLowerCase());
+  });
+
+  return problems;
+}
+
+/** `0` is A, the step's own intent; `1` is B, and so on. */
+export function variantLabel(index: number): string {
+  return String.fromCharCode(65 + index);
+}
+
+/**
+ * Which arm of a step one enrollment gets, as an index into `[intent, ...variants]`.
+ *
+ * A hash of the enrollment and the step rather than a random draw, so a step
+ * that is retried after a failed tick lands on the same arm, and so the
+ * assignment needs no column of its own to stay stable. Hashing the position
+ * in as well keeps the arms of consecutive steps independent: without it the
+ * people who got B on step one would be exactly the people who get B on step
+ * two, and a difference at step two could be step one's doing.
+ */
+export function pickVariant(enrollmentId: string, position: number, arms: number): number {
+  if (arms <= 1) return 0;
+
+  // FNV-1a, 32-bit, then murmur3's finaliser. The finaliser is not optional:
+  // FNV's low bit depends only on the parity of the input's characters, so
+  // `% 2` on the raw hash put every enrollment on opposite arms at steps 0
+  // and 1 — a perfectly anti-correlated split that looks even in aggregate.
+  let hash = 0x811c9dc5;
+  for (const char of `${enrollmentId}:${position}`) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b) >>> 0;
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35) >>> 0;
+  hash ^= hash >>> 16;
+
+  return (hash >>> 0) % arms;
+}
+
+export interface StepGuidance {
+  /** `A`, `B`, … — or undefined when the step is not being tested. */
+  readonly variant?: string;
+  /** The intent this enrollment's message should serve, if the step has one. */
+  readonly intent?: string;
+}
+
+/**
+ * The intent one enrollment's touch at `step` should serve, and which arm it came from.
+ *
+ * A step with no variants reports no variant at all, rather than "A", so the
+ * report only ever shows arms for steps that were actually being tested.
+ */
+export function guidanceFor(enrollmentId: string, step: CadenceStep): StepGuidance {
+  const intent = step.intent?.trim();
+  const variants = (step.variants ?? []).map((v) => v.trim()).filter(Boolean);
+
+  if (!intent) return {};
+  if (variants.length === 0) return { intent };
+
+  const arms = [intent, ...variants];
+  const index = pickVariant(enrollmentId, step.position, arms.length);
+
+  return { variant: variantLabel(index), intent: arms[index] ?? intent };
 }

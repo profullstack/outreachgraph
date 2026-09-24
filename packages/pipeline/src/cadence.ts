@@ -16,6 +16,7 @@
 
 import {
   dueAtFor,
+  guidanceFor,
   newId,
   validateCadence,
   type ActionKind,
@@ -29,6 +30,7 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluatePolicy, type PolicyDecision, type PolicyRequest } from '@outreachgraph/policy';
 import { emitEvent } from './events';
 import { resolveStepCondition, saveBranching, withBranching } from './cadence-conditions';
+import { emitWebhookEvent } from './webhooks';
 
 export interface CadenceRow {
   readonly id: string;
@@ -156,7 +158,7 @@ export async function advanceCadences(
 
     // The pointer is past the end: the plan is finished.
     if (!step) {
-      await finish(db, enrollment.id, 'completed', undefined, stamp);
+      await finish(db, enrollment, 'completed', undefined, stamp);
       completed += 1;
       continue;
     }
@@ -166,7 +168,7 @@ export async function advanceCadences(
     // leave the enrollment alive and generating a refused card every time the
     // next step fell due, for as long as the cadence ran.
     if (step.stopOnReply && (await hasReplied(db, enrollment))) {
-      await finish(db, enrollment.id, 'stopped', 'they replied', stamp);
+      await finish(db, enrollment, 'stopped', 'they replied', stamp);
       await record(
         db,
         enrollment,
@@ -323,9 +325,10 @@ async function loadSteps(db: Client, cadenceId: string): Promise<readonly Cadenc
     delay_hours: number;
     stop_on_reply: number;
     intent: string | null;
+    variants_json: string | null;
   }>(
     db,
-    `SELECT position, network, action, delay_hours, stop_on_reply, intent
+    `SELECT position, network, action, delay_hours, stop_on_reply, intent, variants_json
        FROM cadence_steps WHERE cadence_id = ? ORDER BY position`,
     [cadenceId],
   );
@@ -337,10 +340,25 @@ async function loadSteps(db: Client, cadenceId: string): Promise<readonly Cadenc
     delayHours: row.delay_hours,
     stopOnReply: row.stop_on_reply === 1,
     ...(row.intent ? { intent: row.intent } : {}),
+    ...variantsFrom(row.variants_json),
   }));
 
   // Conditions and acceptance windows live in their own columns (0042).
   return withBranching(db, cadenceId, steps);
+}
+
+function variantsFrom(json: string | null): { variants?: readonly string[] } {
+  if (!json) return {};
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return {};
+    const variants = parsed.filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+    return variants.length > 0 ? { variants } : {};
+  } catch {
+    // A column this module wrote cannot be malformed unless someone edited it
+    // by hand; a step that loses its variants still runs as plain variant A.
+    return {};
+  }
 }
 
 async function hasReplied(db: Client, enrollment: DueEnrollment): Promise<boolean> {
@@ -370,7 +388,7 @@ async function moveOn(
   const dueAt = dueAtFor(new Date(enrollment.enrolled_at), steps, next);
 
   if (!dueAt) {
-    await finish(db, enrollment.id, 'completed', undefined, stamp);
+    await finish(db, enrollment, 'completed', undefined, stamp);
     return true;
   }
 
@@ -386,7 +404,7 @@ async function moveOn(
 
 async function finish(
   db: Client,
-  enrollmentId: string,
+  enrollment: DueEnrollment,
   status: 'completed' | 'stopped',
   reason: string | undefined,
   stamp: string,
@@ -395,8 +413,21 @@ async function finish(
     sql: `UPDATE cadence_enrollments
              SET status = ?, next_due_at = NULL, stopped_reason = ?, updated_at = ?
            WHERE id = ?`,
-    args: [status, reason ?? null, stamp, enrollmentId],
+    args: [status, reason ?? null, stamp, enrollment.id],
   });
+
+  // Only a plan that ran out of steps. One stopped by a reply has already
+  // announced itself as `reply.received`, and saying it twice under two names
+  // is how a Zap ends up creating two deals.
+  if (status === 'completed') {
+    await emitWebhookEvent(db, enrollment.workspace_id, 'cadence.completed', {
+      enrollmentId: enrollment.id,
+      cadenceId: enrollment.cadence_id,
+      campaignId: enrollment.campaign_id,
+      personId: enrollment.person_id,
+      completedAt: stamp,
+    });
+  }
 }
 
 async function record(
@@ -410,8 +441,8 @@ async function record(
   await db.execute({
     sql: `INSERT INTO cadence_step_runs (id, enrollment_id, workspace_id, step_position,
           network, action, outcome, policy_decision, policy_gate, recommendation_id,
-          detail, occurred_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          detail, variant, occurred_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       newId('cadenceRun'),
       enrollment.id,
@@ -424,6 +455,7 @@ async function record(
       resolution.gate ?? null,
       recommendationId ?? null,
       resolution.reason.slice(0, 500),
+      guidanceFor(enrollment.id, step).variant ?? null,
       stamp,
     ],
   });
@@ -479,8 +511,8 @@ export async function createCadence(
   for (const step of [...input.steps].sort((a, b) => a.position - b.position)) {
     await db.execute({
       sql: `INSERT INTO cadence_steps (id, cadence_id, position, network, action,
-            delay_hours, stop_on_reply, intent)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            delay_hours, stop_on_reply, intent, variants_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         newId('cadenceStep'),
         id,
@@ -490,6 +522,9 @@ export async function createCadence(
         step.delayHours,
         step.stopOnReply ? 1 : 0,
         step.intent ?? null,
+        step.variants && step.variants.length > 0
+          ? JSON.stringify(step.variants.map((v) => v.trim()))
+          : null,
       ],
     });
   }

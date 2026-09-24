@@ -34,6 +34,7 @@ import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
+import { routesToApi } from './routing';
 import {
   drainQueue,
   emitEvent,
@@ -49,6 +50,9 @@ import {
   processDeletion,
   workspacesWithInternalBacklog,
   pruneWorkflowEvents,
+  pruneWebhookDeliveries,
+  runCrmSync,
+  runWebhookDelivery,
   regenerateRecommendations,
   rescoreProspect,
   reseedIdleCampaigns,
@@ -535,9 +539,7 @@ const server = Bun.serve({
   async fetch(request) {
     const { pathname } = new URL(request.url);
 
-    if (pathname.startsWith('/api/') || pathname.startsWith('/health')) {
-      return api.fetch(request);
-    }
+    if (routesToApi(pathname)) return api.fetch(request);
     return proxyToWeb(request);
   },
 });
@@ -747,6 +749,27 @@ async function runJob(job: QueuedJob): Promise<void> {
       );
       return;
     }
+    case 'deliver_webhook': {
+      // Throws to ask for a retry; the delivery row already says why.
+      const result = await runWebhookDelivery({ db, encryptionKey }, job);
+      console.log(
+        `deliver_webhook ${String(job.payload.deliveryId)}: ${result.status}` +
+          (result.statusCode ? ` (${result.statusCode})` : '') +
+          (result.error ? ` ${result.error}` : ''),
+      );
+      return;
+    }
+    case 'sync_crm': {
+      const result = await runCrmSync({ db, encryptionKey }, job);
+      console.log(
+        `sync_crm ${String(job.payload.provider)}: ${result.outcome}` +
+          (result.contactId
+            ? ` contact ${result.contactId}${result.created ? ' (new)' : ''}`
+            : '') +
+          (result.error ? ` ${result.error}` : ''),
+      );
+      return;
+    }
     default:
       throw new Error(`no handler for job kind ${job.kind}`);
   }
@@ -787,6 +810,10 @@ async function tick(): Promise<void> {
   // a separate table precisely so this can be aggressive.
   const prunedEvents = await pruneWorkflowEvents(db);
   if (prunedEvents > 0) console.log(`pruned ${prunedEvents} workflow events`);
+
+  // The delivery log is for debugging a receiver, and a month covers that.
+  const prunedDeliveries = await pruneWebhookDeliveries(db);
+  if (prunedDeliveries > 0) console.log(`pruned ${prunedDeliveries} webhook deliveries`);
 
   // Cards that reach nobody are cleared before the queue drains, so the crawls
   // they enqueue run on this tick rather than waiting for the next one.

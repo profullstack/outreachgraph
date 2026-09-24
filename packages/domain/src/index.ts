@@ -30,3 +30,4 @@ export * from './outreach';
 export * from './video';
 export * from './compliance';
 export * from './autogtm';
+export * from './webhooks';

@@ -342,3 +342,38 @@ describe('a company inbox as the recipient', () => {
     expect(prompt).not.toContain('team');
   });
 });
+
+describe('cadence guidance', () => {
+  test('reaches the prompt as a purpose, not as context', async () => {
+    const model = new StubModel(GOOD_DRAFT);
+    await composeDraft(model, input({ guidance: 'ask who owns payouts at Acme' }));
+
+    const prompt = model.calls[0]!.user;
+    expect(prompt).toContain('The purpose of this particular message: ask who owns payouts');
+    expect(prompt).toContain('it is an instruction, not a fact');
+
+    // Guidance sits after the CONTEXT block rather than inside it.
+    expect(prompt.indexOf('The purpose')).toBeGreaterThan(prompt.indexOf('Their exact words'));
+  });
+
+  test('cannot ground a claim the evidence does not support', async () => {
+    // The guidance names a customer; the draft repeats it; nothing in the
+    // evidence supports it. The checks must still refuse.
+    const model = new StubModel(
+      'Settlement taking days is why Globex moved their cross-border payouts to ExamplePay.',
+    );
+    const result = await composeDraft(
+      model,
+      input({ guidance: 'mention that Globex switched to us', maxAttempts: 0 }),
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  test('leaves the prompt unchanged when absent', async () => {
+    const model = new StubModel(GOOD_DRAFT);
+    await composeDraft(model, input());
+
+    expect(model.calls[0]!.user).not.toContain('The purpose of this particular message');
+  });
+});

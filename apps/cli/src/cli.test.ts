@@ -199,6 +199,69 @@ describe('commands', () => {
     expect(output).toContain('4 answered');
     expect(output).toContain('7 remaining');
   });
+
+  test('webhooks add posts the url and filter, and prints the secret once', async () => {
+    const { client: api, calls } = client({
+      endpoint: { id: 'whk_1', urlHint: 'https://hooks.slack.com/…abcd' },
+      secret: 'whsec_abc',
+    });
+
+    const output = await commandByName('webhooks')!.run({
+      client: api,
+      args: ['add', 'https://hooks.slack.com/services/T/B/abcd'],
+      flags: { slack: true, events: 'reply.received, action.sent' },
+    });
+
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/webhooks');
+    expect(calls[0]?.body).toEqual({
+      url: 'https://hooks.slack.com/services/T/B/abcd',
+      kind: 'slack',
+      events: ['reply.received', 'action.sent'],
+    });
+    expect(output).toContain('whk_1');
+    expect(output).toContain('whsec_abc');
+  });
+
+  test('webhooks list prints one endpoint per line, id first; rm and test hit the id', async () => {
+    const { client: api, calls } = client({
+      endpoints: [
+        { id: 'whk_1', kind: 'generic', active: true, events: [], urlHint: 'https://a.example' },
+      ],
+    });
+    const webhooks = commandByName('webhooks')!;
+
+    const listed = await webhooks.run({ client: api, args: ['list'], flags: {} });
+    expect(listed.startsWith('whk_1')).toBe(true);
+    expect(listed).toContain('all events');
+
+    await webhooks.run({ client: api, args: ['test', 'whk_1'], flags: {} });
+    await webhooks.run({ client: api, args: ['rm', 'whk_1'], flags: {} });
+    expect(calls[1]).toMatchObject({
+      method: 'POST',
+      url: 'https://api.test/api/v1/webhooks/whk_1/test',
+    });
+    expect(calls[2]).toMatchObject({
+      method: 'DELETE',
+      url: 'https://api.test/api/v1/webhooks/whk_1',
+    });
+  });
+
+  test('connect hubspot sends the token to the CRM route', async () => {
+    const { client: api, calls } = client({ connection: { provider: 'hubspot', connected: true } });
+
+    const output = await commandByName('connect')!.run({
+      client: api,
+      args: ['hubspot'],
+      flags: { token: 'pat-123' },
+    });
+
+    expect(calls[0]).toMatchObject({
+      method: 'PUT',
+      url: 'https://api.test/api/v1/integrations/crm/hubspot',
+      body: { token: 'pat-123' },
+    });
+    expect(output).toContain('HubSpot');
+  });
 });
 
 describe('cadences', () => {

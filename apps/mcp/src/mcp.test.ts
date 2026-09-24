@@ -172,6 +172,27 @@ describe('tools', () => {
     expect(calls[1]?.body).toEqual({});
   });
 
+  test('add_webhook posts the endpoint; list_webhooks only reads', async () => {
+    const { fetchImpl, calls } = recorder(ok());
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('add_webhook')!, client, {
+      url: 'https://hooks.example.com/in',
+      kind: 'slack',
+      events: ['reply.received'],
+    });
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/webhooks');
+    expect(calls[0]?.body).toEqual({
+      url: 'https://hooks.example.com/in',
+      kind: 'slack',
+      events: ['reply.received'],
+    });
+
+    expect(toolByName('list_webhooks')?.readOnly).toBe(true);
+    await runTool(toolByName('list_webhooks')!, client, {});
+    expect(calls[1]?.method).toBe('GET');
+  });
+
   test('there is no tool that posts to a network directly', () => {
     // A tool named "post_to_linkedin" would be a way around the policy engine
     // whatever its implementation did today.

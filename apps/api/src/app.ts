@@ -97,6 +97,7 @@ import {
   readResearchGrid,
   applyUnsubscribe,
   recordLinkClick,
+  recordEmailOpen,
   runResearchGrid,
   setCadenceStatus,
   setRuleEnabled,
@@ -126,7 +127,11 @@ import {
   xAccountSummary,
   XAccountError,
 } from '@outreachgraph/pipeline';
-import type { XOAuthClient } from '@outreachgraph/providers';
+import type {
+  FetchLike as ProviderFetchLike,
+  HostLookup,
+  XOAuthClient,
+} from '@outreachgraph/providers';
 import {
   archiveCampaign,
   createCampaignFromIntake,
@@ -167,6 +172,7 @@ import {
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import {
   batchStatus,
+  emitWebhookEvent,
   enqueue,
   nichedbDiscoveryStatus,
   nichedbFirstDedupeKey,
@@ -220,6 +226,7 @@ import {
   UnknownProductError,
 } from './workspace-profile';
 import { autogtmRoutes } from './autogtm';
+import { crmRoutes, webhookRoutes } from './webhooks';
 import { llmsText, openApiDocument } from './autogtm-docs';
 import {
   actorFromApiKey,
@@ -277,6 +284,14 @@ export interface AppOptions {
    * it `og connect x` is refused and X cards stay hand-offs.
    */
   readonly xOAuth?: XOAuthClient | undefined;
+  /**
+   * Resolves a webhook URL's host for the SSRF check. Tests pass a fake so a
+   * route test does not depend on real DNS; production uses the system
+   * resolver.
+   */
+  readonly webhookLookup?: HostLookup | undefined;
+  /** The network a CRM token is verified over. Tests pass a fake. */
+  readonly crmFetch?: ProviderFetchLike | undefined;
   /**
    * Suggests the communities a campaign should listen to.
    *
@@ -485,6 +500,28 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     // browser and every later click would never reach us, so a prospect who
     // returns to the message next week would be invisible.
     return c.redirect(click.targetUrl, 302);
+  });
+
+  // The open pixel. Always answers with the image, known token or not: a
+  // broken-image icon in somebody's mail client is our failure made visible
+  // to them, and a 404 would also tell anybody probing which tokens exist.
+  app.get('/o/:file', async (c) => {
+    const token = c.req.param('file').replace(/\.gif$/i, '');
+
+    try {
+      await recordEmailOpen(options.db, { token, userAgent: c.req.header('user-agent') });
+    } catch {
+      // Fall through to the image. A lost open is not worth a broken message.
+    }
+
+    return new Response(PIXEL_GIF, {
+      headers: {
+        'content-type': 'image/gif',
+        // Every fetch has to reach us for a second open to be seen at all.
+        'cache-control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'content-length': String(PIXEL_GIF.byteLength),
+      },
+    });
   });
 
   // ---------------------------------------------------------------- health
@@ -1263,6 +1300,21 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       requireVerifiedEmail: (db, actor) => requireVerifiedEmail(db, actor),
     }),
   );
+
+  // ------------------------------------------------ webhooks and CRM sync
+  //
+  // Where a workspace's events go once they leave the product. In a module of
+  // its own; the emitting happens in the pipeline, where the events occur.
+  {
+    const webhookDeps = {
+      encryptionKey: options.encryptionKey,
+      requireVerifiedEmail: (db: Client, actor: RequestActor) => requireVerifiedEmail(db, actor),
+      lookup: options.webhookLookup,
+      crmFetch: options.crmFetch,
+    };
+    api.route('/webhooks', webhookRoutes(webhookDeps));
+    api.route('/integrations/crm', crmRoutes(webhookDeps));
+  }
 
   // ----------------------------------------------------------------- team
   //
@@ -2586,6 +2638,15 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       detail: { address },
     });
 
+    await emitWebhookEvent(db, actor.workspaceId, 'reply.received', {
+      personId,
+      network: 'email',
+      ...(address ? { fromAddress: address } : {}),
+      ...(body.body ? { body: body.body.slice(0, 2000) } : {}),
+      occurredAt: at,
+      recordedBy: 'user',
+    });
+
     return c.json({ recorded: true, personId, conversationOpen: true });
   });
 
@@ -3692,6 +3753,17 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       detail: { mode: body.mode },
     });
 
+    await emitWebhookEvent(db, actor.workspaceId, 'action.sent', {
+      actionId: action.id,
+      recommendationId: action.recommendation_id,
+      personId: action.person_id,
+      campaignId: manualRecommendation?.campaign_id ?? null,
+      network: action.network,
+      mode: body.mode,
+      ...(body.externalUrl ? { url: body.externalUrl } : {}),
+      sentAt: stamp,
+    });
+
     return c.json({ executed: true, actionId: action.id });
   });
 
@@ -4046,16 +4118,106 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     ]);
     if (!cadence) throw ApiError.notFound('cadence');
 
-    const steps = await queryAll(
+    const rows = await queryAll<Record<string, unknown> & { variants_json: string | null }>(
       db,
-      `SELECT position, network, action, delay_hours, stop_on_reply, intent,
+      `SELECT position, network, action, delay_hours, stop_on_reply, intent, variants_json,
               coalesce(run_condition, 'always') AS condition,
               wait_for_acceptance_hours
          FROM cadence_steps WHERE cadence_id = ? ORDER BY position`,
       [id],
     );
 
+    const steps = rows.map(({ variants_json, ...step }) => ({
+      ...step,
+      variants: parseStringArray(variants_json),
+    }));
+
     return c.json({ cadence, steps });
+  });
+
+  /**
+   * How each arm of each tested step is doing.
+   *
+   * Counts people, not messages, at every stage — a person who clicked three
+   * links clicked once. `replied` is a reply recorded after that step's action
+   * went out, so an answer to step one is not credited to step three's arm.
+   * Opens are reported for completeness and labelled for what they are: Apple
+   * Mail fetches every image on delivery, so `opened` is an upper bound.
+   */
+  api.get('/cadences/:id/variants', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const id = c.req.param('id');
+
+    const cadence = await queryOne<{ id: string }>(
+      db,
+      'SELECT id FROM cadences WHERE id = ? AND workspace_id = ?',
+      [id, actor.workspaceId],
+    );
+    if (!cadence) throw ApiError.notFound('cadence');
+
+    const rows = await queryAll<{
+      step_position: number;
+      variant: string;
+      assigned: number;
+      sent: number;
+      opened: number;
+      clicked: number;
+      replied: number;
+    }>(
+      db,
+      `WITH runs AS (
+         SELECT r.step_position, r.variant, e.person_id, r.recommendation_id
+           FROM cadence_step_runs r
+           JOIN cadence_enrollments e ON e.id = r.enrollment_id
+          WHERE e.cadence_id = ? AND r.workspace_id = ? AND r.variant IS NOT NULL
+       ),
+       sent AS (
+         SELECT runs.*, a.id AS action_id, COALESCE(a.executed_at, a.created_at) AS executed_at
+           FROM runs
+           JOIN actions a ON a.recommendation_id = runs.recommendation_id
+                         AND a.status = 'completed'
+       )
+       SELECT runs.step_position, runs.variant,
+              count(DISTINCT runs.person_id) AS assigned,
+              (SELECT count(DISTINCT s.person_id) FROM sent s
+                WHERE s.step_position = runs.step_position AND s.variant = runs.variant) AS sent,
+              (SELECT count(DISTINCT s.person_id) FROM sent s
+                 JOIN open_pixels op ON op.action_id = s.action_id
+                 JOIN email_opens eo ON eo.pixel_id = op.id AND eo.automated IS NULL
+                WHERE s.step_position = runs.step_position AND s.variant = runs.variant) AS opened,
+              (SELECT count(DISTINCT s.person_id) FROM sent s
+                 JOIN tracked_links tl ON tl.action_id = s.action_id
+                 JOIN link_clicks lc ON lc.tracked_link_id = tl.id AND lc.automated IS NULL
+                WHERE s.step_position = runs.step_position AND s.variant = runs.variant) AS clicked,
+              (SELECT count(DISTINCT s.person_id) FROM sent s
+                 JOIN interactions i ON i.person_id = s.person_id
+                                    AND i.workspace_id = ?
+                                    AND i.direction = 'inbound' AND i.state = 'replied'
+                                    AND i.occurred_at >= s.executed_at
+                WHERE s.step_position = runs.step_position AND s.variant = runs.variant) AS replied
+         FROM runs
+     GROUP BY runs.step_position, runs.variant
+     ORDER BY runs.step_position, runs.variant`,
+      [id, actor.workspaceId, actor.workspaceId],
+    );
+
+    return c.json({
+      variants: rows.map((row) => {
+        const sent = Number(row.sent);
+        const replied = Number(row.replied);
+        return {
+          step: Number(row.step_position),
+          variant: row.variant,
+          assigned: Number(row.assigned),
+          sent,
+          opened: Number(row.opened),
+          clicked: Number(row.clicked),
+          replied,
+          replyRate: sent > 0 ? Math.round((replied / sent) * 1000) / 1000 : null,
+        };
+      }),
+    });
   });
 
   api.post('/cadences', async (c) => {
@@ -4090,6 +4252,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         ...(raw.waitForAcceptanceHours !== undefined && raw.waitForAcceptanceHours !== null
           ? { waitForAcceptanceHours: Number(raw.waitForAcceptanceHours) }
           : {}),
+        ...(Array.isArray(raw.variants) ? { variants: raw.variants.map(String) } : {}),
       })) as never,
     });
 
@@ -4242,9 +4405,10 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       reply_to_email: string | null;
       track_links: number | null;
       tracking_origin: string | null;
+      track_opens: number | null;
     }>(
       db,
-      `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin
+      `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin, track_opens
          FROM workspace_settings WHERE workspace_id = ?`,
       [actor.workspaceId],
     );
@@ -4263,6 +4427,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       replyToEmail: cap?.reply_to_email ?? null,
       trackLinks: (cap?.track_links ?? 0) === 1,
       trackingOrigin: cap?.tracking_origin ?? null,
+      trackOpens: (cap?.track_opens ?? 0) === 1,
       // Where tracked links would actually point if switched on. The setting
       // alone is not enough to tell a user whether tracking will work, since
       // an unset origin falls back to the service's own APP_URL.
@@ -4299,6 +4464,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       // means off — the same full-state rule the alert toggles above follow.
       // For an opt-in that is also the safe direction to be wrong in.
       trackLinks: body.trackLinks === true,
+      trackOpens: body.trackOpens === true,
       ...(body.trackingOrigin === undefined
         ? {}
         : { trackingOrigin: body.trackingOrigin === null ? null : String(body.trackingOrigin) }),
@@ -4871,6 +5037,18 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       detail: { reason: body.reason, scope: body.scope, keys: body.matchKeys.length },
     });
 
+    // Announced per person. A key that is an address or a domain names nobody
+    // in particular yet, and inventing a person for it would be a guess.
+    for (const key of body.matchKeys) {
+      if (!key.startsWith('person:')) continue;
+      await emitWebhookEvent(db, actor.workspaceId, 'person.suppressed', {
+        personId: key.slice('person:'.length),
+        reason: body.reason,
+        source: 'user',
+        suppressionId: id,
+      });
+    }
+
     return c.json({ suppressionId: id }, 201);
   });
 
@@ -5256,6 +5434,21 @@ async function approveRecommendation(
       edited: Boolean(input.editedBody),
       ...(handoff ? { handoff: true, gate: decision.gate } : {}),
     },
+  });
+
+  await emitWebhookEvent(db, actor.workspaceId, 'recommendation.approved', {
+    recommendationId: recommendation.id,
+    actionId,
+    personId: recommendation.person_id,
+    campaignId: recommendation.campaign_id,
+    action: recommendation.action,
+    network: recommendation.network,
+    mode,
+    handoff,
+    // Research and other internal cards are approvals too, but they start no
+    // conversation; a CRM uses this to ignore them.
+    outbound: isOutboundAction(recommendation.action as ActionKind),
+    approvedBy: actor.userId,
   });
 
   // Approving an email is the instruction to send it.
@@ -5662,6 +5855,22 @@ function stringList(value: unknown): string[] {
   if (typeof value === 'string') return value.split(',');
   return [];
 }
+
+/** A JSON array-of-strings column, or `[]` when it is empty or unreadable. */
+function parseStringArray(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    return stringList(JSON.parse(json));
+  } catch {
+    return [];
+  }
+}
+
+/** A transparent 1×1 GIF, the smallest image every mail client will render. */
+const PIXEL_GIF = Uint8Array.from(
+  atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'),
+  (char) => char.charCodeAt(0),
+);
 
 /**
  * Whether this campaign belongs to the caller's workspace.

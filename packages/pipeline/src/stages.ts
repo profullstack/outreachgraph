@@ -25,6 +25,7 @@ import {
   type ProspectStatus,
 } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
+import { emitWebhookEvent } from './webhooks';
 
 export interface StatusChange {
   readonly workspaceId: string;
@@ -117,5 +118,13 @@ export async function recordDiscovered(
           from_status, to_status, stage, occurred_at)
           VALUES (?, ?, ?, ?, NULL, 'discovered', 'discovered', ?)`,
     args: [newId('stageEvent'), change.workspaceId, change.campaignId, change.personId, stamp],
+  });
+
+  // Here and not at person creation: a person is a prospect once a campaign
+  // holds them, and only a fresh membership reaches this function.
+  await emitWebhookEvent(db, change.workspaceId, 'prospect.created', {
+    personId: change.personId,
+    campaignId: change.campaignId,
+    discoveredAt: stamp,
   });
 }
