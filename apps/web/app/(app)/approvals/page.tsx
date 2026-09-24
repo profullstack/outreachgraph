@@ -1,13 +1,17 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ApprovalQueue as Queue } from '../../../components/approval-queue';
+import { HandoffCards } from '../../../components/handoff-cards';
 import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchApprovals,
+  fetchHandoffs,
   type ApprovalFilter,
   type ApprovalQueue,
   type ChannelFilter,
+  type HandoffView,
 } from '../../../lib/api';
 
 export const dynamic = 'force-dynamic';
@@ -40,22 +44,48 @@ function isChannelFilter(value: string | undefined): value is ChannelFilter {
 export default async function ApprovalsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string; channel?: string }>;
+  searchParams: Promise<{ filter?: string; channel?: string; tab?: string }>;
 }) {
-  const { filter: requested, channel: requestedChannel } = await searchParams;
+  const { filter: requested, channel: requestedChannel, tab } = await searchParams;
   const filter: ApprovalFilter = isFilter(requested) ? requested : 'ready';
   const channel: ChannelFilter = isChannelFilter(requestedChannel) ? requestedChannel : 'all';
 
   let queue: ApprovalQueue;
+  let handoffs: HandoffView[];
 
   try {
-    queue = await fetchApprovals('all', QUEUE_LIMIT, 'all');
+    [queue, handoffs] = await Promise.all([
+      fetchApprovals('all', QUEUE_LIMIT, 'all'),
+      // A failure here must not take the queue down with it: hand-offs are
+      // the second thing on this page, not the first.
+      fetchHandoffs(QUEUE_LIMIT).catch((error: unknown) => {
+        if (error instanceof NotAuthenticatedError) throw error;
+        return [] as HandoffView[];
+      }),
+    ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     // A missing API in local development should show what to do, not a stack
     // trace — the PWA is often run before the API is up.
     if (error instanceof ApiUnavailableError) return <ApiDown />;
     throw error;
+  }
+
+  if (tab === 'handoffs') {
+    return (
+      <div className="pt-4">
+        <header className="mb-3">
+          <h1 className="text-xl font-semibold">Hand-offs</h1>
+          <p className="text-ink-muted text-sm">
+            Approved, but the product may not do these for you. Copy, open, paste, Mark done.
+          </p>
+          <Link href="/approvals" className="text-accent text-sm underline">
+            Back to the queue ({queue.counts.buckets.all ?? 0})
+          </Link>
+        </header>
+        <HandoffCards handoffs={handoffs} />
+      </div>
+    );
   }
 
   return (
@@ -66,8 +96,36 @@ export default async function ApprovalsPage({
       initialChannel={channel}
       // Handed in as a slot so it lands under the heading the queue owns.
       // `approve` is suppressed: the queue it would link to is this page.
-      guide={<PageGuide page="approvals" suppress={['approve']} />}
+      guide={
+        <>
+          <PageGuide page="approvals" suppress={['approve']} />
+          <HandoffBanner count={handoffs.length} />
+        </>
+      }
     />
+  );
+}
+
+/**
+ * Approved hand-offs are no longer in the queue, so without this they would
+ * be approved and then invisible: the one outcome worse than being held.
+ */
+function HandoffBanner({ count }: { count: number }) {
+  if (count === 0) return null;
+
+  return (
+    <Link
+      href="/approvals?tab=handoffs"
+      className="border-accent bg-surface-raised mb-3 flex items-center justify-between gap-3 rounded-xl border p-3 text-sm"
+    >
+      <span>
+        <span className="font-medium">
+          {count.toLocaleString()} hand-off{count === 1 ? '' : 's'} need you.
+        </span>{' '}
+        <span className="text-ink-muted">About thirty seconds each.</span>
+      </span>
+      <span className="text-accent shrink-0 font-medium">Open</span>
+    </Link>
   );
 }
 

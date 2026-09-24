@@ -52,6 +52,29 @@ export interface ApprovalCard {
   hold?: ApprovalHold;
 }
 
+/**
+ * Approved work the product may not do itself, waiting for a person.
+ *
+ * Built by the API, not here: the Open link and the steps depend on the
+ * trigger signal, the person's identities and, for email, the resolved
+ * address, none of which the browser has.
+ */
+export interface HandoffView {
+  actionId: string;
+  recommendationId: string;
+  personId: string;
+  personName: string;
+  network: string;
+  action: string;
+  /** Ready to paste. Empty when nothing was drafted. */
+  text: string;
+  openUrl?: string;
+  openLabel: string;
+  steps: string[];
+  reason: string;
+  createdAt: string;
+}
+
 /** Why a card cannot be approved yet, and when that changes. */
 export interface ApprovalHold {
   gate: string;

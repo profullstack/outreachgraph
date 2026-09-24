@@ -275,17 +275,25 @@ describe('approving an email', () => {
     expect(sent).toHaveLength(0);
   });
 
-  test('still refuses when this deployment genuinely cannot send', async () => {
+  test('hands off to the reviewer when this deployment genuinely cannot send', async () => {
     // The original message was not wrong in every case — with no mailer and no
-    // connected mailbox it is the truth, and it must survive.
+    // connected mailbox the product cannot send. It used to be a 409 and a
+    // dead end; it is now a hand-off card that opens the reviewer's own mail
+    // app with the words in it, and nothing is recorded as sent.
     const { app, db } = await harness('approve-no-mailer');
     await makeEmailCard(db, { personEmail: 'jane@acme.com' });
 
     const response = await approve(app);
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(200);
 
-    const payload = (await response.json()) as { error: { message: string } };
-    expect(payload.error.message).toContain('No connected email account');
+    const payload = (await response.json()) as {
+      policy: { decision: string };
+      delivery?: unknown;
+      handoff?: { openUrl?: string };
+    };
+    expect(payload.policy.decision).toBe('manual_only');
+    expect(payload.delivery).toBeUndefined();
+    expect(payload.handoff?.openUrl).toStartWith('mailto:jane@acme.com');
   });
 });
 
@@ -461,7 +469,12 @@ describe('connecting a mailbox over the API', () => {
     const removed = await app.request('/api/v1/integrations/email', { method: 'DELETE' });
     expect(removed.status).toBe(200);
 
+    // Without a mailbox the card can no longer be sent from here: it becomes
+    // a hand-off for the reviewer's own mail app rather than a send.
     const response = await approve(app);
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as { delivery?: unknown; handoff?: unknown };
+    expect(payload.delivery).toBeUndefined();
+    expect(payload.handoff).toBeDefined();
   });
 });

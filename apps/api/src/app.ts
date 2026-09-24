@@ -31,6 +31,7 @@ import {
 import {
   channelForNetwork,
   isNetwork,
+  isOutboundAction,
   newId,
   OUTBOUND_ACTION_KINDS,
   type ActionKind,
@@ -125,6 +126,7 @@ import {
   setCampaignStatus,
 } from './campaigns';
 import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
+import { isHandoffDecision, listHandoffs, type Handoff } from './handoff';
 import { CoinPayClient } from '@outreachgraph/payments';
 import {
   billingOverview,
@@ -2972,6 +2974,12 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     let approved = 0;
     let sent = 0;
     let researchQueued = 0;
+    // Counted apart from both `approved` and `held`. Folding them into
+    // `approved` would claim two hundred things happened when a human still
+    // has to do each one; folding them into `held` is the bug this replaces,
+    // where the preview read "Nothing here can be approved" over a queue of
+    // work that only needed a person to press the button.
+    let handoffs = 0;
     const holds = new Map<string, { reason: string; count: number }>();
 
     for (const row of selected) {
@@ -2986,6 +2994,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         );
 
         if (isExecutable(decision.decision, true)) approved += 1;
+        else if (isHandoffDecision(decision)) handoffs += 1;
         else tallyHold(holds, decision.gate, decision.reason);
 
         continue;
@@ -2993,10 +3002,16 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
       const outcome = await approveRecommendation(db, options, actor, recommendation, {
         ...(body.note ? { note: body.note } : {}),
+        allowHandoff: true,
       });
 
       if (!outcome.ok) {
         tallyHold(holds, outcome.gate, outcome.reason);
+        continue;
+      }
+
+      if (outcome.handoff) {
+        handoffs += 1;
         continue;
       }
 
@@ -3015,7 +3030,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         eventType: 'recommendation.bulk_approved',
         entityKind: 'workspace',
         entityId: actor.workspaceId,
-        detail: { attempted: selected.length, approved, held, sent, filter, channel },
+        detail: { attempted: selected.length, approved, handoffs, held, sent, filter, channel },
       });
     }
 
@@ -3023,6 +3038,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       dryRun: body.dryRun === true,
       attempted: selected.length,
       approved,
+      handoffs,
       held,
       sent,
       researchQueued,
@@ -3063,6 +3079,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const outcome = await approveRecommendation(db, options, actor, recommendation, {
       editedBody: body.editedBody,
       note: body.note,
+      allowHandoff: true,
+      draftIfMissing: true,
     });
 
     if (!outcome.ok) {
@@ -3080,6 +3098,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       policy: { decision: outcome.decision, policyVersion: outcome.policyVersion },
       ...(outcome.delivery ? { delivery: outcome.delivery } : {}),
       ...(outcome.research ? { research: outcome.research } : {}),
+      ...(outcome.handoff ? { handoff: outcome.handoff } : {}),
     });
   });
 
@@ -3270,6 +3289,71 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     ]);
 
     return c.json({ snoozed: true, until: body.until });
+  });
+
+  // ------------------------------------------------------------- handoffs
+  //
+  // Approved work the product may not do itself, waiting for a person. Marking
+  // one done is `POST /actions/:id/execute` with mode `manual`, the route that
+  // has always recorded what a human did by hand; these two only list and
+  // dismiss, so there is still exactly one way an action is completed.
+
+  api.get('/handoffs', async (c) => {
+    const actor = c.get('actor');
+    const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 100) || 100, 1), 500);
+
+    const handoffs = await listHandoffs(c.get('db'), actor.workspaceId, { limit });
+    return c.json({ handoffs, more: handoffs.length === limit });
+  });
+
+  /**
+   * Dismissing a hand-off: the reviewer approved it, then decided against it.
+   *
+   * Cancelled rather than deleted, because `actionCounts` already ignores a
+   * cancelled action. A queued one counts against the prospect's weekly limit,
+   * so a dismissed card left queued would keep that person unreachable for a
+   * week on account of something nobody did.
+   */
+  api.post('/handoffs/:actionId/skip', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    const action = await repo.getAction(db, actor.workspaceId, c.req.param('actionId'));
+    if (!action) throw ApiError.notFound('action');
+    // Only a hand-off. An approved email waiting on its send is not this
+    // route's to cancel; it has its own controls.
+    if (action.mode !== 'manual') throw ApiError.badRequest('action is not a hand-off');
+    if (action.status !== 'queued') {
+      throw ApiError.badRequest(`action is already ${action.status}`);
+    }
+
+    await db.batch([
+      {
+        sql: `UPDATE actions SET status = 'cancelled' WHERE id = ? AND status = 'queued'`,
+        args: [action.id],
+      },
+      {
+        sql: `INSERT INTO approvals (id, workspace_id, recommendation_id, decision, decided_by, decided_at)
+              VALUES (?, ?, ?, 'skip', ?, ?)`,
+        args: [newId('approval'), actor.workspaceId, action.recommendation_id, actor.userId, now()],
+      },
+      {
+        sql: `UPDATE recommendations SET status = 'skipped' WHERE id = ?`,
+        args: [action.recommendation_id],
+      },
+    ]);
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'handoff.skipped',
+      entityKind: 'action',
+      entityId: action.id,
+      detail: { recommendationId: action.recommendation_id },
+    });
+
+    return c.json({ skipped: true, actionId: action.id });
   });
 
   // -------------------------------------------------------------- actions
@@ -4701,6 +4785,8 @@ export type ApproveOutcome =
       readonly policyVersion: string;
       readonly delivery?: { sent: boolean; to?: string; reason?: string };
       readonly research?: { queued: boolean; url?: string; reason?: string };
+      /** Present when the approval produced a hand-off card for a human to act on. */
+      readonly handoff?: Handoff;
     };
 
 /**
@@ -4721,11 +4807,36 @@ async function approveRecommendation(
   options: AppOptions,
   actor: RequestActor,
   recommendation: repo.RecommendationRow,
-  input: { readonly editedBody?: string | undefined; readonly note?: string | undefined },
+  input: {
+    readonly editedBody?: string | undefined;
+    readonly note?: string | undefined;
+    /**
+     * Write a draft for a hand-off that has none. One model call per card, so
+     * the single-card route asks for it and the bulk route does not: two
+     * hundred inline drafts would be a two-hundred-call invoice behind one
+     * button, and the card works without one (the text is picked up from the
+     * drafts table whenever one is written later).
+     */
+    readonly draftIfMissing?: boolean;
+    /**
+     * Accept a hand-off as an outcome. The reviewer's routes do; the AutoGTM
+     * reply route does not, because an agent asking to send a reply needs a
+     * send or a refusal it can act on, not a card waiting for a human.
+     */
+    readonly allowHandoff?: boolean;
+  },
 ): Promise<ApproveOutcome> {
   const decision = await recheckPolicy(db, actor, recommendation, options.mailer !== undefined);
 
-  if (!isExecutable(decision.decision, true)) {
+  // `manual_only` from the capability matrix or a missing account is not a
+  // refusal: it is permitted work a person has to do by hand. Production held
+  // 200 cards this way (175 LinkedIn engagement, 25 X replies with no account
+  // connected) and approving any of them was a 409, so none ever reached the
+  // human who could have done them. They are approved as hand-offs instead.
+  // Anything else short of executable, `deny` above all, is still refused.
+  const handoff = input.allowHandoff === true && isHandoffDecision(decision);
+
+  if (!isExecutable(decision.decision, true) && !handoff) {
     await repo.audit(db, {
       workspaceId: actor.workspaceId,
       actorKind: 'user',
@@ -4745,10 +4856,35 @@ async function approveRecommendation(
     };
   }
 
-  const draft = await db.execute({
+  let draft = await db.execute({
     sql: 'SELECT body FROM drafts WHERE recommendation_id = ? LIMIT 1',
     args: [recommendation.id],
   });
+
+  // A hand-off's whole value is the text to paste, so one without a draft
+  // gets one written here when the caller will pay for it. A refusal or an
+  // error leaves an empty textarea rather than blocking the approval: the
+  // person can still open the post and write two lines themselves.
+  if (
+    handoff &&
+    input.draftIfMissing &&
+    !input.editedBody &&
+    draft.rows.length === 0 &&
+    options.model &&
+    isOutboundAction(recommendation.action as ActionKind)
+  ) {
+    try {
+      const drafted = await draftForRecommendation(db, options.model, recommendation.id);
+      if (drafted.ok) {
+        draft = await db.execute({
+          sql: 'SELECT body FROM drafts WHERE recommendation_id = ? LIMIT 1',
+          args: [recommendation.id],
+        });
+      }
+    } catch (error) {
+      console.warn('hand-off draft failed', recommendation.id, error);
+    }
+  }
 
   const finalBody = input.editedBody ?? (draft.rows[0]?.body as string | undefined) ?? undefined;
 
@@ -4800,7 +4936,12 @@ async function approveRecommendation(
     eventType: 'recommendation.approved',
     entityKind: 'recommendation',
     entityId: recommendation.id,
-    detail: { actionId, decision: decision.decision, edited: Boolean(input.editedBody) },
+    detail: {
+      actionId,
+      decision: decision.decision,
+      edited: Boolean(input.editedBody),
+      ...(handoff ? { handoff: true, gate: decision.gate } : {}),
+    },
   });
 
   // Approving an email is the instruction to send it.
@@ -4866,7 +5007,18 @@ async function approveRecommendation(
     policyVersion: decision.policyVersion,
     ...(delivery ? { delivery } : {}),
     ...(research ? { research } : {}),
+    ...(handoff ? { handoff: await handoffFor(db, actor.workspaceId, actionId) } : {}),
   };
+}
+
+/** The card for an action just written, read back through the same query the list uses. */
+async function handoffFor(
+  db: Client,
+  workspaceId: string,
+  actionId: string,
+): Promise<Handoff | undefined> {
+  const [card] = await listHandoffs(db, workspaceId, { limit: 1, actionId });
+  return card;
 }
 
 /**

@@ -15,6 +15,7 @@ import type {
   ApprovalCard,
   CurrentUser,
   EmailIntegrationView,
+  HandoffView,
   ListeningView,
   ProductSummaryView,
   ProspectDetail,
@@ -28,6 +29,7 @@ export type {
   ApprovalCard,
   ApprovalHold,
   CurrentUser,
+  HandoffView,
   IdentityRow,
   ListeningView,
   ProspectDetail,
@@ -212,6 +214,12 @@ export async function fetchApprovals(
     `/recommendations?limit=${limit}&filter=${encodeURIComponent(filter)}` +
       `&channel=${encodeURIComponent(channel)}`,
   );
+}
+
+/** Approved work waiting for a person to do it by hand, oldest first. */
+export async function fetchHandoffs(limit = 200): Promise<HandoffView[]> {
+  const body = await request<{ handoffs: HandoffView[] }>(`/handoffs?limit=${limit}`);
+  return body.handoffs;
 }
 
 export async function fetchSignals(): Promise<SignalRow[]> {
