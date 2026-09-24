@@ -14,7 +14,8 @@ import {
   XAuthError,
   XWriteError,
   X_POST_LIMIT,
-  type XClient,
+  XSessionError,
+  type XPoster,
 } from '@outreachgraph/providers';
 import { auditAction, type AuditActor } from './outreach-email';
 import { recordSocialSent } from './outreach-bluesky';
@@ -45,7 +46,7 @@ interface ActionRow {
 }
 
 export async function deliverXAction(
-  deps: { readonly db: Client; readonly client: XClient },
+  deps: { readonly db: Client; readonly client: XPoster },
   input: DeliverXInput,
 ): Promise<DeliverXResult> {
   const { db, client } = deps;
@@ -129,8 +130,18 @@ export async function deliverXAction(
 
     return { sent: true, url };
   } catch (error) {
+    // A logged-out or locked session must not be tried again on the next
+    // card; revoking it turns the rest of the X queue back into hand-offs.
+    if (error instanceof XSessionError) {
+      await db.execute({
+        sql: `UPDATE integration_accounts SET status = 'revoked', updated_at = ?
+               WHERE workspace_id = ? AND network = 'x'`,
+        args: [new Date().toISOString(), input.workspaceId],
+      });
+    }
+
     const message =
-      error instanceof XAuthError
+      error instanceof XAuthError || error instanceof XSessionError
         ? 'the connected X account is no longer authorised'
         : error instanceof XWriteError || error instanceof Error
           ? error.message

@@ -28,7 +28,9 @@ export type PacedNetwork = 'x' | 'linkedin';
 
 export const PACING: Record<PacedNetwork, { minGapMs: number; maxGapMs: number; perDay: number }> =
   {
-    x: { minGapMs: 60_000, maxGapMs: 180_000, perDay: 50 },
+    // Tuned for posting through a browser session (X locks accounts that
+    // post like a script); an API grant would tolerate more.
+    x: { minGapMs: 3 * 60_000, maxGapMs: 8 * 60_000, perDay: 20 },
     linkedin: { minGapMs: 4 * 60_000, maxGapMs: 11 * 60_000, perDay: 25 },
   };
 

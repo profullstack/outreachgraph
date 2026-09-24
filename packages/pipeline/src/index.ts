@@ -334,6 +334,7 @@ export {
 
 export {
   completeXConnect,
+  connectXSession,
   disconnectXAccount,
   startXConnect,
   xAccountSummary,

@@ -24,6 +24,9 @@ import {
   xAuthorizeUrl,
   XAuthError,
   XClient,
+  XSession,
+  type XPoster,
+  type XSessionOptions,
   type FetchLike,
   type XOAuthClient,
   type XTokens,
@@ -222,8 +225,13 @@ export async function completeXConnect(
 export async function xClientForWorkspace(
   db: Client,
   workspaceId: string,
-  deps: { oauth?: XOAuthClient; encryptionKey?: Buffer; fetchImpl?: FetchLike },
-): Promise<XClient | undefined> {
+  deps: {
+    oauth?: XOAuthClient;
+    encryptionKey?: Buffer;
+    fetchImpl?: FetchLike;
+    sessionOptions?: XSessionOptions;
+  },
+): Promise<XPoster | undefined> {
   if (!deps.encryptionKey) return undefined;
 
   const row = await queryOne<{
@@ -231,16 +239,31 @@ export async function xClientForWorkspace(
     access_token_enc: string | null;
     refresh_token_enc: string | null;
     expires_at: string | null;
+    scopes: string;
     status: string;
   }>(
     db,
-    `SELECT id, access_token_enc, refresh_token_enc, expires_at, status
+    `SELECT id, access_token_enc, refresh_token_enc, expires_at, scopes, status
        FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
     [workspaceId, NETWORK],
   );
   if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
 
   const clientOptions = deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {};
+
+  // A browser session rather than an API grant: no expiry to refresh, and
+  // the stored secret is the cookie pair.
+  if (row.scopes.includes('"session"')) {
+    try {
+      const cookies = JSON.parse(decryptSecret(row.access_token_enc, deps.encryptionKey)) as {
+        authToken: string;
+        ct0: string;
+      };
+      return new XSession(cookies, { ...clientOptions, ...deps.sessionOptions });
+    } catch {
+      return undefined;
+    }
+  }
 
   let accessToken: string;
   try {
@@ -324,4 +347,91 @@ export async function disconnectXAccount(db: Client, workspaceId: string): Promi
     args: [now(), workspaceId, KIND, NETWORK],
   });
   return (result.rowsAffected ?? 0) > 0;
+}
+
+/**
+ * Connects X through the member's own browser session: the `auth_token` and
+ * `ct0` cookies from a signed-in x.com tab.
+ *
+ * The free alternative to the paid API (see `providers/src/x/session.ts`).
+ * Verified against X before storing, stored encrypted as one secret, and
+ * marked `["session"]` in `scopes` so the loader knows which client to build.
+ * It replaces any OAuth grant the workspace had: one X account per workspace.
+ */
+export async function connectXSession(
+  db: Client,
+  input: {
+    workspaceId: string;
+    authToken: string;
+    ct0: string;
+    encryptionKey: Buffer;
+    verify?: boolean;
+    sessionOptions?: XSessionOptions;
+  },
+): Promise<XAccountSummary> {
+  const cookies = { authToken: input.authToken.trim(), ct0: input.ct0.trim() };
+  let username = '';
+  let userId = '';
+
+  if (input.verify !== false) {
+    try {
+      const me = await new XSession(cookies, input.sessionOptions).me();
+      username = me.username;
+      userId = me.id;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new XAccountError('exchange_failed', `X refused those cookies: ${detail}`);
+    }
+  }
+
+  const stamp = now();
+  const existing = await queryOne<{ id: string; config_json: string }>(
+    db,
+    `SELECT id, config_json FROM integrations WHERE workspace_id = ? AND kind = ? AND network = ?`,
+    [input.workspaceId, KIND, NETWORK],
+  );
+  const integrationId = existing?.id ?? newId('integration');
+  const config = { username, userId, via: 'session', optedInToSessionAutomation: stamp };
+
+  if (existing) {
+    await db.execute({
+      sql: `UPDATE integrations SET status = 'connected', config_json = ?, updated_at = ? WHERE id = ?`,
+      args: [JSON.stringify(config), stamp, integrationId],
+    });
+  } else {
+    await db.execute({
+      sql: `INSERT INTO integrations (id, workspace_id, kind, network, status, config_json,
+            created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'connected', ?, ?, ?)`,
+      args: [integrationId, input.workspaceId, KIND, NETWORK, JSON.stringify(config), stamp, stamp],
+    });
+  }
+
+  await db.execute({
+    sql: `DELETE FROM integration_accounts WHERE workspace_id = ? AND network = ?`,
+    args: [input.workspaceId, NETWORK],
+  });
+  await db.execute({
+    sql: `INSERT INTO integration_accounts (id, integration_id, workspace_id, network,
+          external_account_id, handle, access_token_enc, scopes, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, '["session"]', 'active', ?, ?)`,
+    args: [
+      newId('integrationAccount'),
+      integrationId,
+      input.workspaceId,
+      NETWORK,
+      userId || null,
+      username || null,
+      encryptSecret(JSON.stringify(cookies), input.encryptionKey),
+      stamp,
+      stamp,
+    ],
+  });
+
+  return {
+    connected: true,
+    ...(username ? { username } : {}),
+    ...(userId ? { userId } : {}),
+    connectedAt: stamp,
+  };
 }

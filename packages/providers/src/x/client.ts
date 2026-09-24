@@ -52,7 +52,19 @@ export function tweetIdFromUrl(url: string): string | undefined {
   return match?.[1];
 }
 
-export class XClient {
+/**
+ * What the X sender needs, whichever way it reaches X: the paid API with an
+ * OAuth 2.1 bearer (`XClient`), or the member's browser session (`XSession`).
+ */
+export interface XPoster {
+  me(): Promise<XUser>;
+  reply(input: { text: string; inReplyTo: string }): Promise<{ id: string; url: string }>;
+  like(tweetId: string): Promise<void>;
+  follow(targetUserId: string): Promise<void>;
+  userIdFor(username: string): Promise<string | undefined>;
+}
+
+export class XClient implements XPoster {
   readonly #accessToken: string;
   readonly #baseUrl: string;
   readonly #fetch: FetchLike;

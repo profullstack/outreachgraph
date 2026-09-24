@@ -115,6 +115,7 @@ import {
   LISTEN_SOURCE_SLUGS,
   completeXConnect,
   connectLinkedInSession,
+  connectXSession,
   disconnectLinkedInSession,
   disconnectXAccount,
   isPacedNetwork,
@@ -4409,6 +4410,50 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       encryptionKey: options.encryptionKey,
     });
     return c.json({ authorizeUrl: started.authorizeUrl, expiresAt: started.expiresAt });
+  });
+
+  /**
+   * Connects X through the member's own browser session (`auth_token` +
+   * `ct0` cookies): the free route, since X's API is paid-only for new
+   * developers. Against X's terms, so `acknowledgeTerms` must be true and the
+   * choice is audited against the person who made it.
+   */
+  api.put('/integrations/x/session', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('connecting an X session');
+    if (!options.encryptionKey) {
+      throw new ApiError(503, 'no_key', 'This deployment has no SECRET_ENCRYPTION_KEY.');
+    }
+    const body = await parseBody(
+      c.req.raw,
+      z.object({
+        authToken: z.string().min(20),
+        ct0: z.string().min(20),
+        acknowledgeTerms: z.literal(true),
+      }),
+    );
+    try {
+      const account = await connectXSession(db, {
+        workspaceId: actor.workspaceId,
+        authToken: body.authToken,
+        ct0: body.ct0,
+        encryptionKey: options.encryptionKey,
+      });
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'integration.connected',
+        entityKind: 'workspace',
+        entityId: actor.workspaceId,
+        detail: { network: 'x', sessionAutomation: true, acknowledgedTerms: true },
+      });
+      return c.json({ account });
+    } catch (error) {
+      if (error instanceof XAccountError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
   });
 
   api.delete('/integrations/x', async (c) => {
