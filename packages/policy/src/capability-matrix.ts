@@ -13,7 +13,7 @@
 import type { ActionKind, Network } from '@outreachgraph/domain';
 
 /** Bump whenever any rule below changes. Recorded on every recommendation. */
-export const POLICY_VERSION = '2026-08-11';
+export const POLICY_VERSION = '2026-09-24';
 
 /** PRD §16.2. Ordered loosest to strictest is not meaningful — these are kinds. */
 export const POLICY_MODES = [
@@ -80,8 +80,25 @@ const LINKEDIN: readonly CapabilityRule[] = [
   rule('linkedin', 'connect', 'manual_only', 'Automated connection requests are prohibited.'),
   rule('linkedin', 'send_dm', 'manual_only', 'Automated messaging is prohibited.'),
   rule('linkedin', 'like', 'manual_only', 'Automated engagement is prohibited.'),
-  rule('linkedin', 'comment', 'manual_only', 'Automated engagement is prohibited.'),
-  rule('linkedin', 'reply', 'manual_only', 'Automated engagement is prohibited.'),
+  // Comments and replies run through the member's own logged-in session when
+  // one is connected (`customer_managed` still requires the connection, so an
+  // unconnected workspace gets a hand-off, not an attempt). LinkedIn's terms
+  // forbid it; the workspace owner opted in knowingly on 2026-09-24, and the
+  // sender paces itself because LinkedIn restricts accounts that act fast.
+  rule(
+    'linkedin',
+    'comment',
+    'customer_managed',
+    'Posted through your own connected LinkedIn session, paced; LinkedIn’s terms forbid automation, so the account risk is yours.',
+    'product_decision',
+  ),
+  rule(
+    'linkedin',
+    'reply',
+    'customer_managed',
+    'Posted through your own connected LinkedIn session, paced; LinkedIn’s terms forbid automation, so the account risk is yours.',
+    'product_decision',
+  ),
   rule('linkedin', 'follow', 'manual_only', 'Automated engagement is prohibited.'),
 ];
 
