@@ -417,7 +417,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.json({
       service: 'api',
       name: 'outreachgraph',
-      version: options.version ?? '0.5.0',
+      version: options.version ?? '0.6.0',
       ...(options.commitHash ? { commitHash: options.commitHash } : {}),
       docs: 'https://github.com/profullstack/outreachgraph',
       endpoints: {
@@ -550,7 +550,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.json({
       status: 'ok' as const,
       service: 'api',
-      version: options.version ?? '0.5.0',
+      version: options.version ?? '0.6.0',
       ...(options.commitHash ? { commitHash: options.commitHash } : {}),
       uptimeSeconds: Math.round((Date.now() - STARTED_AT) / 1000),
     }),
