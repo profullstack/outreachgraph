@@ -38,14 +38,72 @@ export function isPacedNetwork(network: string): network is PacedNetwork {
   return network === 'x' || network === 'linkedin';
 }
 
+/**
+ * What a paced action is counted against.
+ *
+ * `post` is a public reply or comment, and is capped by `PACING[network].perDay`
+ * as it always has been. Everything else a LinkedIn session can do has its own
+ * budget, because LinkedIn watches each separately and at very different
+ * volumes: a person visits many more profiles than they send invitations.
+ */
+export type CapGroup = 'post' | 'connect' | 'view_profile' | 'follow' | 'send_dm';
+
+export function capGroupFor(kind: string | undefined): CapGroup {
+  if (kind === 'connect' || kind === 'view_profile' || kind === 'follow' || kind === 'send_dm') {
+    return kind;
+  }
+  return 'post';
+}
+
+/**
+ * Per-kind caps on LinkedIn, per UTC day and per rolling seven days.
+ *
+ * Conservative on purpose, and well below what the UI lets a person click:
+ *
+ *   connect       20/day, 100/week — LinkedIn's weekly invitation limit sits
+ *                 around 100 for most accounts, and an account that hits it
+ *                 is warned and then restricted. The day cap spreads the week
+ *                 so a Monday "approve all" is not the whole week at once.
+ *   view_profile  60/day — visits are metered for commercial use, and a free
+ *                 account that reads too many profiles is cut off for a month.
+ *   follow        30/day.
+ *   send_dm       25/day — only ever to connections, and still a message.
+ *
+ * All of them share the network's gap: the minutes between two actions belong
+ * to the account whichever kind each one is, because what LinkedIn sees is one
+ * member doing things too fast.
+ */
+export const LINKEDIN_ACTION_CAPS: Readonly<
+  Record<Exclude<CapGroup, 'post'>, { readonly perDay: number; readonly perWeek?: number }>
+> = {
+  connect: { perDay: 20, perWeek: 100 },
+  view_profile: { perDay: 60 },
+  follow: { perDay: 30 },
+  send_dm: { perDay: 25 },
+};
+
+/** The caps one action is scheduled under. */
+export function capsFor(
+  network: PacedNetwork,
+  group: CapGroup,
+): { readonly perDay: number; readonly perWeek?: number } {
+  if (network === 'linkedin' && group !== 'post') return LINKEDIN_ACTION_CAPS[group];
+  return { perDay: PACING[network].perDay };
+}
+
 function dayStart(ms: number): number {
   const d = new Date(ms);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
+const DAY_MS = 86_400_000;
+
 /**
  * Queues one action to be sent after the ones already scheduled.
  * Returns when it is expected to go out.
+ *
+ * `kind` picks the cap the action counts against. Omitted, it is a post, which
+ * is also how every job queued before per-kind caps existed is counted.
  */
 export async function scheduleSocialDelivery(
   db: Client,
@@ -55,11 +113,14 @@ export async function scheduleSocialDelivery(
     network: PacedNetwork;
     actor: AuditActor;
     policyVersion?: string;
+    kind?: string;
   },
   nowMs: number = Date.now(),
 ): Promise<{ queued: boolean; runAt: string }> {
   const pace = PACING[input.network];
   const like = `%"network":"${input.network}"%`;
+  const group = capGroupFor(input.kind);
+  const caps = capsFor(input.network, group);
 
   const last = await queryOne<{ run_after: string }>(
     db,
@@ -73,24 +134,36 @@ export async function scheduleSocialDelivery(
   const gap = randomInt(pace.minGapMs, pace.maxGapMs + 1);
   let runAt = Math.max(nowMs, last ? Date.parse(last.run_after) + gap : nowMs);
 
-  // Cap per UTC day, counting everything already scheduled into that day.
-  for (;;) {
-    const start = dayStart(runAt);
-    const count = await queryOne<{ n: number }>(
+  // Jobs in this cap group. A post is anything marked as one, plus every job
+  // queued before groups existed (no `capGroup` in its payload at all).
+  const inGroup =
+    group === 'post'
+      ? `(payload_json LIKE '%"capGroup":"post"%' OR payload_json NOT LIKE '%"capGroup":%')`
+      : `payload_json LIKE '%"capGroup":"${group}"%'`;
+
+  const scheduledBetween = async (from: number, to: number): Promise<number> => {
+    const row = await queryOne<{ n: number }>(
       db,
       `SELECT count(*) AS n FROM jobs
         WHERE workspace_id = ? AND kind = 'deliver_social' AND payload_json LIKE ?
+          AND ${inGroup}
           AND run_after >= ? AND run_after < ?`,
-      [
-        input.workspaceId,
-        like,
-        new Date(start).toISOString(),
-        new Date(start + 86_400_000).toISOString(),
-      ],
+      [input.workspaceId, like, new Date(from).toISOString(), new Date(to).toISOString()],
     );
-    if ((count?.n ?? 0) < pace.perDay) break;
+    return Number(row?.n ?? 0);
+  };
+
+  // Cap per UTC day, and per rolling week where the kind has one, counting
+  // everything already scheduled into that window. Bounded, so a corrupt
+  // queue cannot spin this forever: a year out is still an answer.
+  for (let attempt = 0; attempt < 366; attempt += 1) {
+    const start = dayStart(runAt);
+    const today = await scheduledBetween(start, start + DAY_MS);
+    const week =
+      caps.perWeek === undefined ? 0 : await scheduledBetween(runAt - 7 * DAY_MS, runAt + 1);
+    if (today < caps.perDay && (caps.perWeek === undefined || week < caps.perWeek)) break;
     // Next day, at a working hour with jitter rather than on the stroke of midnight.
-    runAt = start + 86_400_000 + 9 * 3_600_000 + randomInt(0, 3_600_000);
+    runAt = start + DAY_MS + 9 * 3_600_000 + randomInt(0, 3_600_000);
   }
 
   const queued = await enqueue(db, {
@@ -99,6 +172,7 @@ export async function scheduleSocialDelivery(
     payload: {
       actionId: input.actionId,
       network: input.network,
+      capGroup: group,
       actor: input.actor,
       ...(input.policyVersion ? { policyVersion: input.policyVersion } : {}),
     },

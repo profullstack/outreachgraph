@@ -5,10 +5,12 @@ import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchCadence,
+  fetchCadenceVariants,
   fetchEnrollments,
   relativeTime,
   type CadenceDetailView,
   type EnrollmentRowView,
+  type VariantResultView,
 } from '../../../../lib/api';
 
 export const dynamic = 'force-dynamic';
@@ -28,10 +30,16 @@ export default async function CadencePage({ params }: { params: Promise<{ id: st
 
   let detail: CadenceDetailView | undefined;
   let enrollments: EnrollmentRowView[] = [];
+  let variants: VariantResultView[] = [];
   let offline = false;
 
   try {
-    [detail, enrollments] = await Promise.all([fetchCadence(id), fetchEnrollments(id)]);
+    [detail, enrollments, variants] = await Promise.all([
+      fetchCadence(id),
+      fetchEnrollments(id),
+      // A report that fails to load should not take the plan down with it.
+      fetchCadenceVariants(id).catch(() => []),
+    ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
@@ -86,11 +94,73 @@ export default async function CadencePage({ params }: { params: Promise<{ id: st
                 </span>
               </div>
 
-              {step.intent ? <p className="text-ink-muted mt-1 text-xs">{step.intent}</p> : null}
+              {step.condition && step.condition !== 'always' ? (
+                <p className="mt-1 text-xs font-medium">
+                  {CONDITION_LABELS[step.condition] ?? step.condition}
+                </p>
+              ) : null}
+              {step.wait_for_acceptance_hours ? (
+                <p className="text-ink-muted mt-1 text-xs">
+                  Waits up to {formatHours(step.wait_for_acceptance_hours)} for them to accept
+                  before the next connection-dependent step decides.
+                </p>
+              ) : null}
+              {step.intent ? (
+                <p className="text-ink-muted mt-1 text-xs">
+                  {step.variants?.length ? 'A · ' : ''}
+                  {step.intent}
+                </p>
+              ) : null}
+              {step.variants?.map((variant, v) => (
+                <p key={v} className="text-ink-muted mt-1 text-xs">
+                  {String.fromCharCode(66 + v)} · {variant}
+                </p>
+              ))}
             </li>
           ))}
         </ol>
       </section>
+
+      {variants.length > 0 ? (
+        <section className="border-border bg-surface-raised mb-6 rounded-2xl border p-4">
+          <h2 className="text-sm font-semibold">A/B results</h2>
+          <p className="text-ink-muted mt-1 text-xs">
+            People, not messages. A reply counts toward the step whose message it followed. Opens
+            are an upper bound: Apple Mail fetches every image on delivery.
+          </p>
+
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-left text-xs tabular-nums">
+              <thead className="text-ink-muted">
+                <tr>
+                  <th className="py-1 pr-3 font-medium">Step</th>
+                  <th className="py-1 pr-3 font-medium">Arm</th>
+                  <th className="py-1 pr-3 font-medium">Sent</th>
+                  <th className="py-1 pr-3 font-medium">Opened</th>
+                  <th className="py-1 pr-3 font-medium">Clicked</th>
+                  <th className="py-1 pr-3 font-medium">Replied</th>
+                  <th className="py-1 font-medium">Reply rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {variants.map((row) => (
+                  <tr key={`${row.step}-${row.variant}`} className="border-border border-t">
+                    <td className="py-1.5 pr-3">{row.step + 1}</td>
+                    <td className="py-1.5 pr-3 font-medium">{row.variant}</td>
+                    <td className="py-1.5 pr-3">{row.sent}</td>
+                    <td className="py-1.5 pr-3">{row.opened}</td>
+                    <td className="py-1.5 pr-3">{row.clicked}</td>
+                    <td className="py-1.5 pr-3">{row.replied}</td>
+                    <td className="py-1.5">
+                      {row.replyRate === null ? '—' : `${Math.round(row.replyRate * 100)}%`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
 
       <section>
         <h2 className="mb-2 text-sm font-semibold">
@@ -139,6 +209,14 @@ export default async function CadencePage({ params }: { params: Promise<{ id: st
     </div>
   );
 }
+
+const CONDITION_LABELS: Record<string, string> = {
+  if_connected: 'Only if connected on LinkedIn',
+  if_not_connected: 'Only if not connected on LinkedIn',
+  if_no_reply: 'Only if they have not replied',
+  if_clicked: 'Only if they clicked a link',
+  if_not_clicked: 'Only if they have not clicked',
+};
 
 function formatHours(hours: number): string {
   if (hours === 0) return 'no wait';

@@ -31,3 +31,4 @@ export * from './video';
 export * from './compliance';
 export * from './autogtm';
 export * from './replies';
+export * from './webhooks';

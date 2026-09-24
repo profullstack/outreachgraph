@@ -34,6 +34,7 @@ import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
+import { routesToApi } from './routing';
 import {
   drainQueue,
   emitEvent,
@@ -49,6 +50,9 @@ import {
   processDeletion,
   workspacesWithInternalBacklog,
   pruneWorkflowEvents,
+  pruneWebhookDeliveries,
+  runCrmSync,
+  runWebhookDelivery,
   regenerateRecommendations,
   rescoreProspect,
   reseedIdleCampaigns,
@@ -71,6 +75,9 @@ import {
   type QueuedJob,
   runSocialDelivery,
   triageReply,
+  checkLinkedInAcceptances,
+  linkedInSessionForWorkspace,
+  workspacesWithLinkedInSession,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
@@ -533,9 +540,7 @@ const server = Bun.serve({
   async fetch(request) {
     const { pathname } = new URL(request.url);
 
-    if (pathname.startsWith('/api/') || pathname.startsWith('/health')) {
-      return api.fetch(request);
-    }
+    if (routesToApi(pathname)) return api.fetch(request);
     return proxyToWeb(request);
   },
 });
@@ -773,6 +778,27 @@ async function runJob(job: QueuedJob): Promise<void> {
       );
       return;
     }
+    case 'deliver_webhook': {
+      // Throws to ask for a retry; the delivery row already says why.
+      const result = await runWebhookDelivery({ db, encryptionKey }, job);
+      console.log(
+        `deliver_webhook ${String(job.payload.deliveryId)}: ${result.status}` +
+          (result.statusCode ? ` (${result.statusCode})` : '') +
+          (result.error ? ` ${result.error}` : ''),
+      );
+      return;
+    }
+    case 'sync_crm': {
+      const result = await runCrmSync({ db, encryptionKey }, job);
+      console.log(
+        `sync_crm ${String(job.payload.provider)}: ${result.outcome}` +
+          (result.contactId
+            ? ` contact ${result.contactId}${result.created ? ' (new)' : ''}`
+            : '') +
+          (result.error ? ` ${result.error}` : ''),
+      );
+      return;
+    }
     default:
       throw new Error(`no handler for job kind ${job.kind}`);
   }
@@ -813,6 +839,10 @@ async function tick(): Promise<void> {
   // a separate table precisely so this can be aggressive.
   const prunedEvents = await pruneWorkflowEvents(db);
   if (prunedEvents > 0) console.log(`pruned ${prunedEvents} workflow events`);
+
+  // The delivery log is for debugging a receiver, and a month covers that.
+  const prunedDeliveries = await pruneWebhookDeliveries(db);
+  if (prunedDeliveries > 0) console.log(`pruned ${prunedDeliveries} webhook deliveries`);
 
   // Cards that reach nobody are cleared before the queue drains, so the crawls
   // they enqueue run on this tick rather than waiting for the next one.
@@ -1033,6 +1063,30 @@ async function tick(): Promise<void> {
     }
   }
 
+  // ------------------------------------------------ LinkedIn acceptances
+  //
+  // Whether anyone accepted an invitation the workspace's session sent.
+  // LinkedIn notifies nobody but the member, so this looks: each pending
+  // invitation once a day, at most one profile per few minutes per workspace,
+  // so a hundred pending invitations drain over hours rather than as a burst.
+  // Before cadences, so an acceptance seen this tick can open the "if
+  // connected" branch of a step that falls due on the same tick.
+  if (encryptionKey) {
+    for (const workspaceId of await workspacesWithLinkedInSession(db)) {
+      try {
+        const session = await linkedInSessionForWorkspace(db, workspaceId, encryptionKey);
+        if (!session) continue;
+        const checked = await checkLinkedInAcceptances({ db, session }, workspaceId);
+        if (checked.accepted > 0) {
+          console.log(`linkedin ${workspaceId}: ${checked.accepted} invitation(s) accepted`);
+        }
+        if (checked.error) console.warn(`linkedin ${workspaceId}: ${checked.error}`);
+      } catch (error) {
+        console.error(`linkedin acceptance check failed for ${workspaceId}`, error);
+      }
+    }
+  }
+
   // ------------------------------------------------------------- autopilot
   //
   // Sending, alerting and the digest, per workspace. Each is wrapped
@@ -1054,7 +1108,8 @@ async function tick(): Promise<void> {
       if (cadence.considered > 0) {
         console.log(
           `cadences ${workspace.id}: ${cadence.automated} queued, ${cadence.manual} for a human, ` +
-            `${cadence.skipped} skipped, ${cadence.completed} finished, ${cadence.stopped} stopped`,
+            `${cadence.skipped} skipped, ${cadence.completed} finished, ${cadence.stopped} stopped, ` +
+            `${cadence.waiting ?? 0} waiting on an invitation`,
         );
       }
     } catch (error) {

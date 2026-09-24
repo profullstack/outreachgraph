@@ -312,6 +312,7 @@ export interface SettingsView {
   readonly replyToEmail: string | null;
   readonly trackLinks: boolean;
   readonly trackingOrigin: string | null;
+  readonly trackOpens: boolean;
   /** Where tracked links would point if switched on. */
   readonly effectiveTrackingOrigin: string | null;
   readonly lastDigestSentOn: string | null;
@@ -464,6 +465,23 @@ export interface CadenceStepView {
   readonly delay_hours: number;
   readonly stop_on_reply: number;
   readonly intent: string | null;
+  /** `always` unless the step runs only if connected, clicked, and so on. */
+  readonly condition?: string;
+  /** On a LinkedIn connect step: hours a later step waits for acceptance. */
+  readonly wait_for_acceptance_hours?: number | null;
+  /** Alternate intents being tested against `intent` (variant A). */
+  readonly variants?: string[];
+}
+
+export interface VariantResultView {
+  readonly step: number;
+  readonly variant: string;
+  readonly assigned: number;
+  readonly sent: number;
+  readonly opened: number;
+  readonly clicked: number;
+  readonly replied: number;
+  readonly replyRate: number | null;
 }
 
 export interface CadenceDetailView {
@@ -506,6 +524,13 @@ export async function fetchCadences(): Promise<CadenceRowView[]> {
 
 export async function fetchCadence(id: string): Promise<CadenceDetailView> {
   return request<CadenceDetailView>(`/cadences/${encodeURIComponent(id)}`);
+}
+
+export async function fetchCadenceVariants(cadenceId: string): Promise<VariantResultView[]> {
+  const body = await request<{ variants: VariantResultView[] }>(
+    `/cadences/${encodeURIComponent(cadenceId)}/variants`,
+  );
+  return body.variants;
 }
 
 export async function fetchEnrollments(cadenceId: string): Promise<EnrollmentRowView[]> {
@@ -708,4 +733,50 @@ export async function fetchInbox(
 
 export async function fetchThread(personId: string): Promise<InboxThreadView> {
   return request<InboxThreadView>(`/inbox/${encodeURIComponent(personId)}`);
+}
+
+// ------------------------------------------------------------------ webhooks
+
+export interface WebhookEndpointView {
+  readonly id: string;
+  readonly kind: 'generic' | 'slack';
+  /** The origin and the last few characters; the full URL is never returned. */
+  readonly urlHint: string;
+  readonly events: readonly string[];
+  readonly description: string | null;
+  readonly active: boolean;
+  readonly createdAt: string;
+  readonly lastDelivery?: {
+    readonly status: string;
+    readonly statusCode: number | null;
+    readonly at: string;
+  };
+}
+
+export interface WebhooksView {
+  readonly endpoints: readonly WebhookEndpointView[];
+  readonly events: readonly string[];
+  readonly canCreate: boolean;
+}
+
+export async function fetchWebhooks(): Promise<WebhooksView> {
+  return request<WebhooksView>('/webhooks');
+}
+
+export interface CrmConnectionView {
+  readonly provider: 'hubspot' | 'pipedrive';
+  readonly connected: boolean;
+  readonly status?: string;
+  readonly connectedAt?: string;
+  readonly lastSyncAt?: string;
+  readonly lastError?: string;
+}
+
+export interface CrmIntegrationView {
+  readonly providers: readonly CrmConnectionView[];
+  readonly canConnect: boolean;
+}
+
+export async function fetchCrmIntegration(): Promise<CrmIntegrationView> {
+  return request<CrmIntegrationView>('/integrations/crm');
 }

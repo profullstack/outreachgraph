@@ -50,10 +50,11 @@ export async function draftForRecommendation(
     network: string;
     trigger_signal_id: string | null;
     reply_to_interaction_id: string | null;
+    guidance: string | null;
   }>(
     db,
     `SELECT id, workspace_id, campaign_id, person_id, action, network, trigger_signal_id,
-            reply_to_interaction_id
+            reply_to_interaction_id, guidance
        FROM recommendations WHERE id = ?`,
     [recommendationId],
   );
@@ -188,6 +189,7 @@ export async function draftForRecommendation(
       : {}),
     minIdentityConfidence: workspace?.min_outreach_confidence ?? 0.85,
     priorDraftHashes: priorHashes.map((r) => r.similarity_hash),
+    ...(recommendation.guidance ? { guidance: recommendation.guidance } : {}),
   });
 
   if (!result.ok) {

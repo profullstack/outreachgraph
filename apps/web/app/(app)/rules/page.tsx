@@ -21,6 +21,7 @@ const TRIGGER_LABELS: Record<string, string> = {
   score_crossed: 'a score threshold',
   reply_received: 'a reply',
   stage_changed: 'a funnel move',
+  connection_accepted: 'an accepted LinkedIn invitation',
 };
 
 const ACTION_LABELS: Record<string, string> = {

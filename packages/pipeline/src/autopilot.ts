@@ -40,11 +40,11 @@ import {
   defaultEmailSubject,
   loadOutreachSettings,
   pickEmailRecipient,
+  prepareOutgoingEmail,
   recordEmailFailure,
   recordEmailSent,
   AUTOPILOT_ACTOR,
 } from './outreach-email';
-import { trackLinksInBody } from './engagement';
 import { budgetStatus } from './metering';
 
 export interface AutopilotDeps {
@@ -615,30 +615,27 @@ export async function runAutopilot(
     // customer who connected their own mailbox meant replies to reach it.
     const replyTo = deps.replyTo ?? sender.replyTo ?? settings.reply_to_email ?? undefined;
 
-    // Same rule as the approval path: rewrite after the body is settled, so
-    // what the gates checked and what the reviewer would read back is the
-    // approved wording, and only the link destinations differ on the wire.
-    const trackingOrigin = settings.track_links
-      ? (settings.tracking_origin ?? deps.appUrl ?? undefined)
-      : undefined;
-
-    const outgoing = trackingOrigin
-      ? await trackLinksInBody(db, {
-          workspaceId,
-          personId: row.person_id,
-          campaignId: row.campaign_id,
-          actionId,
-          body,
-          origin: trackingOrigin,
-        })
-      : { body, tracked: 0 };
+    // The same builder as the approval path, so an autopilot send carries the
+    // same opt-out, link tracking and pixel as one a human approved.
+    const outgoing = await prepareOutgoingEmail(db, {
+      workspaceId,
+      personId: row.person_id,
+      campaignId: row.campaign_id,
+      actionId,
+      body,
+      recipient: recipient.address,
+      settings,
+      appUrl: deps.appUrl,
+    });
 
     try {
       const result = await sender.mailer.send({
         to: recipient.address,
         subject,
-        text: outgoing.body,
+        text: outgoing.text,
+        ...(outgoing.html ? { html: outgoing.html } : {}),
         ...(replyTo ? { replyTo } : {}),
+        ...(outgoing.headers ? { headers: outgoing.headers } : {}),
       });
 
       await recordEmailSent(db, {

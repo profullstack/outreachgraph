@@ -108,7 +108,108 @@ async function readSecret(prompt: string): Promise<string> {
   }
 }
 
-const CONNECTABLE = ['x', 'x-session', 'linkedin'] as const;
+const CONNECTABLE = ['x', 'x-session', 'linkedin', 'hubspot', 'pipedrive'] as const;
+
+/** The CRMs `og connect` accepts a token for. */
+const CRMS = ['hubspot', 'pipedrive'] as const;
+
+const CRM_TOKEN_HELP: Readonly<Record<(typeof CRMS)[number], string>> = {
+  hubspot:
+    'HubSpot: Settings > Integrations > Private Apps > Create, with the crm.objects.contacts read and write scopes. Copy the access token.',
+  pipedrive: 'Pipedrive: Personal preferences > API. Copy your personal API token.',
+};
+
+/**
+ * `og webhooks list | add <url> | rm <id> | test <id>`.
+ *
+ * `add` prints the signing secret, because it is the only time anyone will
+ * see it; everything else prints one endpoint per line, id first.
+ */
+async function runWebhooks({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', target] = args;
+
+  if (verb === 'list' || verb === 'ls') {
+    const result = (await client.get('/webhooks')) as Record<string, unknown>;
+    const endpoints = rows(result, 'endpoints');
+    if (endpoints.length === 0) return 'No webhooks. Add one: og webhooks add <https-url>';
+    return endpoints
+      .map((endpoint) => {
+        const events = Array.isArray(endpoint.events) ? (endpoint.events as string[]) : [];
+        const last = endpoint.lastDelivery as { status?: string; statusCode?: number } | undefined;
+        return [
+          pad(text(endpoint, 'id'), 32),
+          pad(text(endpoint, 'kind'), 8),
+          pad(endpoint.active === false ? 'disabled' : 'active', 9),
+          pad(events.length === 0 ? 'all events' : events.join(','), 30),
+          text(endpoint, 'urlHint'),
+          last?.status
+            ? `  last: ${last.status}${last.statusCode ? ` ${last.statusCode}` : ''}`
+            : '',
+        ].join(' ');
+      })
+      .join('\n');
+  }
+
+  if (verb === 'add') {
+    if (!target)
+      throw new Error('og webhooks add <https-url> [--slack] [--events a,b] [--description text]');
+    const events = flagString(flags, 'events')
+      ?.split(',')
+      .map((e) => e.trim())
+      .filter(Boolean);
+    const description = flagString(flags, 'description');
+    const result = (await client.post('/webhooks', {
+      url: target,
+      kind: flags.slack === true ? 'slack' : 'generic',
+      ...(events ? { events } : {}),
+      ...(description ? { description } : {}),
+    })) as { endpoint?: Record<string, unknown>; secret?: string };
+    return [
+      `Added ${text(result.endpoint ?? {}, 'id')} -> ${text(result.endpoint ?? {}, 'urlHint')}`,
+      `Signing secret (shown once, store it now): ${result.secret ?? '?'}`,
+      'Verify X-OutreachGraph-Signature as HMAC-SHA256(secret, "<t>.<raw body>").',
+    ].join('\n');
+  }
+
+  if (verb === 'rm' || verb === 'remove' || verb === 'delete') {
+    if (!target) throw new Error('og webhooks rm <webhookId>');
+    if (!client.delete) throw new Error('this client cannot delete');
+    await client.delete(`/webhooks/${encodeURIComponent(target)}`);
+    return `Removed ${target}.`;
+  }
+
+  if (verb === 'test') {
+    if (!target) throw new Error('og webhooks test <webhookId>');
+    const result = (await client.post(
+      `/webhooks/${encodeURIComponent(target)}/test`,
+      {},
+    )) as Record<string, unknown>;
+    return `Queued a ping (${text(result, 'deliveryId')}). It goes out on the worker's next tick; see og webhooks deliveries ${target}.`;
+  }
+
+  if (verb === 'deliveries' || verb === 'log') {
+    const path = target
+      ? `/webhooks/${encodeURIComponent(target)}/deliveries`
+      : '/webhooks/deliveries';
+    const result = (await client.get(path)) as Record<string, unknown>;
+    const deliveries = rows(result, 'deliveries');
+    if (deliveries.length === 0) return 'No deliveries yet.';
+    return deliveries
+      .map((d) =>
+        [
+          pad(text(d, 'createdAt'), 25),
+          pad(text(d, 'eventType'), 24),
+          pad(text(d, 'status'), 10),
+          pad(text(d, 'statusCode', '-'), 4),
+          `attempt ${text(d, 'attempt')}`,
+          text(d, 'error') ? `  ${text(d, 'error')}` : '',
+        ].join(' '),
+      )
+      .join('\n');
+  }
+
+  throw new Error('og webhooks list | add <url> | rm <id> | test <id> | deliveries [id]');
+}
 
 /**
  * Opens the person's editor on a file and returns what they saved. Injected
@@ -222,6 +323,118 @@ export function renderThread(thread: Record<string, unknown>): string {
   }
 
   return lines.join('\n').trimEnd();
+}
+
+/**
+ * One step from the command line: `network:action[:delayHours[:condition[:waitHours]]]`.
+ *
+ * Positional rather than `key=value` because a plan is typed as a column of
+ * `--step` flags and read back the same way; empty fields keep their default,
+ * so `linkedin:connect:24::168` is "invite a day later, wait a week". Nothing
+ * is validated here beyond the shape — the server refuses a bad plan with the
+ * domain's own sentences, which are better than anything this could say.
+ */
+export function parseStepSpec(spec: string, position: number): Record<string, unknown> {
+  const [network, action, delay, condition, wait] = spec.split(':').map((part) => part.trim());
+  if (!network || !action) {
+    throw new Error(
+      `cannot read step "${spec}": use network:action[:delayHours[:condition[:waitHours]]]`,
+    );
+  }
+  const number = (value: string | undefined, name: string): number | undefined => {
+    if (!value) return undefined;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) throw new Error(`${name} in "${spec}" is not a number`);
+    return parsed;
+  };
+  const delayHours = number(delay, 'the delay');
+  const waitForAcceptanceHours = number(wait, 'the acceptance wait');
+  return {
+    position,
+    network,
+    action,
+    delayHours: delayHours ?? 0,
+    ...(condition ? { condition } : {}),
+    ...(waitForAcceptanceHours !== undefined ? { waitForAcceptanceHours } : {}),
+  };
+}
+
+/** `og cadences`, `og cadences show <id>`, `og cadences create …`. */
+async function runCadences({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb, id] = args;
+
+  if (!verb || verb === 'list') {
+    const cadences = rows(await client.get('/cadences'), 'cadences');
+    if (cadences.length === 0) return 'No plans yet. Try `og playbooks` or `og cadences create`.';
+    return cadences
+      .map((cadence) =>
+        [
+          pad(text(cadence, 'id'), 30),
+          pad(text(cadence, 'status'), 9),
+          pad(`${text(cadence, 'steps')} steps`, 9),
+          pad(`${text(cadence, 'active_enrollments', '0')} on it`, 10),
+          text(cadence, 'name'),
+        ].join(' '),
+      )
+      .join('\n');
+  }
+
+  if (verb === 'show') {
+    if (!id) throw new Error('a cadence id is required: og cadences show <id>');
+    const detail = (await client.get(`/cadences/${encodeURIComponent(id)}`)) as Record<
+      string,
+      unknown
+    >;
+    const cadence = (detail.cadence ?? {}) as Record<string, unknown>;
+    const lines = [`${text(cadence, 'name')} (${text(cadence, 'status')})`];
+    for (const step of rows(detail, 'steps')) {
+      const condition = text(step, 'condition', 'always');
+      const wait = text(step, 'wait_for_acceptance_hours');
+      lines.push(
+        [
+          pad(`${Number(text(step, 'position', '0')) + 1}.`, 4),
+          pad(`${text(step, 'network')}:${text(step, 'action')}`, 24),
+          pad(`+${text(step, 'delay_hours', '0')}h`, 7),
+          condition === 'always' ? '' : condition,
+          wait ? `waits ${wait}h for acceptance` : '',
+          text(step, 'intent'),
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+    }
+    return lines.join('\n');
+  }
+
+  if (verb === 'create') {
+    const name = flagString(flags, 'name');
+    if (!name) throw new Error('--name is required');
+
+    const file = flagString(flags, 'file');
+    // A file holds either the steps array or a whole `{ steps }` body.
+    const fromFile: unknown = file ? JSON.parse(await Bun.file(file).text()) : undefined;
+    const steps =
+      fromFile === undefined
+        ? asList(flags.step).map((spec, index) => parseStepSpec(spec, index))
+        : Array.isArray(fromFile)
+          ? fromFile
+          : (fromFile as { steps?: unknown }).steps;
+    if (!Array.isArray(steps) || steps.length === 0) {
+      throw new Error(
+        'at least one --step is required, e.g. --step linkedin:view_profile --step linkedin:connect:24::168',
+      );
+    }
+
+    const result = (await client.post('/cadences', {
+      name,
+      steps,
+      ...(flagString(flags, 'campaign') ? { campaignId: flagString(flags, 'campaign') } : {}),
+      ...(flags.active === true ? { status: 'active' } : {}),
+    })) as Record<string, unknown>;
+    return `Created ${text(result, 'cadenceId')}${flags.active === true ? ' (active)' : ' as a draft'}`;
+  }
+
+  throw new Error('og cadences [list] | og cadences show <id> | og cadences create --name …');
 }
 
 export const COMMANDS: readonly Command[] = [
@@ -428,6 +641,15 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
+    name: 'cadences',
+    usage:
+      'og cadences | og cadences show <id> | og cadences create --name <name> ' +
+      '--step network:action[:delayHours[:condition[:waitHours]]]... [--campaign <id>] [--active] [--file plan.json]',
+    summary:
+      'Plans of touches over time; a step may run only if connected, not connected, clicked, or not replied.',
+    run: runCadences,
+  },
+  {
     name: 'grid',
     usage:
       'og grid --name <name> --ask <question> [--ask <question>] --person <id> [--person <id>]',
@@ -469,11 +691,20 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'connect',
     usage:
-      'og connect x-session --accept-x-risk | og connect linkedin --accept-linkedin-risk | og connect x',
+      'og connect x-session --accept-x-risk | og connect linkedin --accept-linkedin-risk | og connect x | og connect hubspot|pipedrive [--token <token>]',
     summary:
-      'Connect X or LinkedIn through your browser session (free), or X over OAuth 2.1 (paid API).',
+      'Connect X or LinkedIn (session or OAuth 2.1), or a CRM (HubSpot, Pipedrive) that replies and approvals sync to.',
     async run({ client, args, flags }) {
       const network = args[0];
+      if (network === 'hubspot' || network === 'pipedrive') {
+        const token =
+          flagString(flags, 'token') ??
+          (process.stderr.write(`${CRM_TOKEN_HELP[network]}\n`),
+          await readSecret(`${network} token (input hidden): `));
+        if (!token) throw new Error('no token entered');
+        await client.put(`/integrations/crm/${network}`, { token });
+        return `Connected ${network === 'hubspot' ? 'HubSpot' : 'Pipedrive'}. Replies and approved outreach now sync as contacts with a note.`;
+      }
       if (network === 'x') {
         const started = (await client.post('/integrations/x/oauth/start', {})) as Record<
           string,
@@ -524,7 +755,9 @@ export const COMMANDS: readonly Command[] = [
         if (flags['accept-linkedin-risk'] !== true) {
           return [
             'Automating LinkedIn is against its User Agreement and can get the account restricted.',
-            'OutreachGraph paces comments (about 25 a day, minutes apart) to keep that risk low, not zero.',
+            'OutreachGraph paces every action minutes apart and caps each kind (20 invitations a day and 100 a week,',
+            '60 profile visits, 30 follows, 25 messages, 25 comments) to keep that risk low, not zero.',
+            'Every card still waits for your approval unless a campaign is on trusted automation.',
             '',
             'To go ahead: og connect linkedin --accept-linkedin-risk',
             'You will be asked for the li_at cookie: in a browser signed in to LinkedIn, open',
@@ -537,7 +770,7 @@ export const COMMANDS: readonly Command[] = [
           liAt,
           acknowledgeTerms: true,
         })) as { account?: { publicIdentifier?: string } };
-        return `Connected LinkedIn as ${result.account?.publicIdentifier ?? '?'}. LinkedIn comments will now send, paced.`;
+        return `Connected LinkedIn as ${result.account?.publicIdentifier ?? '?'}. Approved LinkedIn comments, invitations, visits, follows and messages will now go out, paced.`;
       }
 
       throw new Error(`og connect ${CONNECTABLE.join(' | ')}`);
@@ -545,8 +778,8 @@ export const COMMANDS: readonly Command[] = [
   },
   {
     name: 'disconnect',
-    usage: 'og disconnect x | og disconnect linkedin',
-    summary: 'Remove a connected X account or LinkedIn session.',
+    usage: 'og disconnect x | linkedin | hubspot | pipedrive',
+    summary: 'Remove a connected X account, LinkedIn session or CRM.',
     async run({ client, args }) {
       const network = args[0];
       if (!network || !(CONNECTABLE as readonly string[]).includes(network)) {
@@ -554,7 +787,12 @@ export const COMMANDS: readonly Command[] = [
       }
       if (!client.delete) throw new Error('this client cannot disconnect');
       // One X account per workspace, however it was connected.
-      const path = network === 'x-session' ? 'x' : network;
+      const path =
+        network === 'x-session'
+          ? 'x'
+          : (CRMS as readonly string[]).includes(network)
+            ? `crm/${network}`
+            : network;
       const result = (await client.delete(`/integrations/${path}`)) as Record<string, unknown>;
       return result.disconnected
         ? `Disconnected ${network}.`
@@ -616,6 +854,13 @@ export const COMMANDS: readonly Command[] = [
         })
         .join('\n');
     },
+  },
+  {
+    name: 'webhooks',
+    usage:
+      'og webhooks list | add <https-url> [--slack] [--events a,b] | rm <id> | test <id> | deliveries [id]',
+    summary: 'Send events to Slack, Zapier, Make, n8n or your own endpoint.',
+    run: runWebhooks,
   },
   {
     name: 'status',

@@ -24,7 +24,7 @@ These come from the PRD and are not style preferences:
 - **The Policy Engine is deterministic.** No LLM participates in a policy decision. It fails closed: an unknown network/action pair is DENY.
 - **Policy is re-checked at execution time**, never trusted from the snapshot stored on the recommendation.
 - **Human approval is the default.** `trusted_automation` is opt-in and additionally gated per capability.
-- **No LinkedIn automation.** Research, evidence, and drafts only; the human acts in LinkedIn's own interface.
+- **LinkedIn acts only through the member's own session, and only after an explicit opt-in.** LinkedIn's terms forbid automation and its API offers none of these actions, so comments, replies, connection requests, profile visits, follows and messages to connections run through the member's `li_at` session (Voyager) — and only after the workspace owner explicitly accepts that risk (`og connect linkedin --accept-linkedin-risk`, the `customer_managed` mode in the capability matrix). Every action is paced and capped per kind (`packages/pipeline/src/social-delivery.ts`), and human approval is still the default. Without the opt-in, every LinkedIn action stays a hand-off the human does in LinkedIn's own interface. Anything new on LinkedIn goes through the same gate; there is no other path.
 - **GitHub is a signal source, not a messaging channel.** No sales outreach in issues, PRs, or discussions.
 - **Identity precision beats recall.** A merge needs corroborating evidence; name-plus-city never merges on its own.
 - **Every personalised claim is grounded in stored evidence.** No source, no claim.

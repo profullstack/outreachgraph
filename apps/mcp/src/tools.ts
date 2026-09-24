@@ -15,8 +15,13 @@
  *      persuasive caller to be pointed at, because there is no other path.
  *
  * So the honest framing for a tool description is not "please don't automate
- * LinkedIn". It is "LinkedIn automation is unreachable, and here is what to do
- * instead" — which is `share_link`, and which is a better answer anyway.
+ * LinkedIn". It is "no tool here can decide what is automated": an agent can
+ * approve a card, and the engine decides at that moment whether it runs.
+ * LinkedIn actions run only through the member's own session, which exists
+ * only after the workspace owner explicitly accepted LinkedIn's terms risk
+ * (`og connect linkedin --accept-linkedin-risk`) — something no tool here can
+ * do — and they are then paced and capped. Without that session every
+ * LinkedIn action is a hand-off, and `share_link` is what to use instead.
  */
 
 import type { ApiClient } from './client';
@@ -160,11 +165,11 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: 'share_link',
     title: 'Get a prefilled composer link',
     description:
-      'For networks the product may not post to — LinkedIn, Reddit, X direct messages — ' +
-      'this returns a link that opens their own composer with the message already written. ' +
-      'A person clicks it and posts under their own account. This is the correct and only ' +
-      'way to act on those networks; there is no automated path and asking for one will be ' +
-      'refused by the policy engine.',
+      'For networks the product may not post to — Reddit, X direct messages, and LinkedIn ' +
+      'when the workspace has not connected its own LinkedIn session — this returns a link ' +
+      'that opens their own composer with the message already written. A person clicks it ' +
+      'and posts under their own account. For those cases this is the correct and only way ' +
+      'to act; there is no automated path and asking for one will be refused by the policy engine.',
     readOnly: false,
     inputSchema: {
       type: 'object',
@@ -177,6 +182,91 @@ export const TOOLS: readonly ToolDefinition[] = [
     run: (client, args) =>
       client.post(`/recommendations/${require(args, 'recommendationId')}/share`, {
         network: require(args, 'network'),
+      }),
+  },
+  {
+    name: 'list_cadences',
+    title: 'List plans',
+    description:
+      'The plans (cadences) in this workspace: ordered touches over time, with how many ' +
+      'steps each has and how many prospects are on it.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/cadences'),
+  },
+  {
+    name: 'get_cadence',
+    title: 'Read one plan',
+    description:
+      'One plan’s steps in order: network, action, delay, the condition each step runs ' +
+      'under (always, if_connected, if_not_connected, if_no_reply, if_clicked, if_not_clicked) ' +
+      'and how long a LinkedIn invitation step waits for acceptance.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { cadenceId: { type: 'string' } },
+      required: ['cadenceId'],
+    },
+    run: (client, args) =>
+      client.get(`/cadences/${encodeURIComponent(require(args, 'cadenceId'))}`),
+  },
+  {
+    name: 'create_cadence',
+    title: 'Write a plan',
+    description:
+      'Create a plan of touches, as a draft unless status is "active". Each step names a ' +
+      'network, an action and a delay in hours after the previous step, and may carry a ' +
+      'condition evaluated when it falls due; a step whose condition is false is skipped on ' +
+      'the record. Two neighbouring steps with opposite conditions are a branch, e.g. ' +
+      'linkedin connect (waitForAcceptanceHours 168), then linkedin send_dm if_connected, ' +
+      'then email send_email if_not_connected. Writing a plan decides nothing about what is ' +
+      'automated: every step still goes through the policy engine when it falls due.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        campaignId: { type: 'string' },
+        status: { type: 'string', enum: ['draft', 'active'] },
+        steps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              network: { type: 'string' },
+              action: { type: 'string' },
+              delayHours: { type: 'number' },
+              intent: { type: 'string' },
+              stopOnReply: { type: 'boolean' },
+              condition: {
+                type: 'string',
+                enum: [
+                  'always',
+                  'if_connected',
+                  'if_not_connected',
+                  'if_no_reply',
+                  'if_clicked',
+                  'if_not_clicked',
+                ],
+              },
+              waitForAcceptanceHours: {
+                type: 'number',
+                description: 'On a linkedin connect step only.',
+              },
+            },
+            required: ['network', 'action'],
+          },
+        },
+      },
+      required: ['name', 'steps'],
+    },
+    // Validation is the server's: a malformed plan comes back as sentences.
+    run: (client, args) =>
+      client.post('/cadences', {
+        name: require(args, 'name'),
+        steps: Array.isArray(args.steps) ? args.steps : [],
+        ...(str(args, 'campaignId') ? { campaignId: str(args, 'campaignId') } : {}),
+        ...(str(args, 'status') ? { status: str(args, 'status') } : {}),
       }),
   },
   {
@@ -505,6 +595,50 @@ export const TOOLS: readonly ToolDefinition[] = [
       client.post(`/inbox/${require(args, 'personId')}/reply`, {
         text: require(args, 'text'),
         ...(str(args, 'subject') ? { subject: str(args, 'subject') } : {}),
+      }),
+  },
+  {
+    name: 'list_webhooks',
+    title: 'List webhook endpoints',
+    description:
+      'The endpoints this workspace sends events to (generic signed JSON, or Slack), which events ' +
+      'each receives, and how its last delivery went. URLs are shown only as a hint and signing ' +
+      'secrets are never returned. Also lists every event type that can be subscribed to.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/webhooks'),
+  },
+  {
+    name: 'add_webhook',
+    title: 'Add a webhook endpoint',
+    description:
+      'Send workspace events (reply.received, link.clicked, prospect.created, ' +
+      'recommendation.approved, action.sent, cadence.completed, person.suppressed) to an https ' +
+      'URL: a Zapier, Make or n8n catch hook, your own server, or a Slack incoming webhook with ' +
+      'kind "slack". Private and internal addresses are refused. The response carries the signing ' +
+      'secret exactly once; deliveries are signed X-OutreachGraph-Signature: t=<unix>,v1=<hex> ' +
+      'over "<t>.<raw body>" with HMAC-SHA256.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'An https URL.' },
+        kind: { type: 'string', enum: ['generic', 'slack'], description: 'Default generic.' },
+        events: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Event types to receive. Omit for all.',
+        },
+        description: { type: 'string' },
+      },
+      required: ['url'],
+    },
+    run: (client, args) =>
+      client.post('/webhooks', {
+        url: require(args, 'url'),
+        kind: str(args, 'kind') === 'slack' ? 'slack' : 'generic',
+        ...(Array.isArray(args.events) ? { events: args.events.map(String) } : {}),
+        ...(str(args, 'description') ? { description: str(args, 'description') } : {}),
       }),
   },
 ];

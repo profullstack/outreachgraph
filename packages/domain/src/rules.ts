@@ -26,6 +26,12 @@ export const RULE_TRIGGERS = [
   'score_crossed',
   'reply_received',
   'stage_changed',
+  /**
+   * Somebody accepted a LinkedIn invitation the workspace's session sent.
+   * Detected by the daily acceptance check, once per person — LinkedIn sends
+   * no notification a third party can receive.
+   */
+  'connection_accepted',
 ] as const;
 export type RuleTrigger = (typeof RULE_TRIGGERS)[number];
 

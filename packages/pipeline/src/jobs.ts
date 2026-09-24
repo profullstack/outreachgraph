@@ -86,6 +86,20 @@ export const JOB_KINDS = [
    * `decideAutoReply` says every condition held and otherwise left as a card.
    */
   'triage_reply',
+  /**
+   * POST one event to one customer webhook endpoint.
+   *
+   * One job per (endpoint, event) so a dead Zapier hook retries on its own
+   * schedule without holding up the Slack channel beside it, and so the
+   * queue's backoff is the retry policy rather than a second one in here.
+   */
+  'deliver_webhook',
+  /**
+   * Push one person and one note into a connected CRM (HubSpot, Pipedrive).
+   *
+   * Queued by the same event bus as webhooks, only for replies and approvals.
+   */
+  'sync_crm',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];

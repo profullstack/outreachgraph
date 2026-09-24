@@ -194,6 +194,8 @@ export {
 export {
   trackLinksInBody,
   recordLinkClick,
+  issueOpenPixel,
+  recordEmailOpen,
   engagementFor,
   relationshipInputFrom,
   type TrackLinksInput,
@@ -229,6 +231,8 @@ export {
   deliverEmailAction,
   defaultEmailSubject,
   loadOutreachSettings,
+  prepareOutgoingEmail,
+  htmlTwin,
   pickEmailRecipient,
   recordEmailFailure,
   recordEmailSent,
@@ -363,9 +367,57 @@ export {
 } from './linkedin-account';
 export { deliverLinkedInAction, type DeliverLinkedInResult } from './outreach-linkedin';
 export {
+  createWebhookEndpoint,
+  deleteWebhookEndpoint,
+  emitWebhookEvent,
+  eventPerson,
+  listWebhookDeliveries,
+  listWebhookEndpoints,
+  pruneWebhookDeliveries,
+  runWebhookDelivery,
+  sendTestEvent,
+  urlHint,
+  webhookBody,
+  WebhookError,
+  WebhookRetryError,
+  CRM_SYNC_MAX_ATTEMPTS,
+  MAX_WEBHOOK_ENDPOINTS,
+  WEBHOOK_MAX_ATTEMPTS,
+  type EmitResult,
+  type UrlCheckOptions,
+  type WebhookDeliveryDeps,
+  type WebhookDeliveryResult,
+  type WebhookDeliverySummary,
+  type WebhookEndpointSummary,
+} from './webhooks';
+export {
+  connectCrm,
+  crmNoteFor,
+  crmStatus,
+  disconnectCrm,
+  runCrmSync,
+  CrmAccountError,
+  type CrmClientFactory,
+  type CrmConnectionSummary,
+  type CrmSyncDeps,
+  type CrmSyncResult,
+} from './crm-sync';
+export {
+  capGroupFor,
+  capsFor,
   isPacedNetwork,
+  LINKEDIN_ACTION_CAPS,
   PACING,
   runSocialDelivery,
   scheduleSocialDelivery,
+  type CapGroup,
   type PacedNetwork,
 } from './social-delivery';
+export {
+  checkLinkedInAcceptances,
+  recordInvitationSent,
+  recordObservedStatus,
+  workspacesWithLinkedInSession,
+  type AcceptanceCheckResult,
+} from './linkedin-connections';
+export { resolveStepCondition, type ConditionVerdict } from './cadence-conditions';

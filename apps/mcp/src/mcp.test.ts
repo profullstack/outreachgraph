@@ -173,6 +173,27 @@ describe('tools', () => {
     expect(calls[1]?.body).toEqual({});
   });
 
+  test('add_webhook posts the endpoint; list_webhooks only reads', async () => {
+    const { fetchImpl, calls } = recorder(ok());
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('add_webhook')!, client, {
+      url: 'https://hooks.example.com/in',
+      kind: 'slack',
+      events: ['reply.received'],
+    });
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/webhooks');
+    expect(calls[0]?.body).toEqual({
+      url: 'https://hooks.example.com/in',
+      kind: 'slack',
+      events: ['reply.received'],
+    });
+
+    expect(toolByName('list_webhooks')?.readOnly).toBe(true);
+    await runTool(toolByName('list_webhooks')!, client, {});
+    expect(calls[1]?.method).toBe('GET');
+  });
+
   test('there is no tool that posts to a network directly', () => {
     // A tool named "post_to_linkedin" would be a way around the policy engine
     // whatever its implementation did today.
@@ -180,6 +201,24 @@ describe('tools', () => {
       expect(tool.name).not.toContain('linkedin');
       expect(tool.name).not.toContain('dm');
     }
+  });
+
+  test('create_cadence sends step conditions through untouched, for the server to judge', async () => {
+    const { fetchImpl, calls } = recorder(ok({ cadenceId: 'cad_1' }));
+    const steps = [
+      { network: 'linkedin', action: 'connect', waitForAcceptanceHours: 168 },
+      { network: 'linkedin', action: 'send_dm', condition: 'if_connected' },
+      { network: 'email', action: 'send_email', condition: 'if_not_connected' },
+    ];
+
+    await runTool(toolByName('create_cadence')!, createClient(CONFIG, fetchImpl), {
+      name: 'Invite then DM or email',
+      steps,
+    });
+
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/cadences');
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.body).toEqual({ name: 'Invite then DM or email', steps });
   });
 
   test('share_link is what the manual networks route through', async () => {
