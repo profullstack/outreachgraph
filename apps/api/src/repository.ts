@@ -162,6 +162,8 @@ export async function listPendingRecommendations(
   workspaceId: string,
   limit: number,
   filter: ApprovalFilter = 'all',
+  /** Rows to skip in queue order; how bulk approve pages past held cards. */
+  offset = 0,
 ) {
   const outbound = OUTBOUND_ACTION_KINDS.map(() => '?').join(', ');
 
@@ -206,9 +208,9 @@ export async function listPendingRecommendations(
       WHERE r.workspace_id = ? AND r.status = 'pending'
         AND (r.expires_at IS NULL OR r.expires_at > ?)
         ${clause[filter]}
-   ORDER BY r.priority DESC, r.created_at ASC
-      LIMIT ?`,
-    [...OUTBOUND_ACTION_KINDS, workspaceId, now(), ...clauseArgs, limit],
+   ORDER BY r.priority DESC, r.created_at ASC, r.id ASC
+      LIMIT ? OFFSET ?`,
+    [...OUTBOUND_ACTION_KINDS, workspaceId, now(), ...clauseArgs, limit, offset],
   );
 }
 

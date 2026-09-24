@@ -35,6 +35,8 @@ interface BulkResult {
   readonly researchQueued: number;
   readonly holds: readonly { gate: string; reason: string; count: number }[];
   readonly more: boolean;
+  /** Where to carry on from; older APIs omit it and start from the top. */
+  readonly cursor?: number;
 }
 
 export function ApproveAll({
@@ -52,12 +54,15 @@ export function ApproveAll({
   const [done, setDone] = useState<BulkResult | undefined>();
   const [busy, setBusy] = useState<'preview' | 'run' | undefined>();
   const [error, setError] = useState<string | undefined>();
+  // Where the preview on screen started reading, so pressing "approve" acts
+  // on the same cards the preview described, and where "carry on" resumes.
+  const [cursor, setCursor] = useState(0);
 
-  async function call(dryRun: boolean): Promise<BulkResult | undefined> {
+  async function call(dryRun: boolean, from: number): Promise<BulkResult | undefined> {
     const response = await fetch('/api/v1/recommendations/approve-all', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ filter, channel, dryRun }),
+      body: JSON.stringify({ filter, channel, dryRun, cursor: from }),
     });
 
     const body = (await response.json()) as BulkResult & { error?: { message?: string } };
@@ -70,13 +75,16 @@ export function ApproveAll({
     return body;
   }
 
-  async function onPreview(): Promise<void> {
+  async function onPreview(from = 0): Promise<void> {
     setBusy('preview');
     setError(undefined);
     setDone(undefined);
 
-    const result = await call(true);
-    if (result) setPreview(result);
+    const result = await call(true, from);
+    if (result) {
+      setCursor(from);
+      setPreview(result);
+    }
     setBusy(undefined);
   }
 
@@ -84,7 +92,7 @@ export function ApproveAll({
     setBusy('run');
     setError(undefined);
 
-    const result = await call(false);
+    const result = await call(false, cursor);
 
     if (result) {
       setDone(result);
@@ -125,7 +133,7 @@ export function ApproveAll({
           {done.more ? (
             <button
               type="button"
-              onClick={() => void onPreview()}
+              onClick={() => void onPreview(done.cursor ?? 0)}
               className="border-border mt-2 rounded-xl border px-3 py-2 text-sm font-medium"
             >
               More remain — carry on

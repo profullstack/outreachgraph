@@ -71,6 +71,88 @@ async function extraCards(seeded: SeededDatabase, count: number): Promise<void> 
   }
 }
 
+/** Higher-priority cards for suppressed people: always held, never approved. */
+async function heldCards(seeded: SeededDatabase, count: number): Promise<void> {
+  const stamp = new Date().toISOString();
+
+  for (let index = 0; index < count; index += 1) {
+    const personId = `per_held_${index}`;
+    await seeded.db.execute({
+      sql: `INSERT INTO people (id, display_name, status, identity_confidence, created_at, updated_at)
+            VALUES (?, ?, 'suppressed', 0.95, ?, ?)`,
+      args: [personId, `Held ${index}`, stamp, stamp],
+    });
+    await seeded.db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action,
+            network, priority, reason, policy_status, policy_version, expected_goal, status,
+            created_at)
+            VALUES (?, ?, ?, ?, 'reply', 'x', 99, 'because', 'allow_with_approval', '2026-08-11',
+            'start_conversation', 'pending', ?)`,
+      args: [`rec_held_${index}`, SEED.workspaceId, SEED.campaignId, personId, stamp],
+    });
+  }
+}
+
+describe('approve-all past held cards', () => {
+  // Production, 2026-09-24: ~190 of the first 200 cards were held, and every
+  // press re-read those same 200, so nothing below them was ever approved.
+  test('reads past held cards at the top and hands back a cursor', async () => {
+    const { app, seeded } = await harness('bulk-held-top');
+    await seeded.db.execute(`UPDATE recommendations SET priority = 10`);
+    await heldCards(seeded, 5);
+    await extraCards(seeded, 3);
+
+    const first = (await (await approveAll(app, { limit: 2 })).json()) as {
+      approved: number;
+      handoffs: number;
+      held: number;
+      more: boolean;
+      cursor: number;
+    };
+    expect(first.approved + first.handoffs).toBe(2);
+    expect(first.held).toBe(5);
+    expect(first.more).toBe(true);
+    // The five held cards are still pending ahead of where it stopped.
+    expect(first.cursor).toBe(5);
+
+    const second = (await (await approveAll(app, { limit: 2, cursor: first.cursor })).json()) as {
+      approved: number;
+      handoffs: number;
+      held: number;
+      cursor: number;
+    };
+    // The last bulk card and the seeded one, without re-checking the held five.
+    expect(second.approved + second.handoffs).toBe(2);
+    expect(second.held).toBe(0);
+
+    const pending = await seeded.db.execute({
+      sql: `SELECT count(*) AS n FROM recommendations WHERE workspace_id = ? AND status = 'pending'`,
+      args: [SEED.workspaceId],
+    });
+    expect(Number(pending.rows[0]?.n)).toBe(5);
+  });
+
+  test('a preview reads the same way and changes nothing', async () => {
+    const { app, seeded } = await harness('bulk-held-preview');
+    await seeded.db.execute(`UPDATE recommendations SET priority = 10`);
+    await heldCards(seeded, 5);
+    await extraCards(seeded, 3);
+
+    const preview = (await (await approveAll(app, { limit: 2, dryRun: true })).json()) as {
+      approved: number;
+      handoffs: number;
+      held: number;
+      cursor: number;
+    };
+    expect(preview.approved + preview.handoffs).toBe(2);
+    expect(preview.held).toBe(5);
+    expect(preview.cursor).toBe(7);
+
+    const actions = await seeded.db.execute('SELECT count(*) AS n FROM actions');
+    expect(Number(actions.rows[0]?.n)).toBe(0);
+  });
+});
+
 describe('approve-all', () => {
   test('approves the pending queue in one request', async () => {
     const { app, seeded } = await harness('bulk-ok');
