@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
@@ -23,6 +24,12 @@ interface BulkResult {
   readonly dryRun: boolean;
   readonly attempted: number;
   readonly approved: number;
+  /**
+   * Cards the product may not do itself (LinkedIn engagement, X with no
+   * account), approved as hand-off cards for a person to finish. Optional so
+   * an older API that does not report them still renders.
+   */
+  readonly handoffs?: number;
   readonly held: number;
   readonly sent: number;
   readonly researchQueued: number;
@@ -92,6 +99,9 @@ export function ApproveAll({
 
   if (pending === 0 && !done) return null;
 
+  const previewHandoffs = preview?.handoffs ?? 0;
+  const actionable = (preview?.approved ?? 0) + previewHandoffs;
+
   return (
     <section className="border-border mb-4 rounded-2xl border p-3">
       {done ? (
@@ -102,6 +112,15 @@ export function ApproveAll({
             {done.researchQueued > 0 ? `, queued ${done.researchQueued} for research` : ''}
             {done.held > 0 ? `, held ${done.held.toLocaleString()}` : ''}.
           </p>
+          {(done.handoffs ?? 0) > 0 ? (
+            <p className="mt-1">
+              <Link href="/approvals?tab=handoffs" className="text-accent font-medium underline">
+                {(done.handoffs ?? 0).toLocaleString()} hand-off card
+                {done.handoffs === 1 ? '' : 's'} ready
+              </Link>{' '}
+              <span className="text-ink-muted">— yours to do, about thirty seconds each.</span>
+            </p>
+          ) : null}
           <Holds holds={done.holds} />
           {done.more ? (
             <button
@@ -118,8 +137,16 @@ export function ApproveAll({
           <p className="font-medium">
             {preview.approved > 0
               ? `This will approve ${preview.approved.toLocaleString()} card${preview.approved === 1 ? '' : 's'}.`
-              : 'Nothing here can be approved right now.'}
+              : previewHandoffs > 0
+                ? `${previewHandoffs.toLocaleString()} need you: the product can't post these, so approving makes each one a hand-off card.`
+                : 'Nothing here can be approved right now.'}
           </p>
+          {preview.approved > 0 && previewHandoffs > 0 ? (
+            <p>
+              {previewHandoffs.toLocaleString()} more need you: they become hand-off cards to copy,
+              open and post yourself.
+            </p>
+          ) : null}
           {preview.held > 0 ? (
             <p className="text-ink-muted">
               {preview.held.toLocaleString()} will be held by policy and stay in the queue.
@@ -131,10 +158,10 @@ export function ApproveAll({
             <button
               type="button"
               onClick={() => void onRun()}
-              disabled={busy !== undefined || preview.approved === 0}
+              disabled={busy !== undefined || actionable === 0}
               className="border-border rounded-xl border px-3 py-2 text-sm font-medium disabled:opacity-50"
             >
-              {busy === 'run' ? 'Approving…' : `Approve ${preview.approved.toLocaleString()}`}
+              {busy === 'run' ? 'Approving…' : `Approve ${actionable.toLocaleString()}`}
             </button>
             <button
               type="button"
