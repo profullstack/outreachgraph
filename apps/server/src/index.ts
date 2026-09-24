@@ -34,6 +34,7 @@ import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
+import { routesToApi } from './routing';
 import {
   drainQueue,
   emitEvent,
@@ -532,9 +533,7 @@ const server = Bun.serve({
   async fetch(request) {
     const { pathname } = new URL(request.url);
 
-    if (pathname.startsWith('/api/') || pathname.startsWith('/health')) {
-      return api.fetch(request);
-    }
+    if (routesToApi(pathname)) return api.fetch(request);
     return proxyToWeb(request);
   },
 });
