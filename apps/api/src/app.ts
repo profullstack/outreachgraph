@@ -19,6 +19,7 @@ import {
   executeActionSchema,
   backfillDraftsSchema,
   campaignLimitsSchema,
+  autoReplySchema,
   recordReplySchema,
   forgotPasswordSchema,
   loginSchema,
@@ -96,6 +97,7 @@ import {
   enrollInCadence,
   readResearchGrid,
   applyUnsubscribe,
+  queueTriage,
   recordLinkClick,
   recordEmailOpen,
   runResearchGrid,
@@ -140,6 +142,7 @@ import {
   renameCampaign,
   saveWorkspaceSettings,
   setCampaignAutopilot,
+  setCampaignAutoReply,
   setCampaignLimits,
   setCampaignStatus,
 } from './campaigns';
@@ -226,6 +229,7 @@ import {
   UnknownProductError,
 } from './workspace-profile';
 import { autogtmRoutes } from './autogtm';
+import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
 import { llmsText, openApiDocument } from './autogtm-docs';
 import {
@@ -1301,6 +1305,23 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     }),
   );
 
+  // ---------------------------------------------------------------- inbox
+  //
+  // Every conversation in the workspace, across campaigns and networks. Same
+  // arrangement as AutoGTM: the approval path is handed in, so a reply sent
+  // from the inbox is re-checked, audited and delivered exactly like a card
+  // approved from the queue.
+  api.route(
+    '/inbox',
+    inboxRoutes({
+      approve: (db, actor, recommendation, editedBody) =>
+        approveRecommendation(db, options, actor, recommendation, {
+          ...(editedBody ? { editedBody } : {}),
+        }),
+      requireVerifiedEmail: (db, actor) => requireVerifiedEmail(db, actor),
+    }),
+  );
+
   // ------------------------------------------------ webhooks and CRM sync
   //
   // Where a workspace's events go once they leave the product. In a module of
@@ -1825,8 +1846,43 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       touched = true;
     }
 
+    // How replies are answered. `autonomous` is the one setting here that can
+    // send a message nobody read, so it carries the same verification gate as
+    // autopilot — and it still sends nothing unless the campaign is on trusted
+    // automation and `decideAutoReply` finds every other condition held.
+    if (body.autoReply !== undefined) {
+      const parsed = autoReplySchema.safeParse(body.autoReply);
+      if (!parsed.success) {
+        throw ApiError.badRequest(
+          `invalid autoReply: ${parsed.error.issues[0]?.message ?? 'bad shape'}`,
+        );
+      }
+      if (parsed.data.mode === undefined && parsed.data.threshold === undefined) {
+        throw ApiError.badRequest('autoReply needs mode or threshold');
+      }
+      if (parsed.data.mode === 'autonomous') await requireVerifiedEmail(db, actor);
+
+      const saved = await setCampaignAutoReply(db, actor.workspaceId, campaignId, parsed.data);
+      if (!saved) throw ApiError.notFound('campaign');
+
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'campaign.auto_reply_changed',
+        entityKind: 'campaign',
+        entityId: campaignId,
+        detail: saved,
+      });
+
+      changed.autoReply = saved;
+      touched = true;
+    }
+
     if (!touched) {
-      throw ApiError.badRequest('send at least one of autopilot, name, status or limits');
+      throw ApiError.badRequest(
+        'send at least one of autopilot, name, status, limits or autoReply',
+      );
     }
 
     return c.json({ campaignId, ...changed });
@@ -2612,12 +2668,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const at = body.occurredAt ?? now();
     const address = body.fromAddress?.trim().toLowerCase() ?? contact?.address ?? null;
 
+    const interactionId = newId('interaction');
+
     await db.execute({
       sql: `INSERT INTO interactions (id, workspace_id, person_id, network, direction,
             state, body, contact_address, shared_inbox, occurred_at, recorded_at)
             VALUES (?, ?, ?, 'email', 'inbound', 'replied', ?, ?, ?, ?, ?)`,
       args: [
-        newId('interaction'),
+        interactionId,
         actor.workspaceId,
         personId,
         body.body ?? null,
@@ -2637,6 +2695,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       entityId: personId,
       detail: { address },
     });
+
+    // A reply typed in by hand gets the same triage as one read from the
+    // mailbox: a label, and a drafted answer when it is worth one. Without
+    // its words there is nothing to label, so a bare "they replied" is left
+    // as the fact it is.
+    if (body.body?.trim()) {
+      await queueTriage(db, actor.workspaceId, interactionId);
+    }
 
     await emitWebhookEvent(db, actor.workspaceId, 'reply.received', {
       personId,

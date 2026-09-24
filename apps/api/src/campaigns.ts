@@ -477,6 +477,36 @@ export async function setCampaignAutopilot(
 }
 
 /**
+ * Sets how a campaign answers replies, returning what is now stored.
+ *
+ * Either field may be omitted and is then left as it was — the same "absent
+ * means leave it alone" rule as the limits below.
+ */
+export async function setCampaignAutoReply(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+  settings: { readonly mode?: 'off' | 'copilot' | 'autonomous'; readonly threshold?: number },
+): Promise<{ mode: string; threshold: number } | undefined> {
+  const result = await db.execute({
+    sql: `UPDATE campaigns
+             SET auto_reply_mode = COALESCE(?, auto_reply_mode),
+                 auto_reply_threshold = COALESCE(?, auto_reply_threshold),
+                 updated_at = ?
+           WHERE id = ? AND workspace_id = ?`,
+    args: [settings.mode ?? null, settings.threshold ?? null, now(), campaignId, workspaceId],
+  });
+  if (result.rowsAffected === 0) return undefined;
+
+  const row = await queryOne<{ auto_reply_mode: string; auto_reply_threshold: number }>(
+    db,
+    'SELECT auto_reply_mode, auto_reply_threshold FROM campaigns WHERE id = ?',
+    [campaignId],
+  );
+  return row ? { mode: row.auto_reply_mode, threshold: row.auto_reply_threshold } : undefined;
+}
+
+/**
  * Merges tunable limits into a campaign's stored budget.
  *
  * Merged rather than replaced: `budget_json` also carries the spend ceilings,

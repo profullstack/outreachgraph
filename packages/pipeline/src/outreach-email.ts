@@ -23,7 +23,7 @@
  * job, and both callers have already asked it by the time they get here.
  */
 
-import { newId, type ProspectStatus } from '@outreachgraph/domain';
+import { newId, replySubject, type ProspectStatus } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer } from '@outreachgraph/email';
 import { recordStatus } from './stages';
@@ -259,6 +259,15 @@ export interface SentEmailRecord {
   readonly actor: AuditActor;
   readonly policyVersion?: string;
   readonly at?: string;
+  /**
+   * This send answers a message they wrote.
+   *
+   * An answer is not a new touch: it must not drag a prospect who replied
+   * back to `contacted`/`executed` in the funnel, which is what the cold-send
+   * bookkeeping below would otherwise do to the one row a human most wants to
+   * see move forward.
+   */
+  readonly answering?: boolean;
 }
 
 /**
@@ -286,13 +295,14 @@ export async function recordEmailSent(db: Client, record: SentEmailRecord): Prom
   await db.execute({
     sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, action_id,
           network, direction, state, body, contact_address, shared_inbox, occurred_at, recorded_at)
-          VALUES (?, ?, ?, ?, ?, 'email', 'outbound', 'contacted', ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, 'email', 'outbound', ?, ?, ?, ?, ?, ?)`,
     args: [
       newId('interaction'),
       record.workspaceId,
       record.personId,
       record.campaignId,
       record.actionId,
+      record.answering ? 'answered' : 'contacted',
       record.body,
       record.to.trim().toLowerCase(),
       record.sharedInbox ? 1 : 0,
@@ -306,20 +316,27 @@ export async function recordEmailSent(db: Client, record: SentEmailRecord): Prom
     args: [record.recommendationId],
   });
 
-  await db.execute({
-    sql: `UPDATE campaign_people SET interaction_state = 'contacted', last_actioned_at = ?
-           WHERE campaign_id = ? AND person_id = ?`,
-    args: [at, record.campaignId, record.personId],
-  });
+  if (record.answering) {
+    await db.execute({
+      sql: `UPDATE campaign_people SET last_actioned_at = ? WHERE campaign_id = ? AND person_id = ?`,
+      args: [at, record.campaignId, record.personId],
+    });
+  } else {
+    await db.execute({
+      sql: `UPDATE campaign_people SET interaction_state = 'contacted', last_actioned_at = ?
+             WHERE campaign_id = ? AND person_id = ?`,
+      args: [at, record.campaignId, record.personId],
+    });
 
-  await recordStatus(db, {
-    workspaceId: record.workspaceId,
-    campaignId: record.campaignId,
-    personId: record.personId,
-    status: 'executed' satisfies ProspectStatus,
-    reason: `${record.actor.actorId} emailed ${record.to}`,
-    at,
-  });
+    await recordStatus(db, {
+      workspaceId: record.workspaceId,
+      campaignId: record.campaignId,
+      personId: record.personId,
+      status: 'executed' satisfies ProspectStatus,
+      reason: `${record.actor.actorId} emailed ${record.to}`,
+      at,
+    });
+  }
 
   await auditAction(db, record.workspaceId, record.actionId, record.actor, {
     eventType: 'action.executed',
@@ -327,6 +344,7 @@ export async function recordEmailSent(db: Client, record: SentEmailRecord): Prom
       mode: 'email',
       to: record.to,
       sharedInbox: record.sharedInbox,
+      ...(record.answering ? { answering: true } : {}),
       ...(record.policyVersion ? { policyVersion: record.policyVersion } : {}),
     },
   });
@@ -450,6 +468,16 @@ interface DeliverableAction {
   readonly company_name: string | null;
   readonly company_contact_email: string | null;
   readonly person_email: string | null;
+  readonly reply_to_interaction_id: string | null;
+}
+
+/** The inbound message a reply answers, and what threading it needs. */
+interface AnsweredMessage {
+  readonly contact_address: string | null;
+  readonly shared_inbox: number;
+  readonly external_id: string | null;
+  readonly subject: string | null;
+  readonly references_header: string | null;
 }
 
 /**
@@ -472,7 +500,7 @@ export async function deliverEmailAction(
     db,
     `SELECT a.id AS action_id, a.status AS action_status, a.body AS action_body,
             a.network, a.kind, a.person_id, a.recommendation_id,
-            r.campaign_id,
+            r.campaign_id, r.reply_to_interaction_id,
             p.display_name,
             d.subject AS draft_subject, d.body AS draft_body,
             co.name AS company_name, co.contact_email AS company_contact_email,
@@ -498,14 +526,43 @@ export async function deliverEmailAction(
   const body = (row.action_body ?? row.draft_body ?? '').trim();
   if (!body) return { sent: false, reason: 'there is no message to send' };
 
-  const recipient = pickEmailRecipient(row);
+  // An answer goes back to the mailbox that wrote, in the same thread. The
+  // address is theirs by definition — they used it — and it may not be the
+  // one we would pick for a cold message: a prospect we reached at a shared
+  // inbox who answers from their own address should be answered there.
+  const answered = row.reply_to_interaction_id
+    ? await queryOne<AnsweredMessage>(
+        db,
+        `SELECT contact_address, shared_inbox, external_id, subject, references_header
+           FROM interactions WHERE id = ? AND workspace_id = ?`,
+        [row.reply_to_interaction_id, input.workspaceId],
+      )
+    : undefined;
+
+  const recipient = answered?.contact_address
+    ? { address: answered.contact_address, shared: answered.shared_inbox === 1 }
+    : pickEmailRecipient(row);
   if (!recipient) {
     return { sent: false, reason: 'no address published for this person or their company' };
   }
 
   const settings = await loadOutreachSettings(db, input.workspaceId);
   const replyTo = deps.replyTo ?? settings.reply_to_email ?? undefined;
-  const subject = row.draft_subject?.trim() || defaultEmailSubject(row.company_name);
+  const subject =
+    row.draft_subject?.trim() ||
+    (answered ? replySubject(answered.subject) : defaultEmailSubject(row.company_name));
+
+  // RFC 5322 threading: In-Reply-To names the message answered, References
+  // carries the chain. Without them a client files the answer as a new
+  // conversation, and the prospect has to go looking for what they asked.
+  const threading: Record<string, string> = answered?.external_id
+    ? {
+        'In-Reply-To': answered.external_id,
+        References: [answered.references_header, answered.external_id]
+          .filter((part): part is string => Boolean(part?.trim()))
+          .join(' '),
+      }
+    : {};
 
   // Link tracking, the opt-out and the pixel happen here and nowhere earlier:
   // `body` has already passed the §14.2 grounding gates, and rewriting before
@@ -521,6 +578,11 @@ export async function deliverEmailAction(
     appUrl: deps.appUrl,
   });
 
+  // Threading headers for a reply sit beside the opt-out headers, never
+  // instead of them: an answer to somebody is still a message they can stop.
+  const allHeaders = { ...(outgoing.headers ?? {}), ...threading };
+  const headers = Object.keys(allHeaders).length > 0 ? allHeaders : undefined;
+
   try {
     const result = await deps.mailer.send({
       to: recipient.address,
@@ -528,7 +590,7 @@ export async function deliverEmailAction(
       text: outgoing.text,
       ...(outgoing.html ? { html: outgoing.html } : {}),
       ...(replyTo ? { replyTo } : {}),
-      ...(outgoing.headers ? { headers: outgoing.headers } : {}),
+      ...(headers ? { headers } : {}),
     });
 
     await recordEmailSent(db, {
@@ -547,6 +609,7 @@ export async function deliverEmailAction(
       externalId: result.id,
       actor: input.actor,
       ...(input.policyVersion ? { policyVersion: input.policyVersion } : {}),
+      ...(answered ? { answering: true } : {}),
     });
 
     return {

@@ -74,6 +74,7 @@ import {
   type ListeningTargets,
   type QueuedJob,
   runSocialDelivery,
+  triageReply,
   checkLinkedInAcceptances,
   linkedInSessionForWorkspace,
   workspacesWithLinkedInSession,
@@ -749,6 +750,34 @@ async function runJob(job: QueuedJob): Promise<void> {
       );
       return;
     }
+    case 'triage_reply': {
+      const { interactionId } = job.payload as { interactionId?: string };
+      if (!interactionId) throw new Error('triage_reply needs interactionId');
+
+      // No model is a working state, not a failure: rules still label, a
+      // rule-matched stop still suppresses, and the reply still sits in the
+      // inbox for a human. Only the drafted answer is missing.
+      const result = await triageReply(
+        {
+          db,
+          ...(model ? { model } : {}),
+          ...(mailer ? { mailer } : {}),
+          ...(encryptionKey ? { encryptionKey } : {}),
+          ...(appUrl ? { appUrl } : {}),
+        },
+        { workspaceId: job.workspaceId, interactionId },
+      );
+
+      console.log(
+        `triage_reply ${interactionId}: ${result.outcome}` +
+          (result.label
+            ? ` (${result.label.label} ${Math.round(result.label.confidence * 100)}% by ${result.label.source})`
+            : '') +
+          (result.recommendationId ? `, card ${result.recommendationId}` : '') +
+          ` — ${result.reason}`,
+      );
+      return;
+    }
     case 'deliver_webhook': {
       // Throws to ask for a retry; the delivery row already says why.
       const result = await runWebhookDelivery({ db, encryptionKey }, job);
@@ -1008,7 +1037,14 @@ async function tick(): Promise<void> {
       });
 
       if (received.recorded > 0) {
-        console.log(`replies ${workspaceId}: ${received.recorded} recorded`);
+        console.log(
+          `replies ${workspaceId}: ${received.recorded} recorded, ${received.triageQueued} queued for triage`,
+        );
+      }
+      if (received.automatedRecorded > 0) {
+        console.log(
+          `replies ${workspaceId}: ${received.automatedRecorded} absence notice(s)/bounce(s) filed to their threads`,
+        );
       }
 
       // Worth a line even at zero: an inbox full of skipped auto-replies and

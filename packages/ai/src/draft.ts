@@ -14,6 +14,7 @@
 import { newId, type ActionKind, type Network, type OutreachStyle } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { composeDraft, type ComposeResult, type TextModel } from '@outreachgraph/ai';
+import { draftReplyForRecommendation } from './draft-reply';
 
 export interface DraftResult {
   readonly ok: boolean;
@@ -48,15 +49,22 @@ export async function draftForRecommendation(
     action: string;
     network: string;
     trigger_signal_id: string | null;
+    reply_to_interaction_id: string | null;
     guidance: string | null;
   }>(
     db,
     `SELECT id, workspace_id, campaign_id, person_id, action, network, trigger_signal_id,
-            guidance
+            reply_to_interaction_id, guidance
        FROM recommendations WHERE id = ?`,
     [recommendationId],
   );
   if (!recommendation) return { ok: false, reason: 'no_recommendation' };
+
+  // A reply card answers a message, not a signal, so it is grounded in the
+  // conversation. See `draft-reply.ts`.
+  if (recommendation.reply_to_interaction_id) {
+    return draftReplyForRecommendation(db, model, recommendation.id);
+  }
 
   // No trigger means nothing to quote, and §14.1 forbids personalising
   // without evidence.

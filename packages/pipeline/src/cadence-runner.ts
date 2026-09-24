@@ -277,10 +277,15 @@ async function conversationOpen(
   workspaceId: string,
   personId: string,
 ): Promise<boolean> {
+  // Both spellings of a human reply: the mailbox poll has always written
+  // `responded` and the manual route `replied`, and reading only the second
+  // meant a reply noticed by the poll never stopped a plan. An absence notice
+  // or a bounce is `direction = 'automated'` and is deliberately not here.
   const row = await queryOne<{ n: number }>(
     db,
     `SELECT count(*) AS n FROM interactions
-      WHERE workspace_id = ? AND person_id = ? AND direction = 'inbound' AND state = 'replied'`,
+      WHERE workspace_id = ? AND person_id = ? AND direction = 'inbound'
+        AND state IN ('replied', 'responded')`,
     [workspaceId, personId],
   );
 

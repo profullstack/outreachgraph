@@ -25,6 +25,7 @@ export {
 } from './engine';
 
 export {
+  autoReplyFlagKey,
   capabilityKey,
   DEFAULT_CAPABILITY_RULES,
   featureFlagKey,
@@ -35,3 +36,12 @@ export {
   type CapabilityRule,
   type PolicyMode,
 } from './capability-matrix';
+
+export {
+  autonomousRequested,
+  AUTONOMOUS_REPLY_LABELS,
+  decideAutoReply,
+  MIN_AUTO_REPLY_THRESHOLD,
+  type AutoReplyDecision,
+  type AutoReplyInput,
+} from './auto-reply';

@@ -30,15 +30,26 @@ export {
 
 export {
   composeDraft,
+  composeReply,
   type ComposeInput,
   type ComposeResult,
   type OfferingContext,
   type ProspectContext,
+  type ReplyComposeInput,
+  type ThreadMessage,
   type TriggerContext,
   type VoiceContext,
 } from './composer';
 
 export { draftForRecommendation, type DraftResult } from './draft';
+
+export { draftReplyForRecommendation, type ReplyDraftResult } from './draft-reply';
+
+export {
+  classifyReplyWithModel,
+  parseClassification,
+  type ClassifyReplyInput,
+} from './classify-reply';
 
 export { draftProfile, type ProfileDraft, type ProfileDraftResult } from './profile';
 

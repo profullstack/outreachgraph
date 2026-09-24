@@ -147,6 +147,7 @@ describe('tools', () => {
           name: 'grid',
           questions: ['q'],
           personIds: ['per_1'],
+          text: 'Thanks, Thursday works.',
         })
         .catch(() => undefined);
 
@@ -272,5 +273,32 @@ describe('describe', () => {
 
   test('passes an ordinary error through', () => {
     expect(describeError(new Error('boom'))).toBe('boom');
+  });
+});
+
+describe('inbox tools', () => {
+  test('list_inbox and get_thread only read', async () => {
+    const { fetchImpl, calls } = recorder(ok({ conversations: [] }));
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('list_inbox')!, client, { filter: 'need_reply', label: 'question' });
+    await runTool(toolByName('get_thread')!, client, { personId: 'per_1' });
+
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'GET']);
+    expect(calls[0]?.url).toContain('/inbox?filter=need_reply&label=question');
+    expect(calls[1]?.url).toBe('https://api.test/api/v1/inbox/per_1');
+  });
+
+  test('reply_to_thread goes through the API reply route, and needs words', async () => {
+    const { fetchImpl, calls } = recorder(ok({ sent: true }));
+    const client = createClient(CONFIG, fetchImpl);
+    const tool = toolByName('reply_to_thread')!;
+
+    await runTool(tool, client, { personId: 'per_1', text: 'Thursday?' });
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/inbox/per_1/reply');
+    expect(calls[0]?.body).toEqual({ text: 'Thursday?' });
+
+    expect(runTool(tool, client, { personId: 'per_1' })).rejects.toThrow('text is required');
   });
 });

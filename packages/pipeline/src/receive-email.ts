@@ -16,14 +16,27 @@
  *     strength of an out-of-office. Silent, and nobody goes looking for the
  *     outreach that never happened.
  *
- * So auto-replies, bounces and bulk mail are identified and skipped rather
- * than counted, and a message that cannot be matched to anyone we wrote to is
- * left alone rather than guessed at.
+ * So auto-replies, bounces and bulk mail are identified and never counted as
+ * a reply, and a message that cannot be matched to anyone we wrote to is left
+ * alone rather than guessed at.
+ *
+ * "Never counted" used to mean "never written down", which kept the gate
+ * honest and left the inbox blind: a bounce was the one thing that explained
+ * why a prospect never answered, and it vanished. Absence notices and bounces
+ * that belong to a thread are now recorded as `direction = 'automated'` — a
+ * direction no reply-counting reader looks at, so the policy gate, the funnel
+ * and every cadence's stop-on-reply see exactly what they saw before. Bulk mail
+ * is still dropped; a newsletter is nobody's conversation.
+ *
+ * A human reply is recorded with its words now, not only its subject, and a
+ * `triage_reply` job is queued for it: labelling, a possible suppression, and
+ * a drafted answer all happen there, off the polling path.
  */
 
-import { newId } from '@outreachgraph/domain';
+import { classifyReplyByRules, newId, type ReplyClassification } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { MailReader, IncomingMessage } from '@outreachgraph/email';
+import { enqueue } from './queue';
 import { recordStatus } from './stages';
 import { emitWebhookEvent } from './webhooks';
 
@@ -47,6 +60,10 @@ export interface ReceiveRepliesResult {
   readonly unmatched: number;
   /** Already recorded by an earlier poll. */
   readonly duplicates: number;
+  /** Absence notices and bounces written to a thread, never counted as replies. */
+  readonly automatedRecorded: number;
+  /** Replies queued for triage (labelling and a drafted answer). */
+  readonly triageQueued: number;
 }
 
 const DEFAULT_LOOKBACK_DAYS = 7;
@@ -68,25 +85,108 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
   let recorded = 0;
   let unmatched = 0;
   let duplicates = 0;
+  let automatedRecorded = 0;
+  let triageQueued = 0;
 
   for (const message of messages) {
-    if (message.automated) {
-      automated[message.automated] = (automated[message.automated] ?? 0) + 1;
+    if (message.automated === 'bulk') {
+      automated.bulk = (automated.bulk ?? 0) + 1;
       continue;
     }
 
-    const person = await matchSender(input.db, input.workspaceId, message);
+    // The deterministic pass runs here, on the polling path, because its
+    // answer decides whether this is a reply at all. The headers settle most
+    // robots; the subject and body settle the ones that forgot to set them —
+    // an out-of-office recorded as a reply stops outreach for good.
+    const ruled = classifyReplyByRules({
+      subject: message.subject,
+      body: message.bodyText,
+      automated: message.automated,
+    });
+
+    const machine =
+      message.automated === 'auto_reply' || message.automated === 'bounce'
+        ? message.automated
+        : ruled?.label === 'bounce'
+          ? 'bounce'
+          : ruled?.label === 'out_of_office'
+            ? 'auto_reply'
+            : undefined;
+
+    if (machine) {
+      automated[machine] = (automated[machine] ?? 0) + 1;
+
+      // A bounce comes from the mailer daemon, which we never wrote to; the
+      // report names who it was about, and that is the thread it belongs to.
+      const person = await matchSender(
+        input.db,
+        input.workspaceId,
+        machine === 'bounce' && message.failedRecipient
+          ? message.failedRecipient
+          : message.fromAddress,
+      );
+      if (!person) continue;
+
+      const label: ReplyClassification =
+        ruled ??
+        ({
+          label: machine === 'bounce' ? 'bounce' : 'out_of_office',
+          confidence: 1,
+          source: 'rule',
+          reason: 'the mail headers identify it',
+        } satisfies ReplyClassification);
+
+      const written = await recordAutomated(input.db, input.workspaceId, person, message, label);
+      if (written) automatedRecorded += 1;
+      continue;
+    }
+
+    const person = await matchSender(input.db, input.workspaceId, message.fromAddress);
     if (!person) {
       unmatched += 1;
       continue;
     }
 
-    const written = await recordReply(input.db, input.workspaceId, person, message);
-    if (written) recorded += 1;
-    else duplicates += 1;
+    const interactionId = await recordReply(input.db, input.workspaceId, person, message, ruled);
+    if (!interactionId) {
+      duplicates += 1;
+      continue;
+    }
+
+    recorded += 1;
+    const queued = await queueTriage(input.db, input.workspaceId, interactionId);
+    if (queued) triageQueued += 1;
   }
 
-  return { fetched: messages.length, recorded, automated, unmatched, duplicates };
+  return {
+    fetched: messages.length,
+    recorded,
+    automated,
+    unmatched,
+    duplicates,
+    automatedRecorded,
+    triageQueued,
+  };
+}
+
+/**
+ * Queues the labelling and answering of one recorded reply.
+ *
+ * Keyed on the interaction so a retried poll, or the manual "they replied"
+ * route recording the same message, cannot triage it twice.
+ */
+export async function queueTriage(
+  db: Client,
+  workspaceId: string,
+  interactionId: string,
+): Promise<boolean> {
+  const result = await enqueue(db, {
+    workspaceId,
+    kind: 'triage_reply',
+    payload: { interactionId },
+    dedupeKey: `triage_reply_${interactionId}`,
+  });
+  return result.queued;
 }
 
 /**
@@ -106,55 +206,137 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
 async function matchSender(
   db: Client,
   workspaceId: string,
-  message: IncomingMessage,
-): Promise<{ personId: string; address: string; shared: boolean } | undefined> {
-  const row = await queryOne<{ person_id: string; contact_address: string; shared_inbox: number }>(
+  fromAddress: string,
+): Promise<MatchedSender | undefined> {
+  const row = await queryOne<{
+    person_id: string;
+    campaign_id: string | null;
+    contact_address: string;
+    shared_inbox: number;
+  }>(
     db,
-    `SELECT person_id, contact_address, shared_inbox FROM interactions
+    `SELECT person_id, campaign_id, contact_address, shared_inbox FROM interactions
       WHERE workspace_id = ? AND direction = 'outbound' AND contact_address = ?
    ORDER BY occurred_at DESC LIMIT 1`,
-    [workspaceId, message.fromAddress],
+    [workspaceId, fromAddress.trim().toLowerCase()],
   );
 
   if (!row) return undefined;
 
   return {
     personId: row.person_id,
+    campaignId: row.campaign_id,
     address: row.contact_address,
     shared: row.shared_inbox === 1,
   };
 }
 
-/** Returns false when this message was already recorded by an earlier poll. */
-async function recordReply(
+interface MatchedSender {
+  readonly personId: string;
+  /** The campaign that last wrote to them, which is the one whose rules answer. */
+  readonly campaignId: string | null;
+  readonly address: string;
+  readonly shared: boolean;
+}
+
+/** Whether this message was already recorded by an earlier poll. */
+async function alreadyRecorded(
   db: Client,
   workspaceId: string,
-  person: { personId: string; address: string; shared: boolean },
   message: IncomingMessage,
 ): Promise<boolean> {
-  if (message.messageId) {
-    const existing = await queryOne<{ id: string }>(
-      db,
-      'SELECT id FROM interactions WHERE workspace_id = ? AND external_id = ?',
-      [workspaceId, message.messageId],
-    );
-    if (existing) return false;
-  }
+  if (!message.messageId) return false;
+  const existing = await queryOne<{ id: string }>(
+    db,
+    'SELECT id FROM interactions WHERE workspace_id = ? AND external_id = ?',
+    [workspaceId, message.messageId],
+  );
+  return existing !== undefined;
+}
+
+/**
+ * Writes an absence notice or a bounce to the thread it belongs to.
+ *
+ * `direction = 'automated'`, and nothing else: no funnel move, no
+ * `interaction_state`, no triage. Those are the three things a real reply
+ * does, and a robot must do none of them.
+ */
+async function recordAutomated(
+  db: Client,
+  workspaceId: string,
+  person: MatchedSender,
+  message: IncomingMessage,
+  label: ReplyClassification,
+): Promise<boolean> {
+  if (await alreadyRecorded(db, workspaceId, message)) return false;
 
   const stamp = now();
-
   await db.execute({
-    sql: `INSERT INTO interactions (id, workspace_id, person_id, network, direction, state,
-          body, contact_address, shared_inbox, external_id, occurred_at, recorded_at)
-          VALUES (?, ?, ?, 'email', 'inbound', 'responded', ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, network, direction,
+          state, body, subject, contact_address, shared_inbox, external_id, reply_label,
+          reply_confidence, reply_label_source, reply_label_reason, labelled_at,
+          occurred_at, recorded_at)
+          VALUES (?, ?, ?, ?, 'email', 'automated', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       newId('interaction'),
       workspaceId,
       person.personId,
+      person.campaignId,
+      label.label === 'bounce' ? 'bounced' : 'auto_replied',
+      message.bodyText?.slice(0, 20_000) ?? message.subject ?? null,
       message.subject ?? null,
       person.address,
       person.shared ? 1 : 0,
       message.messageId ?? null,
+      label.label,
+      label.confidence,
+      label.source,
+      label.reason,
+      stamp,
+      message.receivedAt.toISOString(),
+      stamp,
+    ],
+  });
+  return true;
+}
+
+/** Returns the new interaction's id, or undefined when an earlier poll recorded it. */
+async function recordReply(
+  db: Client,
+  workspaceId: string,
+  person: MatchedSender,
+  message: IncomingMessage,
+  ruled: ReplyClassification | undefined,
+): Promise<string | undefined> {
+  if (await alreadyRecorded(db, workspaceId, message)) return undefined;
+
+  const stamp = now();
+  const interactionId = newId('interaction');
+
+  // The words when the reader fetched them, the subject when it did not —
+  // which is what this column held before bodies were read at all.
+  await db.execute({
+    sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, network, direction,
+          state, body, subject, references_header, contact_address, shared_inbox, external_id,
+          reply_label, reply_confidence, reply_label_source, reply_label_reason, labelled_at,
+          occurred_at, recorded_at)
+          VALUES (?, ?, ?, ?, 'email', 'inbound', 'responded', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      interactionId,
+      workspaceId,
+      person.personId,
+      person.campaignId,
+      message.bodyText?.slice(0, 20_000) ?? message.subject ?? null,
+      message.subject ?? null,
+      message.references ?? null,
+      person.address,
+      person.shared ? 1 : 0,
+      message.messageId ?? null,
+      ruled?.label ?? null,
+      ruled?.confidence ?? null,
+      ruled?.source ?? null,
+      ruled?.reason ?? null,
+      ruled ? stamp : null,
       message.receivedAt.toISOString(),
       stamp,
     ],
@@ -199,7 +381,7 @@ async function recordReply(
     occurredAt: message.receivedAt.toISOString(),
   });
 
-  return true;
+  return interactionId;
 }
 
 /** Every workspace with a mailbox we can read. */

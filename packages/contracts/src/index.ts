@@ -73,6 +73,23 @@ export const campaignLimitsSchema = z
 
 export type CampaignLimits = z.infer<typeof campaignLimitsSchema>;
 
+/**
+ * How a campaign answers replies (`PATCH /campaigns/:id` `autoReply`).
+ *
+ * The threshold floor is the same one `decideAutoReply` enforces, stated here
+ * as well so an out-of-range value is refused with a reason rather than
+ * silently raised: 0.5 is the lowest confidence at which "autonomous" still
+ * means something other than "whatever the model said".
+ */
+export const autoReplySchema = z
+  .object({
+    mode: z.enum(['off', 'copilot', 'autonomous']),
+    threshold: z.number().min(0.5).max(1),
+  })
+  .partial();
+
+export type AutoReplySettings = z.infer<typeof autoReplySchema>;
+
 export const createCampaignSchema = z.object({
   name: z.string().min(1).max(200),
   offeringId: z.string().min(1),
