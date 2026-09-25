@@ -68,6 +68,8 @@ export interface HandoffFacts {
   readonly action: string;
   readonly text: string | null;
   readonly signalUrl: string | null;
+  /** The network the trigger signal was observed on, when one was recorded. */
+  readonly signalNetwork?: string | null;
   readonly profileUrl: string | null;
   readonly handle: string | null;
   readonly email?: string | undefined;
@@ -132,12 +134,69 @@ export function profileUrlFromHandle(network: string, handle: string): string | 
   }
 }
 
+/**
+ * The hosts a network's own posts live on.
+ *
+ * Mastodon and Nostr are absent on purpose: both are federated, so any host
+ * can be theirs and no list decides it. For those the signal's recorded
+ * network is the only evidence, and a URL without one is never called a post.
+ */
+const NETWORK_HOSTS: Readonly<Record<string, readonly string[]>> = {
+  x: ['x.com', 'twitter.com'],
+  linkedin: ['linkedin.com', 'lnkd.in'],
+  github: ['github.com'],
+  bluesky: ['bsky.app'],
+  reddit: ['reddit.com', 'redd.it'],
+  youtube: ['youtube.com', 'youtu.be'],
+  instagram: ['instagram.com'],
+};
+
+/**
+ * Whether a signal URL is somewhere the reviewer can actually do this action.
+ *
+ * The trigger signal is not always on the network the action runs on. A person
+ * found by the site crawl carries a `website` signal whose URL is the page
+ * they were named on — `https://vercel.com` — and a LinkedIn comment card built
+ * from it labelled that homepage "Open the post". You cannot comment on
+ * LinkedIn from vercel.com, and the reviewer learns that only after opening the
+ * tab, which is the whole of the thirty seconds the card exists to save.
+ *
+ * So a URL is the post only when it is on the action's own network: either the
+ * signal says so, or its host does.
+ */
+export function isPostUrlFor(
+  network: string,
+  url: string | null | undefined,
+  signalNetwork?: string | null,
+): boolean {
+  if (!url) return false;
+  if (signalNetwork && signalNetwork === network) return true;
+
+  const hosts = NETWORK_HOSTS[network];
+  if (!hosts) return false;
+
+  let host: string;
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return false;
+  }
+
+  return hosts.some((known) => host === known || host.endsWith(`.${known}`));
+}
+
 /** Builds the card from its facts. Pure, so the wording is testable. */
 export function describeHandoff(facts: HandoffFacts): Handoff {
   const text = facts.text ?? '';
   const profile =
     facts.profileUrl ??
     (facts.handle ? profileUrlFromHandle(facts.network, facts.handle) : undefined);
+
+  // Only a URL on the action's own network is a place the action can be done;
+  // a `website` signal's URL is the page the person was named on, not a post.
+  const post = isPostUrlFor(facts.network, facts.signalUrl, facts.signalNetwork)
+    ? (facts.signalUrl ?? undefined)
+    : undefined;
 
   let openUrl: string | undefined;
   let openLabel: string;
@@ -146,11 +205,11 @@ export function describeHandoff(facts: HandoffFacts): Handoff {
     openUrl = facts.email ? mailto(facts.email, facts.subject ?? undefined, text) : undefined;
     openLabel = 'Open your mail app';
   } else if (PROFILE_ACTIONS.includes(facts.action)) {
-    openUrl = profile ?? facts.signalUrl ?? undefined;
+    openUrl = profile ?? post;
     openLabel = profile ? 'Open the profile' : 'Open the post';
   } else {
-    openUrl = facts.signalUrl ?? profile ?? undefined;
-    openLabel = facts.signalUrl ? 'Open the post' : 'Open the profile';
+    openUrl = post ?? profile;
+    openLabel = post ? 'Open the post' : 'Open the profile';
   }
 
   return {
@@ -163,25 +222,39 @@ export function describeHandoff(facts: HandoffFacts): Handoff {
     text,
     ...(openUrl ? { openUrl } : {}),
     openLabel,
-    steps: stepsFor(facts.action, facts.network, text.length > 0, openLabel),
+    steps: stepsFor(facts.action, facts.network, text.length > 0, openLabel, post !== undefined),
     reason: facts.reason,
     createdAt: facts.createdAt,
   };
 }
 
-/** Two to four steps, in the words of the network's own buttons. */
-function stepsFor(action: string, network: string, hasText: boolean, openLabel: string): string[] {
+/** Two to five steps, in the words of the network's own buttons. */
+function stepsFor(
+  action: string,
+  network: string,
+  hasText: boolean,
+  openLabel: string,
+  hasPost: boolean,
+): string[] {
   const open = `${openLabel}.`;
   const done = 'Press Mark done.';
+  // With no link to the post itself the reviewer lands on the profile, and
+  // "paste it and post it" would be a step with nothing to press. Say what is
+  // actually missing instead.
+  const find = 'Find a recent post of theirs worth answering.';
 
   switch (action) {
     case 'reply':
-    case 'comment':
-      return hasText
-        ? [open, `Paste the ${action} and post it.`, done]
-        : [open, `Write a short ${action} and post it.`, done];
+    case 'comment': {
+      const act = hasText
+        ? `Paste the ${action} and post it.`
+        : `Write a short ${action} and post it.`;
+      return hasPost ? [open, act, done] : [open, find, act, done];
+    }
     case 'like':
-      return [open, network === 'linkedin' ? 'Press Like.' : 'Like it.', done];
+      return hasPost
+        ? [open, network === 'linkedin' ? 'Press Like.' : 'Like it.', done]
+        : [open, find, network === 'linkedin' ? 'Press Like.' : 'Like it.', done];
     case 'follow':
       return [open, 'Press Follow.', done];
     case 'connect':
@@ -220,6 +293,7 @@ interface HandoffRow {
   draft_body: string | null;
   draft_subject: string | null;
   signal_url: string | null;
+  signal_network: string | null;
   profile_url: string | null;
   handle: string | null;
   reason: string;
@@ -254,7 +328,7 @@ export async function listHandoffs(
     `SELECT a.id AS action_id, a.recommendation_id, a.person_id, a.kind, a.network,
             a.body AS action_body, a.created_at,
             p.display_name, r.reason,
-            s.source_url AS signal_url,
+            s.source_url AS signal_url, s.network AS signal_network,
             (SELECT d.body FROM drafts d WHERE d.recommendation_id = a.recommendation_id
               ORDER BY d.updated_at DESC LIMIT 1) AS draft_body,
             (SELECT d.subject FROM drafts d WHERE d.recommendation_id = a.recommendation_id
@@ -296,6 +370,7 @@ export async function listHandoffs(
         action: row.kind,
         text: row.action_body ?? row.draft_body,
         signalUrl: row.signal_url,
+        signalNetwork: row.signal_network,
         profileUrl: row.profile_url,
         handle: row.network === 'email' ? null : row.handle,
         email: email?.address,
