@@ -15,7 +15,7 @@
  */
 
 import { newId, type CrmProvider, type OutboundEvent, CRM_PROVIDERS } from '@outreachgraph/domain';
-import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { isPostgres, now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
   crmClientFor,
   CrmError,
@@ -226,10 +226,18 @@ async function noteOutcome(
   error: string | undefined,
 ): Promise<void> {
   const stamp = now();
+  // Two keys written into the JSON column in place. The expression is the
+  // one thing here each database spells its own way: jsonb_set() nested for
+  // Postgres (a SQL NULL value would null the whole document, hence the
+  // coalesce to JSON null), json_set() for SQLite.
+  const patched = isPostgres(db)
+    ? `jsonb_set(jsonb_set(COALESCE(config_json, '{}')::jsonb,
+         '{lastSyncAt}', COALESCE(to_jsonb(CAST(? AS TEXT)), 'null'::jsonb)),
+         '{lastError}', COALESCE(to_jsonb(CAST(? AS TEXT)), 'null'::jsonb))::text`
+    : `json_set(COALESCE(config_json, '{}'), '$.lastSyncAt', ?, '$.lastError', ?)`;
   await db.execute({
     sql: `UPDATE integrations
-             SET config_json = json_set(COALESCE(config_json, '{}'),
-                   '$.lastSyncAt', ?, '$.lastError', ?),
+             SET config_json = ${patched},
                  updated_at = ?
            WHERE workspace_id = ? AND kind = ? AND network = ?`,
     args: [stamp, error ?? null, stamp, workspaceId, KIND, provider],

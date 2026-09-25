@@ -6,11 +6,7 @@
  * state rather than hand-rolling inserts.
  */
 
-import { createDatabase, migrate, now, type Client } from '@outreachgraph/db';
-import { join } from 'node:path';
-import { rmSync } from 'node:fs';
-
-const MIGRATIONS_DIR = join(import.meta.dir, '../../../migrations');
+import { createTestDatabase, now, type Client } from '@outreachgraph/db';
 
 export const SEED = {
   organizationId: 'org_test',
@@ -31,10 +27,9 @@ export interface SeededDatabase {
 }
 
 export async function seedDatabase(label: string): Promise<SeededDatabase> {
-  const path = join(import.meta.dir, `../.test-${label}-${process.pid}.db`);
-  const db = createDatabase({ url: `file:${path}` });
-
-  await migrate(db, MIGRATIONS_DIR);
+  // A SQLite file next to this package, or — with TEST_DATABASE_URL — a
+  // Postgres database of its own cloned from a migrated template.
+  const { client: db, cleanup } = await createTestDatabase(label, { dir: import.meta.dir });
 
   const stamp = now();
 
@@ -167,13 +162,5 @@ export async function seedDatabase(label: string): Promise<SeededDatabase> {
     },
   ]);
 
-  return {
-    db,
-    cleanup: () => {
-      db.close();
-      for (const suffix of ['', '-wal', '-shm']) {
-        rmSync(`${path}${suffix}`, { force: true });
-      }
-    },
-  };
+  return { db, cleanup };
 }

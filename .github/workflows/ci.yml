@@ -21,6 +21,25 @@ jobs:
     # through a suite that is fine. `image` has had 25 all along.
     timeout-minutes: 30
 
+    # Production runs on Postgres, so the database-bound tests run against one
+    # here: each test gets a database of its own, cloned from a template that
+    # holds the migrated schema (packages/db/src/testing.ts).
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres
+
     steps:
       - uses: actions/checkout@v4
 
@@ -46,16 +65,17 @@ jobs:
         run: bun run --filter '@outreachgraph/web' build
 
       # Proves the committed migrations apply to an empty database, which is
-      # what every deploy does before the new image serves traffic.
-      - name: Migrations apply cleanly
-        run: bun run db:migrate
+      # what every deploy does before the new image serves traffic — on
+      # Postgres (production) and on a SQLite file (a laptop).
+      - name: Migrations apply cleanly (Postgres)
+        run: bun run db:migrate && bun run db:status
         env:
-          TURSO_DATABASE_URL: file:./ci.db
+          DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres
 
-      - name: Migrations are idempotent
-        run: bun run db:status
+      - name: Migrations apply cleanly (SQLite)
+        run: bun run db:migrate && bun run db:status
         env:
-          TURSO_DATABASE_URL: file:./ci.db
+          DATABASE_URL: file:./ci.db
 
   # One image now: the PWA, the API and the worker in a single container.
   #
@@ -66,6 +86,22 @@ jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
+    # The image refuses to boot on anything but Postgres, so the smoke test
+    # gives it one. The service publishes 5432 on the runner; the app
+    # container reaches it through the host gateway.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - uses: actions/checkout@v4
@@ -85,9 +121,10 @@ jobs:
       - name: Boot the container
         run: |
           docker run -d --name og \
+            --add-host=host.docker.internal:host-gateway \
             -e PORT=8080 \
             -e API_TOKEN=ci-smoke-token \
-            -e TURSO_DATABASE_URL=file:./smoke.db \
+            -e DATABASE_URL=postgres://postgres:ci@host.docker.internal:5432/postgres \
             -e WORKER_TICK_MS=3600000 \
             -p 8080:8080 \
             outreachgraph:ci

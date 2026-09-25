@@ -95,10 +95,12 @@ export async function regenerateRecommendations(input: RegenerateInput): Promise
               SELECT 1 FROM signals s
                WHERE s.person_id = p.id
                  AND s.workspace_id = r.workspace_id
-                 AND (s.expires_at IS NULL OR s.expires_at > datetime('now'))
+                 AND (s.expires_at IS NULL OR s.expires_at > ?)
             )
       LIMIT ?`,
-    [workspaceId, campaignId, input.limit ?? DEFAULT_LIMIT],
+    // The cut-off is bound as the ISO text `expires_at` stores, not computed
+    // by the database: its clock functions format differently per dialect.
+    [workspaceId, campaignId, new Date().toISOString(), input.limit ?? DEFAULT_LIMIT],
   );
 
   let replaced = 0;

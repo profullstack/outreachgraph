@@ -94,7 +94,7 @@ export async function knownPatternsForDomain(
       WHERE si.network = 'email'
         AND si.handle IS NOT NULL AND trim(si.handle) <> ''
         AND lower(trim(co.domain)) = ?
-      GROUP BY si.id`,
+      GROUP BY si.id, si.handle, p.display_name`,
     [workspaceId, domain.trim().toLowerCase()],
   );
 

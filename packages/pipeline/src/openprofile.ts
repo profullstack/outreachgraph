@@ -364,7 +364,7 @@ export async function runOpenProfileJob(
       : person.display_name;
   await db.execute({
     sql: `UPDATE people SET display_name = ?, identity_confidence = ?, avatar_url = COALESCE(avatar_url, ?),
-                            avatar_source = CASE WHEN avatar_url IS NULL AND ? IS NOT NULL THEN 'profile' ELSE avatar_source END,
+                            avatar_source = CASE WHEN avatar_url IS NULL AND CAST(? AS TEXT) IS NOT NULL THEN 'profile' ELSE avatar_source END,
                             last_resolved_at = ?, updated_at = ?
            WHERE id = ?`,
     args: [

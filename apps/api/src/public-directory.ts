@@ -136,8 +136,8 @@ const DIRECTORY_SQL = `
      WHERE p.status = 'active' AND p.kind = 'person'
        AND (o.published_url IS NOT NULL OR o.corroborated = 1)
   ) d
-  WHERE (? IS NULL OR d.updated_at >= ?)
-    AND (? IS NULL OR d.updated_at > ? OR (d.updated_at = ? AND d.id > ?))
+  WHERE (CAST(? AS TEXT) IS NULL OR d.updated_at >= ?)
+    AND (CAST(? AS TEXT) IS NULL OR d.updated_at > ? OR (d.updated_at = ? AND d.id > ?))
   ORDER BY d.updated_at ASC, d.id ASC
   LIMIT ?
 `;

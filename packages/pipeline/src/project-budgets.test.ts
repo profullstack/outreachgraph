@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { createDatabase, migrate, now, queryOne, type Client } from '@outreachgraph/db';
+import { createTestDatabase, now, queryOne, type Client } from '@outreachgraph/db';
 import { CONTACT_PRICE_USD } from '@outreachgraph/domain';
-import { join } from 'node:path';
-import { rmSync } from 'node:fs';
 import {
   applyProjectBudget,
   applyProjectBudgets,
@@ -10,22 +8,19 @@ import {
   setCampaignDailyBudget,
 } from './project-budgets';
 
-const MIGRATIONS_DIR = join(import.meta.dir, '../../../migrations');
-
 let db: Client | undefined;
-let path: string | undefined;
+let cleanup: (() => void) | undefined;
 
 afterEach(() => {
-  db?.close();
-  if (path) for (const suffix of ['', '-wal', '-shm']) rmSync(`${path}${suffix}`, { force: true });
+  cleanup?.();
   db = undefined;
-  path = undefined;
+  cleanup = undefined;
 });
 
 async function fresh(label: string): Promise<Client> {
-  path = join(import.meta.dir, `../.test-budgets-${label}-${process.pid}.db`);
-  db = createDatabase({ url: `file:${path}` });
-  await migrate(db, MIGRATIONS_DIR);
+  const fixture = await createTestDatabase(`budgets-${label}`, { dir: import.meta.dir });
+  db = fixture.client;
+  cleanup = fixture.cleanup;
 
   const stamp = now();
   await db.batch([

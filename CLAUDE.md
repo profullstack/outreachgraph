@@ -12,7 +12,7 @@
 ## Architecture
 
 - `packages/domain` depends on nothing. Everything else may depend on it.
-- Application code never imports `@libsql/client` directly — it goes through `packages/db`.
+- Application code never imports a database driver directly — it goes through `packages/db`. Production is Postgres (`@profullstack/libsql-pg`, which keeps the libsql client surface and rewrites SQLite idioms per statement); tests and local dev may use a SQLite file. A new migration is written twice, to `migrations/` (SQLite) and `migrations-pg/` (Postgres), with the same file name; SQL in the app must run on both.
 - Vendor objects never leak past `packages/providers`. Adding Apollo means adding an adapter, not changing callers.
 - HTTP API paths live under `/api/v1`.
 - All long-running Railway services need `/health/live`, `/health/ready`, structured logs, validated environment variables, and graceful SIGTERM.

@@ -583,7 +583,7 @@ async function upsertPerson(
     const byHandle = await queryOne<{ person_id: string }>(
       db,
       `SELECT person_id FROM social_identities
-        WHERE network = ? AND handle = ? COLLATE NOCASE`,
+        WHERE network = ? AND lower(handle) = lower(?)`,
       [identity.network, identity.handle],
     );
     if (byHandle) return byHandle.person_id;
@@ -724,7 +724,7 @@ async function linkIdentities(
       const already = await queryOne<{ id: string }>(
         db,
         `SELECT id FROM social_identities
-          WHERE person_id = ? AND network = ? AND handle IS ?`,
+          WHERE person_id = ? AND network = ? AND handle IS NOT DISTINCT FROM ?`,
         [personId, identity.network, identity.handle ?? null],
       );
 

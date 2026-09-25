@@ -245,9 +245,9 @@ export async function workspaceAnalytics(
         WHERE workspace_id = ? AND status != 'archived' GROUP BY approval_mode`,
       [workspaceId],
     ),
-    queryAll<{ hours: number }>(
+    queryAll<{ contacted_at: string; found_at: string }>(
       db,
-      `SELECT (julianday(contacted.occurred_at) - julianday(found.occurred_at)) * 24 AS hours
+      `SELECT contacted.occurred_at AS contacted_at, found.occurred_at AS found_at
          FROM (SELECT person_id, MIN(occurred_at) AS occurred_at FROM lead_stage_events
                 WHERE workspace_id = ? AND stage = 'contacted' GROUP BY person_id) contacted
          JOIN (SELECT person_id, MIN(occurred_at) AS occurred_at FROM lead_stage_events
@@ -262,8 +262,10 @@ export async function workspaceAnalytics(
     .filter((row) => row.approval_mode === 'trusted_automation')
     .reduce((total, row) => total + row.n, 0);
 
+  // Hours between the two ISO timestamps, computed here rather than with
+  // julianday(), which Postgres does not have.
   const hours = speeds
-    .map((row) => row.hours)
+    .map((row) => (Date.parse(row.contacted_at) - Date.parse(row.found_at)) / (60 * 60 * 1000))
     .filter((value) => Number.isFinite(value) && value >= 0)
     .sort((a, b) => a - b);
 

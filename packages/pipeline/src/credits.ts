@@ -202,9 +202,10 @@ export async function settleProspectCredits(
   const period = creditPeriod(at);
 
   // Everyone past the allowance who has not already been charged this month.
-  // `LIMIT -1 OFFSET n` is SQLite's "skip n, take the rest"; the NOT EXISTS
-  // keeps a busy account from re-attempting an insert per already-charged
-  // person on every policy check.
+  // "Skip n, take the rest" is spelled with a LIMIT no workspace will reach:
+  // SQLite's `LIMIT -1` is not Postgres and Postgres's `LIMIT ALL` is not
+  // SQLite. The NOT EXISTS keeps a busy account from re-attempting an insert
+  // per already-charged person on every policy check.
   const result = await db.execute({
     sql: `WITH contacted AS (
             SELECT person_id, min(occurred_at) AS first_at
@@ -212,7 +213,7 @@ export async function settleProspectCredits(
              WHERE workspace_id = ? AND direction = 'outbound' AND occurred_at >= ?
              GROUP BY person_id
              ORDER BY first_at
-             LIMIT -1 OFFSET ?
+             LIMIT 2147483647 OFFSET ?
           )
           SELECT c.person_id AS person_id FROM contacted c
            WHERE NOT EXISTS (

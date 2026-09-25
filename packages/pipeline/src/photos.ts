@@ -152,11 +152,11 @@ export async function sweepProfilePhotos(
       WHERE cp.workspace_id = ? AND c.status IN ('active', 'running')
         AND p.status = 'active' AND p.kind = 'person'
         AND p.avatar_url IS NULL AND p.photo_looked_up_at IS NULL
-      GROUP BY p.id
+      GROUP BY p.id, co.name, co.domain
       ORDER BY EXISTS (SELECT 1 FROM recommendations r
                         WHERE r.person_id = p.id AND r.status = 'pending'
                           AND r.action NOT IN ('refresh_research', 'observe', 'wait')) DESC,
-               cp.updated_at DESC
+               MAX(cp.updated_at) DESC
       LIMIT ?`,
     [input.workspaceId, limit],
   );

@@ -40,6 +40,7 @@ ENV WEB_PORT=3001
 
 COPY tsconfig.base.json tsconfig.json ./
 COPY migrations ./migrations
+COPY migrations-pg ./migrations-pg
 
 # `outputFileTracingRoot` is the monorepo root, so the standalone bundle keeps
 # the apps/web/ layout the supervisor expects at apps/web/server.js.

@@ -12,7 +12,8 @@
     "migrate": "bun run src/cli/migrate.ts"
   },
   "dependencies": {
-    "@libsql/client": "^0.15.0"
+    "@libsql/client": "^0.15.0",
+    "@profullstack/libsql-pg": "^0.1.2"
   },
   "devDependencies": {
     "@outreachgraph/domain": "workspace:*"

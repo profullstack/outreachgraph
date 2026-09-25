@@ -1,8 +1,11 @@
 /**
  * Forward-only migration runner.
  *
- * Migrations are plain `.sql` files in `/migrations`, applied in filename
- * order and recorded in `_migrations`. There is no `down` step by design: a
+ * Migrations are plain `.sql` files, applied in filename order and recorded
+ * in `_migrations`. There are two directories with the same file names:
+ * `/migrations` (SQLite, for a local file database) and `/migrations-pg`
+ * (Postgres, what production runs); `migrationsDir()` picks by driver. A new
+ * migration is written to both, and a test checks the names stay in step. There is no `down` step by design: a
  * mistaken migration is corrected by writing the next one, so production and
  * every developer database converge on the same history.
  *
@@ -14,7 +17,7 @@
 
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Client } from './client';
+import { isPostgres, type Client } from './client';
 
 export interface Migration {
   readonly name: string;
@@ -39,6 +42,11 @@ const LEDGER = `
     checksum    TEXT NOT NULL
   )
 `;
+
+/** The migrations directory for this client's driver, from the repository root. */
+export function migrationsDir(client: Client): string {
+  return join(import.meta.dir, '../../..', isPostgres(client) ? 'migrations-pg' : 'migrations');
+}
 
 export async function ensureLedger(client: Client): Promise<void> {
   await client.execute(LEDGER);
@@ -97,13 +105,20 @@ export async function migrate(client: Client, dir: string): Promise<MigrateResul
       continue;
     }
 
-    await client.executeMultiple(`BEGIN;\n${migration.sql}\nCOMMIT;`).catch(async (error) => {
-      await client.executeMultiple('ROLLBACK;').catch(() => {
+    // One transaction per file, through the driver's transaction API: a
+    // bare `BEGIN; ... COMMIT;` string would run on one pooled Postgres
+    // connection and the next statement on another.
+    const tx = await client.transaction('write');
+    try {
+      await tx.executeMultiple(migration.sql);
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback().catch(() => {
         // Rollback fails when the transaction already aborted; the original
         // error is the one worth surfacing.
       });
       throw new Error(`migration ${migration.name} failed: ${describe(error)}`, { cause: error });
-    });
+    }
 
     await client.execute({
       sql: 'INSERT INTO _migrations (name, applied_at, checksum) VALUES (?, ?, ?)',

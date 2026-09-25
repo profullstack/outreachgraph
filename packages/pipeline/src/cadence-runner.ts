@@ -217,28 +217,37 @@ async function actionCounts(
   workspaceId: string,
   personId: string,
 ): Promise<{ today: number; thisProspect: number; hoursSinceLast?: number }> {
+  // Cut-offs are computed here and bound as the ISO text every `*_at` column
+  // stores, rather than with the database's clock functions: SQLite's
+  // datetime() and Postgres's now() format differently, and neither matches
+  // the stored strings byte for byte.
+  const nowMs = Date.now();
+  const dayAgo = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+  const weekAgo = new Date(nowMs - 7 * 24 * 60 * 60 * 1000).toISOString();
+
   const today = await queryOne<{ n: number }>(
     db,
     `SELECT count(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= datetime('now', '-1 day')`,
-    [workspaceId],
+      WHERE workspace_id = ? AND created_at >= ?`,
+    [workspaceId, dayAgo],
   );
 
   const week = await queryOne<{ n: number }>(
     db,
     `SELECT count(*) AS n FROM actions
-      WHERE workspace_id = ? AND person_id = ? AND created_at >= datetime('now', '-7 day')`,
-    [workspaceId, personId],
+      WHERE workspace_id = ? AND person_id = ? AND created_at >= ?`,
+    [workspaceId, personId, weekAgo],
   );
 
-  const last = await queryOne<{ hours: number | null }>(
+  const last = await queryOne<{ last_at: string | null }>(
     db,
-    `SELECT (julianday('now') - julianday(max(created_at))) * 24 AS hours
+    `SELECT max(created_at) AS last_at
        FROM actions WHERE workspace_id = ? AND person_id = ?`,
     [workspaceId, personId],
   );
 
-  const hours = last?.hours;
+  const lastMs = last?.last_at ? Date.parse(last.last_at) : Number.NaN;
+  const hours = Number.isFinite(lastMs) ? (nowMs - lastMs) / (60 * 60 * 1000) : null;
 
   return {
     today: Number(today?.n ?? 0),

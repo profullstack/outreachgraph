@@ -23,7 +23,7 @@ what exists.
 
 ```bash
 bun install
-bun run db:migrate          # applies migrations to ./local.db
+bun run db:migrate          # applies migrations to DATABASE_URL (default: a ./local.db SQLite file)
 bun test                    # 1231 tests
 bun run check               # format, typecheck, test
 ```
@@ -114,7 +114,7 @@ packages/
   pipeline/   the discovery-to-queue chain and its background jobs
   email/      the sending boundary: Resend for account mail, SMTP for outreach
   domain/     canonical types — depends on nothing
-  db/         Turso/libSQL client and migration runner
+  db/         database client (Postgres in production, a SQLite file locally) and migration runner
   policy/     the deterministic policy engine
   recommend/  next-best-action engine
   identity/   cross-network identity resolution
@@ -122,7 +122,8 @@ packages/
   scoring/    ICP fit, intent, reachability, relationship, opportunity
   providers/  vendor boundary and enrichment waterfall
   contracts/  request/response schemas shared by API and web
-migrations/   forward-only .sql, applied in filename order
+migrations/   forward-only .sql for SQLite, applied in filename order
+migrations-pg/ the same migrations in Postgres, same file names (production)
 docker/       one Dockerfile per deployable service
 ```
 
@@ -230,9 +231,27 @@ Without a config file Railway falls back to railpack auto-detection, which
 cannot find a start command in a Bun workspace and fails the build — that
 symptom means the service is not pointed at its config.
 
-Migrations run as an explicit release step, never from every replica. Set up
-separate Turso databases, provider keys, and secrets per environment;
-production customer data is never copied into staging.
+Migrations run at boot before anything serves (one replica), or as an explicit
+release step with `RUN_MIGRATIONS=false`. Set up separate databases, provider
+keys, and secrets per environment; production customer data is never copied
+into staging.
+
+## Database
+
+Production runs on Postgres: `DATABASE_URL=postgres://...`, and the app refuses
+to start on anything else there. The client is
+[`@profullstack/libsql-pg`](https://github.com/profullstack/libsql-pg), which
+keeps the `@libsql/client` surface the code was written against and rewrites
+the remaining SQLite idioms per statement. Locally and in tests a SQLite file
+works too (`DATABASE_URL=file:./local.db`, the default when unset), so a new
+migration is written twice — `migrations/NNNN_name.sql` and
+`migrations-pg/NNNN_name.sql` — and SQL in the app must run on both dialects
+(a test checks the two directories carry the same names). `TEST_DATABASE_URL`
+pointed at a Postgres server makes `bun test` run the database-bound suites
+there, one database per test cloned from a migrated template; CI does this.
+
+The data moved off Turso on 2026-09-25 (`npx libsql-pg copy`); `TURSO_*`
+settings are retired and a leftover `libsql://` URL is refused at startup.
 
 ## Conventions
 
