@@ -12,7 +12,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import type { Hono } from 'hono';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
-import { describeHandoff, isHandoffDecision, profileUrlFromHandle } from './handoff';
+import { describeHandoff, isHandoffDecision, isPostUrlFor, profileUrlFromHandle } from './handoff';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
 
 const ACTOR: RequestActor = {
@@ -141,6 +141,24 @@ describe('approving a manual-only card', () => {
     });
     expect(action.rows[0]?.mode).toBe('manual');
     expect(action.rows[0]?.status).toBe('queued');
+  });
+
+  test('a card raised from a crawled page opens the profile, not the page', async () => {
+    const { app, seeded } = await harness('handoff-website-trigger');
+    await linkedinCard(seeded);
+    // What the site crawl writes: the page the person was named on.
+    await seeded.db.execute({
+      sql: `UPDATE signals SET network = 'website', source_url = 'https://vercel.com'
+            WHERE id = 'sig_li'`,
+      args: [],
+    });
+
+    const response = await send(app, 'POST', `/recommendations/${LINKEDIN_REC}/approve`);
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as ApproveBody;
+    expect(body.handoff?.openUrl).toBe('https://www.linkedin.com/in/janesmith');
+    expect(body.handoff?.steps).toContain('Find a recent post of theirs worth answering.');
   });
 
   test('an X reply with no connected account is a hand-off too', async () => {
@@ -363,6 +381,72 @@ describe('describing a hand-off', () => {
       handle: '@jane',
     });
     expect(card.openUrl).toBe('https://x.com/jane');
+  });
+
+  /**
+   * The bug this section exists for: a person found by the site crawl carries
+   * a `website` signal whose URL is the page they were named on, and every
+   * card raised from one sent the reviewer to a company homepage labelled
+   * "Open the post". Nobody can leave a LinkedIn comment on vercel.com.
+   */
+  describe('a trigger signal from another network', () => {
+    const crawled = {
+      ...base,
+      action: 'comment',
+      text: 'We hit the same payout problem.',
+      signalUrl: 'https://vercel.com',
+      signalNetwork: 'website',
+    };
+
+    test('opens the profile, never the crawled page', () => {
+      const card = describeHandoff({
+        ...crawled,
+        profileUrl: 'https://www.linkedin.com/in/jane',
+      });
+      expect(card.openUrl).toBe('https://www.linkedin.com/in/jane');
+      expect(card.openLabel).toBe('Open the profile');
+    });
+
+    test('says to find a post, rather than to paste into a profile', () => {
+      const card = describeHandoff({
+        ...crawled,
+        profileUrl: 'https://www.linkedin.com/in/jane',
+      });
+      expect(card.steps).toContain('Find a recent post of theirs worth answering.');
+    });
+
+    test('offers no link at all when the network is unknown for the person', () => {
+      const card = describeHandoff({ ...crawled, profileUrl: null });
+      expect(card.openUrl).toBeUndefined();
+    });
+
+    test('a post on the action network is still the post', () => {
+      const card = describeHandoff({
+        ...crawled,
+        signalUrl: POST_URL,
+        signalNetwork: 'linkedin',
+        profileUrl: 'https://www.linkedin.com/in/jane',
+      });
+      expect(card.openUrl).toBe(POST_URL);
+      expect(card.openLabel).toBe('Open the post');
+    });
+
+    // Signals predating the `network` column, and any row that recorded it
+    // loosely, are judged by the host instead.
+    test('a post is recognised by its host when the signal names no network', () => {
+      expect(isPostUrlFor('linkedin', POST_URL)).toBe(true);
+      expect(isPostUrlFor('x', 'https://twitter.com/jane/status/1')).toBe(true);
+      expect(isPostUrlFor('linkedin', 'https://vercel.com')).toBe(false);
+      expect(isPostUrlFor('linkedin', 'https://linkedin.com.evil.test/posts/1')).toBe(false);
+      expect(isPostUrlFor('linkedin', 'not a url')).toBe(false);
+    });
+
+    // Federated networks have no host list; only the signal's own network
+    // can say a URL is theirs.
+    test('a mastodon post counts only on the signal network', () => {
+      expect(isPostUrlFor('mastodon', 'https://fosstodon.org/@jane/1', 'mastodon')).toBe(true);
+      expect(isPostUrlFor('mastodon', 'https://fosstodon.org/@jane/1', 'website')).toBe(false);
+    });
   });
 
   test('an email opens the mail app with the words in it', () => {
