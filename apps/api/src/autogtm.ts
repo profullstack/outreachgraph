@@ -1366,10 +1366,23 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
         WHERE cp.workspace_id = ? AND p.status != 'deleted'
           AND (cp.status IN ('responded', 'qualified_opportunity')
                OR cp.interaction_state = 'responded')
-          ${since ? 'AND replied_at >= ?' : ''}
+          ${
+            // The alias is not visible to WHERE in Postgres; the expression is.
+            since
+              ? `AND (SELECT MAX(i.occurred_at) FROM interactions i
+                       WHERE i.workspace_id = ? AND i.person_id = cp.person_id
+                         AND i.direction = 'inbound') >= ?`
+              : ''
+          }
         ORDER BY replied_at DESC
         LIMIT ?`,
-      [actor.workspaceId, actor.workspaceId, actor.workspaceId, ...(since ? [since] : []), limit],
+      [
+        actor.workspaceId,
+        actor.workspaceId,
+        actor.workspaceId,
+        ...(since ? [actor.workspaceId, since] : []),
+        limit,
+      ],
     );
 
     return c.json({

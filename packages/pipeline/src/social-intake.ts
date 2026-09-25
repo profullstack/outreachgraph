@@ -274,7 +274,7 @@ async function findPerson(
   const byHandle = await queryOne<{ person_id: string }>(
     db,
     `SELECT si.person_id FROM social_identities si JOIN people p ON p.id = si.person_id
-      WHERE si.network = ? AND si.handle = ? COLLATE NOCASE AND p.status != 'deleted'
+      WHERE si.network = ? AND lower(si.handle) = lower(?) AND p.status != 'deleted'
       ORDER BY si.confidence DESC LIMIT 1`,
     [network, handle],
   );

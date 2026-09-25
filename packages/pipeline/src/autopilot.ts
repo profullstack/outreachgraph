@@ -351,7 +351,9 @@ export async function runAutopilot(
   // so sixteen thousand consented mailboxes were invisible to the sender.
   const candidates = await queryAll<Candidate>(
     db,
-    `SELECT r.id AS recommendation_id, r.campaign_id, r.person_id, r.action, r.network,
+    `SELECT * FROM (
+     SELECT r.id AS recommendation_id, r.campaign_id, r.person_id, r.action, r.network,
+            r.priority, r.created_at,
             c.approval_mode, c.budget_json,
             p.display_name, p.status AS person_status, p.believed_minor,
             p.outreach_eligible, p.identity_confidence,
@@ -390,7 +392,10 @@ export async function runAutopilot(
         -- (\`decideAutoReply\`) and their own sender (\`triage_reply\`).
         AND r.expected_goal != 'continue_conversation'
         AND r.reply_to_interaction_id IS NULL
-      ORDER BY r.priority DESC, (person_email IS NULL) ASC, r.created_at ASC
+     ) candidate
+      -- Ordered from a subselect: Postgres accepts a select-list alias in ORDER
+      -- BY only on its own, not inside an expression like \`(alias IS NULL)\`.
+      ORDER BY priority DESC, (person_email IS NULL) ASC, created_at ASC
       LIMIT ?`,
     [workspaceId, CANDIDATE_CEILING],
   );

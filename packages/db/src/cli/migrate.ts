@@ -11,18 +11,15 @@
  */
 
 import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
 import { createDatabase, resolveConfig } from '../client';
-import { migrate, migrationStatus } from '../migrate';
-
-const MIGRATIONS_DIR = join(import.meta.dir, '../../../../migrations');
+import { migrate, migrationsDir, migrationStatus } from '../migrate';
 
 async function main(): Promise<number> {
   const args = new Set(process.argv.slice(2));
   const config = resolveConfig();
 
   if (args.has('--reset')) {
-    if (!config.url.startsWith('file:')) {
+    if (config.driver !== 'sqlite') {
       console.error(`refusing to reset a non-file database: ${config.url}`);
       return 1;
     }
@@ -34,10 +31,11 @@ async function main(): Promise<number> {
   }
 
   const client = createDatabase();
+  const dir = migrationsDir(client);
 
   try {
     if (args.has('--status')) {
-      const status = await migrationStatus(client, MIGRATIONS_DIR);
+      const status = await migrationStatus(client, dir);
       for (const entry of status) {
         const mark = entry.applied ? '✓' : ' ';
         const when = entry.appliedAt ?? 'pending';
@@ -48,16 +46,16 @@ async function main(): Promise<number> {
       return 0;
     }
 
-    const result = await migrate(client, MIGRATIONS_DIR);
+    const result = await migrate(client, dir);
     for (const name of result.applied) console.log(`applied ${name}`);
     if (result.applied.length === 0) {
       console.log(`up to date (${result.skipped.length} migrations)`);
     } else {
-      console.log(`\napplied ${result.applied.length} migration(s) to ${config.url}`);
+      console.log(`\napplied ${result.applied.length} migration(s) (${config.driver})`);
     }
     return 0;
   } finally {
-    client.close();
+    await client.close();
   }
 }
 

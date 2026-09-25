@@ -19,7 +19,7 @@
  * the loop split back out behind a lock.
  */
 
-import { closeDatabase, getDatabase, migrate, queryAll } from '@outreachgraph/db';
+import { closeDatabase, getDatabase, migrate, migrationsDir, queryAll } from '@outreachgraph/db';
 import {
   ClaudeModel,
   FallbackModel,
@@ -128,9 +128,8 @@ const db = getDatabase();
  * Set RUN_MIGRATIONS=false to take over that responsibility elsewhere.
  */
 if (process.env.RUN_MIGRATIONS !== 'false') {
-  const migrationsDir = `${import.meta.dir}/../../../migrations`;
   try {
-    const result = await migrate(db, migrationsDir);
+    const result = await migrate(db, migrationsDir(db));
     if (result.applied.length > 0) {
       console.log(`applied ${result.applied.length} migration(s): ${result.applied.join(', ')}`);
     } else {

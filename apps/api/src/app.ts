@@ -987,8 +987,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
          JOIN people p ON p.id = s.person_id AND p.status = 'active'
          JOIN openprofiles o ON o.person_id = s.person_id
         WHERE s.public = 1
-          AND (? IS NULL OR MAX(s.updated_at, o.generated_at) >= ?)
-          AND (? IS NULL OR MAX(s.updated_at, o.generated_at) < ?
+          AND (CAST(? AS TEXT) IS NULL OR MAX(s.updated_at, o.generated_at) >= ?)
+          AND (CAST(? AS TEXT) IS NULL OR MAX(s.updated_at, o.generated_at) < ?
                OR (MAX(s.updated_at, o.generated_at) = ? AND s.person_id > ?))
         ORDER BY updated_at DESC, s.person_id ASC
         LIMIT ?`,

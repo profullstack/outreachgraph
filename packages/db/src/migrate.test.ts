@@ -1,34 +1,42 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { createDatabase } from './client';
-import { loadMigrations, migrate, migrationStatus } from './migrate';
+import { isPostgres, type Client } from './client';
+import { loadMigrations, migrate, migrationsDir, migrationStatus } from './migrate';
+import { createTestDatabase } from './testing';
 
-const MIGRATIONS_DIR = join(import.meta.dir, '../../../migrations');
+/** The two directories that must carry the same file names. */
+const SQLITE_DIR = join(import.meta.dir, '../../../migrations');
+const POSTGRES_DIR = join(import.meta.dir, '../../../migrations-pg');
 
-/** Each test gets its own file so they cannot observe each other's schema. */
-let dbPaths: string[] = [];
+/** Each test gets its own empty database so they cannot observe each other's schema. */
+let cleanups: Array<() => void> = [];
 
-function freshDatabase(label: string) {
-  const path = join(import.meta.dir, `../.test-${label}-${process.pid}.db`);
-  dbPaths.push(path);
-  return { client: createDatabase({ url: `file:${path}` }), path };
+async function freshDatabase(label: string) {
+  const { client, cleanup } = await createTestDatabase(label, { migrated: false });
+  cleanups.push(cleanup);
+  return { client, dir: migrationsDir(client) };
+}
+
+/** User tables, whichever catalog the driver has. */
+async function tableNames(client: Client): Promise<Set<string>> {
+  const result = await client.execute(
+    isPostgres(client)
+      ? "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public'"
+      : "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+  );
+  return new Set(result.rows.map((r) => String(r.name)));
 }
 
 afterEach(() => {
-  for (const path of dbPaths) {
-    for (const suffix of ['', '-wal', '-shm']) {
-      rmSync(`${path}${suffix}`, { force: true });
-    }
-  }
-  dbPaths = [];
+  for (const cleanup of cleanups) cleanup();
+  cleanups = [];
 });
 
 describe('migrations', () => {
   test('apply cleanly to an empty database', async () => {
-    const { client } = freshDatabase('apply');
+    const { client, dir } = await freshDatabase('apply');
     try {
-      const result = await migrate(client, MIGRATIONS_DIR);
+      const result = await migrate(client, dir);
 
       expect(result.applied.length).toBeGreaterThanOrEqual(5);
       expect(result.skipped).toHaveLength(0);
@@ -39,10 +47,10 @@ describe('migrations', () => {
   });
 
   test('are idempotent — a second run applies nothing', async () => {
-    const { client } = freshDatabase('idempotent');
+    const { client, dir } = await freshDatabase('idempotent');
     try {
-      const first = await migrate(client, MIGRATIONS_DIR);
-      const second = await migrate(client, MIGRATIONS_DIR);
+      const first = await migrate(client, dir);
+      const second = await migrate(client, dir);
 
       expect(second.applied).toHaveLength(0);
       expect(second.skipped).toEqual(first.applied);
@@ -52,13 +60,10 @@ describe('migrations', () => {
   });
 
   test('create every table the PRD §21 model requires', async () => {
-    const { client } = freshDatabase('tables');
+    const { client, dir } = await freshDatabase('tables');
     try {
-      await migrate(client, MIGRATIONS_DIR);
-      const result = await client.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-      );
-      const tables = new Set(result.rows.map((r) => String(r.name)));
+      await migrate(client, dir);
+      const tables = await tableNames(client);
 
       for (const required of [
         'users',
@@ -106,9 +111,9 @@ describe('migrations', () => {
   });
 
   test('reject a migration edited after it was applied', async () => {
-    const { client } = freshDatabase('checksum');
+    const { client, dir } = await freshDatabase('checksum');
     try {
-      await migrate(client, MIGRATIONS_DIR);
+      await migrate(client, dir);
 
       // Simulate someone editing an already-applied file.
       await client.execute({
@@ -116,7 +121,7 @@ describe('migrations', () => {
         args: ['deadbeef', '0000_init.sql'],
       });
 
-      await expect(migrate(client, MIGRATIONS_DIR)).rejects.toThrow(/was modified after/);
+      await expect(migrate(client, dir)).rejects.toThrow(/was modified after/);
     } finally {
       client.close();
     }
@@ -151,7 +156,7 @@ describe('migrations', () => {
    * moment that is still cheap.
    */
   test('never reuse a number — apply order must not depend on the environment', async () => {
-    const names = (await loadMigrations(MIGRATIONS_DIR)).map((m) => m.name);
+    const names = (await loadMigrations(SQLITE_DIR)).map((m) => m.name);
 
     const byPrefix = new Map<string, string[]>();
     for (const name of names) {
@@ -166,15 +171,28 @@ describe('migrations', () => {
     expect(collisions).toEqual([]);
   });
 
+  /**
+   * Production is Postgres and a laptop is a SQLite file, so every migration
+   * exists twice, in the dialect each side speaks. The ledger is keyed by
+   * filename on both, which only works while the two directories carry
+   * exactly the same names: a file written to one side only is a schema
+   * change that half the databases never see.
+   */
+  test('keep the SQLite and Postgres migration sets in step', async () => {
+    const sqlite = (await loadMigrations(SQLITE_DIR)).map((m) => m.name);
+    const postgres = (await loadMigrations(POSTGRES_DIR)).map((m) => m.name);
+    expect(postgres).toEqual(sqlite);
+  });
+
   test('report status for applied and pending migrations', async () => {
-    const { client } = freshDatabase('status');
+    const { client, dir } = await freshDatabase('status');
     try {
-      const before = await migrationStatus(client, MIGRATIONS_DIR);
+      const before = await migrationStatus(client, dir);
       expect(before.every((s) => !s.applied)).toBe(true);
 
-      await migrate(client, MIGRATIONS_DIR);
+      await migrate(client, dir);
 
-      const after = await migrationStatus(client, MIGRATIONS_DIR);
+      const after = await migrationStatus(client, dir);
       expect(after.every((s) => s.applied)).toBe(true);
       expect(after[0]?.appliedAt).toBeDefined();
     } finally {
@@ -183,9 +201,9 @@ describe('migrations', () => {
   });
 
   test('enforce one canonical person per platform account', async () => {
-    const { client } = freshDatabase('unique');
+    const { client, dir } = await freshDatabase('unique');
     try {
-      await migrate(client, MIGRATIONS_DIR);
+      await migrate(client, dir);
       const stamp = new Date().toISOString();
 
       await client.execute({
