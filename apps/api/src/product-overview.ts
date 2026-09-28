@@ -69,11 +69,11 @@ export async function loadProductOverview(
   if (!campaign) return { product, profile, campaign, leads: [], messages: [] };
 
   const [leads, messages] = await Promise.all([
-    queryAll<LeadRow>(
+    queryAll<Omit<LeadRow, 'match'> & { match_score: number | null }>(
       db,
       `SELECT p.id AS person_id, p.display_name AS name, p.current_title AS title,
               co.name AS company, p.avatar_url, cp.status AS stage,
-              cp.interaction_state AS contact, s.opportunity AS match
+              cp.interaction_state AS contact, s.opportunity AS match_score
          FROM campaign_people cp
          JOIN people p ON p.id = cp.person_id
          LEFT JOIN companies co ON co.id = p.current_company_id
@@ -102,9 +102,11 @@ export async function loadProductOverview(
     product,
     profile,
     campaign,
-    leads: leads.map((row) => ({
+    // `match_score`, not `match`, in the SQL: the Postgres driver reads a
+    // bare MATCH as an FTS5 query and refuses the statement outright.
+    leads: leads.map(({ match_score, ...row }) => ({
       ...row,
-      match: row.match === null ? null : Math.round(Number(row.match)),
+      match: match_score === null ? null : Math.round(Number(match_score)),
     })),
     messages,
   };
