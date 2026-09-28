@@ -13,7 +13,7 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = { title: 'Plans · OutreachGraph' };
+export const metadata = { title: 'Follow-ups · OutreachGraph' };
 
 /**
  * Cadences: an ordered plan of touches over time.
@@ -39,7 +39,7 @@ export default async function CadencesPage() {
   return (
     <div className="pt-4">
       <header className="mb-4">
-        <h1 className="text-xl font-semibold">Plans</h1>
+        <h1 className="text-xl font-semibold">Follow-ups</h1>
         <p className="text-ink-muted text-sm">
           A sequence of touches over days, not one message and silence.
         </p>

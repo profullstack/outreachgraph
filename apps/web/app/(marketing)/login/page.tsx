@@ -24,7 +24,7 @@ export const metadata = { title: 'Sign in · OutreachGraph' };
  * with one slash and not two" rather than anything cleverer.
  */
 function safeNext(value: string | undefined): string {
-  if (!value || !value.startsWith('/') || value.startsWith('//')) return '/today';
+  if (!value || !value.startsWith('/') || value.startsWith('//')) return '/inbox';
   return value;
 }
 

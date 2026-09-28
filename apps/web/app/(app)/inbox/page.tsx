@@ -1,11 +1,14 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Avatar } from '../../../components/avatar';
+import { CampaignPicker } from '../../../components/campaign-picker';
+import { PageGuide } from '../../../components/page-guide';
 import { ReplyLabelChip } from '../../../components/reply-label-chip';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchInbox,
+  fetchProducts,
   relativeTime,
   type InboxConversationView,
   type InboxFilter,
@@ -35,15 +38,23 @@ function isFilter(value: string | undefined): value is InboxFilter {
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string; label?: string }>;
+  searchParams: Promise<{ filter?: string; label?: string; product?: string }>;
 }) {
-  const { filter: requested, label } = await searchParams;
+  const { filter: requested, label, product } = await searchParams;
   const filter: InboxFilter = isFilter(requested) ? requested : 'need_reply';
 
   let conversations: InboxConversationView[];
+  let products: Awaited<ReturnType<typeof fetchProducts>> = [];
 
   try {
-    ({ conversations } = await fetchInbox(filter, label));
+    [{ conversations }, products] = await Promise.all([
+      fetchInbox(filter, label, product),
+      // The picker is a convenience; the inbox must render without it.
+      fetchProducts().catch((error: unknown) => {
+        if (error instanceof NotAuthenticatedError) throw error;
+        return [];
+      }),
+    ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) {
@@ -66,11 +77,25 @@ export default async function InboxPage({
         </p>
       </header>
 
+      <PageGuide page="inbox" />
+
+      {products.length > 1 ? (
+        <CampaignPicker
+          basePath={`/inbox?filter=${filter}`}
+          param="product"
+          selected={product}
+          allLabel="All products"
+          campaigns={products
+            .filter((p) => p.configured)
+            .map((p) => ({ id: p.offeringId, name: p.name, autopilot: p.autopilot }))}
+        />
+      ) : null}
+
       <nav aria-label="Filter" className="mb-4 flex gap-2">
         {FILTERS.map((option) => (
           <Link
             key={option.value}
-            href={`/inbox?filter=${option.value}`}
+            href={`/inbox?filter=${option.value}${product ? `&product=${encodeURIComponent(product)}` : ''}`}
             aria-current={option.value === filter ? 'page' : undefined}
             className={`rounded-full border px-3 py-1 text-sm ${
               option.value === filter
@@ -129,6 +154,11 @@ export default async function InboxPage({
                     {conv.last_message_preview ?? ''}
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {conv.product_name ? (
+                      <span className="border-border text-ink-muted rounded-full border px-2 py-0.5 text-[11px]">
+                        {conv.product_name}
+                      </span>
+                    ) : null}
                     {conv.label ? (
                       <ReplyLabelChip label={conv.label.label} confidence={conv.label.confidence} />
                     ) : null}

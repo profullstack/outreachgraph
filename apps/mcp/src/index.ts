@@ -21,7 +21,7 @@ import { runTool, TOOLS, toolByName } from './tools';
 
 export function createServer(client: ApiClient): Server {
   const server = new Server(
-    { name: 'outreachgraph', version: '0.7.0' },
+    { name: 'outreachgraph', version: '0.8.0' },
     { capabilities: { tools: {} } },
   );
 

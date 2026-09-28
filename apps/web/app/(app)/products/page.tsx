@@ -1,7 +1,14 @@
-import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { BulkProductIntake } from '../../../components/bulk-product-intake';
 import { PageGuide } from '../../../components/page-guide';
-import { ApiUnavailableError, NotAuthenticatedError, fetchProducts } from '../../../lib/api';
+import { ProductTable, type ProductRowView } from '../../../components/product-table';
+import {
+  ApiUnavailableError,
+  NotAuthenticatedError,
+  fetchCampaignSummaries,
+  fetchProducts,
+  type CampaignSummaryView,
+} from '../../../lib/api';
 import type { ProductSummaryView } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -9,42 +16,55 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Products · OutreachGraph' };
 
 /**
- * Everything this workspace sells, on one page.
+ * Everything this workspace sells, and how each one is doing.
  *
- * The multi-product layer already existed — each offering owns its claims, its
- * ICP, its voice and its campaign — but it was only reachable as a row of
- * pills inside the setup *form*. You had to already be editing one product to
- * discover that a second was possible, which is a feature nobody finds.
- *
- * So the list gets its own route and its own entry in More. The form stays
- * where it is: this page routes to `/setup?product=<id>` rather than
- * re-implementing the editor, and archiving stays on that page too, beside the
- * confirm prompt and the error handling that already exist there. Two places
- * that can archive a product is how the two of them drift.
+ * The main screen for a workspace that runs many products. It used to be a
+ * list of names that led to a settings form, with the numbers on a separate
+ * campaign list and the way to add products folded inside the Outreach page.
+ * Now it is one box to add products — one site or fifty — above a table of
+ * every product with its leads, replies and waiting count. A row opens that
+ * product's page.
  */
 export default async function ProductsPage() {
   let products: ProductSummaryView[] = [];
+  let campaigns: CampaignSummaryView[] = [];
   let offline = false;
 
   try {
-    products = await fetchProducts();
+    [products, campaigns] = await Promise.all([fetchProducts(), fetchCampaignSummaries()]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
     if (error instanceof ApiUnavailableError) offline = true;
     else throw error;
   }
 
+  const byId = new Map(campaigns.map((campaign) => [campaign.id, campaign]));
+
   // The placeholder offering a first campaign bootstraps is not a product
-  // anyone chose to sell, and listing "Unconfigured offering" as though it
-  // were makes an empty workspace read as a full one.
-  const configured = products.filter((product) => product.configured);
+  // anyone chose to sell.
+  const rows: ProductRowView[] = products
+    .filter((product) => product.configured)
+    .map((product) => {
+      const campaign = product.campaignId ? byId.get(product.campaignId) : undefined;
+      return {
+        id: product.offeringId,
+        name: product.name,
+        host: product.url?.replace(/^https?:\/\//, '').replace(/\/$/, '') ?? null,
+        leads: Number(campaign?.people ?? 0),
+        replies: Number(campaign?.replied ?? 0),
+        waiting: Number(campaign?.awaiting_approval ?? 0),
+        working: Number(campaign?.jobs_pending ?? 0) > 0,
+        autopilot: product.autopilot,
+        status: product.campaignStatus,
+      };
+    });
 
   return (
     <div className="pt-4">
       <header className="mb-4">
         <h1 className="text-xl font-semibold">Products</h1>
         <p className="text-ink-muted text-sm">
-          Each one gets its own buyers, its own voice and its own campaign.
+          Each one has its own buyers, voice and campaign. Open one to see how it is doing.
         </p>
       </header>
 
@@ -56,58 +76,26 @@ export default async function ProductsPage() {
         </p>
       ) : (
         <>
-          {configured.length === 0 ? (
-            <p className="border-border text-ink-muted mb-4 rounded-2xl border border-dashed p-8 text-center text-sm">
-              Nothing described yet. Add what you sell and every draft can quote it.
+          {/* Open by default only while there is nothing to show below it. */}
+          <details
+            open={rows.length === 0}
+            className="border-border bg-surface-raised mb-4 rounded-2xl border p-4"
+          >
+            <summary className="cursor-pointer text-sm font-medium">+ Add products</summary>
+            <div className="mt-3">
+              <BulkProductIntake />
+            </div>
+          </details>
+
+          {rows.length === 0 ? (
+            <p className="border-border text-ink-muted rounded-2xl border border-dashed p-8 text-center text-sm">
+              No products yet. Paste your site above and we take it from there.
             </p>
           ) : (
-            <ul className="border-border divide-border mb-4 divide-y overflow-hidden rounded-2xl border">
-              {configured.map((product) => (
-                <li key={product.offeringId}>
-                  <Link
-                    href={`/setup?product=${encodeURIComponent(product.offeringId)}`}
-                    className="bg-surface-raised block p-4"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-medium">{product.name}</div>
-                        <div className="text-ink-muted truncate text-xs">
-                          {product.url ?? product.category}
-                        </div>
-                      </div>
-
-                      <div className="shrink-0 text-[11px]">
-                        {product.campaignStatus === 'archived' ? (
-                          <span className="text-ink-muted">archived</span>
-                        ) : product.campaignId ? (
-                          <span className="text-accent">
-                            {product.autopilot ? 'autopilot' : 'campaign'}
-                          </span>
-                        ) : (
-                          <span className="text-ink-muted">no campaign</span>
-                        )}
-                      </div>
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            <ProductTable rows={rows} />
           )}
-
-          <Link
-            href="/setup?product=new"
-            className="border-border text-ink-muted block rounded-2xl border border-dashed p-4 text-center text-sm"
-          >
-            + Add a product
-          </Link>
         </>
       )}
-
-      <p className="text-ink-muted mt-6 text-center text-xs">
-        <Link href="/more" className="underline">
-          Back to More
-        </Link>
-      </p>
     </div>
   );
 }

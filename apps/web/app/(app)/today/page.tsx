@@ -106,7 +106,7 @@ export default async function TodayPage() {
       {top ? (
         <section>
           <h2 className="text-ink-muted mb-2 text-[11px] font-semibold tracking-wide uppercase">
-            Highest opportunity
+            Best matches
           </h2>
           <Link
             href="/approvals"

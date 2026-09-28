@@ -69,7 +69,7 @@ export function WorkspaceSwitcher({
       return;
     }
 
-    router.replace('/today');
+    router.replace('/inbox');
     router.refresh();
   }
 

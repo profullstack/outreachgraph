@@ -17,7 +17,7 @@ import { useState, type FormEvent } from 'react';
  * page validates the one it reads from the query string before passing it
  * here, so this component cannot be pointed at another origin.
  */
-export function LoginForm({ next = '/today' }: { next?: string }) {
+export function LoginForm({ next = '/inbox' }: { next?: string }) {
   const router = useRouter();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');

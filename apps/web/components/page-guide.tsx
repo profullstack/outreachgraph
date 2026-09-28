@@ -41,6 +41,30 @@ export async function PageGuide({
   const { copy, stepIndex } = guide;
   const actions = guide.actions.filter((action) => !suppress.includes(action.id));
 
+  // Set up: nothing blocking left. The panel shrinks to one line — what the
+  // worker is doing, and a link for anything optional still open. A full
+  // explanation of the process on every page, every day, to someone who has
+  // been running it for weeks is the clutter this used to be.
+  if (guide.reachable && guide.started && !actions.some((action) => action.blocking)) {
+    return (
+      <section
+        aria-label="What is happening"
+        className="border-border mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-3 py-2"
+      >
+        {live ? (
+          <div className="min-w-0 flex-1">
+            <ActivityLine {...(guide.status ? { initialStatus: guide.status } : {})} />
+          </div>
+        ) : null}
+        {actions.map((action) => (
+          <Link key={action.id} href={action.href} className="text-accent text-xs font-medium">
+            {action.label}
+          </Link>
+        ))}
+      </section>
+    );
+  }
+
   const chip =
     stepIndex >= 0
       ? `Step ${stepIndex + 1} of ${PIPELINE.length} · ${PIPELINE[stepIndex]?.label}`

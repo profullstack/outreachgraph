@@ -180,7 +180,7 @@ export function ApprovalCard({ card }: { card: Card }) {
           <div className="text-accent text-lg leading-none font-semibold tabular-nums">
             {card.opportunity ?? '—'}
           </div>
-          <div className="text-ink-muted text-[11px]">opportunity</div>
+          <div className="text-ink-muted text-[11px]">match</div>
         </div>
       </header>
 

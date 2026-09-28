@@ -67,7 +67,7 @@ export function VerifyForm({ token }: { token: string }) {
           Your address is verified and outreach is unlocked.
         </p>
         <Link
-          href="/today"
+          href="/inbox"
           className="bg-accent mt-4 inline-flex items-center justify-center rounded-xl px-5 py-3 text-sm font-medium text-white"
         >
           Go to Today
