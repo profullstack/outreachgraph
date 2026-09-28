@@ -61,11 +61,24 @@ export async function runDiscoveryJob(
   // The offering grounds the search: "companies that would buy what you sell"
   // is a much better query than the keyword alone, and the workspace usually
   // already told us during setup.
-  const offering = await queryOne<{ name: string; description: string | null }>(
-    deps.db,
-    `SELECT name, description FROM offerings WHERE workspace_id = ? ORDER BY created_at LIMIT 1`,
-    [job.workspaceId],
-  );
+  //
+  // The campaign's own offering, not the workspace's first: a workspace that
+  // sells fifty things would otherwise search for buyers of the first one in
+  // every campaign. The first offering is only the answer for a campaign row
+  // that somehow names none.
+  const offering =
+    (await queryOne<{ name: string; description: string | null }>(
+      deps.db,
+      `SELECT o.name, o.description FROM campaigns c
+         JOIN offerings o ON o.id = c.offering_id
+        WHERE c.id = ? AND c.workspace_id = ?`,
+      [campaignId, job.workspaceId],
+    )) ??
+    (await queryOne<{ name: string; description: string | null }>(
+      deps.db,
+      `SELECT name, description FROM offerings WHERE workspace_id = ? ORDER BY created_at LIMIT 1`,
+      [job.workspaceId],
+    ));
 
   const summary = offering
     ? [offering.name, offering.description].filter(Boolean).join(' — ')

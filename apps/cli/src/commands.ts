@@ -607,6 +607,64 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
+    name: 'products-add',
+    usage: 'og products-add <site>... [--file <path>] [--autopilot]',
+    summary: 'Start a campaign for each of your own sites: one product per site.',
+    async run({ client, args, flags }) {
+      const file = flagString(flags, 'file');
+      const fromFile = file ? (await import('node:fs')).readFileSync(file, 'utf8') : '';
+      const domains = [...args, ...fromFile.split(/[\s,;]+/)].filter((d) => d.trim());
+      if (domains.length === 0) {
+        throw new Error('at least one site is required: og products-add ugig.net nichedb.dev');
+      }
+
+      const result = (await client.post('/campaigns/bulk', {
+        domains,
+        autopilot: flags.autopilot === true,
+      })) as Record<string, unknown>;
+
+      const queued = (result.queued as string[] | undefined) ?? [];
+      const existing = rows(result, 'existing');
+      const invalid = (result.invalid as string[] | undefined) ?? [];
+
+      return [
+        `Queued ${queued.length} site${queued.length === 1 ? '' : 's'}` +
+          (queued.length > 0 ? ` — watch with: og batch ${text(result, 'batchId')}` : ''),
+        ...(existing.length > 0
+          ? [`Already products: ${existing.map((p) => text(p, 'domain')).join(', ')}`]
+          : []),
+        ...(invalid.length > 0 ? [`Not websites: ${invalid.join(', ')}`] : []),
+      ].join('\n');
+    },
+  },
+  {
+    name: 'batch',
+    usage: 'og batch <batchId>',
+    summary: 'Progress of a bulk submission, one line per item.',
+    async run({ client, args }) {
+      const id = args[0];
+      if (!id) throw new Error('a batch id is required: og batch <batchId>');
+
+      const result = (await client.get(`/batches/${encodeURIComponent(id)}`)) as Record<
+        string,
+        unknown
+      >;
+      const items = rows(result, 'items');
+      const summary =
+        `${text(result, 'done', '0')} done, ${text(result, 'failed', '0')} failed, ` +
+        `${text(result, 'pending', '0')} waiting, ${text(result, 'running', '0')} running`;
+
+      return [
+        summary,
+        ...items.map(
+          (item) =>
+            `${pad(text(item, 'status'), 8)} ${text(item, 'url', text(item, 'id'))}` +
+            (item.lastError ? `  ${text(item, 'lastError')}` : ''),
+        ),
+      ].join('\n');
+    },
+  },
+  {
     name: 'add-social',
     usage: 'og add-social <network:handle | profile url>... [--campaign <id>] [--via <how>]',
     summary: 'Hand over people from a social network, for assessment and an OpenProfile.',
