@@ -143,6 +143,38 @@ describe('commands', () => {
     expect(output).toContain('empty');
   });
 
+  test('products-add sends every site and points at the batch', async () => {
+    const { client: api, calls } = client({
+      batchId: 'job_1',
+      queued: ['ugig.net', 'bl0ggers.com'],
+      existing: [{ domain: 'nichedb.dev', offeringId: 'off_1', name: 'nichedb' }],
+      invalid: [],
+    });
+
+    const output = await commandByName('products-add')!.run({
+      client: api,
+      args: ['ugig.net', 'nichedb.dev', 'bl0ggers.com'],
+      flags: { autopilot: true },
+    });
+
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/campaigns/bulk');
+    expect(calls[0]?.body).toEqual({
+      domains: ['ugig.net', 'nichedb.dev', 'bl0ggers.com'],
+      autopilot: true,
+    });
+    expect(output).toContain('Queued 2 sites');
+    expect(output).toContain('og batch job_1');
+    expect(output).toContain('Already products: nichedb.dev');
+  });
+
+  test('products-add with no sites asks for one instead of posting nothing', async () => {
+    const { client: api, calls } = client({});
+    await expect(
+      commandByName('products-add')!.run({ client: api, args: [], flags: {} }),
+    ).rejects.toThrow('at least one site');
+    expect(calls).toHaveLength(0);
+  });
+
   test('add requires a url rather than guessing', async () => {
     const { client: api, calls } = client({});
 

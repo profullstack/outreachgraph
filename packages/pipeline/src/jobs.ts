@@ -30,6 +30,14 @@ export const JOB_KINDS = [
   'crawl_site',
   /** Expand a keyword into real companies and queue a crawl for each. */
   'discover_domains',
+  /**
+   * Read one of the workspace's own sites into a product and start its search.
+   *
+   * Queued by the bulk product form, one per site: crawl, draft the offering,
+   * buyer and voice, save them, then seed the product's campaign with its
+   * market and queue `discover_domains` for it.
+   */
+  'bootstrap_product',
   /** Read nichedb.dev's open collections since a cursor, queue a crawl per new site, and queue itself again. */
   'discover_nichedb',
   /**

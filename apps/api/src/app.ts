@@ -153,6 +153,7 @@ import {
   setCampaignLimits,
   setCampaignStatus,
 } from './campaigns';
+import { BulkProductsError, queueBulkProducts } from './bulk-products';
 import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
 import { isHandoffDecision, listHandoffs, type Handoff } from './handoff';
 import { CoinPayClient } from '@outreachgraph/payments';
@@ -1774,6 +1775,62 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         seed: result.seed,
         autopilot: result.autopilot,
         offeringId: result.offeringId,
+      },
+    });
+
+    return c.json(result, 202);
+  });
+
+  /**
+   * Many products at once: one per site, each with a campaign already searching.
+   *
+   * `{ domains: string | string[], autopilot?: boolean }` — a pasted list is
+   * fine. Sites the workspace already sells are reported back, not duplicated.
+   * Progress per site is `GET /batches/:batchId`.
+   */
+  api.post('/campaigns/bulk', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('starting campaigns');
+    await requireVerifiedEmail(db, actor, 'we read your sites');
+
+    // Checked here, not left to the jobs: without a model every one of them
+    // would fail its way through the retries while the form said "queued".
+    if (!options.model) {
+      throw new ApiError(
+        503,
+        'composer_unavailable',
+        'no language model is configured, so sites cannot be read into products yet',
+      );
+    }
+
+    const body = safeJson(await c.req.raw.text());
+
+    let result;
+    try {
+      result = await queueBulkProducts(db, actor.workspaceId, body.domains, {
+        autopilot: body.autopilot === true,
+      });
+    } catch (error) {
+      if (error instanceof BulkProductsError) {
+        throw ApiError.badRequest(error.message, { domains: [error.message] });
+      }
+      throw error;
+    }
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'campaign.bulk_queued',
+      entityKind: 'workspace',
+      entityId: actor.workspaceId,
+      detail: {
+        batchId: result.batchId,
+        queued: result.queued.length,
+        existing: result.existing.length,
+        autopilot: body.autopilot === true,
       },
     });
 

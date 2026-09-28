@@ -34,6 +34,7 @@ import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
+import { runBootstrapProductJob } from '../../api/src/bulk-products';
 import { routesToApi } from './routing';
 import {
   drainQueue,
@@ -638,6 +639,21 @@ async function discoverNichedb(job: QueuedJob): Promise<void> {
   );
 }
 
+/**
+ * Reads one of the workspace's own sites into a product and starts its search.
+ *
+ * Throws on anything a retry could fix, like discovery does; a site that
+ * refuses the crawler completes with the reason logged.
+ */
+async function bootstrapProduct(job: QueuedJob): Promise<void> {
+  const result = await runBootstrapProductJob({ db, site, ...(model ? { model } : {}) }, job);
+  console.log(
+    `bootstrap ${result.domain}: ${result.outcome}` +
+      (result.market ? ` — looking for ${result.market}` : '') +
+      (result.detail ? ` (${result.detail})` : ''),
+  );
+}
+
 async function runJob(job: QueuedJob): Promise<void> {
   switch (job.kind) {
     case 'crawl_site':
@@ -648,6 +664,9 @@ async function runJob(job: QueuedJob): Promise<void> {
       return;
     case 'discover_nichedb':
       await discoverNichedb(job);
+      return;
+    case 'bootstrap_product':
+      await bootstrapProduct(job);
       return;
     case 'rescore_prospect': {
       const { campaignId, personId } = job.payload as { campaignId?: string; personId?: string };

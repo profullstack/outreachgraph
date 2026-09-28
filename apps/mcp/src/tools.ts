@@ -357,6 +357,50 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'start_product_campaigns',
+    title: 'Start a campaign for each of your sites',
+    description:
+      'For a workspace that sells several products: give it your own sites (not prospects). ' +
+      'Each is read, saved as a product with its own voice and buyer profile, and given a ' +
+      'campaign that starts searching for buyers. Sites already a product are skipped. ' +
+      'Returns a batchId; watch it with batch_status.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        domains: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Your sites, e.g. ["ugig.net", "nichedb.dev"]. Up to 100.',
+        },
+        autopilot: {
+          type: 'boolean',
+          description: 'Send without per-message approval. Default false.',
+        },
+      },
+      required: ['domains'],
+    },
+    run: (client, args) => {
+      const domains = Array.isArray(args.domains)
+        ? args.domains.filter((d): d is string => typeof d === 'string' && d.trim() !== '')
+        : [];
+      if (domains.length === 0) throw new Error('domains is required');
+      return client.post('/campaigns/bulk', { domains, autopilot: args.autopilot === true });
+    },
+  },
+  {
+    name: 'batch_status',
+    title: 'Progress of a bulk submission',
+    description: 'Each item in a batch with its state (pending, running, done, failed) and error.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { batchId: { type: 'string' } },
+      required: ['batchId'],
+    },
+    run: (client, args) => client.get(`/batches/${encodeURIComponent(require(args, 'batchId'))}`),
+  },
+  {
     name: 'add_people_from_social',
     title: 'Hand over people from a social network',
     description:

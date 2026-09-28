@@ -149,6 +149,7 @@ describe('tools', () => {
           personIds: ['per_1'],
           text: 'Thanks, Thursday works.',
           account: 'acme.bsky.social',
+          domains: ['example.com'],
         })
         .catch(() => undefined);
 
@@ -193,6 +194,21 @@ describe('tools', () => {
     expect(toolByName('list_webhooks')?.readOnly).toBe(true);
     await runTool(toolByName('list_webhooks')!, client, {});
     expect(calls[1]?.method).toBe('GET');
+  });
+
+  test('start_product_campaigns posts the sites; batch_status only reads', async () => {
+    const { fetchImpl, calls } = recorder(ok());
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('start_product_campaigns')!, client, {
+      domains: ['ugig.net', '', 'nichedb.dev'],
+    });
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/campaigns/bulk');
+    expect(calls[0]?.body).toEqual({ domains: ['ugig.net', 'nichedb.dev'], autopilot: false });
+
+    expect(toolByName('batch_status')?.readOnly).toBe(true);
+    await runTool(toolByName('batch_status')!, client, { batchId: 'job_1' });
+    expect(calls[1]?.url).toBe('https://api.test/api/v1/batches/job_1');
   });
 
   test('there is no tool that posts to a network directly', () => {
