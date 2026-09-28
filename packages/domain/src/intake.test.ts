@@ -20,6 +20,19 @@ describe('toHostname', () => {
     expect(toHostname('mailto:jane@acme.com')).toBeUndefined();
     expect(toHostname('ftp://acme.com')).toBeUndefined();
   });
+
+  test('knows the newer gTLDs real products use', () => {
+    for (const host of ['aiornot.vote', 'qrypt.chat', 'phonenumbers.bot', 'mediaanalyzer.pro']) {
+      expect(toHostname(host)).toBe(host);
+    }
+  });
+
+  test('anyTld accepts an unlisted suffix where every entry is a site', () => {
+    expect(toHostname('acme.zzzz')).toBeUndefined();
+    expect(toHostname('acme.zzzz', { anyTld: true })).toBe('acme.zzzz');
+    expect(toHostname('Acme Inc.', { anyTld: true })).toBeUndefined();
+    expect(toHostname('acme.q', { anyTld: true })).toBeUndefined();
+  });
 });
 
 describe('classifyIntake', () => {

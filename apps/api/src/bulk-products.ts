@@ -59,7 +59,8 @@ export function parseDomainList(input: unknown): ParsedDomains {
   const invalid: string[] = [];
 
   for (const part of parts) {
-    const host = toHostname(part);
+    // Every entry is declared to be a site, so any real-looking TLD will do.
+    const host = toHostname(part, { anyTld: true });
     if (!host) {
       invalid.push(part);
       continue;
@@ -74,7 +75,7 @@ export function parseDomainList(input: unknown): ParsedDomains {
 
 /** The hostname an offering was set up from, or undefined when it has none. */
 function hostOf(url: string | null): string | undefined {
-  return url ? toHostname(url) : undefined;
+  return url ? toHostname(url, { anyTld: true }) : undefined;
 }
 
 export interface ExistingProduct {
@@ -243,8 +244,8 @@ export async function runBootstrapProductJob(
 ): Promise<BootstrapResult> {
   const payload = job.payload as { domain?: unknown; url?: unknown; autopilot?: unknown };
   const domain =
-    (typeof payload.domain === 'string' && toHostname(payload.domain)) ||
-    (typeof payload.url === 'string' && toHostname(payload.url)) ||
+    (typeof payload.domain === 'string' && toHostname(payload.domain, { anyTld: true })) ||
+    (typeof payload.url === 'string' && toHostname(payload.url, { anyTld: true })) ||
     undefined;
   if (!domain) throw new Error('bootstrap_product needs a domain');
 

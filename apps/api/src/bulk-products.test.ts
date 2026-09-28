@@ -105,6 +105,21 @@ describe('parseDomainList', () => {
     expect(parsed.invalid).toEqual(['not', 'a', 'site', 'mailto:x@y.com']);
   });
 
+  test('accepts any real-looking TLD, since every entry is meant to be a site', () => {
+    const parsed = parseDomainList(
+      'phonenumbers.bot qrypt.chat goingbroke.now aiornot.vote agenticjobs.work mediaanalyzer.pro x.q',
+    );
+    expect(parsed.domains).toEqual([
+      'phonenumbers.bot',
+      'qrypt.chat',
+      'goingbroke.now',
+      'aiornot.vote',
+      'agenticjobs.work',
+      'mediaanalyzer.pro',
+    ]);
+    expect(parsed.invalid).toEqual(['x.q']);
+  });
+
   test('takes an array as given', () => {
     expect(parseDomainList(['a.com', 'b.io', 'a.com']).domains).toEqual(['a.com', 'b.io']);
   });

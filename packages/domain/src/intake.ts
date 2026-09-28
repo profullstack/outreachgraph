@@ -85,6 +85,26 @@ const KNOWN_TLDS = new Set([
   'life',
   'world',
   'global',
+  'pro',
+  'work',
+  'now',
+  'bot',
+  'chat',
+  'vote',
+  'games',
+  'live',
+  'social',
+  'email',
+  'network',
+  'club',
+  'space',
+  'team',
+  'tools',
+  'fun',
+  'art',
+  'page',
+  'run',
+  'sh',
 ]);
 
 function looksLikeTld(suffix: string): boolean {
@@ -98,7 +118,17 @@ function looksLikeTld(suffix: string): boolean {
  * treated as a host when it is a single token that ends in a plausible TLD.
  * "Acme Inc." has a dot and is not a domain, which is why the space matters.
  */
-export function toHostname(input: string): string | undefined {
+export function toHostname(
+  input: string,
+  /**
+   * Accept any alphabetic suffix, not only the known ones.
+   *
+   * The allowlist exists to tell "Acme Inc." from a domain in a box that
+   * takes both. A field that only ever holds websites has no such ambiguity,
+   * and there refusing `.bot` or `.vote` is simply wrong.
+   */
+  options: { anyTld?: boolean } = {},
+): string | undefined {
   const trimmed = input.trim();
   if (!trimmed) return undefined;
 
@@ -134,7 +164,8 @@ export function toHostname(input: string): string | undefined {
 
   const labels = host.split('.');
   const suffix = labels[labels.length - 1] ?? '';
-  if (!/^[a-z]+$/.test(suffix) || !looksLikeTld(suffix)) return undefined;
+  if (!/^[a-z]{2,}$/.test(suffix)) return undefined;
+  if (!options.anyTld && !looksLikeTld(suffix)) return undefined;
   if (labels.some((label) => label.length === 0)) return undefined;
 
   return host;
