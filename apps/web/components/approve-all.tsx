@@ -26,7 +26,7 @@ interface BulkResult {
   readonly approved: number;
   /**
    * Cards the product may not do itself (LinkedIn engagement, X with no
-   * account), approved as hand-off cards for a person to finish. Optional so
+   * account), approved as manual posts for a person to finish. Optional so
    * an older API that does not report them still renders.
    */
   readonly handoffs?: number;
@@ -123,7 +123,7 @@ export function ApproveAll({
           {(done.handoffs ?? 0) > 0 ? (
             <p className="mt-1">
               <Link href="/approvals?tab=handoffs" className="text-accent font-medium underline">
-                {(done.handoffs ?? 0).toLocaleString()} hand-off card
+                {(done.handoffs ?? 0).toLocaleString()} manual post
                 {done.handoffs === 1 ? '' : 's'} ready
               </Link>{' '}
               <span className="text-ink-muted">— yours to do, about thirty seconds each.</span>
@@ -146,12 +146,12 @@ export function ApproveAll({
             {preview.approved > 0
               ? `This will approve ${preview.approved.toLocaleString()} card${preview.approved === 1 ? '' : 's'}.`
               : previewHandoffs > 0
-                ? `${previewHandoffs.toLocaleString()} need you: the product can't post these, so approving makes each one a hand-off card.`
+                ? `${previewHandoffs.toLocaleString()} need you: the product can't post these, so approving makes each one a manual post.`
                 : 'Nothing here can be approved right now.'}
           </p>
           {preview.approved > 0 && previewHandoffs > 0 ? (
             <p>
-              {previewHandoffs.toLocaleString()} more need you: they become hand-off cards to copy,
+              {previewHandoffs.toLocaleString()} more need you: they become manual posts to copy,
               open and post yourself.
             </p>
           ) : null}

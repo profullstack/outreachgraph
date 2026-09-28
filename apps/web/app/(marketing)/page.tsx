@@ -27,7 +27,7 @@ export const metadata = {
  */
 export default async function LandingPage() {
   const jar = await cookies();
-  if (jar.get('og_session')) redirect('/today');
+  if (jar.get('og_session')) redirect('/inbox');
 
   return (
     <div>

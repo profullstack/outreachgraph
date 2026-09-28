@@ -157,8 +157,8 @@ export function BulkProductIntake() {
         Your sites
       </label>
       <p className="text-ink-muted mt-1 text-xs">
-        One per line, up to a hundred. Each becomes a product with its own campaign: we read the
-        site, describe what it sells and who buys it, and start finding those buyers. Sites that are
+        One or many, one per line. Each becomes a product with its own campaign: we read the site,
+        describe what it sells and who buys it, and start finding those buyers. Sites that are
         already a product here are skipped.
       </p>
 
@@ -195,7 +195,7 @@ export function BulkProductIntake() {
         disabled={busy || n === 0}
         className="bg-accent mt-3 rounded-xl px-4 py-3 text-sm font-medium text-white disabled:opacity-40"
       >
-        {busy ? 'Queueing…' : n > 1 ? `Start ${n} campaigns` : 'Start campaign'}
+        {busy ? 'Queueing…' : n > 1 ? `Add ${n} products` : 'Add product'}
       </button>
 
       {error ? (

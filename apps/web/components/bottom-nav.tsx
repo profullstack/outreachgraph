@@ -2,39 +2,97 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 /**
  * Phone-first bottom navigation (PRD §1.1 "Mobile Navigation").
  *
- * Thumb-reachable destinations sitting above the home indicator. The desktop
- * layout expands this into the full §25 navigation.
+ * Five tabs, in the order the work actually happens once a workspace is set
+ * up: read what came back, approve what is waiting, look after the products,
+ * see the numbers, change a setting. It used to follow the pipeline —
+ * Today, Outreach, Funnel, Prospects, Approvals, More — which is how the
+ * machine is built rather than how anyone uses it, and it left the Inbox, the
+ * page opened most, behind "More".
  *
- * Ordered along the funnel — start a run, watch what comes back, work the
- * list, approve — because the first question a new account has is "where do I
- * begin", and the answer has to be a tab rather than a form buried at the top
- * of another screen.
- *
- * Signals moved to More to make room for Funnel. Six is already the most
- * labels that fit a 375px phone without wrapping, and between "the raw
- * observations we collected" and "where every lead stands", the second is the
- * one someone opens the app to see. Signals is still a route and still linked.
+ * Everything that lost its tab is still a route, and Settings lists it.
  */
 const TABS = [
-  { href: '/today', label: 'Today', icon: SunIcon },
-  { href: '/outreach', label: 'Outreach', icon: SendIcon },
-  { href: '/funnel', label: 'Funnel', icon: FunnelIcon },
-  { href: '/prospects', label: 'Prospects', icon: PeopleIcon },
-  { href: '/approvals', label: 'Approvals', icon: CheckIcon },
-  { href: '/more', label: 'More', icon: DotsIcon },
+  { href: '/inbox', label: 'Inbox', icon: InboxIcon, badge: true },
+  { href: '/approvals', label: 'Approve', icon: CheckIcon },
+  { href: '/products', label: 'Products', icon: BoxIcon },
+  { href: '/funnel', label: 'Results', icon: FunnelIcon },
+  { href: '/settings', label: 'Settings', icon: GearIcon },
 ] as const;
+
+/** Routes that belong to a tab without sharing its path. */
+const OWNED_BY: Record<string, string> = {
+  '/setup': '/products',
+  '/outreach': '/products',
+  '/today': '/settings',
+  '/more': '/settings',
+  '/team': '/settings',
+  '/billing': '/settings',
+  '/cadences': '/settings',
+  '/rules': '/settings',
+  '/research': '/settings',
+  '/import': '/settings',
+  '/signals': '/settings',
+  '/prospects': '/settings',
+};
 
 /** Public routes: the app chrome would be meaningless before signing in. */
 const PUBLIC_ROUTES = ['/', '/login', '/offline'];
 
+const UNREAD_POLL_MS = 60_000;
+
+/**
+ * People waiting on a reply, for the Inbox badge.
+ *
+ * Fetched here rather than by each page so the badge is right on every tab,
+ * and quietly: a failed count shows no badge, never an error.
+ */
+function useUnread(enabled: boolean): string | undefined {
+  const [count, setCount] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+
+    const tick = async () => {
+      try {
+        const response = await fetch('/api/v1/inbox/unread', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        });
+        if (!response.ok || cancelled) return;
+        const body = (await response.json()) as { needReply?: number; capped?: boolean };
+        const n = Number(body.needReply ?? 0);
+        setCount(n === 0 ? undefined : body.capped ? '99+' : String(n));
+      } catch {
+        // No badge is the right answer when the count cannot be had.
+      }
+    };
+
+    void tick();
+    const timer = setInterval(() => void tick(), UNREAD_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [enabled]);
+
+  return count;
+}
+
 export function BottomNav() {
   const pathname = usePathname();
+  const hidden = PUBLIC_ROUTES.includes(pathname);
+  const unread = useUnread(!hidden);
 
-  if (PUBLIC_ROUTES.includes(pathname)) return null;
+  if (hidden) return null;
+
+  const section = '/' + (pathname.split('/')[1] ?? '');
+  const owner = OWNED_BY[section] ?? section;
 
   return (
     <nav
@@ -43,22 +101,30 @@ export function BottomNav() {
     >
       <ul className="mx-auto flex w-full max-w-2xl">
         {TABS.map((tab) => {
-          // Exact match, or a nested route beneath this tab.
-          const active = pathname === tab.href || pathname.startsWith(`${tab.href}/`);
+          const active = owner === tab.href;
           const Icon = tab.icon;
+          const badge = 'badge' in tab && tab.badge ? unread : undefined;
 
           return (
             <li key={tab.href} className="flex-1">
               <Link
                 href={tab.href}
                 aria-current={active ? 'page' : undefined}
-                // 10px rather than 11: six labels have to clear "Prospects" and
-                // "Approvals" on a 375px phone without wrapping to two lines.
-                className={`flex min-h-[56px] flex-col items-center justify-center gap-1 text-[10px] leading-none font-medium ${
+                className={`relative flex min-h-[56px] flex-col items-center justify-center gap-1 text-[11px] leading-none font-medium ${
                   active ? 'text-accent' : 'text-ink-muted'
                 }`}
               >
-                <Icon />
+                <span className="relative">
+                  <Icon />
+                  {badge ? (
+                    <span
+                      aria-label={`${badge} waiting for a reply`}
+                      className="bg-accent absolute -top-1.5 left-3.5 min-w-[18px] rounded-full px-1 text-center text-[10px] leading-[18px] font-semibold text-white"
+                    >
+                      {badge}
+                    </span>
+                  ) : null}
+                </span>
                 {tab.label}
               </Link>
             </li>
@@ -81,38 +147,10 @@ const ICON_PROPS = {
   'aria-hidden': true,
 } as const;
 
-function SunIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-    </svg>
-  );
-}
-
-function SendIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <path d="M21.5 2.5 11 13" />
-      <path d="M21.5 2.5 15 21l-4-8-8-4 18.5-6.5z" />
-    </svg>
-  );
-}
-
 function FunnelIcon() {
   return (
     <svg {...ICON_PROPS}>
       <path d="M3 4h18l-7 8v7l-4 2v-9L3 4z" />
-    </svg>
-  );
-}
-
-function PeopleIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-      <circle cx="9" cy="7" r="4" />
-      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
     </svg>
   );
 }
@@ -126,12 +164,29 @@ function CheckIcon() {
   );
 }
 
-function DotsIcon() {
+function InboxIcon() {
   return (
     <svg {...ICON_PROPS}>
-      <circle cx="12" cy="5" r="1" />
-      <circle cx="12" cy="12" r="1" />
-      <circle cx="12" cy="19" r="1" />
+      <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+    </svg>
+  );
+}
+
+function BoxIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M21 8 12 3 3 8v8l9 5 9-5V8z" />
+      <path d="m3 8 9 5 9-5M12 13v8" />
+    </svg>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   );
 }

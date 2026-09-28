@@ -53,16 +53,16 @@ export const PIPELINE: readonly PipelineStep[] = [
   {
     id: 'profile',
     label: 'Say what you sell',
-    href: '/setup',
+    href: '/products',
     blurb:
       'We read your website and draft your offering, who buys it and the voice to write in. Every message is grounded in this, so it comes first.',
   },
   {
     id: 'campaign',
     label: 'Say who to reach',
-    href: '/outreach',
+    href: '/products',
     blurb:
-      'Paste company websites, or describe the market in a sentence. Each product gets its own campaign.',
+      'Each product gets its own campaign, already aimed at the market its site describes. Change who it targets on the product’s page.',
   },
   {
     id: 'research',
@@ -88,7 +88,7 @@ export const PIPELINE: readonly PipelineStep[] = [
   {
     id: 'watch',
     label: 'Watch what comes back',
-    href: '/funnel',
+    href: '/inbox',
     blurb: 'Stages, replies, and anything that has been sitting in one place too long.',
   },
 ];
@@ -97,6 +97,7 @@ export const PIPELINE: readonly PipelineStep[] = [
 
 export type PageId =
   | 'today'
+  | 'inbox'
   | 'setup'
   | 'products'
   | 'team'
@@ -131,6 +132,12 @@ export const PAGE_COPY: Record<PageId, PageCopy> = {
     you: 'Read the queue and clear anything waiting. Start here each day.',
     ours: 'We keep working in the background whether or not this page is open.',
     note: 'An empty queue means one of two things, and the panel below tells you which: nothing has been researched yet, or nothing researched is worth writing to.',
+  },
+  inbox: {
+    step: 'watch',
+    what: 'Every reply, newest first, labelled as it arrives.',
+    you: 'Answer the ones waiting on you. A drafted reply is ready on the ones worth one.',
+    ours: 'We read the mailbox, label each reply and draft an answer.',
   },
   setup: {
     step: 'profile',
@@ -186,7 +193,7 @@ export const PAGE_COPY: Record<PageId, PageCopy> = {
     what: 'Everything the system wants to do, waiting for your decision.',
     you: 'Approve, edit or reject. Approved email sends immediately.',
     ours: 'We write the draft and rank the queue. We do not send without you unless the campaign is on autopilot.',
-    note: 'Cards under Research have no message by design; they are internal work the prospect never sees. Start on the Ready tab.',
+    note: 'Internal checks never have a message; they are work the prospect never sees. Ready is where the decisions are.',
   },
   funnel: {
     step: 'watch',
@@ -258,7 +265,7 @@ export function nextActions(state: GuideState): readonly NextAction[] {
       id: 'verify',
       label: 'Confirm your email address',
       detail: 'We check it before running anything that costs money. The link is in your inbox.',
-      href: '/today',
+      href: '/inbox',
       blocking: true,
     });
   }
@@ -269,7 +276,7 @@ export function nextActions(state: GuideState): readonly NextAction[] {
       label: 'Tell us what you sell',
       detail:
         'Until you do, drafts quote placeholder text and scoring has no idea who a good fit is.',
-      href: '/setup',
+      href: '/products',
       blocking: true,
     });
   }
@@ -277,10 +284,10 @@ export function nextActions(state: GuideState): readonly NextAction[] {
   if (!state.started) {
     actions.push({
       id: 'campaign',
-      label: 'Start your first campaign',
+      label: 'Add your first product',
       detail:
-        'Enter a company website, or describe the market you want to reach. Nothing runs until you do.',
-      href: '/outreach',
+        'Paste your site. We describe what it sells, who buys it, and start finding them. Nothing runs until you do.',
+      href: '/products',
       blocking: true,
     });
   }
@@ -325,7 +332,7 @@ export function nextActions(state: GuideState): readonly NextAction[] {
       label: `${state.status.queue.failed} background ${
         state.status.queue.failed === 1 ? 'job has' : 'jobs have'
       } failed`,
-      detail: 'The running commentary on Today names what broke.',
+      detail: 'The running commentary on Activity names what broke.',
       href: '/today',
       blocking: false,
     });

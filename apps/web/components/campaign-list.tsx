@@ -159,7 +159,7 @@ export function CampaignList({ initial }: { initial: readonly CampaignSummaryVie
                 </button>
 
                 <Link
-                  href={`/funnel?campaignId=${encodeURIComponent(campaign.id)}`}
+                  href={`/funnel?campaign=${encodeURIComponent(campaign.id)}`}
                   className="text-accent px-1 py-1.5 text-[13px] underline"
                 >
                   Funnel

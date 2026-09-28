@@ -115,6 +115,39 @@ async function conversation(
 }
 
 describe('GET /inbox', () => {
+  test('each conversation names its product, and can be narrowed to one', async () => {
+    const { app, seeded } = await harness('inbox-product');
+    await conversation(seeded);
+
+    const all = await json<{ conversations: { product_id: string; product_name: string }[] }>(
+      await get(app, '/inbox'),
+    );
+    expect(all.conversations[0]?.product_id).toBe(SEED.offeringId);
+    expect(all.conversations[0]?.product_name).toBeTruthy();
+
+    const mine = await json<{ conversations: unknown[] }>(
+      await get(app, `/inbox?product=${SEED.offeringId}`),
+    );
+    expect(mine.conversations).toHaveLength(1);
+
+    const other = await json<{ conversations: unknown[] }>(
+      await get(app, '/inbox?product=off_someone_else'),
+    );
+    expect(other.conversations).toHaveLength(0);
+  });
+
+  test('the unread count is the people waiting on a reply', async () => {
+    const { app, seeded } = await harness('inbox-unread');
+    expect(
+      await json<{ needReply: number; capped: boolean }>(await get(app, '/inbox/unread')),
+    ).toEqual({ needReply: 0, capped: false });
+
+    await conversation(seeded);
+    expect(
+      await json<{ needReply: number; capped: boolean }>(await get(app, '/inbox/unread')),
+    ).toEqual({ needReply: 1, capped: false });
+  });
+
   test('a reply waits on us, carrying its label', async () => {
     const { app, seeded } = await harness('inbox-list');
     await conversation(seeded);

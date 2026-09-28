@@ -154,6 +154,8 @@ import {
   setCampaignStatus,
 } from './campaigns';
 import { BulkProductsError, queueBulkProducts } from './bulk-products';
+import { checkMailDomain, type MailResolver } from './mail-domain';
+import { loadProductOverview } from './product-overview';
 import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
 import { isHandoffDecision, listHandoffs, type Handoff } from './handoff';
 import { CoinPayClient } from '@outreachgraph/payments';
@@ -281,6 +283,8 @@ export interface AppOptions {
   readonly github?: GitHubProvider;
   /** Reads the customer's own site during onboarding. Tests inject a fake. */
   readonly site?: SiteProvider;
+  /** DNS for the invitation mail-domain check. Tests inject a fake. */
+  readonly mailResolver?: MailResolver;
   /**
    * Sends account email. Omit to log messages instead of sending them, which
    * is what local development and the test suite do.
@@ -418,7 +422,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.json({
       service: 'api',
       name: 'outreachgraph',
-      version: options.version ?? '0.7.0',
+      version: options.version ?? '0.8.0',
       ...(options.commitHash ? { commitHash: options.commitHash } : {}),
       docs: 'https://github.com/profullstack/outreachgraph',
       endpoints: {
@@ -551,7 +555,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.json({
       status: 'ok' as const,
       service: 'api',
-      version: options.version ?? '0.7.0',
+      version: options.version ?? '0.8.0',
       ...(options.commitHash ? { commitHash: options.commitHash } : {}),
       uptimeSeconds: Math.round((Date.now() - STARTED_AT) / 1000),
     }),
@@ -1413,6 +1417,21 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const body = safeJson(await c.req.raw.text());
     const email = typeof body.email === 'string' ? body.email : '';
     const role = isInvitableRole(body.role) ? body.role : 'member';
+
+    // Before minting anything: an invitation to a domain that cannot receive
+    // mail is reported as sent and never arrives, so say so here instead.
+    if (email.includes('@')) {
+      const reachable = await checkMailDomain(email, options.mailResolver);
+      if (!reachable.ok) {
+        const message = reachable.suggestion
+          ? `${reachable.domain} cannot receive email. Did you mean ${reachable.suggestion}?`
+          : `${reachable.domain} cannot receive email. Check the address.`;
+        throw ApiError.badRequest(message, {
+          email: [message],
+          ...(reachable.suggestion ? { suggestion: [reachable.suggestion] } : {}),
+        });
+      }
+    }
 
     let minted;
     try {
@@ -2311,6 +2330,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       offeringId || undefined,
     );
     return c.json(profile);
+  });
+
+  /** One product with its campaign, leads and latest messages, for its page. */
+  api.get('/products/:id/overview', async (c) => {
+    const actor = c.get('actor');
+    const overview = await loadProductOverview(c.get('db'), actor.workspaceId, c.req.param('id'));
+    if (!overview) throw ApiError.notFound('product');
+    return c.json(overview);
   });
 
   /** Everything the workspace sells. */

@@ -704,6 +704,9 @@ export interface InboxConversationView {
   readonly title: string | null;
   readonly company: string | null;
   readonly avatar_url: string | null;
+  /** The product of the latest campaign this person heard from. */
+  readonly product_id: string | null;
+  readonly product_name: string | null;
   readonly networks: readonly string[];
   readonly status: 'need_reply' | 'replied' | 'sent';
   readonly suppressed: boolean;
@@ -757,9 +760,11 @@ export interface InboxThreadView {
 export async function fetchInbox(
   filter: InboxFilter = 'all',
   label?: string,
+  product?: string,
 ): Promise<{ conversations: InboxConversationView[] }> {
   const query = new URLSearchParams({ filter, limit: '100' });
   if (label) query.set('label', label);
+  if (product) query.set('product', product);
   return request<{ conversations: InboxConversationView[] }>(`/inbox?${query.toString()}`);
 }
 
@@ -811,4 +816,58 @@ export interface CrmIntegrationView {
 
 export async function fetchCrmIntegration(): Promise<CrmIntegrationView> {
   return request<CrmIntegrationView>('/integrations/crm');
+}
+
+// ------------------------------------------------------ one product's page
+
+export interface ProductLeadView {
+  readonly person_id: string;
+  readonly name: string;
+  readonly title: string | null;
+  readonly company: string | null;
+  readonly avatar_url: string | null;
+  readonly stage: string;
+  readonly contact: string;
+  readonly match: number | null;
+}
+
+export interface ProductMessageView {
+  readonly id: string;
+  readonly person_id: string;
+  readonly name: string;
+  readonly company: string | null;
+  readonly network: string;
+  readonly status: string;
+  readonly subject: string | null;
+  readonly body: string | null;
+  readonly created_at: string;
+}
+
+export interface ProductOverviewView {
+  readonly product: ProductSummaryView;
+  readonly profile: {
+    readonly configured: boolean;
+    readonly url?: string;
+    readonly offering?: {
+      readonly name: string;
+      readonly category: string;
+      readonly description?: string;
+      readonly valuePropositions: readonly string[];
+      readonly likelyPains: readonly string[];
+    };
+    readonly icp?: {
+      readonly titles: readonly string[];
+      readonly seniorities: readonly string[];
+      readonly industries: readonly string[];
+      readonly keywords: readonly string[];
+    };
+    readonly voice?: { readonly style: string; readonly maxWords?: number };
+  };
+  readonly campaign: CampaignSummaryView | null;
+  readonly leads: readonly ProductLeadView[];
+  readonly messages: readonly ProductMessageView[];
+}
+
+export async function fetchProductOverview(offeringId: string): Promise<ProductOverviewView> {
+  return request<ProductOverviewView>(`/products/${encodeURIComponent(offeringId)}/overview`);
 }

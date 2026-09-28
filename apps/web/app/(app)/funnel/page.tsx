@@ -1,5 +1,5 @@
-import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { CampaignPicker } from '../../../components/campaign-picker';
 import { FunnelChart, LeadTimelineChart } from '../../../components/funnel-chart';
 import { PageGuide } from '../../../components/page-guide';
 import {
@@ -15,7 +15,7 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = { title: 'Funnel · OutreachGraph' };
+export const metadata = { title: 'Results · OutreachGraph' };
 
 /**
  * The sales view (PRD §25).
@@ -56,7 +56,7 @@ export default async function FunnelPage({
   if (offline || !analytics) {
     return (
       <div className="pt-4">
-        <h1 className="text-xl font-semibold">Funnel</h1>
+        <h1 className="text-xl font-semibold">Results</h1>
         <p className="border-border text-ink-muted mt-4 rounded-2xl border border-dashed p-8 text-center text-sm">
           Waiting for the API.
         </p>
@@ -69,7 +69,7 @@ export default async function FunnelPage({
   return (
     <div className="pt-4">
       <header className="mb-4">
-        <h1 className="text-xl font-semibold">Funnel</h1>
+        <h1 className="text-xl font-semibold">Results</h1>
         <p className="text-ink-muted text-sm">
           {selected ? selected.name : 'Every campaign in this workspace'}
         </p>
@@ -78,18 +78,15 @@ export default async function FunnelPage({
       <PageGuide page="funnel" />
 
       {campaigns.length > 1 ? (
-        <nav className="mb-4 flex flex-wrap gap-2">
-          <FilterChip href="/funnel" active={!campaign} label="All" />
-          {campaigns.slice(0, 8).map((row) => (
-            <FilterChip
-              key={row.id}
-              href={`/funnel?campaign=${encodeURIComponent(row.id)}`}
-              active={campaign === row.id}
-              label={row.name}
-              autopilot={row.approval_mode === 'trusted_automation'}
-            />
-          ))}
-        </nav>
+        <CampaignPicker
+          basePath="/funnel"
+          selected={campaign}
+          campaigns={campaigns.map((row) => ({
+            id: row.id,
+            name: row.name,
+            autopilot: row.approval_mode === 'trusted_automation',
+          }))}
+        />
       ) : null}
 
       <section className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -131,30 +128,6 @@ function Stat({ label, value }: { label: string; value: number | string }) {
       <p className="text-ink-muted text-xs">{label}</p>
       <p className="mt-1 text-xl font-semibold tabular-nums">{value}</p>
     </div>
-  );
-}
-
-function FilterChip({
-  href,
-  active,
-  label,
-  autopilot,
-}: {
-  href: string;
-  active: boolean;
-  label: string;
-  autopilot?: boolean;
-}) {
-  return (
-    <Link
-      href={href}
-      className={`rounded-full border px-3 py-1.5 text-xs ${
-        active ? 'border-accent bg-accent/10 text-accent' : 'border-border text-ink-muted'
-      }`}
-    >
-      {autopilot ? '● ' : ''}
-      {label}
-    </Link>
   );
 }
 

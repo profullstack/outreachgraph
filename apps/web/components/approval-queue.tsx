@@ -31,7 +31,7 @@ const TABS: readonly { id: ApprovalFilter; label: string; blurb: string }[] = [
   },
   {
     id: 'research',
-    label: 'Research',
+    label: 'Internal checks',
     blurb: 'Internal work the prospect never sees. These never have a message.',
   },
   { id: 'all', label: 'All', blurb: 'Everything pending, in priority order.' },
@@ -97,6 +97,8 @@ export function ApprovalQueue({
    * the panel off the client bundle.
    */
   guide,
+  /** Approved cards waiting for someone to post them by hand. */
+  manualPosts = 0,
 }: {
   cards: Card[];
   counts: {
@@ -108,6 +110,7 @@ export function ApprovalQueue({
   initialFilter: ApprovalFilter;
   initialChannel: ChannelFilter;
   guide?: React.ReactNode;
+  manualPosts?: number;
 }) {
   const [filter, setFilter] = useState<ApprovalFilter>(initialFilter);
   const [channel, setChannel] = useState<ChannelFilter>(initialChannel);
@@ -157,7 +160,7 @@ export function ApprovalQueue({
   return (
     <div className="pt-4">
       <header className="mb-3">
-        <h1 className="text-xl font-semibold">Approvals</h1>
+        <h1 className="text-xl font-semibold">Approve</h1>
         <p className="text-ink-muted text-sm">
           {active?.blurb}
           {activeChannel?.blurb ? ` ${activeChannel.blurb}` : ''}
@@ -168,29 +171,52 @@ export function ApprovalQueue({
 
       <HeldSummary counts={counts} filter={filter} />
 
-      <nav className="mb-2 flex flex-wrap gap-2" aria-label="Filter the queue by stage">
-        {TABS.map((tab) => (
-          <FilterChip
-            key={tab.id}
-            label={tab.label}
-            count={counts.buckets[tab.id] ?? 0}
-            selected={tab.id === filter}
-            onSelect={() => select(tab.id)}
-          />
-        ))}
+      {/* Two things a person acts on: messages ready to send, and posts only
+          they can make. Everything else in the queue is the machine's own work
+          and stays behind "More filters". */}
+      <nav className="mb-2 flex flex-wrap items-center gap-2" aria-label="What to act on">
+        <FilterChip
+          label="Ready"
+          count={counts.buckets.ready ?? 0}
+          selected={filter === 'ready' && channel === 'all'}
+          onSelect={() => {
+            select('ready');
+            selectChannel('all');
+          }}
+        />
+        <a
+          href="/approvals?tab=handoffs"
+          className="border-border text-ink-muted rounded-full border px-3 py-1.5 text-xs"
+        >
+          Manual posts <span className="tabular-nums">{manualPosts.toLocaleString()}</span>
+        </a>
       </nav>
 
-      <nav className="mb-4 flex flex-wrap gap-2" aria-label="Filter the queue by channel">
-        {CHANNEL_TABS.map((tab) => (
-          <FilterChip
-            key={tab.id}
-            label={tab.label}
-            count={counts.channels[tab.id] ?? 0}
-            selected={tab.id === channel}
-            onSelect={() => selectChannel(tab.id)}
-          />
-        ))}
-      </nav>
+      <details className="mb-4" open={filter !== 'ready' || channel !== 'all'}>
+        <summary className="text-ink-muted cursor-pointer text-xs">More filters</summary>
+        <nav className="mt-2 mb-2 flex flex-wrap gap-2" aria-label="Filter the queue by stage">
+          {TABS.map((tab) => (
+            <FilterChip
+              key={tab.id}
+              label={tab.label}
+              count={counts.buckets[tab.id] ?? 0}
+              selected={tab.id === filter}
+              onSelect={() => select(tab.id)}
+            />
+          ))}
+        </nav>
+        <nav className="flex flex-wrap gap-2" aria-label="Filter the queue by channel">
+          {CHANNEL_TABS.map((tab) => (
+            <FilterChip
+              key={tab.id}
+              label={tab.label}
+              count={counts.channels[tab.id] ?? 0}
+              selected={tab.id === channel}
+              onSelect={() => selectChannel(tab.id)}
+            />
+          ))}
+        </nav>
+      </details>
 
       {/* Scoped to the tabs above it, so "approve all" means the list you are
           looking at rather than the whole queue — which is the only reading

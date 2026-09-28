@@ -61,6 +61,8 @@ export interface InboxDeps {
   readonly requireVerifiedEmail: (db: Client, actor: RequestActor) => Promise<void>;
 }
 
+const UNREAD_CAP = 100;
+
 export const INBOX_FILTERS = ['need_reply', 'replied', 'sent', 'all'] as const;
 export type InboxFilter = (typeof INBOX_FILTERS)[number];
 
@@ -78,6 +80,8 @@ interface ConversationRow {
   current_title: string | null;
   avatar_url: string | null;
   company_name: string | null;
+  product_id: string | null;
+  product_name: string | null;
   inbound: number;
   outbound: number;
   automated: number;
@@ -120,12 +124,14 @@ export function inboxRoutes(deps: InboxDeps): Hono<AppEnv> {
 
     const limit = clampPage(c.req.query('limit'));
     const before = c.req.query('before');
+    const product = c.req.query('product');
 
     const rows = await listConversations(db, actor.workspaceId, {
       filter,
       ...(label ? { label: label as ReplyLabel } : {}),
       limit,
       ...(before ? { before } : {}),
+      ...(product ? { product } : {}),
     });
 
     const conversations = rows.map((row) => ({
@@ -134,6 +140,8 @@ export function inboxRoutes(deps: InboxDeps): Hono<AppEnv> {
       title: row.current_title,
       company: row.company_name,
       avatar_url: row.avatar_url,
+      product_id: row.product_id,
+      product_name: row.product_name,
       networks: (row.networks ?? '').split(',').filter(Boolean),
       status: conversationStatus(row),
       suppressed: Number(row.suppressed) > 0,
@@ -163,6 +171,22 @@ export function inboxRoutes(deps: InboxDeps): Hono<AppEnv> {
       conversations,
       ...(conversations.length === limit && last ? { next_before: last.last_message_at } : {}),
     });
+  });
+
+  /**
+   * How many people are waiting on a reply, for the tab badge.
+   *
+   * Registered before `/:personId`, which would otherwise read "unread" as a
+   * person id. Capped: the badge says "99+" past that, and counting further
+   * would cost a scan nobody reads.
+   */
+  r.get('/unread', async (c) => {
+    const actor = c.get('actor');
+    const rows = await listConversations(c.get('db'), actor.workspaceId, {
+      filter: 'need_reply',
+      limit: UNREAD_CAP,
+    });
+    return c.json({ needReply: rows.length, capped: rows.length >= UNREAD_CAP });
   });
 
   r.get('/:personId', async (c) => {
@@ -321,6 +345,8 @@ async function listConversations(
     readonly label?: ReplyLabel;
     readonly limit: number;
     readonly before?: string;
+    /** Only conversations whose latest campaign sells this product. */
+    readonly product?: string;
   },
 ): Promise<ConversationRow[]> {
   const conditions: string[] = [`p.status != 'deleted'`];
@@ -340,6 +366,10 @@ async function listConversations(
   if (options.before) {
     conditions.push('t.last_at < ?');
     args.push(options.before);
+  }
+  if (options.product) {
+    conditions.push('o.id = ?');
+    args.push(options.product);
   }
 
   return queryAll<ConversationRow>(
@@ -368,12 +398,17 @@ async function listConversations(
               (SELECT x.reply_confidence FROM interactions x
                 WHERE x.workspace_id = ? AND x.person_id = agg.person_id
                   AND x.direction IN ('inbound', 'automated') AND x.state != 'clicked'
-                ORDER BY x.occurred_at DESC LIMIT 1) AS last_label_confidence
+                ORDER BY x.occurred_at DESC LIMIT 1) AS last_label_confidence,
+              (SELECT x.campaign_id FROM interactions x
+                WHERE x.workspace_id = ? AND x.person_id = agg.person_id
+                  AND x.campaign_id IS NOT NULL
+                ORDER BY x.occurred_at DESC LIMIT 1) AS campaign_id
          FROM agg
      )
      SELECT t.person_id, t.inbound, t.outbound, t.automated, t.last_at, t.networks,
             t.last_human_direction, t.last_label, t.last_label_confidence,
             p.display_name, p.current_title, p.avatar_url, co.name AS company_name,
+            o.id AS product_id, o.name AS product_name,
             (SELECT x.body FROM interactions x
               WHERE x.workspace_id = ? AND x.person_id = t.person_id AND x.state != 'clicked'
               ORDER BY x.occurred_at DESC LIMIT 1) AS last_body,
@@ -390,10 +425,13 @@ async function listConversations(
        FROM t
        JOIN people p ON p.id = t.person_id
        LEFT JOIN companies co ON co.id = p.current_company_id
+       LEFT JOIN campaigns c ON c.id = t.campaign_id
+       LEFT JOIN offerings o ON o.id = c.offering_id
       WHERE ${conditions.join(' AND ')}
       ORDER BY t.last_at DESC
       LIMIT ?`,
     [
+      workspaceId,
       workspaceId,
       workspaceId,
       workspaceId,

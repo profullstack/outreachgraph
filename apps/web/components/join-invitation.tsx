@@ -34,7 +34,7 @@ export function JoinInvitation({ token, organization }: { token: string; organiz
 
       // The API re-pins the session onto the workspace just joined, so a plain
       // refresh is what makes the rest of the app show the new account.
-      router.replace('/today');
+      router.replace('/inbox');
       router.refresh();
     } catch {
       setError('could not reach the server');

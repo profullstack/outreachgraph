@@ -18,7 +18,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
        * anything off a narrow screen.
        */}
       <div className="mx-auto w-full max-w-2xl px-4 pt-[env(safe-area-inset-top)]">
-        <Link href="/today" aria-label="OutreachGraph home" className="inline-flex py-4">
+        <Link href="/inbox" aria-label="OutreachGraph home" className="inline-flex py-4">
           <BrandLockup size="lg" />
         </Link>
       </div>

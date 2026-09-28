@@ -16,7 +16,7 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = { title: 'Approvals · OutreachGraph' };
+export const metadata = { title: 'Approve · OutreachGraph' };
 
 /**
  * The whole pending queue, in one request.
@@ -75,7 +75,7 @@ export default async function ApprovalsPage({
     return (
       <div className="pt-4">
         <header className="mb-3">
-          <h1 className="text-xl font-semibold">Hand-offs</h1>
+          <h1 className="text-xl font-semibold">Manual posts</h1>
           <p className="text-ink-muted text-sm">
             Approved, but the product may not do these for you. Copy, open, paste, Mark done.
           </p>
@@ -94,6 +94,7 @@ export default async function ApprovalsPage({
       counts={queue.counts}
       initialFilter={filter}
       initialChannel={channel}
+      manualPosts={handoffs.length}
       // Handed in as a slot so it lands under the heading the queue owns.
       // `approve` is suppressed: the queue it would link to is this page.
       guide={
@@ -120,7 +121,7 @@ function HandoffBanner({ count }: { count: number }) {
     >
       <span>
         <span className="font-medium">
-          {count.toLocaleString()} hand-off{count === 1 ? '' : 's'} need you.
+          {count.toLocaleString()} manual post{count === 1 ? '' : 's'} need you.
         </span>{' '}
         <span className="text-ink-muted">About thirty seconds each.</span>
       </span>

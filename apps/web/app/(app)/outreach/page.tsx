@@ -3,7 +3,6 @@ import { redirect } from 'next/navigation';
 import { CampaignIntake } from '../../../components/campaign-intake';
 import { CampaignList } from '../../../components/campaign-list';
 import { BulkUrlIntake } from '../../../components/bulk-url-intake';
-import { BulkProductIntake } from '../../../components/bulk-product-intake';
 import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
@@ -85,19 +84,6 @@ export default async function OutreachPage() {
             <BulkUrlIntake />
           </details>
 
-          {/* The other kind of list: not companies to reach, but the things
-              this workspace sells. One campaign each, set up in one go. */}
-          <details className="border-border bg-surface-raised mt-4 rounded-2xl border p-4">
-            <summary className="cursor-pointer text-sm font-medium">
-              Selling several products? Start a campaign for each of your sites
-            </summary>
-            <p className="text-ink-muted mt-1 mb-3 text-[13px] leading-relaxed">
-              Paste your own sites, not your prospects’. Each one gets its own product, voice and
-              campaign.
-            </p>
-            <BulkProductIntake />
-          </details>
-
           {/*
             Every campaign, not just the one being started.
 
@@ -114,7 +100,7 @@ export default async function OutreachPage() {
           </section>
 
           <p className="text-ink-muted mt-4 text-center text-sm">
-            Watch what comes back on the <Link href="/funnel">Funnel</Link>.
+            Watch what comes back on the <Link href="/funnel">Results</Link>.
           </p>
         </>
       )}
