@@ -31,6 +31,7 @@ import { issueOpenPixel, trackLinksInBody } from './engagement';
 import { issueUnsubscribeToken, unsubscribeUrl } from './unsubscribe';
 import { assignSender, noteSendFailure } from './sender-pool';
 import { emitWebhookEvent } from './webhooks';
+import { ownDomains, refuseRecipient } from './recipient-guard';
 
 export interface EmailRecipient {
   readonly address: string;
@@ -555,6 +556,12 @@ export async function deliverEmailAction(
     : pickEmailRecipient(row);
   if (!recipient) {
     return { sent: false, reason: 'no address published for this person or their company' };
+  }
+
+  // Cold messages only: an answer goes to whoever wrote, whatever the address.
+  if (!answered) {
+    const refused = refuseRecipient(recipient.address, await ownDomains(db, input.workspaceId));
+    if (refused) return { sent: false, reason: refused };
   }
 
   const settings = await loadOutreachSettings(db, input.workspaceId);

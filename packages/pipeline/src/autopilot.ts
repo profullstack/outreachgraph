@@ -48,6 +48,7 @@ import {
   AUTOPILOT_ACTOR,
 } from './outreach-email';
 import { budgetStatus } from './metering';
+import { ownDomains, refuseRecipient } from './recipient-guard';
 
 export interface AutopilotDeps {
   readonly db: Client;
@@ -273,6 +274,8 @@ export function describeHold(reason: string): string {
   if (/the cooldown is/i.test(reason)) return 'the address was written to within the cooldown';
   if (/weekly limit for this prospect/i.test(reason)) return 'already written to this week';
   if (/no address published/i.test(reason)) return 'no address to write to';
+  if (/own products/i.test(reason)) return "the address is one of this workspace's own";
+  if (/desk, not a buyer/i.test(reason)) return 'the address is a support or abuse desk';
   if (/no drafted message/i.test(reason)) return 'no message written yet';
   if (/quality checks/i.test(reason)) return 'the draft failed its quality checks';
   if (/giving up after/i.test(reason)) return 'sending failed repeatedly';
@@ -405,6 +408,8 @@ export async function runAutopilot(
   // comparisons, not a hundred queries — and after a send the entry is
   // updated in place so the next colleague sees the message that just left.
   const addressUsage = new Map<string, AddressUsage>();
+  // Read once per pass: the workspace's own domains are never prospects.
+  const own = await ownDomains(db, workspaceId);
 
   // Read once and refreshed after each send rather than once per candidate: a
   // workspace can cross its monthly allowance partway through a sweep, and only
@@ -465,6 +470,13 @@ export async function runAutopilot(
     const recipient = pickEmailRecipient(row);
     if (!recipient) {
       await note('no address published for this person or their company');
+      continue;
+    }
+
+    // Desks that only file tickets, and the workspace's own products.
+    const refused = refuseRecipient(recipient.address, own);
+    if (refused) {
+      await note(refused);
       continue;
     }
 
