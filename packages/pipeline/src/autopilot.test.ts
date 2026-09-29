@@ -485,7 +485,7 @@ describe('one mailbox, several colleagues', () => {
     const { db } = seeded;
 
     // Neither has a personal address, so both resolve to the company's.
-    await makeSendable(db, { companyEmail: 'support@acme.com' });
+    await makeSendable(db, { companyEmail: 'hello@acme.com' });
     await addColleague(db, 'Colleague');
 
     const { sent, mailer } = recordingMailer();
@@ -493,7 +493,7 @@ describe('one mailbox, several colleagues', () => {
 
     // Two prospects, two drafts, two clean per-person limits — and one message.
     expect(sent).toHaveLength(1);
-    expect(sent[0]?.to).toBe('support@acme.com');
+    expect(sent[0]?.to).toBe('hello@acme.com');
     expect(result.sent).toHaveLength(1);
 
     // The second is held back, and the reason names the *address* rather than
@@ -534,13 +534,13 @@ describe('one mailbox, several colleagues', () => {
     seeded = await seedDatabase('autopilot-manual-counts');
     const { db } = seeded;
 
-    await makeSendable(db, { companyEmail: 'support@acme.com' });
+    await makeSendable(db, { companyEmail: 'hello@acme.com' });
 
     await db.execute({
       sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, network,
             direction, state, body, contact_address, shared_inbox, occurred_at, recorded_at)
             VALUES ('int_manual', ?, ?, ?, 'email', 'outbound', 'contacted', 'sent by hand',
-                    'support@acme.com', 1, ?, ?)`,
+                    'hello@acme.com', 1, ?, ?)`,
       args: [SEED.workspaceId, SEED.personId, SEED.campaignId, now(), now()],
     });
 
@@ -613,14 +613,14 @@ describe('a queue held at the top', () => {
     const { db } = seeded;
 
     // Jane can be written to, at the lowest priority in the queue.
-    await makeSendable(db, { personEmail: 'jane@acme.com', companyEmail: 'support@acme.com' });
+    await makeSendable(db, { personEmail: 'jane@acme.com', companyEmail: 'hello@acme.com' });
     await db.execute({
       sql: 'UPDATE recommendations SET priority = 1 WHERE id = ?',
       args: [SEED.recommendationId],
     });
 
     // Three colleagues ahead of her, all resolving to an inbox on cooldown.
-    await inboxAlreadyWrittenTo(db, 'support@acme.com');
+    await inboxAlreadyWrittenTo(db, 'hello@acme.com');
     await addHeldColleague(db, 'Held1', 50);
     await addHeldColleague(db, 'Held2', 50);
     await addHeldColleague(db, 'Held3', 50);
@@ -649,8 +649,8 @@ describe('a queue held at the top', () => {
     seeded = await seedDatabase('autopilot-hold-once');
     const { db } = seeded;
 
-    await makeSendable(db, { companyEmail: 'support@acme.com' });
-    await inboxAlreadyWrittenTo(db, 'support@acme.com');
+    await makeSendable(db, { companyEmail: 'hello@acme.com' });
+    await inboxAlreadyWrittenTo(db, 'hello@acme.com');
 
     const ledger = new HoldLedger();
     const { mailer } = recordingMailer();

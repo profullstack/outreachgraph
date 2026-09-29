@@ -472,3 +472,4 @@ export {
   type AudienceSweepResult,
 } from './audience';
 export { audienceReaderFor, type AudienceReaderDeps } from './audience-readers';
+export { isNonBuyerDesk, ownDomains, refuseRecipient } from './recipient-guard';

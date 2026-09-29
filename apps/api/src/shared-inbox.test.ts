@@ -31,7 +31,7 @@ const ACTOR: RequestActor = {
   role: 'owner',
 };
 
-const SHARED_INBOX = 'support@acme.com';
+const SHARED_INBOX = 'hello@acme.com';
 
 let active: SeededDatabase | undefined;
 
