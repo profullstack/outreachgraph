@@ -12,7 +12,7 @@
     },
     "apps/api": {
       "name": "@outreachgraph/api",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "dependencies": {
         "@logicsrc/openaccess": "^0.3.0",
         "@outreachgraph/ai": "workspace:*",
@@ -27,14 +27,14 @@
         "@outreachgraph/scoring": "workspace:*",
         "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
-        "@profullstack/openprofile": "^0.1.0",
+        "@profullstack/openprofile": "^0.1.2",
         "hono": "^4.6.14",
         "zod": "^3.24.1",
       },
     },
     "apps/cli": {
       "name": "@outreachgraph/cli",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "bin": {
         "og": "./src/index.ts",
       },
@@ -44,7 +44,7 @@
     },
     "apps/mcp": {
       "name": "@outreachgraph/mcp",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "bin": {
         "outreachgraph-mcp": "./src/index.ts",
       },
@@ -55,7 +55,7 @@
     },
     "apps/server": {
       "name": "@outreachgraph/server",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "dependencies": {
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/contracts": "workspace:*",
@@ -76,7 +76,7 @@
     },
     "apps/web": {
       "name": "@outreachgraph/web",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "dependencies": {
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
@@ -193,7 +193,7 @@
       "dependencies": {
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/identity": "workspace:*",
-        "@profullstack/openprofile": "^0.1.0",
+        "@profullstack/openprofile": "^0.1.2",
       },
     },
     "packages/recommend": {
@@ -398,7 +398,7 @@
 
     "@profullstack/libsql-pg": ["@profullstack/libsql-pg@0.1.2", "", { "dependencies": { "@profullstack/libsql-pg": "^0.1.1", "pg": "^8.13.0" }, "optionalDependencies": { "@libsql/client": "^0.15.0" }, "bin": { "libsql-pg": "bin/libsql-pg.js" } }, "sha512-6YrQujssWhkyWInB0G4CWOhH6Pj6kydeK4RKrXOosxQ12flpO4VjUEGTabtSh9zZ7FzCRch0hwFNKApJl/7b4w=="],
 
-    "@profullstack/openprofile": ["@profullstack/openprofile@0.1.0", "", {}, "sha512-3Gj5fQJW8wYAJ8iiYNIC0r/bnvbf+9piRhjJ8cktfgE2UFlfcv6A1nfABTK3wcoEGTbAs1x8SLVoIc0RjBQvJw=="],
+    "@profullstack/openprofile": ["@profullstack/openprofile@0.1.2", "", {}, "sha512-pUPCvfkCkVZcxFuE3Szt5JzMmkjy7Ojows+M1Ln+dTtLEFKVR1y8LdjxbeeNpqvhGzlHQ2CROtlXfb5VgB6+Rw=="],
 
     "@profullstack/x402-gateway": ["@profullstack/x402-gateway@0.7.0", "", { "dependencies": { "@profullstack/keys": "^0.1.0" } }, "sha512-xsZRWHdOD9Y9EuRS4PsRmykVS2geOu/luY0jBlliOF3SEgxiLhgmx7ks+2jOUtGlq+cIfSonnk5eEObRGCOJ9w=="],
 
@@ -550,7 +550,7 @@
 
     "hasown": ["hasown@2.0.4", "", { "dependencies": { "function-bind": "^1.1.2" } }, "sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A=="],
 
-    "hono": ["hono@4.13.1", "", {}, "sha512-kdJoFVv2xmayw6cY09H7AbMJMt8Jn5jdlEdXsP7AGBdF2DIptVlKlOLKXP41yPip4/a3yQPv9gVcJYI8YY04dw=="],
+    "hono": ["hono@4.13.7", "", {}, "sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ=="],
 
     "http-errors": ["http-errors@2.0.1", "", { "dependencies": { "depd": "~2.0.0", "inherits": "~2.0.4", "setprototypeof": "~1.2.0", "statuses": "~2.0.2", "toidentifier": "~1.0.1" } }, "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ=="],
 
@@ -793,8 +793,6 @@
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
-
-    "@logicsrc/openaccess/hono": ["hono@4.13.7", "", {}, "sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ=="],
 
     "@tailwindcss/oxide-wasm32-wasi/@emnapi/core": ["@emnapi/core@1.11.3", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.3", "tslib": "^2.4.0" }, "bundled": true }, "sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg=="],
 
