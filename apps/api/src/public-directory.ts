@@ -328,9 +328,16 @@ export class FixedWindowLimiter {
 export const DIRECTORY_RATE_LIMIT = 60;
 export const DIRECTORY_RATE_WINDOW_MS = 60_000;
 
-/** The caller as the edge saw it: first forwarded hop, else the one Bun reports. */
+/**
+ * The caller as the edge saw it.
+ *
+ * `X-Real-IP` first: nginx sets it to `$remote_addr`, which the client cannot
+ * forge, while the first `X-Forwarded-For` hop is whatever the client sent —
+ * keying a limit on it lets a caller pick a fresh key per request.
+ */
 export function clientKey(request: Request, fallback = 'unknown'): string {
+  const real = request.headers.get('x-real-ip')?.trim();
+  if (real) return real;
   const forwarded = request.headers.get('x-forwarded-for');
-  const first = forwarded?.split(',')[0]?.trim();
-  return first || request.headers.get('x-real-ip')?.trim() || fallback;
+  return forwarded?.split(',')[0]?.trim() || fallback;
 }

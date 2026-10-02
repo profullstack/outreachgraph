@@ -472,4 +472,22 @@ export {
   type AudienceSweepResult,
 } from './audience';
 export { audienceReaderFor, type AudienceReaderDeps } from './audience-readers';
+export {
+  AUTO_PROMOTE_SCORE,
+  deleteJobPost,
+  enqueueResolve,
+  getJobPost,
+  listJobPosts,
+  promoteJobPostContact,
+  resolveJobPost,
+  saveJobPosts,
+  searchJobPosts,
+  updateJobPost,
+  type JobPost,
+  type JobPostContact,
+  type PromoteResult,
+  type ResolveJobPostDeps,
+  type ResolveJobPostResult,
+  type SearchJobPostsResult,
+} from './job-posts';
 export { isNonBuyerDesk, ownDomains, refuseRecipient } from './recipient-guard';

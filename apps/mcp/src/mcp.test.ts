@@ -150,6 +150,10 @@ describe('tools', () => {
           text: 'Thanks, Thursday works.',
           account: 'acme.bsky.social',
           domains: ['example.com'],
+          keyword: 'senior software engineer (remote)',
+          urls: ['https://apply.workable.com/raydar/j/C39C58F585/'],
+          jobPostId: 'jbp_1',
+          contactId: 'jpc_1',
         })
         .catch(() => undefined);
 

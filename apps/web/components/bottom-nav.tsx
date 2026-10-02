@@ -28,6 +28,7 @@ const TABS = [
 const OWNED_BY: Record<string, string> = {
   '/setup': '/products',
   '/outreach': '/products',
+  '/jobs': '/products',
   '/today': '/settings',
   '/more': '/settings',
   '/team': '/settings',

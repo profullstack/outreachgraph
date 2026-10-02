@@ -64,7 +64,11 @@ export default async function ProductsPage() {
       <header className="mb-4">
         <h1 className="text-xl font-semibold">Products</h1>
         <p className="text-ink-muted text-sm">
-          Each one has its own buyers, voice and campaign. Open one to see how it is doing.
+          Each one has its own buyers, voice and campaign. Open one to see how it is doing.{' '}
+          <a href="/jobs" className="underline">
+            Job posts
+          </a>{' '}
+          finds the people behind hiring companies.
         </p>
       </header>
 

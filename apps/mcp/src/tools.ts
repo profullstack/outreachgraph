@@ -514,6 +514,149 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'list_job_posts',
+    title: 'List saved job postings and the people found behind them',
+    description:
+      'Job postings the workspace is working from, newest first, each with its company, whether a ' +
+      'recruiting agency placed it, and the people a search found: name, role, LinkedIn profile, ' +
+      'any address the company published, and the search result as evidence.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          description: 'new, contact_found, no_contact, failed, contacted, applied or archived',
+        },
+      },
+    },
+    run: (client, args) =>
+      client.get(
+        str(args, 'status')
+          ? `/job-posts?status=${encodeURIComponent(str(args, 'status') as string)}`
+          : '/job-posts',
+      ),
+  },
+  {
+    name: 'search_job_posts',
+    title: 'Search the job boards by keyword',
+    description:
+      'Search Workable, Greenhouse, Lever and Ashby for postings matching a keyword such as ' +
+      '"senior software engineer (remote)" (the quoted part is the title, parentheses are loose ' +
+      'qualifiers), and add them to the list. Each is then read and searched for its people.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        keyword: { type: 'string' },
+        boards: { type: 'array', items: { type: 'string' }, description: 'All four when omitted.' },
+        limit: { type: 'number', description: 'Postings to add, 20 by default, 50 at most.' },
+        campaignId: {
+          type: 'string',
+          description: 'Promote the best contact of each posting into this campaign.',
+        },
+      },
+      required: ['keyword'],
+    },
+    run: (client, args) =>
+      client.post('/job-posts/search', {
+        keyword: require(args, 'keyword'),
+        ...(Array.isArray(args.boards) ? { boards: args.boards } : {}),
+        ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+        ...(str(args, 'campaignId') ? { campaignId: str(args, 'campaignId') } : {}),
+      }),
+  },
+  {
+    name: 'add_job_posts',
+    title: 'Add job postings by URL',
+    description:
+      'Save one or more job posting URLs (Workable, Greenhouse, Lever, Ashby, or any careers page). ' +
+      'A URL already in the list is reported as a duplicate.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        urls: { type: 'array', items: { type: 'string' } },
+        campaignId: { type: 'string' },
+      },
+      required: ['urls'],
+    },
+    run: (client, args) =>
+      client.post('/job-posts', {
+        urls: Array.isArray(args.urls) ? args.urls : [],
+        ...(str(args, 'campaignId') ? { campaignId: str(args, 'campaignId') } : {}),
+      }),
+  },
+  {
+    name: 'find_job_post_contacts',
+    title: 'Find the people behind one job posting, now',
+    description:
+      'Read the posting from its board and search LinkedIn for the founders, engineering leaders ' +
+      'and recruiters of the company. Only results that name the company as itself are kept.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { jobPostId: { type: 'string' } },
+      required: ['jobPostId'],
+    },
+    run: (client, args) =>
+      client.post(`/job-posts/${encodeURIComponent(require(args, 'jobPostId'))}/resolve`, {}),
+  },
+  {
+    name: 'promote_job_post_contact',
+    title: 'Put a job-post contact into a campaign',
+    description:
+      'Add one person found behind a posting to a campaign, with their employer and any address ' +
+      'their company published. Nothing is sent: they become a prospect awaiting approval.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobPostId: { type: 'string' },
+        contactId: { type: 'string' },
+        campaignId: { type: 'string', description: "Defaults to the posting's own campaign." },
+      },
+      required: ['jobPostId', 'contactId'],
+    },
+    run: (client, args) =>
+      client.post(
+        `/job-posts/${encodeURIComponent(require(args, 'jobPostId'))}/contacts/${encodeURIComponent(require(args, 'contactId'))}/promote`,
+        str(args, 'campaignId') ? { campaignId: str(args, 'campaignId') } : {},
+      ),
+  },
+  {
+    name: 'update_job_post',
+    title: 'Edit or remove a job posting',
+    description:
+      "Set a posting's status (contacted, applied, archived, …), its notes, or its campaign; or " +
+      'remove it with remove: true.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobPostId: { type: 'string' },
+        status: { type: 'string' },
+        notes: { type: 'string' },
+        campaignId: { type: 'string' },
+        remove: { type: 'boolean' },
+      },
+      required: ['jobPostId'],
+    },
+    run: async (client, args) => {
+      const path = `/job-posts/${encodeURIComponent(require(args, 'jobPostId'))}`;
+      if (args.remove === true) {
+        if (!client.delete) throw new Error('this client cannot delete');
+        return client.delete(path);
+      }
+      if (!client.patch) throw new Error('this client cannot edit');
+      return client.patch(path, {
+        ...(str(args, 'status') ? { status: str(args, 'status') } : {}),
+        ...(typeof args.notes === 'string' ? { notes: args.notes } : {}),
+        ...(str(args, 'campaignId') ? { campaignId: str(args, 'campaignId') } : {}),
+      });
+    },
+  },
+  {
     name: 'get_openprofile',
     title: "Get a person's OpenProfile.md",
     description:

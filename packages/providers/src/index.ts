@@ -40,7 +40,17 @@ export {
   type ProfilePhotoFinder,
   type ProfilePhotoQuery,
   type ValueSerpOptions,
+  type WebResult,
+  type WebSearcher,
 } from './valueserp';
+
+export {
+  readJobPosting,
+  readCompanySite,
+  type CompanySite,
+  type JobPosting,
+  type JobReaderOptions,
+} from './jobs';
 
 export {
   FixtureProvider,
