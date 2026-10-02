@@ -116,6 +116,11 @@ export const JOB_KINDS = [
    * Queued by the same event bus as webhooks, only for replies and approvals.
    */
   'sync_crm',
+  /**
+   * Read one saved job posting from its board and search for the people
+   * behind it (`resolveJobPost`). Queued when a posting is added.
+   */
+  'resolve_job_post',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];

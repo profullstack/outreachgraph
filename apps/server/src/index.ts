@@ -52,6 +52,7 @@ import {
   workspacesAwaitingEnrichment,
   workspacesWithAudienceWatches,
   processDeletion,
+  resolveJobPost,
   workspacesWithInternalBacklog,
   pruneWorkflowEvents,
   pruneWebhookDeliveries,
@@ -269,9 +270,18 @@ if (!encryptionKey) {
  * Each search lookup is a paid request, so the sweep is
  * capped per workspace per day as well as per tick.
  */
-const photoFinder = process.env.VALUESERP_API_KEY
+const valueSerp = process.env.VALUESERP_API_KEY
   ? new ValueSerpClient({ apiKey: process.env.VALUESERP_API_KEY })
   : undefined;
+const photoFinder = valueSerp;
+
+/**
+ * The job-post intake's search: postings by keyword, people by company. The
+ * same ValueSERP account; without it postings can still be pasted and read.
+ */
+const jobSearcher = valueSerp;
+if (!jobSearcher)
+  console.log('no VALUESERP_API_KEY: job posts are read but nobody is searched for');
 
 const photoLookupsPerDay = Number(process.env.PHOTO_LOOKUPS_PER_DAY ?? 300);
 
@@ -445,6 +455,7 @@ const api = createApp({
   ...(mailer ? { mailer } : {}),
   ...(encryptionKey ? { encryptionKey } : {}),
   ...(appUrl ? { appUrl } : {}),
+  ...(jobSearcher ? { jobSearcher } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
   // A person editing their own OpenProfile.md carries an OpenAccess bearer
   // rather than a session here.
@@ -668,6 +679,20 @@ async function runJob(job: QueuedJob): Promise<void> {
     case 'bootstrap_product':
       await bootstrapProduct(job);
       return;
+    case 'resolve_job_post': {
+      const { jobPostId } = job.payload as { jobPostId?: string };
+      if (!jobPostId) throw new Error('resolve_job_post needs jobPostId');
+      const result = await resolveJobPost(
+        { db, searcher: jobSearcher },
+        job.workspaceId,
+        jobPostId,
+      );
+      console.log(
+        `job post ${jobPostId}: ${result.post.company ?? 'unknown company'}, ` +
+          `${result.contacts} contact(s)${result.promoted ? `, promoted ${result.promoted}` : ''}`,
+      );
+      return;
+    }
     case 'rescore_prospect': {
       const { campaignId, personId } = job.payload as { campaignId?: string; personId?: string };
       if (!campaignId || !personId)

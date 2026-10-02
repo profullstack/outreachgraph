@@ -89,6 +89,9 @@ export const ID_PREFIXES = {
   // Watching the workspace's own audience: the watch, and one recorded act.
   audienceWatch: 'awt',
   audienceEngagement: 'aen',
+  // A job posting the workspace is working from, and a person found behind it.
+  jobPost: 'jbp',
+  jobPostContact: 'jpc',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

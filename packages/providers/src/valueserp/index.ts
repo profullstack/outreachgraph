@@ -40,11 +40,29 @@ export interface ProfilePhotoFinder {
   findProfilePhoto(query: ProfilePhotoQuery): Promise<ProfilePhoto | undefined>;
 }
 
+/** One Google web result, as much of it as a caller reads. */
+export interface WebResult {
+  readonly title?: string | undefined;
+  readonly link?: string | undefined;
+  readonly snippet?: string | undefined;
+}
+
+/** Google web search, for the job-post intake: postings by keyword, people by company. */
+export interface WebSearcher {
+  /**
+   * One query. Unlike the photo lookup this throws on a refusal: a keyword
+   * search the operator is waiting on must say "out of credits" rather than
+   * "found nothing".
+   */
+  search(query: string, options?: { num?: number }): Promise<readonly WebResult[]>;
+}
+
 export interface ValueSerpOptions {
   readonly apiKey: string;
   readonly baseUrl?: string;
   readonly fetchImpl?: typeof fetch;
   readonly timeoutMs?: number;
+  readonly searchTimeoutMs?: number;
 }
 
 const DEFAULT_BASE = 'https://api.valueserp.com';
@@ -60,17 +78,60 @@ interface ImageResult {
   readonly source?: string;
 }
 
-export class ValueSerpClient implements ProfilePhotoFinder {
+export class ValueSerpClient implements ProfilePhotoFinder, WebSearcher {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  /** Web search returns ten times the data an image lookup does, and ValueSERP can take 30 s. */
+  private readonly searchTimeoutMs: number;
 
   constructor(options: ValueSerpOptions) {
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE).replace(/\/$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 10_000;
+    this.searchTimeoutMs = options.searchTimeoutMs ?? 60_000;
+  }
+
+  async search(query: string, options: { num?: number } = {}): Promise<readonly WebResult[]> {
+    const url = new URL('/search', this.baseUrl);
+    url.searchParams.set('api_key', this.apiKey);
+    url.searchParams.set('q', query);
+    url.searchParams.set('num', String(Math.min(Math.max(options.num ?? 20, 1), 100)));
+    url.searchParams.set('gl', 'us');
+    url.searchParams.set('hl', 'en');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.searchTimeoutMs);
+    try {
+      const response = await this.fetchImpl(url, {
+        signal: controller.signal,
+        headers: { accept: 'application/json' },
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        organic_results?: { title?: unknown; link?: unknown; snippet?: unknown }[];
+        request_info?: { success?: boolean; message?: string };
+      };
+      if (!response.ok || body.request_info?.success === false) {
+        throw new Error(
+          `ValueSERP refused the search (${response.status}): ${body.request_info?.message ?? 'no reason given'}`,
+        );
+      }
+      const results = Array.isArray(body.organic_results) ? body.organic_results : [];
+      return results.map((result) => ({
+        ...(typeof result.title === 'string' ? { title: result.title } : {}),
+        ...(typeof result.link === 'string' ? { link: result.link } : {}),
+        ...(typeof result.snippet === 'string' ? { snippet: result.snippet } : {}),
+      }));
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`ValueSERP did not answer within ${this.searchTimeoutMs / 1000} s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**

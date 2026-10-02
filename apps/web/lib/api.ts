@@ -247,6 +247,51 @@ export interface CampaignRow {
   readonly started_at: string | null;
 }
 
+export interface JobPostContactView {
+  readonly id: string;
+  readonly name: string;
+  readonly profileUrl: string;
+  readonly headline?: string;
+  readonly snippet?: string;
+  readonly role: string;
+  readonly score: number;
+  readonly email?: string;
+  readonly personId?: string;
+  readonly onCompanySite?: boolean;
+}
+
+export interface JobPostView {
+  readonly id: string;
+  readonly url: string;
+  readonly source: string;
+  readonly campaignId?: string;
+  readonly title?: string;
+  readonly company?: string;
+  readonly companyDomain?: string;
+  readonly location?: string;
+  readonly remote?: boolean;
+  readonly salary?: string;
+  readonly agency: boolean;
+  readonly publishedEmails: readonly string[];
+  readonly keyword?: string;
+  readonly status: string;
+  readonly notes?: string;
+  readonly lastError?: string;
+  readonly createdAt: string;
+  readonly contacts: readonly JobPostContactView[];
+}
+
+export interface JobPostsView {
+  readonly jobPosts: readonly JobPostView[];
+  readonly statuses: readonly string[];
+  readonly boards: readonly string[];
+  readonly searchEnabled: boolean;
+}
+
+export async function fetchJobPosts(): Promise<JobPostsView> {
+  return request<JobPostsView>('/job-posts');
+}
+
 export async function fetchCampaigns(): Promise<CampaignRow[]> {
   const body = await request<{ campaigns: CampaignRow[] }>('/campaigns');
   return body.campaigns;

@@ -125,6 +125,201 @@ const CRM_TOKEN_HELP: Readonly<Record<(typeof CRMS)[number], string>> = {
  * `add` prints the signing secret, because it is the only time anyone will
  * see it; everything else prints one endpoint per line, id first.
  */
+/** One posting as one line: id, status, company, title, best contact. */
+function jobPostLine(post: Record<string, unknown>): string {
+  const contacts = rows(post, 'contacts');
+  const best = contacts[0];
+  const who = best
+    ? `${text(best, 'name')} (${text(best, 'role')}${text(best, 'email') ? `, ${text(best, 'email')}` : ''})`
+    : text(post, 'lastError') || '-';
+  return [
+    pad(text(post, 'id'), 32),
+    pad(text(post, 'status'), 13),
+    pad(`${text(post, 'company', '?')}${post.agency === true ? ' [agency]' : ''}`, 24),
+    pad(text(post, 'title', text(post, 'url')), 40),
+    who,
+  ].join(' ');
+}
+
+/** A posting and everyone found behind it, with the evidence for each. */
+function jobPostDetail(post: Record<string, unknown>): string {
+  const lines = [
+    `${text(post, 'title', '?')} at ${text(post, 'company', '?')}${post.agency === true ? ' (recruiting agency, for an unnamed client)' : ''}`,
+    text(post, 'url'),
+    [text(post, 'location'), post.remote === true ? 'remote' : '', text(post, 'salary')]
+      .filter(Boolean)
+      .join(' · '),
+    `status: ${text(post, 'status')}${text(post, 'companyDomain') ? `   site: ${text(post, 'companyDomain')}` : ''}`,
+  ];
+  const published = Array.isArray(post.publishedEmails) ? (post.publishedEmails as string[]) : [];
+  if (published.length > 0) lines.push(`published on their site: ${published.join(', ')}`);
+  if (text(post, 'lastError')) lines.push(`note: ${text(post, 'lastError')}`);
+  if (text(post, 'notes')) lines.push(`notes: ${text(post, 'notes')}`);
+
+  const contacts = rows(post, 'contacts');
+  lines.push(
+    '',
+    contacts.length ? 'People:' : 'Nobody found yet. Try: og jobs resolve ' + text(post, 'id'),
+  );
+  for (const contact of contacts) {
+    lines.push(
+      `  ${pad(text(contact, 'id'), 32)} ${pad(text(contact, 'name'), 22)} ${pad(text(contact, 'role'), 20)} ${text(contact, 'score')}` +
+        `${contact.onCompanySite === true ? '  [named on their site]' : ''}${text(contact, 'personId') ? '  [in campaign]' : ''}`,
+      `      ${text(contact, 'profileUrl')}${text(contact, 'email') ? `  ${text(contact, 'email')}` : ''}`,
+      `      "${[text(contact, 'headline'), text(contact, 'snippet')].filter(Boolean).join(' · ').slice(0, 160)}"`,
+    );
+  }
+  return lines.filter((line, i) => line !== '' || i > 0).join('\n');
+}
+
+/**
+ * `og jobs` — job postings, and the people behind each one.
+ *
+ * `search` takes what you would type into a job board ("senior software
+ * engineer (remote)") and adds what it finds; `add` takes URLs. Either way the
+ * worker reads each posting and searches for its people; `resolve` does that
+ * now and prints them.
+ */
+async function runJobs({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', ...rest] = args;
+  const target = rest[0];
+  const campaign = flagString(flags, 'campaign');
+
+  if (verb === 'list' || verb === 'ls') {
+    const status = flagString(flags, 'status');
+    const result = (await client.get(
+      `/job-posts${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    )) as Record<string, unknown>;
+    const posts = rows(result, 'jobPosts');
+    if (posts.length === 0) {
+      return 'No job posts. Add one: og jobs add <url>, or og jobs search "senior software engineer (remote)"';
+    }
+    return posts.map(jobPostLine).join('\n');
+  }
+
+  if (verb === 'add') {
+    if (rest.length === 0) throw new Error('og jobs add <url> [url…] [--campaign <id>]');
+    const result = (await client.post('/job-posts', {
+      urls: rest,
+      ...(campaign ? { campaignId: campaign } : {}),
+    })) as Record<string, unknown>;
+    const saved = rows(result, 'saved');
+    const duplicates = Array.isArray(result.duplicates) ? result.duplicates.length : 0;
+    const rejected = rows(result, 'rejected');
+    return [
+      `Added ${saved.length}${duplicates ? `, ${duplicates} already listed` : ''}.`,
+      ...saved.map((post) => `  ${text(post, 'id')}  ${text(post, 'url')}`),
+      ...rejected.map((r) => `  rejected ${text(r, 'url')}: ${text(r, 'reason')}`),
+      saved.length
+        ? 'Each is being read and searched; see og jobs list, or og jobs resolve <id> now.'
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  if (verb === 'search') {
+    const keyword = rest.join(' ').trim();
+    if (!keyword) {
+      throw new Error(
+        'og jobs search "<keyword>" [--boards workable,greenhouse,lever,ashby] [--limit 20]',
+      );
+    }
+    const boards = flagString(flags, 'boards')
+      ?.split(',')
+      .map((b) => b.trim())
+      .filter(Boolean);
+    const limit = flagString(flags, 'limit');
+    const result = (await client.post('/job-posts/search', {
+      keyword,
+      ...(boards ? { boards } : {}),
+      ...(limit ? { limit: Number(limit) } : {}),
+      ...(campaign ? { campaignId: campaign } : {}),
+    })) as Record<string, unknown>;
+    const saved = rows(result, 'saved');
+    const duplicates = Array.isArray(result.duplicates) ? result.duplicates.length : 0;
+    return [
+      `Found ${text(result, 'found', '0')} posting(s) for "${keyword}": ${saved.length} new` +
+        `${duplicates ? `, ${duplicates} already listed` : ''}.`,
+      ...saved.map(
+        (post) =>
+          `  ${pad(text(post, 'id'), 32)} ${pad(text(post, 'title', '?'), 40)} ${text(post, 'url')}`,
+      ),
+      saved.length
+        ? 'Reading each and searching for its people now; og jobs list shows progress.'
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  if (verb === 'show') {
+    if (!target) throw new Error('og jobs show <id>');
+    const result = (await client.get(`/job-posts/${encodeURIComponent(target)}`)) as Record<
+      string,
+      unknown
+    >;
+    return jobPostDetail((result.jobPost ?? {}) as Record<string, unknown>);
+  }
+
+  if (verb === 'resolve' || verb === 'find') {
+    if (!target) throw new Error('og jobs resolve <id>');
+    const result = (await client.post(
+      `/job-posts/${encodeURIComponent(target)}/resolve`,
+      {},
+    )) as Record<string, unknown>;
+    return jobPostDetail((result.jobPost ?? {}) as Record<string, unknown>);
+  }
+
+  if (verb === 'promote') {
+    const contactId = rest[1];
+    if (!target || !contactId)
+      throw new Error('og jobs promote <jobPostId> <contactId> [--campaign <id>]');
+    const result = (await client.post(
+      `/job-posts/${encodeURIComponent(target)}/contacts/${encodeURIComponent(contactId)}/promote`,
+      campaign ? { campaignId: campaign } : {},
+    )) as Record<string, unknown>;
+    return (
+      `Added ${text(result, 'personId')} to campaign ${text(result, 'campaignId')}` +
+      (result.email === true
+        ? ', with the address their company published.'
+        : result.findEmailQueued === true
+          ? '; searching for their email.'
+          : '.') +
+      ' Nothing is sent until you approve it.'
+    );
+  }
+
+  if (verb === 'status' || verb === 'note' || verb === 'attach') {
+    if (!target) throw new Error(`og jobs ${verb} <id> <value>`);
+    const value = rest.slice(1).join(' ').trim();
+    if (!value) throw new Error(`og jobs ${verb} <id> <value>`);
+    const body =
+      verb === 'status'
+        ? { status: value }
+        : verb === 'note'
+          ? { notes: value }
+          : { campaignId: value };
+    if (!client.patch) throw new Error('this client cannot edit');
+    const result = (await client.patch(`/job-posts/${encodeURIComponent(target)}`, body)) as Record<
+      string,
+      unknown
+    >;
+    return jobPostLine((result.jobPost ?? {}) as Record<string, unknown>);
+  }
+
+  if (verb === 'rm' || verb === 'remove' || verb === 'delete') {
+    if (!target) throw new Error('og jobs rm <id>');
+    if (!client.delete) throw new Error('this client cannot delete');
+    await client.delete(`/job-posts/${encodeURIComponent(target)}`);
+    return `Removed ${target}.`;
+  }
+
+  throw new Error(
+    'og jobs list | search "<keyword>" | add <url…> | show <id> | resolve <id> | promote <id> <contactId> | status <id> <status> | note <id> <text> | rm <id>',
+  );
+}
+
 /**
  * `og audience` — the workspace's own followers, likers and repliers.
  *
@@ -1101,6 +1296,13 @@ export const COMMANDS: readonly Command[] = [
       'og audience list | watch <network:handle | url> [--campaign <id>] [--kinds follow,like] [--every <minutes>] | unwatch <id> | run <id>',
     summary: 'Turn the people who engage with your own accounts into prospects.',
     run: runAudience,
+  },
+  {
+    name: 'jobs',
+    usage:
+      'og jobs list [--status s] | search "<keyword>" [--boards a,b] [--limit n] | add <url…> [--campaign <id>] | show <id> | resolve <id> | promote <id> <contactId> [--campaign <id>] | status <id> <status> | note <id> <text> | rm <id>',
+    summary: 'Job postings by URL or keyword, and the real people behind each one.',
+    run: runJobs,
   },
   {
     name: 'webhooks',

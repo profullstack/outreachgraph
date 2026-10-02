@@ -139,6 +139,8 @@ import {
 import type {
   FetchLike as ProviderFetchLike,
   HostLookup,
+  JobReaderOptions,
+  WebSearcher,
   XOAuthClient,
 } from '@outreachgraph/providers';
 import {
@@ -242,6 +244,7 @@ import { autogtmRoutes } from './autogtm';
 import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
 import { audienceRoutes } from './audience';
+import { jobPostRoutes } from './job-posts';
 import { llmsText, openApiDocument } from './autogtm-docs';
 import {
   actorFromApiKey,
@@ -316,6 +319,13 @@ export interface AppOptions {
    */
   readonly xFetch?: ProviderFetchLike | undefined;
   readonly blueskyFetch?: ProviderFetchLike | undefined;
+  /**
+   * Google search for the job-post intake (ValueSERP): postings by keyword,
+   * people by company. Absent without a key, which leaves pasting URLs.
+   */
+  readonly jobSearcher?: WebSearcher | undefined;
+  /** Test seam for the job boards and company sites a posting is read from. */
+  readonly jobReader?: JobReaderOptions | undefined;
   /**
    * Suggests the communities a campaign should listen to.
    *
@@ -1375,6 +1385,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         }),
       requireVerifiedEmail: (db, actor) => requireVerifiedEmail(db, actor),
     }),
+  );
+
+  // ------------------------------------------------------------ job posts
+  //
+  // Postings by URL or by keyword, and the people behind each one.
+  api.route(
+    '/job-posts',
+    jobPostRoutes({ searcher: options.jobSearcher, reader: options.jobReader }),
   );
 
   // ----------------------------------------------------------------- team
