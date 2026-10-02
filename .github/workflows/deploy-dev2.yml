@@ -41,6 +41,46 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      # app.env on the box is the runtime's only env and nothing else writes it, so a
+      # secret a new feature needs ships as a repo secret and lands here, reviewable
+      # and repeatable, instead of somebody editing dev2 by hand. Additive: an unset
+      # secret is skipped, an unchanged value writes nothing, and a change keeps a
+      # numbered backup of app.env first. Values travel on stdin, never in argv.
+      - name: Sync secrets into app.env
+        env:
+          DEV2_USER: ${{ secrets.DEV2_USER }}
+          DEV2_HOST: ${{ secrets.DEV2_HOST }}
+          VALUESERP_API_KEY: ${{ secrets.VALUESERP_API_KEY }}
+        run: |
+          lines=""
+          for key in VALUESERP_API_KEY; do
+            value=$(printenv "$key" || true)
+            [ -n "$value" ] && lines="$lines$key=$value"$'\n'
+          done
+          if [ -z "$lines" ]; then echo "no secrets to sync"; exit 0; fi
+          printf '%s' "$lines" | ssh -o BatchMode=yes "$DEV2_USER@$DEV2_HOST" '
+            set -eu
+            env_file=/home/anthony/www/outreachgraph.com/app.env
+            tmp=$(mktemp); cp "$env_file" "$tmp"; changed=""
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              key=${line%%=*}
+              if grep -qxF -- "$line" "$tmp"; then continue; fi
+              grep -v "^$key=" "$tmp" > "$tmp.next" || true
+              printf "%s\n" "$line" >> "$tmp.next"
+              mv "$tmp.next" "$tmp"; changed="$changed $key"
+            done
+            if [ -n "$changed" ]; then
+              n=1; while [ -e "$env_file.bak-$(printf %03d $n)" ]; do n=$((n+1)); done
+              cp -p "$env_file" "$env_file.bak-$(printf %03d $n)"
+              cat "$tmp" > "$env_file"; chmod 600 "$env_file"
+              echo "app.env updated:$changed"
+            else
+              echo "app.env already current"
+            fi
+            rm -f "$tmp"
+          '
+
       - name: Deploy
         env:
           DEV2_USER: ${{ secrets.DEV2_USER }}
