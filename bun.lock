@@ -27,6 +27,7 @@
         "@outreachgraph/scoring": "workspace:*",
         "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
+        "@profullstack/form-guard": "^0.1.1",
         "@profullstack/openprofile": "^0.1.2",
         "hono": "^4.6.14",
         "zod": "^3.24.1",
@@ -393,6 +394,8 @@
     "@outreachgraph/web": ["@outreachgraph/web@workspace:apps/web"],
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
+
+    "@profullstack/form-guard": ["@profullstack/form-guard@0.1.1", "", {}, "sha512-RGLGfQhjq40f+JqEhSmsJnS0I5sFWjYdrYx4VYtkUqz8xvioN2yyR+6uFK0mnDAStKrYytlngg3meUsrChm/OQ=="],
 
     "@profullstack/keys": ["@profullstack/keys@0.1.0", "", {}, "sha512-Vys47LvS5ivhdZu4SYOxh9Le3DEmWhjP0+CtrU45RhXAbY0ZFG/2Dk9V1bIIUGDp8UWMJqctvUD21JrNjfh04w=="],
 

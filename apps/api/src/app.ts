@@ -245,6 +245,7 @@ import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
 import { audienceRoutes } from './audience';
 import { jobPostRoutes } from './job-posts';
+import { clientIp, createThrottles, isQuotedUserAgent, type ThrottleConfig } from './throttle';
 import { llmsText, openApiDocument } from './autogtm-docs';
 import {
   actorFromApiKey,
@@ -326,6 +327,8 @@ export interface AppOptions {
   readonly jobSearcher?: WebSearcher | undefined;
   /** Test seam for the job boards and company sites a posting is read from. */
   readonly jobReader?: JobReaderOptions | undefined;
+  /** Overrides for the abuse throttles (`./throttle`); tests shrink them. */
+  readonly throttles?: ThrottleConfig | undefined;
   /**
    * Suggests the communities a campaign should listen to.
    *
@@ -665,8 +668,21 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // ------------------------------------------------------------------- auth
   // These sit before the auth guard, since they are how you get a session.
   const auth = new Hono<AppEnv>();
+  const throttles = createThrottles(options.throttles);
+
+  /**
+   * The first thing every public, mail-sending auth route does: refuse the
+   * known bot signature, then count the attempt against the caller's address.
+   */
+  async function guardPublic(request: Request, name: 'register' | 'forgotByIp' | 'login') {
+    if (isQuotedUserAgent(request)) {
+      throw new ApiError(403, 'forbidden', 'request refused');
+    }
+    await throttles.take(name, clientIp(request));
+  }
 
   auth.post('/register', async (c) => {
+    await guardPublic(c.req.raw, 'register');
     const body = await parseBody(c.req.raw, registerSchema);
     const result = await registerUser(options.db, body);
 
@@ -696,6 +712,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   auth.post('/verify/resend', async (c) => {
     const actor = await resolveActor(c.req.raw);
     if (!actor) throw ApiError.unauthorized();
+    await throttles.take('verifyResend', actor.userId);
 
     const user = await queryOne<{ email: string; email_verified_at: string | null }>(
       options.db,
@@ -710,6 +727,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   auth.post('/login', async (c) => {
+    await guardPublic(c.req.raw, 'login');
     const body = await parseBody(c.req.raw, loginSchema);
     const session = await login(options.db, body.email, body.password, c.req.header('user-agent'));
 
@@ -743,7 +761,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
    * does not become a way to probe which addresses are registered.
    */
   auth.post('/password/forgot', async (c) => {
+    await guardPublic(c.req.raw, 'forgotByIp');
     const body = await parseBody(c.req.raw, forgotPasswordSchema);
+    // Keyed on the target too: rotating addresses must not buy a stranger
+    // a fourth reset mail this hour.
+    await throttles.take('forgotByEmail', body.email.trim().toLowerCase());
     const minted = await mintPasswordResetToken(options.db, body.email);
 
     if (minted) {
@@ -1392,7 +1414,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // Postings by URL or by keyword, and the people behind each one.
   api.route(
     '/job-posts',
-    jobPostRoutes({ searcher: options.jobSearcher, reader: options.jobReader }),
+    jobPostRoutes({ searcher: options.jobSearcher, reader: options.jobReader, throttles }),
   );
 
   // ----------------------------------------------------------------- team
@@ -5533,6 +5555,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // Single error shape for every failure (PRD §24).
   app.onError((error, c) => {
     if (error instanceof ApiError) {
+      const retryAfter = (error.details as { retryAfterSeconds?: unknown } | undefined)
+        ?.retryAfterSeconds;
+      if (error.status === 429 && typeof retryAfter === 'number') {
+        c.header('retry-after', String(retryAfter));
+      }
       return c.json(
         {
           error: {

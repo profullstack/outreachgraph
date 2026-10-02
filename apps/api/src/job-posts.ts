@@ -33,12 +33,15 @@ import {
 import type { JobReaderOptions, WebSearcher } from '@outreachgraph/providers';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
+import type { Throttles } from './throttle';
 
 export interface JobPostRouteDeps {
   /** ValueSERP in production; absent without `VALUESERP_API_KEY`. */
   readonly searcher?: WebSearcher | undefined;
   /** Test seam for the job boards and company sites. */
   readonly reader?: JobReaderOptions | undefined;
+  /** Per-workspace limits on the routes that spend search credits. */
+  readonly throttles?: Throttles | undefined;
 }
 
 const saveSchema = z.object({
@@ -117,6 +120,7 @@ export function jobPostRoutes(deps: JobPostRouteDeps): Hono<AppEnv> {
     const actor = c.get('actor');
     const db = c.get('db');
     requireApprover(actor, 'adding job posts');
+    await deps.throttles?.take('jobAdd', actor.workspaceId);
 
     const input = await body(c.req.raw, saveSchema);
     const urls = [...(input.urls ?? []), ...(input.url ? [input.url] : [])].filter((u) => u.trim());
@@ -154,6 +158,7 @@ export function jobPostRoutes(deps: JobPostRouteDeps): Hono<AppEnv> {
     if (!deps.searcher) {
       throw ApiError.badRequest('job search needs VALUESERP_API_KEY on this deployment');
     }
+    await deps.throttles?.take('jobSearch', actor.workspaceId);
 
     const input = await body(c.req.raw, searchSchema);
     await requireCampaign(db, actor.workspaceId, input.campaignId);
@@ -235,6 +240,7 @@ export function jobPostRoutes(deps: JobPostRouteDeps): Hono<AppEnv> {
     const id = c.req.param('id');
     if (!(await getJobPost(db, actor.workspaceId, id))) throw ApiError.notFound('job post');
 
+    await deps.throttles?.take('jobResolve', actor.workspaceId);
     if (c.req.query('queue')) {
       return c.json({ queued: await enqueueResolve(db, actor.workspaceId, id) }, 202);
     }
