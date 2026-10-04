@@ -328,7 +328,24 @@ function SiteFooter() {
         </span>
       </div>
 
-      <p className="text-ink-muted mt-5 text-[13px]">© {new Date().getFullYear()} OutreachGraph</p>
+      <div className="text-ink-muted mt-5 flex flex-wrap items-center justify-between gap-4 text-[13px]">
+        <p>© {new Date().getFullYear()} OutreachGraph</p>
+        <nav className="webring flex gap-3" aria-label="Profullstack webring">
+          <a
+            href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2Foutreachgraph.com%2F"
+            rel="prev"
+          >
+            {'<<'}
+          </a>
+          <a href="https://rssamplifier.com/ring/profullstack">Profullstack</a>
+          <a
+            href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2Foutreachgraph.com%2F"
+            rel="next"
+          >
+            {'>>'}
+          </a>
+        </nav>
+      </div>
     </Band>
   );
 }
