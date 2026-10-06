@@ -44,11 +44,16 @@ COPY migrations-pg ./migrations-pg
 
 # `outputFileTracingRoot` is the monorepo root, so the standalone bundle keeps
 # the apps/web/ layout the supervisor expects at apps/web/server.js.
-COPY --from=builder /app/apps/web/.next/standalone ./
-COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=builder /app/apps/web/public ./apps/web/public
+#
+# Owned by `bun` as they are copied, rather than by a `chown -R /app` after:
+# that walked all of node_modules on every build, printed nothing for over
+# four minutes on dev2, and the deploy's idle SSH session was dropped mid-way
+# (every deploy on 2026-10-06 failed that way). Everything else is only read,
+# and root-owned files are readable; `.next` is the one tree Next writes to.
+COPY --chown=bun:bun --from=builder /app/apps/web/.next/standalone ./
+COPY --chown=bun:bun --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --chown=bun:bun --from=builder /app/apps/web/public ./apps/web/public
 
-RUN chown -R bun:bun /app
 USER bun
 
 EXPOSE 8080

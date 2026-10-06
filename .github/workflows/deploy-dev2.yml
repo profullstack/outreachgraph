@@ -58,7 +58,7 @@ jobs:
             [ -n "$value" ] && lines="$lines$key=$value"$'\n'
           done
           if [ -z "$lines" ]; then echo "no secrets to sync"; exit 0; fi
-          printf '%s' "$lines" | ssh -o BatchMode=yes "$DEV2_USER@$DEV2_HOST" '
+          printf '%s' "$lines" | ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEV2_USER@$DEV2_HOST" '
             set -eu
             env_file=/home/anthony/www/outreachgraph.com/app.env
             tmp=$(mktemp); cp "$env_file" "$tmp"; changed=""
@@ -87,7 +87,7 @@ jobs:
           DEV2_HOST: ${{ secrets.DEV2_HOST }}
           SHA: ${{ steps.rev.outputs.sha }}
         run: |
-          ssh -o BatchMode=yes "$DEV2_USER@$DEV2_HOST" \
+          ssh -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$DEV2_USER@$DEV2_HOST" \
             /home/anthony/www/outreachgraph.com/deploy-app.sh "$SHA"
 
       - name: Verify the site answers
