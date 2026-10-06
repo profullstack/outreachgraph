@@ -109,6 +109,9 @@ export interface MappedRow {
   company?: string;
   title?: string;
   location?: string;
+  companyDomain?: string;
+  linkedinUrl?: string;
+  updatedAt?: string;
 }
 
 /** Applies a header mapping to the data rows. */

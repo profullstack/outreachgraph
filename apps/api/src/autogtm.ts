@@ -153,6 +153,7 @@ const importLead = z.object({
   company: z.string().trim().max(200).optional(),
   job_title: z.string().trim().max(200).optional(),
   location: z.string().trim().max(200).optional(),
+  linkedin_url: z.string().trim().max(500).optional(),
 });
 
 const importBody = z.object({
@@ -769,6 +770,7 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
 
     let imported = 0;
     let merged = 0;
+    let updated = 0;
     let rejected = 0;
     const personIds = new Set<string>();
 
@@ -780,11 +782,14 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
         ...(lead.company ? { company: lead.company } : {}),
         ...(lead.job_title ? { title: lead.job_title } : {}),
         ...(lead.location ? { location: lead.location } : {}),
+        ...(lead.company_domain ? { companyDomain: lead.company_domain } : {}),
+        ...(lead.linkedin_url ? { linkedinUrl: lead.linkedin_url } : {}),
       }));
 
       const result = await importContactChunk(db, importId, rows, { startRow: offset });
       imported += result.imported;
       merged += result.merged;
+      updated += result.updated;
       rejected += result.rejected;
       for (const id of result.personIds) personIds.add(id);
     }
@@ -846,6 +851,7 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
         status: 'completed',
         imported,
         merged,
+        updated,
         rejected,
         crawls_queued: crawls,
       },
@@ -862,12 +868,14 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
       total_rows: number;
       imported: number;
       merged: number;
+      updated: number;
       rejected: number;
       created_at: string;
       updated_at: string;
     }>(
       c.get('db'),
-      `SELECT id, campaign_id, status, total_rows, imported, merged, rejected, created_at, updated_at
+      `SELECT id, campaign_id, status, total_rows, imported, merged, updated, rejected, created_at,
+              updated_at
          FROM contact_imports WHERE id = ? AND workspace_id = ?`,
       [c.req.param('task_id'), actor.workspaceId],
     );
@@ -881,6 +889,7 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
       total_rows: row.total_rows,
       imported: row.imported,
       merged: row.merged,
+      updated: Number(row.updated ?? 0),
       rejected: row.rejected,
       created_at: row.created_at,
       updated_at: row.updated_at,

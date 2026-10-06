@@ -9,7 +9,7 @@
  * import at all.
  */
 
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import type { Hono } from 'hono';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
@@ -21,6 +21,9 @@ const ACTOR: RequestActor = {
   organizationId: SEED.organizationId,
   role: 'owner',
 };
+
+// Seeding takes 5-7 s on a loaded box; see crawl.test.ts.
+setDefaultTimeout(30_000);
 
 let active: SeededDatabase | undefined;
 
@@ -282,5 +285,113 @@ describe('contact import', () => {
     // Generous, because CI is shared. The old path could not do 400 rows in
     // anything like this against a local file, let alone a remote database.
     expect(Date.now() - started).toBeLessThan(20_000);
+  });
+
+  test('a re-import patches known people with its newer data: newest wins', async () => {
+    const { app, seeded } = await harness('import-patch-newest');
+    const first = await startImport(app);
+    await post(app, `/contacts/imports/${first}/rows`, {
+      rows: [
+        { email: 'dave.mackenzie@corp.com', name: 'Dave Mackenzie', title: 'Engineer' },
+        { email: 'admin@theirstartup.com', name: 'Ana Ruiz' },
+        { email: 'kim@corp.com', name: 'Kim Lee', title: 'CTO' },
+      ],
+    });
+
+    // The enriched export, a while later.
+    const second = await startImport(app);
+    const response = await post(app, `/contacts/imports/${second}/rows`, {
+      rows: [
+        {
+          email: 'dave.mackenzie@corp.com',
+          name: 'Dave Mackenzie',
+          title: 'VP Engineering',
+          location: 'Oakland, CA',
+          companyDomain: 'https://www.corp.com/about',
+          linkedinUrl: 'linkedin.com/in/DaveMackenzie/',
+        },
+        // Dated before we last touched Ana: only blanks are filled.
+        {
+          email: 'admin@theirstartup.com',
+          name: 'Ana R',
+          title: 'Founder',
+          updatedAt: '2001-01-01',
+        },
+        // Nothing new: an empty cell never erases the stored title.
+        { email: 'kim@corp.com', name: 'Kim Lee' },
+      ],
+    });
+    const body = (await response.json()) as { merged: number; updated: number };
+    expect(body.merged).toBe(3);
+    expect(body.updated).toBe(2);
+
+    const people = await seeded.db.execute({
+      sql: `SELECT e.address, p.display_name, p.current_title, p.location, c.domain
+              FROM person_emails e JOIN people p ON p.id = e.person_id
+              LEFT JOIN companies c ON c.id = p.current_company_id
+             WHERE e.workspace_id = ? ORDER BY e.address`,
+      args: [SEED.workspaceId],
+    });
+    const by = Object.fromEntries(people.rows.map((r) => [String(r.address), r]));
+    expect(by['dave.mackenzie@corp.com']).toMatchObject({
+      current_title: 'VP Engineering',
+      location: 'Oakland, CA',
+      domain: 'corp.com',
+    });
+    expect(by['admin@theirstartup.com']).toMatchObject({
+      display_name: 'Ana Ruiz',
+      current_title: 'Founder',
+    });
+    expect(by['kim@corp.com']).toMatchObject({ current_title: 'CTO' });
+
+    const linkedin = await seeded.db.execute({
+      sql: "SELECT profile_url FROM social_identities WHERE network = 'linkedin'",
+      args: [],
+    });
+    expect(linkedin.rows.map((r) => r.profile_url)).toEqual([
+      'https://www.linkedin.com/in/davemackenzie',
+    ]);
+
+    // Importing the same enriched file again changes nothing more.
+    const third = await startImport(app);
+    const again = (await (
+      await post(app, `/contacts/imports/${third}/rows`, {
+        rows: [
+          {
+            email: 'dave.mackenzie@corp.com',
+            name: 'Dave Mackenzie',
+            title: 'VP Engineering',
+            location: 'Oakland, CA',
+            companyDomain: 'corp.com',
+            linkedinUrl: 'https://www.linkedin.com/in/davemackenzie',
+          },
+        ],
+      })
+    ).json()) as { updated: number };
+    expect(again.updated).toBe(0);
+  });
+
+  test('every known row in a chunk is patched, not the first fifty', async () => {
+    const { app, seeded } = await harness('import-patch-all');
+    const rows = Array.from({ length: 120 }, (_, i) => ({
+      email: `person${i}@acme-${i}.com`,
+      name: `Person Number${i}`,
+    }));
+    const first = await startImport(app);
+    await post(app, `/contacts/imports/${first}/rows`, { rows });
+
+    const second = await startImport(app);
+    const body = (await (
+      await post(app, `/contacts/imports/${second}/rows`, {
+        rows: rows.map((r) => ({ ...r, title: 'Head of Growth' })),
+      })
+    ).json()) as { merged: number; updated: number };
+    expect(body).toMatchObject({ merged: 120, updated: 120 });
+
+    const titled = await seeded.db.execute({
+      sql: "SELECT count(*) AS n FROM people WHERE current_title = 'Head of Growth'",
+      args: [],
+    });
+    expect(Number(titled.rows[0]?.n)).toBe(120);
   });
 });
