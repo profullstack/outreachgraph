@@ -74,6 +74,8 @@ export async function startContactImport(db: Client, input: StartImportInput): P
 export interface ChunkResult {
   readonly imported: number;
   readonly merged: number;
+  /** Of the merged, how many people the row's newer data changed. */
+  readonly updated: number;
   readonly rejected: number;
   readonly personIds: readonly string[];
 }
@@ -150,11 +152,13 @@ export async function importContactChunk(
   const known = clean.filter((entry) => existing.has(entry.contact.dedupeKey));
 
   const personIds: string[] = [];
+  const freshIds: string[] = [];
   const statements: { sql: string; args: (string | number | null)[] }[] = [];
 
   for (const entry of fresh) {
     const personId = newId('person');
     personIds.push(personId);
+    freshIds.push(personId);
     statements.push(
       ...insertContactStatements({
         personId,
@@ -203,45 +207,61 @@ export async function importContactChunk(
     } catch (error) {
       if (!isUniqueViolation(error)) throw error;
 
+      // The slow path stores and patches row by row, so nothing is left for
+      // the batched patch below.
       const retried = await storeOneAtATime(db, importId, batch, clean, rejects.length);
-      imported = retried.imported;
-      merged = retried.merged;
-      rejected = retried.rejected;
-      personIds.length = 0;
-      personIds.push(...retried.personIds);
+      await db.execute({
+        sql: `UPDATE contact_imports
+                 SET total_rows = total_rows + ?, imported = imported + ?,
+                     merged = merged + ?, updated = updated + ?, rejected = rejected + ?,
+                     updated_at = ?
+               WHERE id = ?`,
+        args: [
+          rows.length,
+          retried.imported,
+          retried.merged,
+          retried.updated,
+          retried.rejected,
+          now(),
+          importId,
+        ],
+      });
+      return retried;
     }
   }
 
-  // Gap-filling for people we already had is deliberately *not* batched into
-  // the above: it reads each person to avoid overwriting what is already
-  // known, and doing that for a chunk that is mostly re-imports is the one
-  // case where the extra round trips buy something. Bounded so a re-import of
-  // seventeen thousand does not become the old behaviour by another route.
-  for (const entry of known.slice(0, MERGE_ENRICH_LIMIT)) {
-    const personId = existing.get(entry.contact.dedupeKey);
-    if (personId) await enrichExistingPerson(db, personId, entry.contact);
-  }
+  // ---------------------------------------------------------------- patch
+  // An import is usually the newer data: an enriched export of people we
+  // already hold. Every known row patches its person (newest wins, see
+  // planPatch), and new people get their company and LinkedIn attached. A
+  // handful of reads and one batch for the chunk, however many rows.
+  const updated = await patchPeople(
+    db,
+    known.flatMap((entry) => {
+      const personId = existing.get(entry.contact.dedupeKey);
+      return personId ? [{ personId, contact: entry.contact }] : [];
+    }),
+  );
+  await patchPeople(
+    db,
+    fresh.flatMap((entry, index) => {
+      const personId = freshIds[index];
+      return personId && (entry.contact.companyDomain || entry.contact.linkedinUrl)
+        ? [{ personId, contact: entry.contact }]
+        : [];
+    }),
+  );
 
   await db.execute({
     sql: `UPDATE contact_imports
              SET total_rows = total_rows + ?, imported = imported + ?,
-                 merged = merged + ?, rejected = rejected + ?, updated_at = ?
+                 merged = merged + ?, updated = updated + ?, rejected = rejected + ?, updated_at = ?
            WHERE id = ?`,
-    args: [rows.length, imported, merged, rejected, now(), importId],
+    args: [rows.length, imported, merged, updated, rejected, now(), importId],
   });
 
-  return { imported, merged, rejected, personIds };
+  return { imported, merged, updated, rejected, personIds };
 }
-
-/**
- * How many already-known people get their gaps filled per chunk.
- *
- * Gap-filling reads the stored person first so it cannot overwrite a better
- * value, which is a round trip each. Worth it for a handful; for a re-import
- * of seventeen thousand it would restore exactly the cost this change
- * removed. The rest keep what they have, which is what a merge means anyway.
- */
-const MERGE_ENRICH_LIMIT = 50;
 
 /**
  * Which of these mailboxes we already hold, in one query.
@@ -348,10 +368,11 @@ async function storeOneAtATime(
   batch: { workspace_id: string; consent_basis: string; consent_source: string | null },
   clean: readonly { row: number; contact: CleanContact }[],
   alreadyRejected: number,
-): Promise<{ imported: number; merged: number; rejected: number; personIds: string[] }> {
+): Promise<ChunkResult> {
   const personIds: string[] = [];
   let imported = 0;
   let merged = 0;
+  let updated = 0;
   let rejected = alreadyRejected;
 
   for (const entry of clean) {
@@ -366,6 +387,10 @@ async function storeOneAtATime(
 
       if (outcome.created) imported += 1;
       else merged += 1;
+      const changed = await patchPeople(db, [
+        { personId: outcome.personId, contact: entry.contact },
+      ]);
+      if (!outcome.created) updated += changed;
 
       personIds.push(outcome.personId);
     } catch (error) {
@@ -381,7 +406,7 @@ async function storeOneAtATime(
     }
   }
 
-  return { imported, merged, rejected, personIds };
+  return { imported, merged, updated, rejected, personIds };
 }
 
 async function recordReject(
@@ -432,10 +457,7 @@ async function storeContact(
     [input.workspaceId, input.contact.dedupeKey],
   );
 
-  if (existing) {
-    await enrichExistingPerson(db, existing.person_id, input.contact);
-    return { personId: existing.person_id, created: false };
-  }
+  if (existing) return { personId: existing.person_id, created: false };
 
   const personId = newId('person');
   const stamp = now();
@@ -506,67 +528,200 @@ async function storeContact(
   return { personId, created: true };
 }
 
+/** The fields of a stored person an import can change. */
+export interface StoredPerson {
+  readonly display_name: string;
+  readonly first_name: string | null;
+  readonly last_name: string | null;
+  readonly current_title: string | null;
+  readonly location: string | null;
+  readonly current_company_id: string | null;
+  readonly updated_at: string | null;
+}
+
 /**
- * Fills gaps on a person we already had, without overwriting what we know.
+ * What an imported row changes on a person we already had: column -> value.
  *
- * A second import must not downgrade a record. If the existing name came from
- * a real source and this row derived one from the address, keeping the
- * existing one is right — and the reverse is right too, which is why the
- * derived flag travels this far.
+ * Newest wins. An import is normally the newer data (an enriched export of
+ * people we hold), so a value it carries replaces a different stored one.
+ * Two exceptions keep it from downgrading a record:
+ *
+ *   - a name derived from the address ("dave.mackenzie@" -> Dave Mackenzie)
+ *     never replaces a real one, and is never written over one;
+ *   - a row dated older than the stored person (an `updated_at` or
+ *     `enriched_at` column) only fills blanks.
+ *
+ * Empty cells never erase anything.
  */
-async function enrichExistingPerson(
-  db: Client,
-  personId: string,
+export function planPatch(
+  person: StoredPerson,
   contact: CleanContact,
-): Promise<void> {
-  const person = await queryOne<{
-    display_name: string;
-    first_name: string | null;
-    last_name: string | null;
-    current_title: string | null;
-    location: string | null;
-  }>(
-    db,
-    `SELECT display_name, first_name, last_name, current_title, location
-       FROM people WHERE id = ?`,
-    [personId],
+  companyId?: string | undefined,
+): Record<string, string> {
+  const older = Boolean(
+    contact.updatedAt && person.updated_at && contact.updatedAt < person.updated_at,
+  );
+  const patch: Record<string, string> = {};
+  const take = (column: string, stored: string | null, incoming: string | undefined) => {
+    if (!incoming || incoming === stored) return;
+    if (older && stored) return;
+    patch[column] = incoming;
+  };
+
+  if (!contact.nameDerived) {
+    take('display_name', person.display_name, contact.displayName);
+    take('first_name', person.first_name, contact.firstName);
+    take('last_name', person.last_name, contact.lastName);
+  }
+  take('current_title', person.current_title, contact.title);
+  take('location', person.location, contact.location);
+  take('current_company_id', person.current_company_id, companyId);
+  return patch;
+}
+
+const IN_CHUNK = 400;
+
+async function rowsIn<T>(
+  db: Client,
+  sql: (placeholders: string) => string,
+  keys: readonly string[],
+  extra: readonly string[] = [],
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let offset = 0; offset < keys.length; offset += IN_CHUNK) {
+    const slice = keys.slice(offset, offset + IN_CHUNK);
+    if (!slice.length) continue;
+    const result = await db.execute({
+      sql: sql(slice.map(() => '?').join(', ')),
+      args: [...extra, ...slice],
+    });
+    out.push(...(result.rows as unknown as T[]));
+  }
+  return out;
+}
+
+/** The company row for each domain, made when it is new. */
+async function companiesFor(
+  db: Client,
+  wanted: ReadonlyMap<string, string>,
+): Promise<Map<string, string>> {
+  const domains = [...wanted.keys()];
+  const found = new Map<string, string>();
+  if (!domains.length) return found;
+  const read = async () => {
+    for (const row of await rowsIn<{ id: string; domain: string }>(
+      db,
+      (p) => `SELECT id, domain FROM companies WHERE domain IN (${p})`,
+      domains,
+    ))
+      found.set(String(row.domain), String(row.id));
+  };
+  await read();
+  const missing = domains.filter((d) => !found.has(d));
+  if (missing.length) {
+    const stamp = now();
+    // No conflict target: the domain index is partial, and a bare DO NOTHING
+    // reads the same on SQLite and Postgres. A racing import makes the row; we
+    // read it back either way.
+    await db.batch(
+      missing.map((domain) => ({
+        sql: `INSERT INTO companies (id, name, domain, technologies, created_at, updated_at)
+              VALUES (?, ?, ?, '[]', ?, ?) ON CONFLICT DO NOTHING`,
+        args: [newId('company'), wanted.get(domain) ?? domain, domain, stamp, stamp],
+      })),
+    );
+    await read();
+  }
+  return found;
+}
+
+/**
+ * Applies each row's newer data to its person, in a few reads and one batch.
+ * Returns how many people changed.
+ */
+async function patchPeople(
+  db: Client,
+  entries: ReadonlyArray<{ personId: string; contact: CleanContact }>,
+): Promise<number> {
+  if (!entries.length) return 0;
+
+  const wanted = new Map<string, string>();
+  for (const { contact } of entries)
+    if (contact.companyDomain && !wanted.has(contact.companyDomain))
+      wanted.set(contact.companyDomain, contact.company ?? contact.companyDomain);
+  const companies = await companiesFor(db, wanted);
+
+  const ids = [...new Set(entries.map((e) => e.personId))];
+  const people = new Map(
+    (
+      await rowsIn<StoredPerson & { id: string }>(
+        db,
+        (p) => `SELECT id, display_name, first_name, last_name, current_title, location,
+                       current_company_id, updated_at
+                  FROM people WHERE id IN (${p})`,
+        ids,
+      )
+    ).map((row) => [String(row.id), row] as const),
   );
 
-  if (!person) return;
+  const linked = new Set(
+    (
+      await rowsIn<{ person_id: string; profile_url: string }>(
+        db,
+        (p) => `SELECT person_id, profile_url FROM social_identities
+                 WHERE network = 'linkedin' AND person_id IN (${p})`,
+        ids,
+      )
+    ).map((row) => `${row.person_id} ${row.profile_url}`),
+  );
 
-  const updates: string[] = [];
-  const args: unknown[] = [];
+  const stamp = now();
+  const statements: { sql: string; args: (string | number | null)[] }[] = [];
+  const changed = new Set<string>();
 
-  if (!contact.nameDerived && contact.displayName && contact.displayName !== person.display_name) {
-    updates.push('display_name = ?');
-    args.push(contact.displayName);
-  }
-  if (!person.first_name && contact.firstName) {
-    updates.push('first_name = ?');
-    args.push(contact.firstName);
-  }
-  if (!person.last_name && contact.lastName) {
-    updates.push('last_name = ?');
-    args.push(contact.lastName);
-  }
-  if (!person.current_title && contact.title) {
-    updates.push('current_title = ?');
-    args.push(contact.title);
-  }
-  if (!person.location && contact.location) {
-    updates.push('location = ?');
-    args.push(contact.location);
+  for (const { personId, contact } of entries) {
+    const person = people.get(personId);
+    if (!person) continue;
+
+    const patch = planPatch(
+      person,
+      contact,
+      contact.companyDomain ? companies.get(contact.companyDomain) : undefined,
+    );
+    const columns = Object.keys(patch);
+    if (columns.length) {
+      statements.push({
+        sql: `UPDATE people SET ${columns.map((c) => `${c} = ?`).join(', ')}, updated_at = ?
+               WHERE id = ?`,
+        args: [...columns.map((c) => patch[c]!), stamp, personId],
+      });
+      changed.add(personId);
+    }
+
+    const url = contact.linkedinUrl;
+    if (url && !linked.has(`${personId} ${url}`)) {
+      linked.add(`${personId} ${url}`);
+      statements.push({
+        sql: `INSERT INTO social_identities (id, person_id, network, handle, profile_url, confidence,
+              source_type, verified_by, first_seen_at, last_verified_at)
+              VALUES (?, ?, 'linkedin', ?, ?, ?, 'import', ?, ?, ?)`,
+        args: [
+          newId('socialIdentity'),
+          personId,
+          decodeURIComponent(url.split('/in/')[1] ?? '') || null,
+          url,
+          IMPORTED_CONFIDENCE,
+          JSON.stringify(['import']),
+          stamp,
+          stamp,
+        ],
+      });
+      changed.add(personId);
+    }
   }
 
-  if (updates.length === 0) return;
-
-  updates.push('updated_at = ?');
-  args.push(now(), personId);
-
-  await db.execute({
-    sql: `UPDATE people SET ${updates.join(', ')} WHERE id = ?`,
-    args: args as never[],
-  });
+  if (statements.length) await db.batch(statements);
+  return changed.size;
 }
 
 export async function finishContactImport(db: Client, importId: string): Promise<void> {

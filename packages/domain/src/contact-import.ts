@@ -19,6 +19,8 @@
  * thousand records.
  */
 
+import { companyDomainFrom } from './job-posts';
+
 /** Why a row was dropped. Stored per reject so an import explains itself. */
 export type RejectReason =
   | 'no_email'
@@ -37,6 +39,11 @@ export interface RawContact {
   readonly company?: string | undefined;
   readonly title?: string | undefined;
   readonly location?: string | undefined;
+  /** The company's domain or website, as an enriched export carries it. */
+  readonly companyDomain?: string | undefined;
+  readonly linkedinUrl?: string | undefined;
+  /** When the row's data was last updated or enriched, if the file says. */
+  readonly updatedAt?: string | undefined;
 }
 
 export interface CleanContact {
@@ -49,6 +56,12 @@ export interface CleanContact {
   readonly company?: string;
   readonly title?: string;
   readonly location?: string;
+  /** The employer's own domain: never a job board or a social network. */
+  readonly companyDomain?: string;
+  /** A LinkedIn profile, normalised to https://www.linkedin.com/in/<slug>. */
+  readonly linkedinUrl?: string;
+  /** ISO time the row's data was last updated, when the file carries one. */
+  readonly updatedAt?: string;
   readonly domain: string;
   /** True when the address is at a mailbox provider, not a company. */
   readonly freemail: boolean;
@@ -421,6 +434,9 @@ export function cleanContact(raw: RawContact, seen?: ReadonlySet<string>): Clean
       ...(tidy(raw.company) ? { company: tidy(raw.company) } : {}),
       ...(tidy(raw.title) ? { title: tidy(raw.title) } : {}),
       ...(tidy(raw.location) ? { location: tidy(raw.location) } : {}),
+      ...optional('companyDomain', companyDomainFrom(tidy(raw.companyDomain) || undefined)),
+      ...optional('linkedinUrl', linkedinProfile(raw.linkedinUrl)),
+      ...optional('updatedAt', isoTime(raw.updatedAt)),
       domain,
       freemail: FREEMAIL_DOMAINS.has(domain),
       nameDerived: !usable,
@@ -453,9 +469,48 @@ export function mapHeaders(headers: readonly string[]): Record<string, number> {
     else if (/^(company|organi[sz]ation|employer|account)$/.test(key)) assign('company');
     else if (/^(title|jobtitle|role|position)$/.test(key)) assign('title');
     else if (/^(location|city|country|region)$/.test(key)) assign('location');
+    else if (
+      /^(companydomain|domain|website|companywebsite|companyurl|organi[sz]ationdomain)$/.test(key)
+    )
+      assign('companyDomain');
+    else if (
+      /^(linkedin|linkedinurl|linkedinprofile|linkedinprofileurl|personlinkedinurl)$/.test(key)
+    )
+      assign('linkedinUrl');
+    else if (
+      /^(updatedat|lastupdated|enrichedat|lastenriched|modified|modifiedat|lastmodified)$/.test(key)
+    )
+      assign('updatedAt');
   };
 
   headers.forEach((header, index) => match(index, header));
 
   return mapping;
+}
+
+const optional = <K extends string>(key: K, value: string | undefined) =>
+  (value ? { [key]: value } : {}) as Partial<Record<K, string>>;
+
+/** A LinkedIn member profile URL, or nothing: company pages and posts are not a person. */
+export function linkedinProfile(raw: string | undefined): string | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  const match = /(?:^|\/\/|\.)linkedin\.com\/in\/([^/?#\s]+)/i.exec(text);
+  if (!match?.[1]) return undefined;
+  let slug: string;
+  try {
+    slug = decodeURIComponent(match[1]);
+  } catch {
+    slug = match[1];
+  }
+  slug = slug.trim().toLowerCase();
+  return slug ? `https://www.linkedin.com/in/${encodeURIComponent(slug)}` : undefined;
+}
+
+/** A spreadsheet's date as ISO time, or nothing when it is not a date. */
+function isoTime(raw: string | undefined): string | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  const ms = /^\d{10}$/.test(text) ? Number(text) * 1000 : Date.parse(text);
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : undefined;
 }

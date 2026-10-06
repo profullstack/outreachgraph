@@ -28,6 +28,8 @@ const CHUNK = 500;
 interface ImportSummary {
   readonly imported: number;
   readonly merged: number;
+  /** Of the merged, how many the file's newer data changed. */
+  readonly updated?: number;
   readonly rejected: number;
 }
 
@@ -116,7 +118,7 @@ export function ContactImport() {
       }
 
       const { importId } = (await started.json()) as { importId: string };
-      const totals = { imported: 0, merged: 0, rejected: 0 };
+      const totals = { imported: 0, merged: 0, updated: 0, rejected: 0 };
 
       // Sequentially, so the server sees a steady trickle rather than
       // thirty-four simultaneous writes, and so progress means something.
@@ -135,6 +137,7 @@ export function ContactImport() {
         const chunk = (await response.json()) as ImportSummary;
         totals.imported += chunk.imported;
         totals.merged += chunk.merged;
+        totals.updated += chunk.updated ?? 0;
         totals.rejected += chunk.rejected;
 
         setProgress(Math.min(100, Math.round(((offset + CHUNK) / rows.length) * 100)));
@@ -238,7 +241,9 @@ export function ContactImport() {
         <div className="border-border mt-4 rounded-xl border p-3 text-sm">
           <p>
             <span className="font-medium">{summary.imported.toLocaleString()}</span> added
-            {summary.merged > 0 ? `, ${summary.merged.toLocaleString()} already known` : ''}
+            {summary.merged > 0
+              ? `, ${summary.merged.toLocaleString()} already known (${(summary.updated ?? 0).toLocaleString()} updated with newer data)`
+              : ''}
             {summary.rejected > 0 ? `, ${summary.rejected.toLocaleString()} not usable` : ''}.
           </p>
 

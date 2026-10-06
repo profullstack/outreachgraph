@@ -3205,6 +3205,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
               company: z.string().optional(),
               title: z.string().optional(),
               location: z.string().optional(),
+              companyDomain: z.string().max(253).optional(),
+              linkedinUrl: z.string().max(500).optional(),
+              updatedAt: z.string().max(64).optional(),
             }),
           )
           .max(IMPORT_CHUNK_MAX),
@@ -3296,7 +3299,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const batch = await queryOne<Record<string, unknown>>(
       db,
       `SELECT id, filename, consent_basis, consent_source, total_rows, imported, merged,
-              rejected, status, created_at
+              updated, rejected, status, created_at
          FROM contact_imports WHERE id = ? AND workspace_id = ?`,
       [importId, actor.workspaceId],
     );

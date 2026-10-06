@@ -441,6 +441,7 @@ export const OPERATIONS: readonly Operation[] = [
               company: { type: 'string' },
               job_title: { type: 'string' },
               location: { type: 'string' },
+              linkedin_url: { type: 'string' },
             },
           },
         },
@@ -458,6 +459,11 @@ export const OPERATIONS: readonly Operation[] = [
         merged: {
           type: 'integer',
           description: 'Already on file; updated rather than duplicated.',
+        },
+        updated: {
+          type: 'integer',
+          description:
+            'Of the merged, how many people this import changed. Newer data wins: a value in the import replaces a different stored one, unless the row is dated older.',
         },
         rejected: { type: 'integer' },
         crawls_queued: { type: 'integer' },
@@ -480,6 +486,7 @@ export const OPERATIONS: readonly Operation[] = [
         total_rows: { type: 'integer' },
         imported: { type: 'integer' },
         merged: { type: 'integer' },
+        updated: { type: 'integer' },
         rejected: { type: 'integer' },
       },
     },

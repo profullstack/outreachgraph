@@ -12,6 +12,7 @@ import {
   cleanContact,
   emailDedupeKey,
   isFreemailDomain,
+  linkedinProfile,
   mapHeaders,
   nameFromEmail,
 } from './contact-import';
@@ -168,5 +169,52 @@ describe('mapHeaders', () => {
 
   test('the first matching column wins', () => {
     expect(mapHeaders(['email', 'secondary email']).email).toBe(0);
+  });
+});
+
+describe('enriched columns', () => {
+  test('headers from an enriched export map onto the new fields', () => {
+    expect(
+      mapHeaders([
+        'email',
+        'first_name',
+        'company_domain',
+        'job_title',
+        'linkedin_url',
+        'enriched_at',
+      ]),
+    ).toMatchObject({
+      email: 0,
+      firstName: 1,
+      companyDomain: 2,
+      title: 3,
+      linkedinUrl: 4,
+      updatedAt: 5,
+    });
+  });
+
+  test('LinkedIn profiles are normalised; company pages are not a person', () => {
+    expect(linkedinProfile('linkedin.com/in/DaveMackenzie/?trk=x')).toBe(
+      'https://www.linkedin.com/in/davemackenzie',
+    );
+    expect(linkedinProfile('https://www.linkedin.com/company/acme')).toBeUndefined();
+    expect(linkedinProfile('not a url')).toBeUndefined();
+  });
+
+  test('cleanContact keeps a company domain, a profile and a date', () => {
+    const result = cleanContact({
+      email: 'dave@corp.com',
+      name: 'Dave Mackenzie',
+      companyDomain: 'https://www.corp.com/about',
+      linkedinUrl: 'https://linkedin.com/in/dave',
+      updatedAt: '2026-10-01',
+    });
+    expect(result.ok && result.contact).toMatchObject({
+      companyDomain: 'corp.com',
+      linkedinUrl: 'https://www.linkedin.com/in/dave',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    });
+    const board = cleanContact({ email: 'x@corp.com', companyDomain: 'linkedin.com' });
+    expect(board.ok && board.contact.companyDomain).toBeUndefined();
   });
 });
