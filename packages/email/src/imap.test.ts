@@ -37,8 +37,16 @@ describe('classifying a sender', () => {
     expect(classifyAutomated('jane@acme.com', { subject: 'Re: hello' })).toBeUndefined();
   });
 
-  test('the null return path is a bounce', () => {
-    expect(classifyAutomated('jane@acme.com', { 'return-path': '<>' })).toBe('bounce');
+  test('the null return path alone is a machine answer, not a bounce', () => {
+    expect(classifyAutomated('jane@acme.com', { 'return-path': '<>' })).toBe('auto_reply');
+  });
+
+  test('a delivery-status report is a bounce whoever sends it', () => {
+    expect(
+      classifyAutomated('mx@relay.example', {
+        'content-type': 'multipart/report; report-type=delivery-status; boundary="x"',
+      }),
+    ).toBe('bounce');
   });
 
   test('mailer-daemon is a bounce whatever the headers say', () => {
@@ -46,9 +54,11 @@ describe('classifying a sender', () => {
     expect(classifyAutomated('postmaster@acme.com', {})).toBe('bounce');
   });
 
-  test('no-reply addresses never represent a person', () => {
+  test('no-reply notices are bulk, never bounces', () => {
+    // These stopped a real mailbox as "bounces": Bluesky digests and app
+    // notifications from noreply@ addresses.
     for (const address of ['no-reply@x.com', 'noreply@x.com', 'donotreply@x.com']) {
-      expect(classifyAutomated(address, {})).toBe('bounce');
+      expect(classifyAutomated(address, {})).toBe('bulk');
     }
   });
 

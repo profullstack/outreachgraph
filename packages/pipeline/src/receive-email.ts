@@ -131,8 +131,10 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
       // A bounce also counts against the mailbox it landed in, which is the
       // one that sent the message — before the person match, because a
       // bounce for an address we cannot place still costs the sender its
-      // reputation. Header-flagged and rule-detected bounces count alike.
-      if (machine === 'bounce' && input.senderAccountId) {
+      // reputation. Only a delivery report the headers confirm counts: a
+      // subject that merely reads like a failure is filed to its thread but
+      // never stops a mailbox, since a wrong stop halts all of its sending.
+      if (message.automated === 'bounce' && input.senderAccountId) {
         const bounce = await recordSenderBounce(input.db, {
           workspaceId: input.workspaceId,
           accountId: input.senderAccountId,
