@@ -36,9 +36,11 @@ Not an idea:
 - general advice (how to validate, how to market, how to price), news, opinion, hiring, fundraising;
 - a list of many unrelated ideas with nothing specific;
 - a launch of a general-purpose platform;
-- a revenue story that never says what the product does. "I built a $1M app in 5 hours", "How I grew my mobile app to $17K per month" and "Bro's directory website does $35k per month" are NOT ideas unless the summary names what the product does for whom. If you cannot say what it does in a few concrete words, answer idea: false.
+- a revenue story that never says what the product does. "I built a $1M app in 5 hours", "How I grew my mobile app to $17K per month" and "Bro's directory website does $35k per month" are NOT ideas: nothing in them says what the product does. If you cannot say what it does in a few concrete words, answer idea: false.
 
-The label must name what the product does, never how well it sells or what kind of software it is. Bad labels: "successful mobile app", "$20K/month app", "online game", "AI tool", "SaaS business". Good labels: "Excel formula generator", "vet clinic appointment scheduler", "screenshot to code converter". No numbers or money in labels.
+A product's name or a comparison is enough when it tells you what the product does: "$25K/month Stagetimer app" is a countdown timer for live events and stage speakers; "rebuilt Skype and makes $14,000 per month" is a video calling app. Keep those, and name them by what they do.
+
+The label must name what the product does, never how well it sells or what kind of software it is. Bad labels: "successful mobile app", "$20K/month app", "online game", "AI tool", "SaaS business". Good labels: "stage countdown timer", "video calling app", "Excel formula generator", "vet clinic appointment scheduler", "screenshot to code converter". No numbers or money in labels.
 
 For each post return:
 - idea: true or false.
