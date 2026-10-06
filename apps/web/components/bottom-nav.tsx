@@ -15,12 +15,14 @@ import { useEffect, useState } from 'react';
  * page opened most, behind "More".
  *
  * Everything that lost its tab is still a route, and Settings lists it.
+ * Import got its tab back: behind More, nobody could find it.
  */
 const TABS = [
   { href: '/inbox', label: 'Inbox', icon: InboxIcon, badge: true },
   { href: '/approvals', label: 'Approve', icon: CheckIcon },
   { href: '/products', label: 'Products', icon: BoxIcon },
   { href: '/funnel', label: 'Results', icon: FunnelIcon },
+  { href: '/import', label: 'Import', icon: UploadIcon },
   { href: '/settings', label: 'Settings', icon: GearIcon },
 ] as const;
 
@@ -36,7 +38,6 @@ const OWNED_BY: Record<string, string> = {
   '/cadences': '/settings',
   '/rules': '/settings',
   '/research': '/settings',
-  '/import': '/settings',
   '/signals': '/settings',
   '/prospects': '/settings',
 };
@@ -179,6 +180,15 @@ function BoxIcon() {
     <svg {...ICON_PROPS}>
       <path d="M21 8 12 3 3 8v8l9 5 9-5V8z" />
       <path d="m3 8 9 5 9-5M12 13v8" />
+    </svg>
+  );
+}
+
+function UploadIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="m17 8-5-5-5 5M12 3v12" />
     </svg>
   );
 }
