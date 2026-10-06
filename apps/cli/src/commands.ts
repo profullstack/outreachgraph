@@ -329,6 +329,94 @@ async function runJobs({ client, args, flags }: CommandContext): Promise<string>
  * setting one up is whether it works, and waiting half an hour for the
  * interval to come round is not an answer.
  */
+async function runIdeas({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', target, ...rest] = args;
+
+  if (verb === 'list' || verb === 'ls') {
+    const status = flagString(flags, 'status');
+    const result = (await client.get(
+      `/ideas${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    )) as Record<string, unknown>;
+    const ideas = rows(result, 'ideas');
+    if (ideas.length === 0) return 'No ideas yet. Run a scan: og ideas scan';
+    return ideas
+      .map((idea) =>
+        [
+          pad(text(idea, 'id'), 30),
+          pad(text(idea, 'status'), 9),
+          pad(`${text(idea, 'askers')} asked`, 9),
+          pad(`demand ${text(idea, 'demand')}`, 12),
+          text(idea, 'label'),
+        ].join(' '),
+      )
+      .join('\n');
+  }
+
+  if (verb === 'show') {
+    if (!target) throw new Error('og ideas show <id>');
+    const { idea } = (await client.get(`/ideas/${encodeURIComponent(target)}`)) as {
+      idea: Record<string, unknown>;
+    };
+    const asks = Array.isArray(idea.asksList)
+      ? (idea.asksList as Array<Record<string, unknown>>)
+      : [];
+    const wants = Array.isArray(idea.wants) ? (idea.wants as string[]) : [];
+    return [
+      `${text(idea, 'label')}  (${text(idea, 'status')}, ${text(idea, 'askers')} people, demand ${text(idea, 'demand')})`,
+      wants.length ? `wants: ${wants.join('; ')}` : '',
+      text(idea, 'handoffUrl') ? `building: ${text(idea, 'handoffUrl')}` : '',
+      ...asks.map((a) => `  r/${text(a, 'sub')}  ${text(a, 'title')}\n    ${text(a, 'url')}`),
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  if (verb === 'scan') {
+    const subs = flagString(flags, 'subs');
+    const { result } = (await client.post(
+      '/ideas/scan',
+      subs ? { subs: subs.split(',') } : {},
+    )) as { result: Record<string, unknown> };
+    const flagged = Array.isArray(result.flagged) ? result.flagged.length : 0;
+    return `read ${text(result, 'read')} posts, ${text(result, 'found')} new asks, ${text(result, 'rejected')} rejected, ${flagged} idea(s) flagged to build${result.judged ? '' : ' (not judged: no model)'}`;
+  }
+
+  if (verb === 'build') {
+    if (!target) throw new Error('og ideas build <id>');
+    const res = (await client.post(`/ideas/${encodeURIComponent(target)}/build`, {})) as Record<
+      string,
+      unknown
+    >;
+    return `Handed to chovy.com. Open to start the build: ${text(res, 'handoffUrl')}`;
+  }
+
+  if (verb === 'dismiss' || verb === 'watch') {
+    if (!target) throw new Error(`og ideas ${verb} <id>`);
+    await client.patch!(`/ideas/${encodeURIComponent(target)}`, {
+      status: verb === 'dismiss' ? 'dismissed' : 'watching',
+    });
+    return `${target} ${verb === 'dismiss' ? 'dismissed' : 'back on the list'}`;
+  }
+
+  if (verb === 'subs') {
+    if (!target) {
+      const { settings } = (await client.get('/ideas/settings')) as {
+        settings: { subs: string[] };
+      };
+      return settings.subs.map((s) => `r/${s}`).join('\n');
+    }
+    const subs = [target, ...rest].flatMap((s) => s.split(','));
+    const { settings } = (await client.put('/ideas/settings', { subs })) as {
+      settings: { subs: string[] };
+    };
+    return `Scanning ${settings.subs.length} subreddits: ${settings.subs.join(', ')}`;
+  }
+
+  throw new Error(
+    'og ideas list [--status build] | show <id> | scan [--subs a,b] | build <id> | dismiss <id> | subs [a b c]',
+  );
+}
+
 async function runAudience({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target] = args;
 
@@ -1386,6 +1474,13 @@ export const COMMANDS: readonly Command[] = [
         })
         .join('\n');
     },
+  },
+  {
+    name: 'ideas',
+    usage:
+      'og ideas list [--status build] | show <id> | scan [--subs a,b] | build <id> | dismiss <id> | subs [a b c]',
+    summary: 'What people keep asking for on Reddit, ranked; build one with chovy.com.',
+    run: runIdeas,
   },
   {
     name: 'audience',

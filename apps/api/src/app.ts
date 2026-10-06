@@ -251,6 +251,8 @@ import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
 import { audienceRoutes } from './audience';
 import { jobPostRoutes } from './job-posts';
+import { ideaRoutes } from './ideas';
+import type { ChovyConfig, Fetcher as RedditFetcher } from '@outreachgraph/ideas';
 import { clientIp, createThrottles, isQuotedUserAgent, type ThrottleConfig } from './throttle';
 import { llmsText, openApiDocument } from './autogtm-docs';
 import {
@@ -333,6 +335,15 @@ export interface AppOptions {
   readonly jobSearcher?: WebSearcher | undefined;
   /** Test seam for the job boards and company sites a posting is read from. */
   readonly jobReader?: JobReaderOptions | undefined;
+  /**
+   * The Idea Generator's Build it: chovy.com's campaign hand-off. Absent
+   * without CHOVY_CAMPAIGN_SECRET, which leaves ideas readable but not buildable.
+   */
+  readonly chovy?: ChovyConfig | undefined;
+  /** Test seams for the Idea Generator: chovy.com, and Reddit's mirror/archive. */
+  readonly chovyFetch?: typeof fetch | undefined;
+  readonly redditFetch?: RedditFetcher | undefined;
+  readonly ideaArchiveGapMs?: number | undefined;
   /** Overrides for the abuse throttles (`./throttle`); tests shrink them. */
   readonly throttles?: ThrottleConfig | undefined;
   /**
@@ -1422,6 +1433,20 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   api.route(
     '/job-posts',
     jobPostRoutes({ searcher: options.jobSearcher, reader: options.jobReader, throttles }),
+  );
+
+  // ----------------------------------------------------------------- ideas
+  //
+  // What people keep asking for on Reddit, ranked; Build it hands one to chovy.com.
+  api.route(
+    '/ideas',
+    ideaRoutes({
+      model: options.model,
+      chovy: options.chovy,
+      chovyFetch: options.chovyFetch,
+      redditFetch: options.redditFetch,
+      archiveGapMs: options.ideaArchiveGapMs,
+    }),
   );
 
   // ----------------------------------------------------------------- team

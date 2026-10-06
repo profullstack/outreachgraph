@@ -29,6 +29,7 @@ import {
   type FallbackEntry,
 } from '@outreachgraph/ai';
 import { ImapReader, ResendMailer } from '@outreachgraph/email';
+import { chovyConfig } from '@outreachgraph/ideas';
 import { CoinPayClient } from '@outreachgraph/payments';
 import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
@@ -51,6 +52,8 @@ import {
   sweepContactEnrichment,
   workspacesAwaitingEnrichment,
   workspacesWithAudienceWatches,
+  scanIdeas,
+  workspacesDueForIdeaScan,
   processDeletion,
   resolveJobPost,
   workspacesWithInternalBacklog,
@@ -284,6 +287,15 @@ const jobSearcher = valueSerp;
 if (!jobSearcher)
   console.log('no VALUESERP_API_KEY: job posts are read but nobody is searched for');
 
+/**
+ * The Idea Generator's Build it hands an idea to chovy.com, which builds the
+ * app on our own stack. Without the secret, ideas are found and ranked but
+ * cannot be handed off.
+ */
+let ideaScanRunning = false;
+const chovy = chovyConfig();
+if (!chovy) console.log('no CHOVY_CAMPAIGN_SECRET: ideas are found and ranked, Build it is off');
+
 const photoLookupsPerDay = Number(process.env.PHOTO_LOOKUPS_PER_DAY ?? 300);
 
 if (!photoFinder)
@@ -457,6 +469,7 @@ const api = createApp({
   ...(encryptionKey ? { encryptionKey } : {}),
   ...(appUrl ? { appUrl } : {}),
   ...(jobSearcher ? { jobSearcher } : {}),
+  ...(chovy ? { chovy } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
   // A person editing their own OpenProfile.md carries an OpenAccess bearer
   // rather than a session here.
@@ -1081,6 +1094,30 @@ async function tick(): Promise<void> {
   // which is both the cheapest grounded claim the product can make and the
   // fastest-decaying one. Each watch has its own interval, so a workspace
   // watching one Bluesky handle costs one query per tick and nothing else.
+  // The Idea Generator: what people keep asking for on Reddit. A scan paces the
+  // public archive at ~2.5s a request, so it runs beside the tick rather than
+  // inside it, one at a time.
+  if (!ideaScanRunning) {
+    const due = await workspacesDueForIdeaScan(db);
+    if (due.length) {
+      ideaScanRunning = true;
+      void (async () => {
+        for (const workspaceId of due) {
+          try {
+            const r = await scanIdeas({ db, ...(model ? { model } : {}) }, { workspaceId });
+            console.log(
+              `ideas: ${workspaceId} read ${r.read}, found ${r.found}, rejected ${r.rejected}, flagged ${r.flagged.length}${r.judged ? '' : ' (not judged)'}`,
+            );
+          } catch (error) {
+            console.error(`idea scan failed for ${workspaceId}`, error);
+          }
+        }
+      })().finally(() => {
+        ideaScanRunning = false;
+      });
+    }
+  }
+
   for (const workspaceId of await workspacesWithAudienceWatches(db)) {
     try {
       const swept = await sweepAudienceWatches(

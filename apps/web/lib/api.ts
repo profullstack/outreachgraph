@@ -303,6 +303,54 @@ export async function fetchJobPosts(): Promise<JobPostsView> {
   return request<JobPostsView>('/job-posts');
 }
 
+// ----------------------------------------------------------------- ideas
+
+export interface IdeaView {
+  readonly id: string;
+  readonly label: string;
+  readonly status: 'watching' | 'build' | 'building' | 'dismissed';
+  readonly askers: number;
+  readonly asks: number;
+  readonly demand: number;
+  readonly subs: string[];
+  readonly wants: string[];
+  readonly firstAt: string;
+  readonly lastAt: string;
+  readonly handoffUrl?: string;
+  readonly handoffAt?: string;
+}
+
+export interface IdeaAskView {
+  readonly id: string;
+  readonly sub: string;
+  readonly title: string;
+  readonly url: string;
+  readonly author: string;
+  readonly postedAt: string;
+  readonly wants: string[];
+  readonly postScore?: number;
+  readonly comments?: number;
+}
+
+export interface IdeasView {
+  readonly ideas: IdeaView[];
+  readonly settings: {
+    readonly subs: string[];
+    readonly enabled: boolean;
+    readonly everyMinutes: number;
+    readonly buildAt: number;
+    readonly windowDays: number;
+    readonly lastScannedAt?: string;
+    readonly lastResult?: { read: number; found: number; rejected: number; judged: boolean };
+  };
+  readonly judgeEnabled: boolean;
+  readonly buildEnabled: boolean;
+}
+
+export async function fetchIdeas(): Promise<IdeasView> {
+  return request<IdeasView>('/ideas');
+}
+
 export async function fetchCampaigns(): Promise<CampaignRow[]> {
   const body = await request<{ campaigns: CampaignRow[] }>('/campaigns');
   return body.campaigns;

@@ -51,9 +51,10 @@ jobs:
           DEV2_USER: ${{ secrets.DEV2_USER }}
           DEV2_HOST: ${{ secrets.DEV2_HOST }}
           VALUESERP_API_KEY: ${{ secrets.VALUESERP_API_KEY }}
+          CHOVY_CAMPAIGN_SECRET: ${{ secrets.CHOVY_CAMPAIGN_SECRET }}
         run: |
           lines=""
-          for key in VALUESERP_API_KEY; do
+          for key in VALUESERP_API_KEY CHOVY_CAMPAIGN_SECRET; do
             value=$(printenv "$key" || true)
             [ -n "$value" ] && lines="$lines$key=$value"$'\n'
           done

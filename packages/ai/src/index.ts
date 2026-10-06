@@ -95,3 +95,5 @@ export {
 } from './grid';
 
 export { expandTerm, mergeTerms, MAX_EXPANSIONS_PER_TERM, type ExpansionResult } from './synonyms';
+
+export { judgeAsks, parseJudgements, type AskJudgeInput, type AskJudgement } from './judge-asks';

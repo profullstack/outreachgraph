@@ -20,6 +20,7 @@
         "@outreachgraph/db": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/email": "workspace:*",
+        "@outreachgraph/ideas": "workspace:*",
         "@outreachgraph/payments": "workspace:*",
         "@outreachgraph/pipeline": "workspace:*",
         "@outreachgraph/policy": "workspace:*",
@@ -63,6 +64,7 @@
         "@outreachgraph/db": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/email": "workspace:*",
+        "@outreachgraph/ideas": "workspace:*",
         "@outreachgraph/payments": "workspace:*",
         "@outreachgraph/pipeline": "workspace:*",
         "@outreachgraph/policy": "workspace:*",
@@ -140,6 +142,10 @@
         "@types/nodemailer": "^8.0.1",
       },
     },
+    "packages/ideas": {
+      "name": "@outreachgraph/ideas",
+      "version": "0.1.0",
+    },
     "packages/identity": {
       "name": "@outreachgraph/identity",
       "version": "0.4.0",
@@ -172,6 +178,7 @@
         "@outreachgraph/db": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
         "@outreachgraph/email": "workspace:*",
+        "@outreachgraph/ideas": "workspace:*",
         "@outreachgraph/identity": "workspace:*",
         "@outreachgraph/policy": "workspace:*",
         "@outreachgraph/providers": "workspace:*",
@@ -366,6 +373,8 @@
     "@outreachgraph/domain": ["@outreachgraph/domain@workspace:packages/domain"],
 
     "@outreachgraph/email": ["@outreachgraph/email@workspace:packages/email"],
+
+    "@outreachgraph/ideas": ["@outreachgraph/ideas@workspace:packages/ideas"],
 
     "@outreachgraph/identity": ["@outreachgraph/identity@workspace:packages/identity"],
 

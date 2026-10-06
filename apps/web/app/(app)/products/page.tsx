@@ -68,7 +68,11 @@ export default async function ProductsPage() {
           <a href="/jobs" className="underline">
             Job posts
           </a>{' '}
-          finds the people behind hiring companies.
+          finds the people behind hiring companies.{' '}
+          <a href="/ideas" className="underline">
+            Ideas
+          </a>{' '}
+          finds products people keep asking for, and builds one with chovy.com.
         </p>
       </header>
 

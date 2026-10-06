@@ -458,6 +458,61 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'list_ideas',
+    title: 'List product ideas people keep asking for',
+    description:
+      'Ideas found on Reddit: posts of people asking for a site, app or tool, grouped by what they want ' +
+      'and ranked by how many different people asked. Status "build" means enough people asked; ' +
+      '"building" means it was handed to chovy.com.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['watching', 'build', 'building', 'dismissed'] },
+      },
+    },
+    run: (client, args) =>
+      client.get(
+        str(args, 'status')
+          ? `/ideas?status=${encodeURIComponent(str(args, 'status') as string)}`
+          : '/ideas',
+      ),
+  },
+  {
+    name: 'get_idea',
+    title: 'Read one idea and the posts that asked for it',
+    description:
+      'One idea with what people want it to do and every Reddit post that asked, with links.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    run: (client, args) => client.get(`/ideas/${encodeURIComponent(str(args, 'id') as string)}`),
+  },
+  {
+    name: 'scan_ideas',
+    title: 'Scan Reddit for people asking for tools',
+    description:
+      "Reads the workspace's subreddits (or the ones given) now, keeps the posts asking for a tool, and " +
+      'files them under ideas. Takes up to a minute: the public archive is read slowly on purpose.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { subs: { type: 'array', items: { type: 'string' } } },
+    },
+    run: (client, args) =>
+      client.post('/ideas/scan', Array.isArray(args.subs) ? { subs: args.subs } : {}),
+  },
+  {
+    name: 'build_idea',
+    title: 'Build an idea with chovy.com',
+    description:
+      'Hands the idea (what to build, what it must do, who asked) to chovy.com and returns the link that ' +
+      'opens its build intake with the idea filled in. Marks the idea "building".',
+    readOnly: false,
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    run: (client, args) =>
+      client.post(`/ideas/${encodeURIComponent(str(args, 'id') as string)}/build`, {}),
+  },
+  {
     name: 'list_audience_watches',
     title: 'List the accounts whose audience is being read',
     description:

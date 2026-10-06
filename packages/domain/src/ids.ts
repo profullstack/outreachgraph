@@ -92,6 +92,9 @@ export const ID_PREFIXES = {
   // A job posting the workspace is working from, and a person found behind it.
   jobPost: 'jbp',
   jobPostContact: 'jpc',
+  // The Idea Generator: a product people keep asking for, and one post that asked.
+  idea: 'ida',
+  ideaAsk: 'iak',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

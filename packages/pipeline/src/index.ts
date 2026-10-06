@@ -501,3 +501,22 @@ export {
   type SearchJobPostsResult,
 } from './job-posts';
 export { isNonBuyerDesk, ownDomains, refuseRecipient } from './recipient-guard';
+export {
+  briefFor,
+  cleanSubs,
+  getIdea,
+  getIdeaScan,
+  listIdeas,
+  recordHandoff,
+  saveIdeaScan,
+  scanIdeas,
+  updateIdea,
+  workspacesDueForIdeaScan,
+  IDEA_STATUSES,
+  type IdeaAsk,
+  type IdeaScanDeps,
+  type IdeaScanResult,
+  type IdeaScanSettings,
+  type IdeaStatus,
+  type IdeaSummary,
+} from './ideas';
