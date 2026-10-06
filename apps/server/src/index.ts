@@ -77,6 +77,8 @@ import {
   sendLeadAlerts,
   readableMailboxes,
   recordReplyCheck,
+  runWarmupInbox,
+  runWarmupSends,
   type ListeningTargets,
   type QueuedJob,
   runEmailDelivery,
@@ -114,6 +116,7 @@ const RECEIVE_POLL_MS = Number(process.env.RECEIVE_POLL_MS ?? 300_000);
 
 /** Last successful poll per workspace, so the slower clock survives a tick. */
 const lastPolledAt = new Map<string, number>();
+let lastWarmupSweepAt = 0;
 const ENVIRONMENT = process.env.NODE_ENV ?? 'development';
 
 const db = getDatabase();
@@ -1181,6 +1184,30 @@ async function tick(): Promise<void> {
       // A mailbox that will not open is this workspace's problem, not the
       // tick's. Sending still has to happen for everyone else.
       console.error(`reading replies failed for ${workspaceId}`, error);
+    }
+  }
+
+  // ------------------------------------------------------ warm-up network
+  //
+  // Sends are checked every tick (each mailbox's pacing decides whether one
+  // is due); inboxes are swept on the reply poll's slower clock.
+  if (encryptionKey) {
+    try {
+      const sends = await runWarmupSends(db, { encryptionKey });
+      if (sends.sent > 0 || sends.failed > 0) {
+        console.log(`warm-up: sent ${sends.sent}, failed ${sends.failed}`);
+      }
+      if (Date.now() - lastWarmupSweepAt >= RECEIVE_POLL_MS) {
+        lastWarmupSweepAt = Date.now();
+        const inbox = await runWarmupInbox(db, { encryptionKey });
+        if (inbox.seen > 0 || inbox.failed > 0) {
+          console.log(
+            `warm-up: ${inbox.seen} received (${inbox.rescued} from spam), ${inbox.replied} answered, ${inbox.failed} failed`,
+          );
+        }
+      }
+    } catch (error) {
+      console.error('warm-up network failed', error);
     }
   }
 

@@ -27,6 +27,7 @@ import {
   type ServerSettings,
 } from '@outreachgraph/providers';
 import { listSenders, type SenderView } from './sender-pool';
+import { warmupStats, type WarmupStats } from './warmup-network';
 
 /** Bounce risk and health are judged over this many days of sending. */
 const HEALTH_WINDOW_DAYS = 30;
@@ -49,6 +50,8 @@ export interface MailboxView extends SenderView {
   readonly bounceRisk: BounceRisk;
   readonly healthScore: number;
   readonly healthIssues: readonly string[];
+  /** The warm-up network: whether it is on, its filter tag, and how its mail lands. */
+  readonly warmupNetwork: WarmupStats | null;
 }
 
 export interface MailboxesSummary {
@@ -119,12 +122,14 @@ export async function listMailboxes(
   const sendsById = new Map(sends.map((row) => [row.id, Number(row.n)]));
   const bouncesById = new Map(bounces.map((row) => [row.id, Number(row.n)]));
 
+  const warm = await warmupStats(db, ids, at);
   const mailboxes = senders.map((sender) =>
     toMailbox(
       sender,
       extraById.get(sender.id),
       sendsById.get(sender.id) ?? 0,
       bouncesById.get(sender.id) ?? 0,
+      warm.get(sender.id) ?? null,
     ),
   );
 
@@ -146,6 +151,7 @@ function toMailbox(
   extra: ExtraRow | undefined,
   sends: number,
   bounces: number,
+  warm: WarmupStats | null,
 ): MailboxView {
   const config = parseConfig(extra?.config_json ?? null);
   const fromEmail = config.fromEmail ?? sender.handle;
@@ -183,6 +189,7 @@ function toMailbox(
     bounceRisk: health.bounceRisk,
     healthScore: health.score,
     healthIssues: health.issues,
+    warmupNetwork: warm,
   };
 }
 

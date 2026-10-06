@@ -92,6 +92,9 @@ export const ID_PREFIXES = {
   // A job posting the workspace is working from, and a person found behind it.
   jobPost: 'jbp',
   jobPostContact: 'jpc',
+  // One warm-up network message, and the token its X-OG-Warmup header carries.
+  warmupMessage: 'wum',
+  warmupToken: 'wut',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;
