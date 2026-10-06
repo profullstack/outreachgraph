@@ -588,3 +588,59 @@ describe('audience', () => {
     ).rejects.toThrow('og audience list');
   });
 });
+
+describe('og leads', () => {
+  test('add sends the file to the append route and prints the report', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const dir = mkdtempSync(`${import.meta.dir}/../.test-leads-`);
+    const file = `${dir}/leads.csv`;
+    writeFileSync(file, 'email,first_name\nada@acme.dev,Ada\ninfo@acme.dev,\n');
+
+    try {
+      const { client: api, calls } = client({
+        task_id: 'cim_1',
+        received: 2,
+        added: 2,
+        skipped: 0,
+        rejected: 0,
+        flagged: 1,
+        flagged_held: 1,
+        report: [
+          {
+            row: 2,
+            email: 'info@acme.dev',
+            outcome: 'flagged',
+            reason: 'role_address',
+            why: 'role address',
+            detail: 'role_address: info@ is a team inbox, not a person',
+          },
+        ],
+      });
+      const out = await commandByName('leads')!.run({
+        client: api,
+        args: ['add', 'cmp_1', file],
+        flags: { 'consent-source': 'signups' },
+      });
+
+      expect(calls[0]?.url).toBe('https://api.test/api/v1/autogtm/campaigns/cmp_1/leads');
+      expect(calls[0]?.body).toMatchObject({
+        csv: 'email,first_name\nada@acme.dev,Ada\ninfo@acme.dev,\n',
+        consent_source: 'signups',
+        allow_flagged: false,
+        skip_project_duplicates: true,
+      });
+      expect(out).toContain('2 of 2 added');
+      expect(out).toContain('held back from sending');
+      expect(out).toContain('info@ is a team inbox');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('allow clears a screening hold', async () => {
+    const { client: api, calls } = client({ person_id: 'per_1', held: false });
+    await commandByName('leads')!.run({ client: api, args: ['allow', 'per_1'], flags: {} });
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/autogtm/leads/per_1/screening');
+    expect(calls[0]?.body).toEqual({ allow: true });
+  });
+});

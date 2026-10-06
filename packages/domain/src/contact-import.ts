@@ -434,7 +434,9 @@ export function cleanContact(raw: RawContact, seen?: ReadonlySet<string>): Clean
       ...(tidy(raw.company) ? { company: tidy(raw.company) } : {}),
       ...(tidy(raw.title) ? { title: tidy(raw.title) } : {}),
       ...(tidy(raw.location) ? { location: tidy(raw.location) } : {}),
-      ...optional('companyDomain', companyDomainFrom(tidy(raw.companyDomain) || undefined)),
+      // A webmail host in the company column is a mistake in the export, not
+      // an employer: gmail.com is never anybody's company.
+      ...optional('companyDomain', employerDomain(tidy(raw.companyDomain) || undefined)),
       ...optional('linkedinUrl', linkedinProfile(raw.linkedinUrl)),
       ...optional('updatedAt', isoTime(raw.updatedAt)),
       domain,
@@ -486,6 +488,13 @@ export function mapHeaders(headers: readonly string[]): Record<string, number> {
   headers.forEach((header, index) => match(index, header));
 
   return mapping;
+}
+
+function employerDomain(raw: string | undefined): string | undefined {
+  const domain = companyDomainFrom(raw);
+  return domain && !FREEMAIL_DOMAINS.has(domain) && !DISPOSABLE_DOMAINS.has(domain)
+    ? domain
+    : undefined;
 }
 
 const optional = <K extends string>(key: K, value: string | undefined) =>

@@ -921,6 +921,92 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'add_leads_to_campaign',
+    title: 'Add leads to an existing campaign',
+    description:
+      'Append up to 5,000 leads to a campaign that is already running, as `leads` (email, ' +
+      'first_name, last_name, company_domain, job_title, linkedin_url...) or as the text of a ' +
+      'CSV file. People already in the campaign or its project, and anyone on a suppress list, ' +
+      'are skipped. Screening flags generated names, relay and temp-mail addresses, bot and test ' +
+      'accounts and role inboxes, and holds them back from sending unless allowFlagged. The ' +
+      'result is a per-row report: every rejected, skipped and flagged row with the reason. ' +
+      'Report those to the user rather than summarising them away.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaignId: { type: 'string' },
+        leads: { type: 'array', items: { type: 'object' } },
+        csv: { type: 'string', description: 'A CSV with a header row. Send this or leads.' },
+        consentSource: { type: 'string', description: 'Where these people came from.' },
+        allowFlagged: { type: 'boolean', description: 'Send to screened leads too.' },
+      },
+      required: ['campaignId'],
+    },
+    run: (client, args) =>
+      client.post(`/autogtm/campaigns/${encodeURIComponent(require(args, 'campaignId'))}/leads`, {
+        ...(Array.isArray(args.leads) ? { leads: args.leads } : {}),
+        // Untrimmed: the file's own line endings are part of the CSV.
+        ...(typeof args.csv === 'string' && args.csv.trim() ? { csv: args.csv } : {}),
+        ...(str(args, 'consentSource') ? { consent_source: str(args, 'consentSource') } : {}),
+        allow_flagged: args.allowFlagged === true,
+      }),
+  },
+  {
+    name: 'get_import_report',
+    title: 'Read an import report',
+    description:
+      'Every row an import rejected, skipped or flagged, with the column or check behind it, ' +
+      'for the task_id an import or add_leads_to_campaign returned.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' } },
+      required: ['taskId'],
+    },
+    run: (client, args) =>
+      client.get(`/autogtm/campaigns/import/${encodeURIComponent(require(args, 'taskId'))}/report`),
+  },
+  {
+    name: 'list_screened_leads',
+    title: 'List leads held back by screening',
+    description:
+      'A campaign’s leads that lead screening is holding back from sending, each with its ' +
+      'reasons (generated name, relay address, temp-mail domain, bot or test account, role ' +
+      'inbox). Nothing is sent to them until a human allows them.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaignId: { type: 'string' },
+        includeAllowed: { type: 'boolean' },
+      },
+      required: ['campaignId'],
+    },
+    run: (client, args) =>
+      client.get(
+        `/autogtm/campaigns/${encodeURIComponent(require(args, 'campaignId'))}/screened`,
+        args.includeAllowed === true ? { include_allowed: 'true' } : {},
+      ),
+  },
+  {
+    name: 'allow_screened_lead',
+    title: 'Send to a screened lead anyway',
+    description:
+      'Clears (allow: true) or restores (allow: false) the screening hold on one lead. Only do ' +
+      'this when the user has looked at the reason and decided the person is real.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { personId: { type: 'string' }, allow: { type: 'boolean' } },
+      required: ['personId', 'allow'],
+    },
+    run: (client, args) =>
+      client.post(`/autogtm/leads/${encodeURIComponent(require(args, 'personId'))}/screening`, {
+        allow: args.allow === true,
+      }),
+  },
+  {
     name: 'list_inbox',
     title: 'List conversations',
     description:

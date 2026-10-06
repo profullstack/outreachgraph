@@ -19,6 +19,7 @@ import { matchKeysForPerson } from './suppression-keys';
 import type { PolicyDecision, PolicyRequest } from '@outreachgraph/policy';
 import { advanceCadences, type AdvanceResult, type DueEnrollment } from './cadence';
 import { budgetStatus } from './metering';
+import { screenHold } from './lead-screen';
 
 export interface RunCadencesDeps {
   readonly db: Client;
@@ -102,11 +103,13 @@ async function policyInputsFor(
   const suppressed =
     person?.status === 'suppressed' ||
     (await isSuppressed(db, enrollment.workspace_id, enrollment.person_id));
+  const screenedOut = await screenHold(db, enrollment.workspace_id, enrollment.person_id);
 
   return {
     approvalMode: (campaign?.approval_mode ?? 'draft_and_approve') as 'draft_and_approve',
     hasConnectedAccount: connected || (step.network === 'email' && platformEmailEnabled),
     personSuppressed: suppressed,
+    ...(screenedOut ? { personScreenedOut: screenedOut } : {}),
     personBelievedMinor: person?.believed_minor === 1,
     personDeleted: person?.status === 'deleted',
     identityConfidence: person?.identity_confidence ?? 0,

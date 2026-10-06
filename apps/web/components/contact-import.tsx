@@ -60,6 +60,8 @@ export function ContactImport() {
   const [progress, setProgress] = useState<number | undefined>();
   const [summary, setSummary] = useState<ImportSummary | undefined>();
   const [groups, setGroups] = useState<RejectGroup[]>([]);
+  const [flagged, setFlagged] = useState<RejectGroup[]>([]);
+  const [reportUrl, setReportUrl] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
   function onFile(event: ChangeEvent<HTMLInputElement>): void {
@@ -153,8 +155,14 @@ export function ContactImport() {
       const detail = await fetch(`/api/v1/contacts/imports/${importId}`);
 
       if (detail.ok) {
-        const body = (await detail.json()) as { rejectsByReason: RejectGroup[] };
+        const body = (await detail.json()) as {
+          rejectsByReason: RejectGroup[];
+          flaggedByReason?: RejectGroup[];
+          reportUrl?: string;
+        };
         setGroups(body.rejectsByReason);
+        setFlagged(body.flaggedByReason ?? []);
+        setReportUrl(body.reportUrl);
       }
 
       setProgress(100);
@@ -256,6 +264,23 @@ export function ContactImport() {
                 </li>
               ))}
             </ul>
+          ) : null}
+
+          {flagged.length > 0 ? (
+            <ul className="text-ink-muted mt-2 flex flex-col gap-1 text-xs">
+              {flagged.map((group) => (
+                <li key={group.reason}>
+                  <span className="font-medium">{group.n.toLocaleString()}</span> imported but held
+                  back from sending: {group.reason.replace(/\+/g, ', ').replace(/_/g, ' ')}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {reportUrl && (summary.rejected > 0 || flagged.length > 0) ? (
+            <a href={reportUrl} className="text-accent mt-2 inline-block text-xs font-medium">
+              Download every row and why (CSV)
+            </a>
           ) : null}
 
           {progress === 100 ? (

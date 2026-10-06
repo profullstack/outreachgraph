@@ -38,6 +38,7 @@ import { rescoreProspect } from './jobs';
 import { recordDiscovered, recordStatus } from './stages';
 import { storeDiscoveredPhoto } from './photos';
 import { enqueueFindEmail } from './find-email-queue';
+import { screenHold } from './lead-screen';
 
 export interface PipelineOptions {
   readonly db: Client;
@@ -988,6 +989,9 @@ async function createRecommendation(
   const counts = await actionCounts(db, workspaceId, personId);
   const flags = await featureFlags(db, workspaceId);
   const connected = await connectedNetworks(db, workspaceId);
+  // A screened lead (relay mailbox, generated name...) gets research but no
+  // cold card until a human allows them.
+  const screenedOut = await screenHold(db, workspaceId, personId);
 
   const result = generateRecommendation({
     personId,
@@ -1006,6 +1010,7 @@ async function createRecommendation(
       // Overridden per network by `connectedNetworks` above.
       hasConnectedAccount: connected.size > 0 || options.emailSendingEnabled === true,
       personSuppressed: person.status === 'suppressed',
+      ...(screenedOut ? { personScreenedOut: screenedOut } : {}),
       personBelievedMinor: person.believed_minor === 1,
       personDeleted: person.status === 'deleted',
       identityConfidence: person.identity_confidence,

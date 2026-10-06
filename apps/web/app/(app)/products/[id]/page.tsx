@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { Avatar } from '../../../../components/avatar';
+import { AddLeads } from '../../../../components/add-leads';
 import { CampaignControls } from '../../../../components/campaign-controls';
+import { ScreenedLeads } from '../../../../components/screened-leads';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -135,6 +137,12 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
       </Step>
 
       <Step n={3} title={`Leads${campaign ? ` · ${campaign.people}` : ''}`}>
+        {campaign ? (
+          <>
+            <AddLeads campaignId={campaign.id} />
+            <ScreenedLeads campaignId={campaign.id} />
+          </>
+        ) : null}
         {leads.length === 0 ? (
           <Empty>
             {campaign && campaign.jobs_pending > 0
