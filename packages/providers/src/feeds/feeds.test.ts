@@ -80,6 +80,102 @@ describe('excerpt', () => {
   });
 });
 
+describe('RedditSource through the mirror', () => {
+  const ago = (hours: number): string => new Date(Date.now() - hours * 3_600_000).toISOString();
+
+  /** RSS Amplifier for the subs in `mirror`, an empty feed for the rest, and the archive. */
+  function web(
+    mirror: Record<string, unknown[]>,
+    archive: unknown[] = [],
+  ): { fetch: FetchLike; urls: string[] } {
+    const urls: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = input.toString();
+      urls.push(url);
+      const sub = /rssamplifier\.com\/r\/([^.]+)\.json/.exec(url)?.[1];
+      const body = sub !== undefined ? { items: mirror[sub] ?? [] } : { data: archive };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    return { fetch: fetchImpl, urls };
+  }
+
+  test('reads each subreddit from RSS Amplifier, matches terms here, and never calls reddit.com', async () => {
+    const { fetch, urls } = web({
+      smallbusiness: [
+        {
+          id: 't3_abc',
+          title: 'Can anyone recommend an invoicing tool?',
+          url: 'https://www.reddit.com/r/smallbusiness/comments/abc/x/',
+          summary: 'Six vans, paper invoices.',
+          date_published: ago(2),
+          authors: [{ name: '/u/vanowner' }],
+        },
+        {
+          id: 't3_def',
+          title: 'Weekend thread',
+          url: 'https://www.reddit.com/r/smallbusiness/comments/def/y/',
+          date_published: ago(1),
+          authors: [{ name: '/u/x' }],
+        },
+      ],
+    });
+    const posts = await new RedditSource({
+      fetchImpl: fetch,
+      subreddits: ['smallbusiness'],
+    }).search({ terms: ['invoicing'] });
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      externalId: 'abc',
+      authorHandle: 'vanowner',
+      url: 'https://www.reddit.com/r/smallbusiness/comments/abc/x/',
+      container: 'r/smallbusiness',
+    });
+    expect(urls).toEqual(['https://rssamplifier.com/r/smallbusiness.json?limit=100']);
+  });
+
+  test('a subreddit the mirror has not read comes from the archive, since the window', async () => {
+    const { fetch, urls } = web({}, [
+      {
+        id: 'zz1',
+        author: 'plumber',
+        title: 'Looking for a field service app',
+        selftext: 'quotes and scheduling',
+        permalink: '/r/plumbing/comments/zz1/x/',
+        subreddit: 'plumbing',
+        created_utc: Math.floor(Date.now() / 1000) - 3600,
+      },
+      {
+        id: 'zz2',
+        author: 'AutoModerator',
+        title: 'field service app megathread',
+        created_utc: Math.floor(Date.now() / 1000) - 60,
+      },
+    ]);
+    const since = new Date(Date.now() - 86_400_000);
+    const posts = await new RedditSource({
+      fetchImpl: fetch,
+      subreddits: ['plumbing'],
+      archiveGapMs: 0,
+    }).search({ terms: ['field service'], since });
+    expect(posts.map((post) => post.externalId)).toEqual(['zz1']);
+    expect(urls[1]).toStartWith(
+      'https://arctic-shift.photon-reddit.com/api/posts/search?subreddit=plumbing',
+    );
+    expect(urls[1]).toContain(`after=${Math.floor(since.getTime() / 1000)}`);
+  });
+
+  test('a token goes back to Reddit itself', async () => {
+    const { fetch, urls } = stub({ data: { children: [] } });
+    await new RedditSource({ fetchImpl: fetch, subreddits: ['plumbing'], accessToken: 't' }).search(
+      { terms: ['x'] },
+    );
+    expect(urls[0]).toStartWith('https://www.reddit.com/r/plumbing/search.json');
+  });
+});
+
 describe('RedditSource', () => {
   const listing = {
     data: {
@@ -117,7 +213,12 @@ describe('RedditSource', () => {
     // The single highest-leverage setting for a non-technical campaign: three
     // trade subreddits beat an unscoped search of all of Reddit.
     const { fetch, urls } = stub(listing);
-    const source = new RedditSource({ fetchImpl: fetch, subreddits: ['plumbing', 'hvac'] });
+    // Straight to Reddit, as a deployment with an allowed address would.
+    const source = new RedditSource({
+      fetchImpl: fetch,
+      subreddits: ['plumbing', 'hvac'],
+      mirrorUrl: null,
+    });
 
     await source.search({ terms: ['scheduling'] });
 
