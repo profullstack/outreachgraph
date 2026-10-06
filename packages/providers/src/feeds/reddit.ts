@@ -25,6 +25,15 @@
  *     per client. For anything beyond a light poll, register an OAuth app and
  *     pass a token — the request shape here is unchanged, so that is a header,
  *     not a rewrite.
+ *
+ * **Reddit blocks datacenter addresses outright**, with a 403 that the direct
+ * path used to read as "no posts", so a server with no token heard nothing at
+ * all. Subreddit listening therefore reads RSS Amplifier's mirror of each
+ * subreddit (`rssamplifier.com/r/<sub>.json`, filled by its own crawler) and,
+ * for a subreddit it has not read yet, the Arctic Shift archive's newest
+ * posts. Both answer servers anonymously. The terms are matched here, against
+ * the newest posts, which is what `sort=new` search did anyway. Reddit itself
+ * is still used for a site-wide search, and whenever an OAuth token is set.
  */
 
 import type { FetchLike } from '../site/fetch';
@@ -38,6 +47,10 @@ import {
 } from './source';
 
 export const REDDIT_API = 'https://www.reddit.com';
+/** RSS Amplifier's subreddit mirrors: `/r/<sub>.json`. */
+export const REDDIT_MIRROR = 'https://rssamplifier.com';
+/** The Arctic Shift archive, for subreddits the mirror has not read yet. */
+export const REDDIT_ARCHIVE = 'https://arctic-shift.photon-reddit.com';
 
 export interface RedditSourceOptions {
   readonly baseUrl?: string;
@@ -56,6 +69,39 @@ export interface RedditSourceOptions {
   readonly userAgent?: string;
   /** OAuth bearer token, for deployments that registered an app. */
   readonly accessToken?: string;
+  /**
+   * Where subreddit listings are read from when there is no token. `null`
+   * goes to Reddit directly, which only works from an address Reddit allows.
+   */
+  readonly mirrorUrl?: string | null;
+  /** The archive that stands in for a subreddit the mirror has not read. `null` turns it off. */
+  readonly archiveUrl?: string | null;
+  /** Least time between two archive requests; it answers 422 to anything faster. */
+  readonly archiveGapMs?: number;
+}
+
+interface MirrorFeed {
+  items?: {
+    id?: string;
+    title?: string;
+    url?: string;
+    summary?: string;
+    content_text?: string;
+    date_published?: string;
+    authors?: { name?: string }[];
+  }[];
+}
+
+interface ArchivePost {
+  id?: string;
+  author?: string;
+  title?: string;
+  selftext?: string;
+  permalink?: string;
+  subreddit?: string;
+  created_utc?: number;
+  over_18?: boolean;
+  stickied?: boolean;
 }
 
 interface RedditListing {
@@ -93,8 +139,15 @@ export class RedditSource implements FeedSource {
   readonly #subreddits: readonly string[];
   readonly #userAgent: string;
   readonly #accessToken: string | undefined;
+  readonly #mirrorUrl: string | null;
+  readonly #archiveUrl: string | null;
+  readonly #archiveGapMs: number;
+  #archiveLast = 0;
 
   constructor(options: RedditSourceOptions = {}) {
+    this.#mirrorUrl = options.mirrorUrl === undefined ? REDDIT_MIRROR : options.mirrorUrl;
+    this.#archiveUrl = options.archiveUrl === undefined ? REDDIT_ARCHIVE : options.archiveUrl;
+    this.#archiveGapMs = options.archiveGapMs ?? 2_000;
     this.#baseUrl = options.baseUrl ?? REDDIT_API;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? 10_000;
@@ -108,6 +161,11 @@ export class RedditSource implements FeedSource {
     if (terms.length === 0) return [];
 
     const limit = Math.min(input.limit ?? 25, 100);
+
+    if (this.#subreddits.length > 0 && !this.#accessToken && this.#mirrorUrl) {
+      return this.#searchMirrored(terms, limit, input.since);
+    }
+
     const query = buildQuery(terms);
 
     // One request per subreddit rather than an OR across them: Reddit's
@@ -157,6 +215,136 @@ export class RedditSource implements FeedSource {
     }
 
     return posts;
+  }
+
+  /**
+   * The newest posts of each subreddit, from the mirror or the archive, kept
+   * when they mention a term. One subreddit failing costs that subreddit,
+   * not the run.
+   */
+  async #searchMirrored(
+    terms: readonly string[],
+    limit: number,
+    since: Date | undefined,
+  ): Promise<readonly FeedPost[]> {
+    const posts: FeedPost[] = [];
+    const seen = new Set<string>();
+
+    for (const subreddit of this.#subreddits) {
+      let found: FeedPost[] = [];
+      try {
+        found = await this.#fromMirror(subreddit);
+        if (found.length === 0 && this.#archiveUrl)
+          found = await this.#fromArchive(subreddit, since);
+      } catch {
+        continue;
+      }
+
+      let kept = 0;
+      for (const post of found) {
+        if (kept >= limit) break;
+        if (seen.has(post.externalId)) continue;
+        if (
+          post.authorHandle === '[deleted]' ||
+          post.authorHandle === 'AutoModerator' ||
+          !post.authorHandle
+        )
+          continue;
+        if (since && Date.parse(post.postedAt) < since.getTime()) continue;
+        if (!mentionsTerm(`${post.title ?? ''}\n${post.text}`, terms)) continue;
+        seen.add(post.externalId);
+        posts.push(post);
+        kept += 1;
+      }
+    }
+
+    return posts;
+  }
+
+  async #getJson<T>(
+    url: string,
+    timeoutMs = this.#timeoutMs,
+  ): Promise<{ status: number; body?: T }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await this.#fetch(url, {
+        headers: { 'user-agent': this.#userAgent, accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (!response.ok) return { status: response.status };
+      return { status: response.status, body: (await response.json()) as T };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #fromMirror(subreddit: string): Promise<FeedPost[]> {
+    const { body } = await this.#getJson<MirrorFeed>(
+      `${this.#mirrorUrl}/r/${encodeURIComponent(subreddit)}.json?limit=100`,
+    );
+    return (body?.items ?? []).flatMap((item) => {
+      const id = (item.id ?? '').replace(/^t3_/, '');
+      const author = (item.authors?.[0]?.name ?? '').replace(/^\/?u\//, '');
+      const text = [item.title, item.content_text ?? item.summary]
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+      if (!id || !text) return [];
+      return [
+        {
+          network: 'reddit' as const,
+          externalId: id,
+          authorHandle: author,
+          authorUrl: `https://www.reddit.com/user/${author}`,
+          url: item.url ?? `https://www.reddit.com/r/${subreddit}/comments/${id}/`,
+          ...(item.title ? { title: item.title } : {}),
+          text: excerpt(text),
+          postedAt: item.date_published ?? new Date().toISOString(),
+          container: `r/${/\/r\/([^/]+)\//.exec(item.url ?? '')?.[1] ?? subreddit}`,
+        },
+      ];
+    });
+  }
+
+  async #fromArchive(subreddit: string, since: Date | undefined): Promise<FeedPost[]> {
+    const wait = this.#archiveLast + this.#archiveGapMs - Date.now();
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    this.#archiveLast = Date.now();
+
+    const params = new URLSearchParams({ subreddit, limit: '100', sort: 'desc' });
+    if (since) params.set('after', String(Math.floor(since.getTime() / 1000)));
+    const { status, body } = await this.#getJson<{ data?: ArchivePost[] }>(
+      `${this.#archiveUrl}/api/posts/search?${params.toString()}`,
+      // A hundred full posts is a third of a megabyte from a free service.
+      Math.max(this.#timeoutMs, 30_000),
+    );
+    if (status === 429) throw new FeedRateLimitError('reddit');
+
+    return (body?.data ?? []).flatMap((post) => {
+      if (!post.id || !post.author || post.over_18 || post.stickied) return [];
+      const selftext =
+        post.selftext === '[removed]' || post.selftext === '[deleted]' ? '' : post.selftext;
+      const text = [post.title, selftext].filter(Boolean).join('\n\n').trim();
+      if (!text) return [];
+      return [
+        {
+          network: 'reddit' as const,
+          externalId: post.id,
+          authorHandle: post.author,
+          authorUrl: `https://www.reddit.com/user/${post.author}`,
+          url: post.permalink
+            ? `https://www.reddit.com${post.permalink}`
+            : `https://www.reddit.com/r/${subreddit}/comments/${post.id}/`,
+          ...(post.title ? { title: post.title } : {}),
+          text: excerpt(text),
+          postedAt: post.created_utc
+            ? new Date(post.created_utc * 1000).toISOString()
+            : new Date().toISOString(),
+          container: `r/${post.subreddit ?? subreddit}`,
+        },
+      ];
+    });
   }
 
   async #fetchListing(
