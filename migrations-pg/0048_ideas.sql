@@ -1,8 +1,9 @@
--- 0047_ideas.sql (Postgres). See migrations/0047_ideas.sql for the reasoning.
+-- 0048_ideas.sql (Postgres). See migrations/0048_ideas.sql for the reasoning.
 
 create table if not exists idea_scans (
   workspace_id text PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
   subs_json text NOT NULL DEFAULT '[]',
+  feeds_json text,
   enabled bigint NOT NULL DEFAULT 1,
   every_minutes bigint NOT NULL DEFAULT 360,
   build_at bigint NOT NULL DEFAULT 5,
@@ -20,6 +21,7 @@ create table if not exists ideas (
   label text NOT NULL,
   named bigint NOT NULL DEFAULT 0,
   terms_json text NOT NULL DEFAULT '[]',
+  rivals_json text NOT NULL DEFAULT '[]',
   status text NOT NULL DEFAULT 'watching',
   first_at text NOT NULL,
   last_at text NOT NULL,
@@ -51,6 +53,9 @@ create table if not exists idea_asks (
   judged bigint NOT NULL DEFAULT 0,
   post_score bigint,
   comments bigint,
+  source text NOT NULL DEFAULT 'reddit',
+  paid bigint NOT NULL DEFAULT 0,
+  revenue text,
   created_at text NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_idea_asks_post ON idea_asks(workspace_id, post_id);

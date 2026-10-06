@@ -1,4 +1,4 @@
--- 0047_ideas.sql: the Idea Generator.
+-- 0048_ideas.sql: the Idea Generator.
 --
 -- People on Reddit ask for tools: "is there an app that tracks X and warns me",
 -- "I wish someone made Y". One ask is an anecdote; five different people asking
@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS idea_scans (
   workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
   -- JSON array of subreddit names.
   subs_json TEXT NOT NULL DEFAULT '[]',
+  -- JSON array of RSS Amplifier feeds ({slug, role, name}); NULL reads the defaults.
+  feeds_json TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   -- Minutes between scheduled scans.
   every_minutes INTEGER NOT NULL DEFAULT 360,
@@ -37,6 +39,8 @@ CREATE TABLE IF NOT EXISTS ideas (
   named INTEGER NOT NULL DEFAULT 0,
   -- JSON array of the words its asks share, most shared first.
   terms_json TEXT NOT NULL DEFAULT '[]',
+  -- JSON array of recent launches ({title, url}) that match it: the competition.
+  rivals_json TEXT NOT NULL DEFAULT '[]',
   -- 'watching' | 'build' | 'building' | 'dismissed'.
   status TEXT NOT NULL DEFAULT 'watching',
   first_at TEXT NOT NULL,
@@ -74,6 +78,12 @@ CREATE TABLE IF NOT EXISTS idea_asks (
   judged INTEGER NOT NULL DEFAULT 0,
   post_score INTEGER,
   comments INTEGER,
+  -- 'reddit' | 'feed': a subreddit ask, or a post from a blog, newsletter or HN feed.
+  source TEXT NOT NULL DEFAULT 'reddit',
+  -- 1 when the post shows people paying, or saying they would.
+  paid INTEGER NOT NULL DEFAULT 0,
+  -- The revenue figure as written ("$25K/month"), when there is one.
+  revenue TEXT,
   created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_idea_asks_post ON idea_asks(workspace_id, post_id);

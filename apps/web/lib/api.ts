@@ -312,7 +312,13 @@ export interface IdeaView {
   readonly askers: number;
   readonly asks: number;
   readonly demand: number;
+  readonly worth: number;
+  readonly verdict: 'build' | 'validate' | 'watch' | 'crowded';
+  readonly paid: number;
+  readonly revenue: string[];
   readonly subs: string[];
+  readonly feeds: string[];
+  readonly rivals: Array<{ title: string; url: string; postedAt: string }>;
   readonly wants: string[];
   readonly firstAt: string;
   readonly lastAt: string;
@@ -330,12 +336,16 @@ export interface IdeaAskView {
   readonly wants: string[];
   readonly postScore?: number;
   readonly comments?: number;
+  readonly source: string;
+  readonly paid: boolean;
+  readonly revenue?: string;
 }
 
 export interface IdeasView {
   readonly ideas: IdeaView[];
   readonly settings: {
     readonly subs: string[];
+    readonly feeds: Array<{ slug: string; role: string; name: string }>;
     readonly enabled: boolean;
     readonly everyMinutes: number;
     readonly buildAt: number;

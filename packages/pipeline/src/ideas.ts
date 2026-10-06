@@ -13,23 +13,38 @@
  * the hand-off HTTP call in the API, so both can be faked in tests.
  */
 
-import { judgeAsks, type AskJudgement, type TextModel } from '@outreachgraph/ai';
+import {
+  judgeAsks,
+  judgeSignals,
+  type AskJudgement,
+  type SignalJudgement,
+  type TextModel,
+} from '@outreachgraph/ai';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { newId } from '@outreachgraph/domain';
 import {
   archivePosts,
   bestIdea,
   classifyAsk,
+  classifySignal,
+  cleanFeeds,
   defaultFetch,
   demandScore,
   ideaTermsOf,
   pacedFetch,
+  readFeed,
   readSub,
+  rivalsFor,
+  worthScore,
+  DEFAULT_FEEDS,
   DEFAULT_SUBS,
+  PAYS,
   type BuildBrief,
   type Fetcher,
   type FeedPost,
+  type IdeaFeed,
   type IdeaRef,
+  type WorthVerdict,
 } from '@outreachgraph/ideas';
 
 export const IDEA_STATUSES = ['watching', 'build', 'building', 'dismissed'] as const;
@@ -38,12 +53,22 @@ export type IdeaStatus = (typeof IDEA_STATUSES)[number];
 const DAY_MS = 86_400_000;
 const MIN_CONFIDENCE = 0.5;
 const JUDGE_LIMIT = 30;
+/** Launches kept per idea. */
+const MAX_RIVALS = 20;
+
+interface Launch {
+  title: string;
+  url: string;
+  postedAt: string;
+}
 
 /* ------------------------------------------------------------- settings -- */
 
 export interface IdeaScanSettings {
   readonly workspaceId: string;
   readonly subs: string[];
+  /** RSS Amplifier feeds: Ask HN, case studies, essays, launches. */
+  readonly feeds: IdeaFeed[];
   readonly enabled: boolean;
   readonly everyMinutes: number;
   readonly buildAt: number;
@@ -56,6 +81,7 @@ export interface IdeaScanSettings {
 interface ScanRow {
   workspace_id: string;
   subs_json: string;
+  feeds_json: string | null;
   enabled: number;
   every_minutes: number;
   build_at: number;
@@ -88,6 +114,7 @@ export async function getIdeaScan(db: Client, workspaceId: string): Promise<Idea
     return {
       workspaceId,
       subs: [...DEFAULT_SUBS],
+      feeds: [...DEFAULT_FEEDS],
       enabled: true,
       everyMinutes: 360,
       buildAt: 5,
@@ -96,6 +123,7 @@ export async function getIdeaScan(db: Client, workspaceId: string): Promise<Idea
   return {
     workspaceId,
     subs: parse<string[]>(row.subs_json, [...DEFAULT_SUBS]),
+    feeds: row.feeds_json ? cleanFeeds(parse<IdeaFeed[]>(row.feeds_json, [])) : [...DEFAULT_FEEDS],
     enabled: Number(row.enabled) === 1,
     everyMinutes: Number(row.every_minutes),
     buildAt: Number(row.build_at),
@@ -112,12 +140,15 @@ export async function saveIdeaScan(
   db: Client,
   workspaceId: string,
   patch: Partial<
-    Pick<IdeaScanSettings, 'subs' | 'enabled' | 'everyMinutes' | 'buildAt' | 'windowDays'>
+    Pick<IdeaScanSettings, 'subs' | 'enabled' | 'everyMinutes' | 'buildAt' | 'windowDays'> & {
+      feeds: ReadonlyArray<string | Partial<IdeaFeed>>;
+    }
   >,
 ): Promise<IdeaScanSettings> {
   const cur = await getIdeaScan(db, workspaceId);
   const next = {
     subs: patch.subs ? cleanSubs(patch.subs) : cur.subs,
+    feeds: patch.feeds ? cleanFeeds(patch.feeds) : cur.feeds,
     enabled: patch.enabled ?? cur.enabled,
     everyMinutes: Math.min(Math.max(patch.everyMinutes ?? cur.everyMinutes, 30), 10_080),
     buildAt: Math.min(Math.max(patch.buildAt ?? cur.buildAt, 1), 100),
@@ -125,14 +156,15 @@ export async function saveIdeaScan(
   };
   const at = now();
   await db.execute({
-    sql: `INSERT INTO idea_scans (workspace_id, subs_json, enabled, every_minutes, build_at, window_days, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (workspace_id) DO UPDATE SET subs_json = excluded.subs_json, enabled = excluded.enabled,
+    sql: `INSERT INTO idea_scans (workspace_id, subs_json, feeds_json, enabled, every_minutes, build_at, window_days, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (workspace_id) DO UPDATE SET subs_json = excluded.subs_json, feeds_json = excluded.feeds_json, enabled = excluded.enabled,
             every_minutes = excluded.every_minutes, build_at = excluded.build_at, window_days = excluded.window_days,
             updated_at = excluded.updated_at`,
     args: [
       workspaceId,
       JSON.stringify(next.subs),
+      JSON.stringify(next.feeds),
       next.enabled ? 1 : 0,
       next.everyMinutes,
       next.buildAt,
@@ -220,6 +252,7 @@ interface IdeaRow {
   label: string;
   named: number;
   terms_json: string;
+  rivals_json: string | null;
   status: IdeaStatus;
   first_at: string;
   last_at: string;
@@ -249,6 +282,9 @@ interface AskRow {
   judged: number;
   post_score: number | null;
   comments: number | null;
+  source: string | null;
+  paid: number | null;
+  revenue: string | null;
 }
 
 /** File one ask: into the idea it matches, or a new one. Returns the idea id. */
@@ -308,14 +344,42 @@ async function refreshIdea(db: Client, ideaId: string, ideas: IdeaRef[]): Promis
   if (ref) ref.terms = terms;
 }
 
+/** A post that may be evidence for an idea, from a subreddit or a feed. */
+interface Candidate {
+  post: FeedPost;
+  source: 'reddit' | 'feed';
+  role: 'asks' | 'signals';
+  verdict: { score: number; kind: string; wants: string[] };
+  body: string;
+  score?: number | undefined;
+  comments?: number | undefined;
+  paid: boolean;
+  revenue?: string | undefined;
+}
+
+interface Judgement {
+  keep: boolean;
+  wants: readonly string[];
+  label: string;
+  paid?: boolean;
+}
+
 /**
- * Read every subreddit, keep the asks, file them under ideas, flag the ones
- * enough people asked for. Every post read is marked seen, ask or not, except
- * the candidates the judge had no time for, which wait for the next scan.
+ * Read every subreddit and feed, keep the asks and signals, file them under
+ * ideas, note matching launches, flag the ones enough people asked for. Every
+ * post read is marked seen, kept or not, except the candidates the judge had
+ * no time for, which wait for the next scan. Launches are never marked seen:
+ * they are re-read each scan to keep the rival counts current.
+ *
+ * Naming only subreddits (or only feeds) scans just those.
  */
 export async function scanIdeas(
   deps: IdeaScanDeps,
-  input: { workspaceId: string; subs?: string[] },
+  input: {
+    workspaceId: string;
+    subs?: string[];
+    feeds?: ReadonlyArray<string | Partial<IdeaFeed>>;
+  },
 ): Promise<IdeaScanResult> {
   const { db } = deps;
   const ws = input.workspaceId;
@@ -323,14 +387,62 @@ export async function scanIdeas(
   const at = deps.now ?? new Date();
   const oldest = at.getTime() - settings.windowDays * DAY_MS;
   const fetchJson = pacedFetch(deps.fetchJson ?? defaultFetch, deps.archiveGapMs ?? 2_500);
+  const named = Boolean(input.subs || input.feeds);
+  const subs = input.subs ? cleanSubs(input.subs) : named ? [] : settings.subs;
+  const feeds = input.feeds ? cleanFeeds(input.feeds) : named ? [] : settings.feeds;
   const sources: IdeaScanResult['sources'] = [];
   const skipped: string[] = [];
   let read = 0;
 
-  // 1. Candidates: unseen, recent, and shaped like an ask.
-  const candidates: Array<{ post: FeedPost; first: ReturnType<typeof classifyAsk> }> = [];
+  // 1. Candidates: unseen, recent, and shaped like an ask or a signal.
+  const candidates: Candidate[] = [];
   const toMark: string[] = [];
-  for (const sub of input.subs ? cleanSubs(input.subs) : settings.subs) {
+  const launches: Launch[] = [];
+  const consider = async (
+    posts: FeedPost[],
+    source: Candidate['source'],
+    role: Candidate['role'],
+  ) => {
+    const seen = await seenIds(
+      db,
+      ws,
+      posts.map((p) => p.id),
+    );
+    for (const post of posts) {
+      if (seen.has(post.id) || toMark.includes(post.id)) continue;
+      toMark.push(post.id);
+      if (Date.parse(post.postedAt) < oldest) continue;
+      if (role === 'signals') {
+        const verdict = classifySignal(post.title, post.text);
+        if (verdict.score >= MIN_CONFIDENCE)
+          candidates.push({
+            post,
+            source,
+            role,
+            verdict,
+            body: post.text,
+            paid: verdict.paid,
+            revenue: verdict.revenue,
+          });
+        continue;
+      }
+      const verdict = classifyAsk(post.title, post.text);
+      // The mirror's text is cut short: give near misses a look at the full text.
+      if (verdict.score >= MIN_CONFIDENCE - 0.1)
+        candidates.push({
+          post,
+          source,
+          role,
+          verdict,
+          body: post.text,
+          score: post.score,
+          comments: post.comments,
+          paid: PAYS.test(`${post.title}\n${post.text}`),
+        });
+    }
+  };
+
+  for (const sub of subs) {
     let got: Awaited<ReturnType<typeof readSub>>;
     try {
       got = await readSub(sub, fetchJson);
@@ -345,79 +457,118 @@ export async function scanIdeas(
       ...(got.note ? { note: got.note } : {}),
     });
     read += got.posts.length;
-    const seen = await seenIds(
-      db,
-      ws,
-      got.posts.map((p) => p.id),
-    );
-    for (const post of got.posts) {
-      if (seen.has(post.id) || toMark.includes(post.id)) continue;
-      toMark.push(post.id);
-      if (Date.parse(post.postedAt) < oldest) continue;
-      const first = classifyAsk(post.title, post.text);
-      // The mirror's text is cut short: give near misses a look at the full text.
-      if (first.score >= MIN_CONFIDENCE - 0.1) candidates.push({ post, first });
-    }
+    await consider(got.posts, 'reddit', 'asks');
   }
 
-  // 2. Full text and numbers from the archive, in one batch.
-  let full = new Map<string, { selftext?: string; score?: number; num_comments?: number }>();
-  if (candidates.length) {
+  for (const feed of feeds) {
+    let got: Awaited<ReturnType<typeof readFeed>>;
     try {
-      full = await archivePosts(
-        candidates.map((c) => c.post.id),
-        fetchJson,
-      );
+      got = await readFeed(feed, fetchJson);
+    } catch (error) {
+      skipped.push(`${feed.name}: ${(error as Error).message}`);
+      continue;
+    }
+    sources.push({
+      sub: feed.slug,
+      via: `feed:${feed.role}`,
+      posts: got.posts.length,
+      ...(got.note ? { note: got.note } : {}),
+    });
+    read += got.posts.length;
+    if (feed.role === 'built') {
+      for (const post of got.posts)
+        if (Date.parse(post.postedAt) >= oldest)
+          launches.push({ title: post.title, url: post.url, postedAt: post.postedAt });
+      continue;
+    }
+    await consider(got.posts, 'feed', feed.role);
+  }
+
+  // 2. Full text and numbers from the archive, in one batch, for Reddit posts.
+  let full = new Map<string, { selftext?: string; score?: number; num_comments?: number }>();
+  const fromReddit = candidates.filter((c) => c.source === 'reddit').map((c) => c.post.id);
+  if (fromReddit.length) {
+    try {
+      full = await archivePosts(fromReddit, fetchJson);
     } catch (error) {
       skipped.push(`archive: ${(error as Error).message}`);
     }
   }
   const kept = candidates
-    .map(({ post, first }) => {
-      const record = full.get(post.id);
+    .map((c): Candidate => {
+      if (c.source !== 'reddit') return c;
+      const record = full.get(c.post.id);
       const body =
         record?.selftext &&
-        record.selftext.length > post.text.length &&
+        record.selftext.length > c.post.text.length &&
         record.selftext !== '[removed]'
           ? record.selftext
-          : post.text;
-      const verdict = body === post.text ? first : classifyAsk(post.title, body);
+          : c.post.text;
       return {
-        post,
-        verdict,
+        ...c,
         body,
-        score: record?.score ?? post.score,
-        comments: record?.num_comments ?? post.comments,
+        verdict: body === c.post.text ? c.verdict : classifyAsk(c.post.title, body),
+        score: record?.score ?? c.post.score,
+        comments: record?.num_comments ?? c.post.comments,
+        paid: c.paid || PAYS.test(body),
       };
     })
     .filter((c) => c.verdict.score >= MIN_CONFIDENCE);
 
-  // 3. The judge, ten at a time. What it has not got to waits for the next scan.
-  const judgements = new Map<string, AskJudgement>();
-  let judged = false;
+  // 3. The judges, ten at a time: one for asks, one for signals. What they
+  //    have not got to waits for the next scan.
+  const judgements = new Map<string, Judgement>();
+  const judgedRoles = new Set<Candidate['role']>();
   let deferred = 0;
   const later = new Set<string>();
-  if (deps.model && kept.length) {
-    for (const k of kept.slice(JUDGE_LIMIT)) later.add(k.post.id);
-    deferred += later.size;
-    kept.length = Math.min(kept.length, JUDGE_LIMIT);
-    try {
-      for (let i = 0; i < kept.length; i += 10) {
-        const page = kept.slice(i, i + 10);
-        for (const j of await judgeAsks(
-          deps.model,
-          page.map((k) => ({ id: k.post.id, title: k.post.title, text: k.body })),
-        ))
-          judgements.set(j.id, j);
+  const model = deps.model;
+  if (model && kept.length) {
+    const run = async (
+      role: Candidate['role'],
+      judge: (
+        page: Array<{ id: string; title: string; text: string }>,
+      ) => Promise<Array<Judgement & { id: string }>>,
+    ) => {
+      const list = kept.filter((k) => k.role === role);
+      if (!list.length) return;
+      for (const k of list.slice(JUDGE_LIMIT)) later.add(k.post.id);
+      const before = judgements.size;
+      try {
+        for (let i = 0; i < Math.min(list.length, JUDGE_LIMIT); i += 10) {
+          const page = list.slice(i, Math.min(i + 10, JUDGE_LIMIT));
+          for (const j of await judge(
+            page.map((k) => ({ id: k.post.id, title: k.post.title, text: k.body })),
+          ))
+            judgements.set(j.id, j);
+        }
+        if (judgements.size > before) judgedRoles.add(role);
+        else skipped.push(`judge (${role}): no usable answer; kept the pattern verdicts`);
+      } catch (error) {
+        skipped.push(`judge (${role}): ${(error as Error).message}; kept the pattern verdicts`);
       }
-      judged = judgements.size > 0;
-      if (!judged) skipped.push('judge: no usable answer; kept the pattern verdicts');
-    } catch (error) {
-      skipped.push(`judge: ${(error as Error).message}; kept the pattern verdicts`);
-    }
+    };
+    await run('asks', async (page) =>
+      (await judgeAsks(model, page)).map((j: AskJudgement) => ({
+        id: j.id,
+        keep: j.ask,
+        wants: j.wants,
+        label: j.label,
+      })),
+    );
+    await run('signals', async (page) =>
+      (await judgeSignals(model, page)).map((j: SignalJudgement) => ({
+        id: j.id,
+        keep: j.idea,
+        wants: j.wants,
+        label: j.label,
+        paid: j.paid,
+      })),
+    );
+    deferred += later.size;
   }
+  const judged = judgedRoles.size > 0;
 
-  // 4. File the asks.
+  // 4. File them.
   const ideas: IdeaRef[] = (
     await queryAll<IdeaRow>(db, 'SELECT * FROM ideas WHERE workspace_id = ?', [ws])
   ).map((r) => ({
@@ -430,12 +581,13 @@ export async function scanIdeas(
   let rejected = 0;
   const touched = new Set<string>();
   for (const k of kept) {
+    if (later.has(k.post.id)) continue;
     const j = judgements.get(k.post.id);
-    if (j && !j.ask) {
+    if (j && !j.keep) {
       rejected++;
       continue;
     }
-    if (judged && !j) {
+    if (judgedRoles.has(k.role) && !j) {
       // The judge ran but skipped this one: judge it next time, not now.
       later.add(k.post.id);
       deferred++;
@@ -443,6 +595,7 @@ export async function scanIdeas(
     }
     const wants = j?.wants.length ? [...j.wants] : k.verdict.wants;
     const label = j?.label || null;
+    const paid = k.paid || j?.paid === true;
     const ideaId = await fileAsk(db, ws, ideas, {
       title: k.post.title,
       wants,
@@ -451,8 +604,8 @@ export async function scanIdeas(
     });
     await db.execute({
       sql: `INSERT INTO idea_asks (id, workspace_id, idea_id, post_id, sub, title, body, url, author, posted_at, confidence, kind,
-              wants_json, label, judged, post_score, comments, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              wants_json, label, judged, post_score, comments, source, paid, revenue, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (workspace_id, post_id) DO NOTHING`,
       args: [
         newId('ideaAsk'),
@@ -472,6 +625,9 @@ export async function scanIdeas(
         j ? 1 : 0,
         k.score ?? null,
         k.comments ?? null,
+        k.source,
+        paid ? 1 : 0,
+        k.revenue ?? null,
         now(),
       ],
     });
@@ -484,6 +640,34 @@ export async function scanIdeas(
     ws,
     toMark.filter((id) => !later.has(id)),
   );
+
+  // 4b. Launches that match an idea are its competition.
+  if (launches.length) {
+    const rows = await queryAll<{ id: string; rivals_json: string }>(
+      db,
+      "SELECT id, rivals_json FROM ideas WHERE workspace_id = ? AND status <> 'dismissed'",
+      [ws],
+    );
+    for (const row of rows) {
+      const ref = ideas.find((i) => i.id === row.id);
+      if (!ref) continue;
+      const matched = rivalsFor(ref, launches) as Launch[];
+      if (!matched.length) continue;
+      const current = parse<Launch[]>(row.rivals_json, []);
+      const merged = [
+        ...new Map([...current, ...matched].map((l) => [l.url, l] as const)).values(),
+      ].slice(-MAX_RIVALS);
+      if (
+        merged.length === current.length &&
+        matched.every((m) => current.some((c) => c.url === m.url))
+      )
+        continue;
+      await db.execute({
+        sql: 'UPDATE ideas SET rivals_json = ?, updated_at = ? WHERE id = ?',
+        args: [JSON.stringify(merged), now(), row.id],
+      });
+    }
+  }
 
   // 5. Flag what enough different people asked for.
   const flagged: string[] = [];
@@ -547,6 +731,11 @@ export interface IdeaAsk {
   readonly judged: boolean;
   readonly postScore?: number | undefined;
   readonly comments?: number | undefined;
+  /** 'reddit' or 'feed'. */
+  readonly source: string;
+  /** The post shows people paying, or saying they would. */
+  readonly paid: boolean;
+  readonly revenue?: string | undefined;
 }
 
 export interface IdeaSummary {
@@ -556,7 +745,19 @@ export interface IdeaSummary {
   readonly askers: number;
   readonly asks: number;
   readonly demand: number;
+  /** Demand plus proof of payment, reach across sources, and competition. */
+  readonly worth: number;
+  readonly verdict: WorthVerdict;
+  /** Distinct sources showing money changing hands, or people saying they would pay. */
+  readonly paid: number;
+  /** Revenue figures quoted by its sources ("$25K/month"). */
+  readonly revenue: string[];
+  /** Subreddits it was asked about in. */
   readonly subs: string[];
+  /** Feeds (Ask HN, newsletters, blogs) it came up in, by name. */
+  readonly feeds: string[];
+  /** Recent launches that match it. */
+  readonly rivals: Array<{ title: string; url: string; postedAt: string }>;
   readonly wants: string[];
   readonly firstAt: string;
   readonly lastAt: string;
@@ -582,7 +783,13 @@ const askFrom = (r: AskRow, withBody = false): IdeaAsk => ({
   judged: Number(r.judged) === 1,
   ...(r.post_score != null ? { postScore: Number(r.post_score) } : {}),
   ...(r.comments != null ? { comments: Number(r.comments) } : {}),
+  source: r.source ?? 'reddit',
+  paid: Number(r.paid ?? 0) === 1,
+  ...(r.revenue ? { revenue: r.revenue } : {}),
 });
+
+/** A feed's display name: the default list's, else its slug. */
+const feedName = (slug: string): string => DEFAULT_FEEDS.find((f) => f.slug === slug)?.name ?? slug;
 
 /** The wants most often asked for across an idea's asks. */
 function topWants(asks: IdeaAsk[], n = 8): string[] {
@@ -610,6 +817,16 @@ function summarize(row: IdeaRow, asks: IdeaAsk[], windowDays: number, at: Date):
       comments: a.comments ?? null,
     })),
   );
+  const rivals = parse<Launch[]>(row.rivals_json, []).filter(
+    (l) => Date.parse(l.postedAt) >= since,
+  );
+  const worth = worthScore({
+    demand: inWindow.length ? demand : 0,
+    askers: inWindow.length ? askers : 0,
+    sources: inWindow.map((a) => a.sub),
+    paidSources: inWindow.filter((a) => a.paid).map((a) => a.sub),
+    rivals: rivals.length,
+  });
   return {
     id: row.id,
     label: row.label,
@@ -617,7 +834,13 @@ function summarize(row: IdeaRow, asks: IdeaAsk[], windowDays: number, at: Date):
     askers: inWindow.length ? askers : 0,
     asks: asks.length,
     demand: inWindow.length ? demand : 0,
-    subs: [...new Set(asks.map((a) => a.sub))],
+    worth: worth.worth,
+    verdict: worth.verdict,
+    paid: worth.paid,
+    revenue: [...new Set(asks.flatMap((a) => (a.revenue ? [a.revenue] : [])))].slice(0, 5),
+    subs: [...new Set(asks.filter((a) => a.source === 'reddit').map((a) => a.sub))],
+    feeds: [...new Set(asks.filter((a) => a.source === 'feed').map((a) => feedName(a.sub)))],
+    rivals,
     wants: topWants(asks),
     firstAt: row.first_at,
     lastAt: row.last_at,
@@ -651,7 +874,7 @@ async function asksFor(
   return out;
 }
 
-/** Ideas, most wanted first. */
+/** Ideas, most worth building first. */
 export async function listIdeas(
   db: Client,
   workspaceId: string,
@@ -683,7 +906,7 @@ export async function listIdeas(
   const at = options.now ?? new Date();
   return rows
     .map((r) => summarize(r, asks.get(r.id) ?? [], windowDays, at))
-    .sort((a, b) => b.demand - a.demand || b.lastAt.localeCompare(a.lastAt))
+    .sort((a, b) => b.worth - a.worth || b.lastAt.localeCompare(a.lastAt))
     .slice(0, Math.min(Math.max(options.limit ?? 100, 1), 500));
 }
 
@@ -749,6 +972,9 @@ export function briefFor(idea: IdeaSummary & { asksList: IdeaAsk[] }): BuildBrie
     wants: idea.wants,
     askers: Math.max(idea.askers, 1),
     subs: idea.subs,
+    feeds: idea.feeds,
+    revenue: idea.revenue,
+    rivals: idea.rivals.length,
     examples: idea.asksList.slice(0, 3).map((a) => ({ title: a.title, url: a.url })),
   };
 }

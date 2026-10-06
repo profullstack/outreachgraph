@@ -40,8 +40,19 @@ export interface IdeaRouteDeps {
   readonly archiveGapMs?: number | undefined;
 }
 
+/** An RSS Amplifier feed: its slug or directory URL, optionally with a role. */
+const feedSchema = z.union([
+  z.string().max(200),
+  z.object({
+    slug: z.string().max(200),
+    role: z.enum(['asks', 'signals', 'built']).optional(),
+    name: z.string().max(80).optional(),
+  }),
+]);
+
 const settingsSchema = z.object({
   subs: z.array(z.string().max(40)).max(60).optional(),
+  feeds: z.array(feedSchema).max(100).optional(),
   enabled: z.boolean().optional(),
   everyMinutes: z.number().int().min(30).max(10_080).optional(),
   buildAt: z.number().int().min(1).max(100).optional(),
@@ -54,7 +65,10 @@ const updateSchema = z.object({
   notes: z.string().max(5_000).nullable().optional(),
 });
 
-const scanSchema = z.object({ subs: z.array(z.string().max(40)).max(60).optional() });
+const scanSchema = z.object({
+  subs: z.array(z.string().max(40)).max(60).optional(),
+  feeds: z.array(feedSchema).max(100).optional(),
+});
 
 async function body<T extends z.ZodTypeAny>(request: Request, schema: T): Promise<z.infer<T>> {
   let raw: unknown = {};
@@ -109,7 +123,11 @@ export function ideaRoutes(deps: IdeaRouteDeps): Hono<AppEnv> {
       eventType: 'ideas.settings_saved',
       entityKind: 'workspace',
       entityId: actor.workspaceId,
-      detail: { subs: settings.subs.length, enabled: settings.enabled },
+      detail: {
+        subs: settings.subs.length,
+        feeds: settings.feeds.length,
+        enabled: settings.enabled,
+      },
     });
     return c.json({ settings });
   });
@@ -125,7 +143,11 @@ export function ideaRoutes(deps: IdeaRouteDeps): Hono<AppEnv> {
         ...(deps.redditFetch ? { fetchJson: deps.redditFetch } : {}),
         ...(deps.archiveGapMs !== undefined ? { archiveGapMs: deps.archiveGapMs } : {}),
       },
-      { workspaceId: actor.workspaceId, ...(input.subs ? { subs: input.subs } : {}) },
+      {
+        workspaceId: actor.workspaceId,
+        ...(input.subs ? { subs: input.subs } : {}),
+        ...(input.feeds ? { feeds: input.feeds } : {}),
+      },
     );
     return c.json({ result });
   });

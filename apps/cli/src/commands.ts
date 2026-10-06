@@ -344,8 +344,10 @@ async function runIdeas({ client, args, flags }: CommandContext): Promise<string
         [
           pad(text(idea, 'id'), 30),
           pad(text(idea, 'status'), 9),
+          pad(text(idea, 'verdict'), 9),
           pad(`${text(idea, 'askers')} asked`, 9),
-          pad(`demand ${text(idea, 'demand')}`, 12),
+          pad(`${text(idea, 'paid')} paid`, 7),
+          pad(`worth ${text(idea, 'worth')}`, 11),
           text(idea, 'label'),
         ].join(' '),
       )
@@ -361,11 +363,21 @@ async function runIdeas({ client, args, flags }: CommandContext): Promise<string
       ? (idea.asksList as Array<Record<string, unknown>>)
       : [];
     const wants = Array.isArray(idea.wants) ? (idea.wants as string[]) : [];
+    const list = (key: string) => (Array.isArray(idea[key]) ? (idea[key] as unknown[]) : []);
+    const rivals = list('rivals') as Array<Record<string, unknown>>;
     return [
-      `${text(idea, 'label')}  (${text(idea, 'status')}, ${text(idea, 'askers')} people, demand ${text(idea, 'demand')})`,
+      `${text(idea, 'label')}  (${text(idea, 'verdict')}: worth ${text(idea, 'worth')}, ${text(idea, 'askers')} people, ${text(idea, 'paid')} sources showing money, demand ${text(idea, 'demand')}; ${text(idea, 'status')})`,
       wants.length ? `wants: ${wants.join('; ')}` : '',
+      list('revenue').length ? `revenue: ${list('revenue').join('; ')}` : '',
+      list('feeds').length ? `also in: ${list('feeds').join(', ')}` : '',
+      rivals.length
+        ? `rivals (${rivals.length}):\n${rivals.map((r) => `  ${text(r, 'title')}  ${text(r, 'url')}`).join('\n')}`
+        : '',
       text(idea, 'handoffUrl') ? `building: ${text(idea, 'handoffUrl')}` : '',
-      ...asks.map((a) => `  r/${text(a, 'sub')}  ${text(a, 'title')}\n    ${text(a, 'url')}`),
+      ...asks.map(
+        (a) =>
+          `  ${text(a, 'source') === 'feed' ? text(a, 'sub') : `r/${text(a, 'sub')}`}${text(a, 'paid') === 'true' ? ' $' : ''}  ${text(a, 'title')}\n    ${text(a, 'url')}`,
+      ),
     ]
       .filter(Boolean)
       .join('\n');
@@ -373,10 +385,11 @@ async function runIdeas({ client, args, flags }: CommandContext): Promise<string
 
   if (verb === 'scan') {
     const subs = flagString(flags, 'subs');
-    const { result } = (await client.post(
-      '/ideas/scan',
-      subs ? { subs: subs.split(',') } : {},
-    )) as { result: Record<string, unknown> };
+    const feeds = flagString(flags, 'feeds');
+    const { result } = (await client.post('/ideas/scan', {
+      ...(subs ? { subs: subs.split(',') } : {}),
+      ...(feeds ? { feeds: feeds.split(',') } : {}),
+    })) as { result: Record<string, unknown> };
     const flagged = Array.isArray(result.flagged) ? result.flagged.length : 0;
     return `read ${text(result, 'read')} posts, ${text(result, 'found')} new asks, ${text(result, 'rejected')} rejected, ${flagged} idea(s) flagged to build${result.judged ? '' : ' (not judged: no model)'}`;
   }
@@ -412,8 +425,30 @@ async function runIdeas({ client, args, flags }: CommandContext): Promise<string
     return `Scanning ${settings.subs.length} subreddits: ${settings.subs.join(', ')}`;
   }
 
+  if (verb === 'feeds') {
+    type Feed = { slug: string; role: string; name: string };
+    const show = (feeds: Feed[]) =>
+      feeds.map((f) => `${pad(f.role, 8)} ${pad(f.slug, 34)} ${f.name}`).join('\n');
+    if (!target) {
+      const { settings } = (await client.get('/ideas/settings')) as { settings: { feeds: Feed[] } };
+      return show(settings.feeds);
+    }
+    // og ideas feeds slug-a asks:slug-b built:slug-c (a bare slug reads as signals)
+    const feeds = [target, ...rest]
+      .flatMap((s) => s.split(','))
+      .map((s) => {
+        const [role, slug] =
+          s.includes(':') && !s.includes('://') ? s.split(':', 2) : [undefined, s];
+        return role ? { slug: slug!, role } : slug!;
+      });
+    const { settings } = (await client.put('/ideas/settings', { feeds })) as {
+      settings: { feeds: Feed[] };
+    };
+    return show(settings.feeds);
+  }
+
   throw new Error(
-    'og ideas list [--status build] | show <id> | scan [--subs a,b] | build <id> | dismiss <id> | subs [a b c]',
+    'og ideas list [--status build] | show <id> | scan [--subs a,b] [--feeds x,y] | build <id> | dismiss <id> | subs [a b c] | feeds [slug asks:slug built:slug]',
   );
 }
 

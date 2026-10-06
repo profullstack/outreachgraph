@@ -14,6 +14,12 @@ export interface BuildBrief {
   wants: string[];
   askers: number;
   subs: string[];
+  /** Feeds it came up in (Ask HN, newsletters), by name. */
+  feeds?: string[];
+  /** Revenue its sources quote for products like it. */
+  revenue?: string[];
+  /** Recent launches that match it. */
+  rivals?: number;
   /** A few of the posts that asked, so the builder sees the demand in people's words. */
   examples: Array<{ title: string; url: string }>;
 }
@@ -23,7 +29,13 @@ export function briefText(b: BuildBrief): string {
   const lines = [
     `Build a web app: ${b.label}.`,
     b.wants.length ? `It should: ${b.wants.slice(0, 8).join('; ')}.` : '',
-    `${b.askers} ${b.askers === 1 ? 'person has' : 'different people have'} asked for this on Reddit (${b.subs.map((s) => `r/${s}`).join(', ')}).`,
+    `${b.askers} ${b.askers === 1 ? 'person or source has' : 'different people and sources have'} asked for this${
+      b.subs.length ? ` on Reddit (${b.subs.map((s) => `r/${s}`).join(', ')})` : ''
+    }${b.subs.length && b.feeds?.length ? ' and' : ''}${b.feeds?.length ? ` in ${b.feeds.join(', ')}` : ''}.`,
+    b.revenue?.length ? `Products like it make money: ${b.revenue.join('; ')}.` : '',
+    b.rivals
+      ? `${b.rivals} similar launch${b.rivals === 1 ? '' : 'es'} recently: differentiate.`
+      : '',
     ...b.examples.slice(0, 3).map((e) => `- "${e.title}" ${e.url}`),
   ];
   return lines.filter(Boolean).join('\n').slice(0, 3900);

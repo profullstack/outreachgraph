@@ -482,24 +482,65 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: 'get_idea',
     title: 'Read one idea and the posts that asked for it',
     description:
-      'One idea with what people want it to do and every Reddit post that asked, with links.',
+      'One idea: what people want it to do, its worth score and verdict (build / validate / watch / ' +
+      'crowded), revenue its sources quote, matching launches (rivals), and every post that asked, with links.',
     readOnly: true,
     inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     run: (client, args) => client.get(`/ideas/${encodeURIComponent(str(args, 'id') as string)}`),
   },
   {
     name: 'scan_ideas',
-    title: 'Scan Reddit for people asking for tools',
+    title: 'Scan Reddit and idea feeds for things worth building',
     description:
-      "Reads the workspace's subreddits (or the ones given) now, keeps the posts asking for a tool, and " +
-      'files them under ideas. Takes up to a minute: the public archive is read slowly on purpose.',
+      "Reads the workspace's subreddits and RSS Amplifier feeds (Ask HN, founder case studies, " +
+      'essays, Show HN launches) now, or only the ones given. Keeps asks and signals (pains, products ' +
+      'making money), files them under ideas, and counts matching launches as rivals. Takes up to a ' +
+      'minute: the public Reddit archive is read slowly on purpose.',
     readOnly: false,
     inputSchema: {
       type: 'object',
-      properties: { subs: { type: 'array', items: { type: 'string' } } },
+      properties: {
+        subs: { type: 'array', items: { type: 'string' } },
+        feeds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'RSS Amplifier feed slugs, e.g. hnrss-org-7 (Ask HN)',
+        },
+      },
     },
     run: (client, args) =>
-      client.post('/ideas/scan', Array.isArray(args.subs) ? { subs: args.subs } : {}),
+      client.post('/ideas/scan', {
+        ...(Array.isArray(args.subs) ? { subs: args.subs } : {}),
+        ...(Array.isArray(args.feeds) ? { feeds: args.feeds } : {}),
+      }),
+  },
+  {
+    name: 'set_idea_feeds',
+    title: 'Choose the feeds the idea generator reads',
+    description:
+      'Replaces the RSS Amplifier feeds scanned for ideas. Each is a slug (or rssamplifier.com URL) ' +
+      'with a role: "asks" (people asking for tools, like Ask HN), "signals" (case studies and essays ' +
+      'about what sells; the default for a new slug), or "built" (launches, counted as competition).',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        feeds: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              slug: { type: 'string' },
+              role: { type: 'string', enum: ['asks', 'signals', 'built'] },
+              name: { type: 'string' },
+            },
+            required: ['slug'],
+          },
+        },
+      },
+      required: ['feeds'],
+    },
+    run: (client, args) => client.put('/ideas/settings', { feeds: args.feeds }),
   },
   {
     name: 'build_idea',

@@ -96,7 +96,8 @@ export function IdeasBoard({ initial }: { initial: IdeasView }) {
             {ready ? ` · ${ready} ready to build` : ''}
           </div>
           <div className="text-ink-muted">
-            {s.subs.length} subreddits · flagged at {s.buildAt} people in {s.windowDays} days ·{' '}
+            {s.subs.length} subreddits · {s.feeds.length} feeds · flagged at {s.buildAt} people in{' '}
+            {s.windowDays} days ·{' '}
             {s.lastScannedAt
               ? `last scan ${new Date(s.lastScannedAt).toLocaleString()}`
               : 'never scanned'}
@@ -128,8 +129,8 @@ export function IdeasBoard({ initial }: { initial: IdeasView }) {
           {s.subs
             .slice(0, 4)
             .map((x) => `r/${x}`)
-            .join(', ')}{' '}
-          and more for people asking for a tool.
+            .join(', ')}
+          , Ask HN, founder case studies and more for things people want and pay for.
         </p>
       ) : (
         <ul className="space-y-3">
@@ -144,8 +145,18 @@ export function IdeasBoard({ initial }: { initial: IdeasView }) {
                   <div className="font-medium">{idea.label}</div>
                   <div className="text-ink-muted text-sm">
                     {idea.askers} {idea.askers === 1 ? 'person' : 'people'} asked ·{' '}
-                    {idea.subs.map((x) => `r/${x}`).join(', ')} · last{' '}
+                    {[...idea.subs.map((x) => `r/${x}`), ...idea.feeds].join(', ')} · last{' '}
                     {new Date(idea.lastAt).toLocaleDateString()}
+                  </div>
+                  <div className="text-ink-muted text-sm">
+                    Worth {idea.worth}
+                    {idea.paid
+                      ? ` · ${idea.paid} source${idea.paid === 1 ? '' : 's'} showing money`
+                      : ' · no proof of payment yet'}
+                    {idea.revenue.length ? ` (${idea.revenue.slice(0, 2).join(', ')})` : ''}
+                    {idea.rivals.length
+                      ? ` · ${idea.rivals.length} similar launch${idea.rivals.length === 1 ? '' : 'es'}`
+                      : ''}
                   </div>
                   {idea.wants.length ? (
                     <div className="text-ink-muted mt-1 text-sm">
@@ -154,6 +165,18 @@ export function IdeasBoard({ initial }: { initial: IdeasView }) {
                   ) : null}
                 </button>
                 <div className="flex shrink-0 flex-col items-end gap-2">
+                  <span
+                    title="build: wanted and paid for · validate: one of the two · crowded: 4+ similar launches"
+                    className={`rounded-full px-2 py-0.5 text-xs ${
+                      idea.verdict === 'build'
+                        ? 'bg-green-100 text-green-800'
+                        : idea.verdict === 'crowded'
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-border/60 text-ink-muted'
+                    }`}
+                  >
+                    {idea.verdict === 'build' ? 'worth building' : idea.verdict}
+                  </span>
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs ${
                       idea.status === 'build'
@@ -204,12 +227,27 @@ export function IdeasBoard({ initial }: { initial: IdeasView }) {
                     >
                       <div>{a.title}</div>
                       <div className="text-ink-muted text-xs">
-                        r/{a.sub} · u/{a.author} · {new Date(a.postedAt).toLocaleDateString()}
+                        {a.source === 'feed' ? a.sub : `r/${a.sub} · u/${a.author}`} ·{' '}
+                        {new Date(a.postedAt).toLocaleDateString()}
+                        {a.revenue ? ` · ${a.revenue}` : a.paid ? ' · would pay' : ''}
                         {a.postScore != null ? ` · ${a.postScore} points` : ''}
                         {a.comments != null ? ` · ${a.comments} comments` : ''}
                       </div>
                     </a>
                   ))}
+                  {idea.rivals.length ? (
+                    <div className="text-ink-muted pt-1 text-xs">
+                      Similar launches:{' '}
+                      {idea.rivals.slice(0, 5).map((r, i) => (
+                        <span key={r.url}>
+                          {i ? ' · ' : ''}
+                          <a href={r.url} target="_blank" rel="noopener" className="underline">
+                            {r.title.replace(/^Show HN:\s*/i, '')}
+                          </a>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                   {asks[idea.id] === undefined ? (
                     <p className="text-ink-muted text-sm">Loading the posts…</p>
                   ) : null}

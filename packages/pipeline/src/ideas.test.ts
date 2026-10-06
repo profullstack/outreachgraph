@@ -7,7 +7,7 @@
  * second scan reads nothing twice; and nothing leaks between workspaces.
  */
 
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import { StubModel } from '@outreachgraph/ai';
 import { queryAll, type Client } from '@outreachgraph/db';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
@@ -20,6 +20,10 @@ import {
   updateIdea,
   workspacesDueForIdeaScan,
 } from './ideas';
+
+// Seeding a test database takes 5-7 s on a loaded runner: the timeout measures the
+// box, not the code (see crawl.test.ts). A real hang still fails, 30 s later.
+setDefaultTimeout(30_000);
 
 let seeded: SeededDatabase | undefined;
 afterEach(() => {
@@ -213,5 +217,101 @@ describe('scanIdeas', () => {
     expect(await updateIdea(d, SEED.workspaceId, idea!.id, { status: 'dismissed' })).toBe(true);
     expect(await listIdeas(d, SEED.workspaceId, { now: NOW })).toHaveLength(0);
     expect(await updateIdea(d, 'wsp_other', idea!.id, { status: 'build' })).toBe(false);
+  });
+
+  test('feeds: Ask HN and a case study join the Reddit idea, launches are rivals, worth ranks it', async () => {
+    const d = await db('ideas-feeds');
+    await saveIdeaScan(d, SEED.workspaceId, {
+      subs: ['AskTechnology'],
+      feeds: ['hnrss-org-7', 'indieniche-substack-com', 'hacker-news-show-hn'],
+      buildAt: 10,
+    });
+    const reddit = fakeReddit();
+    const iso = (daysAgo: number) => new Date(t(daysAgo) * 1000).toISOString();
+    const FEEDS: Record<string, unknown[]> = {
+      'hnrss-org-7': [
+        {
+          guid: 'https://news.ycombinator.com/item?id=111',
+          url: 'https://news.ycombinator.com/item?id=111',
+          title: 'Ask HN: Is there a tool to transcribe audio files I already recorded?',
+          summary: 'I have hours of interviews. I would pay for something that exports to docx.',
+          author: 'dave',
+          publishedAt: iso(1),
+        },
+      ],
+      'indieniche-substack-com': [
+        {
+          guid: 'https://indieniche.substack.com/p/transcribe',
+          url: 'https://indieniche.substack.com/p/transcribe',
+          title:
+            'She Built a Transcription Tool for Recorded Audio Files. It Now Makes $12K/Month.',
+          summary: 'Researchers upload interviews they already have.',
+          publishedAt: iso(4),
+        },
+        {
+          guid: 'https://indieniche.substack.com/p/advice',
+          url: 'https://indieniche.substack.com/p/advice',
+          title: 'Five things I learned this week',
+          summary: 'Some general thoughts.',
+          publishedAt: iso(2),
+        },
+      ],
+      'hacker-news-show-hn': [
+        {
+          guid: 'https://news.ycombinator.com/item?id=222',
+          url: 'https://news.ycombinator.com/item?id=222',
+          title: 'Show HN: Transcription for audio files you already recorded',
+          author: 'erin',
+          publishedAt: iso(3),
+        },
+      ],
+    };
+    const fetchJson = async (url: string) => {
+      const feed = /\/api\/feeds\/([^/?]+)/.exec(url)?.[1];
+      if (feed) return { freshness: 'live', items: FEEDS[feed] ?? [] };
+      return reddit.fetchJson(url);
+    };
+    const label = 'transcription for existing audio files';
+    const model = new StubModel(
+      JSON.stringify({
+        results: [
+          { id: 'p1', ask: true, idea: true, wants: ['transcribe existing audio files'], label },
+          { id: 'p2', ask: true, idea: true, wants: ['transcribe uploaded mp3 files'], label },
+          { id: 'p3', ask: false, idea: false, wants: [], label: '' },
+          { id: 'hn:111', ask: true, idea: true, wants: ['transcribe recorded interviews'], label },
+          {
+            id: 'feed:indieniche-substack-com:https://indieniche.substack.com/p/transcribe',
+            ask: false,
+            idea: true,
+            wants: ['transcribe recorded audio files'],
+            label,
+            paid: true,
+          },
+        ],
+      }),
+    );
+
+    const result = await scanIdeas(
+      { db: d, model, fetchJson, archiveGapMs: 0, now: NOW },
+      { workspaceId: SEED.workspaceId },
+    );
+    expect(result.found).toBe(4);
+    expect(result.sources.map((s) => s.via)).toContain('feed:signals');
+
+    const [idea] = await listIdeas(d, SEED.workspaceId, { now: NOW });
+    expect(idea).toMatchObject({ label, askers: 4, paid: 2, verdict: 'build' });
+    expect(idea!.subs).toEqual(['AskTechnology']);
+    expect(idea!.feeds.sort()).toEqual(['Ask HN', 'Indieniche']);
+    expect(idea!.revenue).toEqual(['$12K/Month']);
+    expect(idea!.rivals.map((r) => r.url)).toEqual(['https://news.ycombinator.com/item?id=222']);
+    expect(idea!.worth).toBeGreaterThan(idea!.demand);
+
+    // Launches are re-read, never filed as demand.
+    const sources = await queryAll<{ source: string }>(
+      d,
+      'SELECT source FROM idea_asks WHERE workspace_id = ?',
+      [SEED.workspaceId],
+    );
+    expect(sources.filter((s) => s.source === 'feed')).toHaveLength(2);
   });
 });

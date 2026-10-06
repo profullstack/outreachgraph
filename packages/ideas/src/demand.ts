@@ -431,3 +431,57 @@ export function demandScore(
   );
   return { askers, demand: Number((askers * 10 + attention).toFixed(1)) };
 }
+
+// ------------------------------------------------------------------- worth
+
+/** Launches whose words match an idea: the competition it would walk into. */
+export function rivalsFor(
+  idea: { label: string; terms: string[] },
+  launches: Array<{ title: string; url: string }>,
+): Array<{ title: string; url: string }> {
+  const named = labelTerms(idea.label);
+  return launches.filter((launch) => {
+    const terms = askTerms({ title: launch.title, wants: [] });
+    const match = similarity(terms, idea.terms);
+    return match.shared >= 2 && match.score >= 0.5 && terms.some((t) => named.has(t));
+  });
+}
+
+export type WorthVerdict = 'build' | 'validate' | 'watch' | 'crowded';
+
+/**
+ * Worth building AND selling, not only wanted. Demand (different people asking,
+ * and the attention they got) is the base. On top:
+ *
+ *   paid     each source showing money (a case study's revenue, an asker saying
+ *            they would pay) adds 15, up to three: willingness to pay is the
+ *            difference between a feature request and a business.
+ *   reach    each further place it comes up (another subreddit, Ask HN, a
+ *            newsletter) adds 8, up to four: one forum is one community's quirk.
+ *   rivals   one recent launch means a market exists (+5); a few is a fight
+ *            (-5); four or more is crowded (-20).
+ *
+ * The verdict: 'build' needs both demand and money; 'validate' has one of them;
+ * 'crowded' is any idea with four or more matching launches.
+ */
+export function worthScore(input: {
+  demand: number;
+  askers: number;
+  sources: string[];
+  paidSources: string[];
+  rivals: number;
+}): { worth: number; paid: number; reach: number; verdict: WorthVerdict } {
+  const paid = Math.min(new Set(input.paidSources).size, 3);
+  const reach = Math.min(Math.max(new Set(input.sources).size - 1, 0), 4);
+  const rivalry = input.rivals >= 4 ? -20 : input.rivals >= 2 ? -5 : input.rivals === 1 ? 5 : 0;
+  const worth = Number((input.demand + paid * 15 + reach * 8 + rivalry).toFixed(1));
+  const verdict: WorthVerdict =
+    input.rivals >= 4
+      ? 'crowded'
+      : input.askers >= 2 && paid >= 1
+        ? 'build'
+        : input.askers >= 2 || paid >= 1
+          ? 'validate'
+          : 'watch';
+  return { worth, paid, reach, verdict };
+}
