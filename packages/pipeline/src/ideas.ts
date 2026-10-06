@@ -35,6 +35,7 @@ import {
   readFeed,
   readSub,
   rivalsFor,
+  specificLabel,
   worthScore,
   DEFAULT_FEEDS,
   DEFAULT_SUBS,
@@ -595,6 +596,11 @@ export async function scanIdeas(
     }
     const wants = j?.wants.length ? [...j.wants] : k.verdict.wants;
     const label = j?.label || null;
+    // A signal must name what the product does: "a $20K/month app" is a story, not an idea.
+    if (k.role === 'signals' && !specificLabel(label ?? wants[0])) {
+      rejected++;
+      continue;
+    }
     const paid = k.paid || j?.paid === true;
     const ideaId = await fileAsk(db, ws, ideas, {
       title: k.post.title,

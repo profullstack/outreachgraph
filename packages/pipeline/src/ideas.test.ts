@@ -249,6 +249,13 @@ describe('scanIdeas', () => {
           publishedAt: iso(4),
         },
         {
+          guid: 'https://indieniche.substack.com/p/vague',
+          url: 'https://indieniche.substack.com/p/vague',
+          title: 'How I Grew My Mobile App to $17K per Month',
+          summary: 'Lessons from three years of growth.',
+          publishedAt: iso(3),
+        },
+        {
           guid: 'https://indieniche.substack.com/p/advice',
           url: 'https://indieniche.substack.com/p/advice',
           title: 'Five things I learned this week',
@@ -280,6 +287,14 @@ describe('scanIdeas', () => {
           { id: 'p3', ask: false, idea: false, wants: [], label: '' },
           { id: 'hn:111', ask: true, idea: true, wants: ['transcribe recorded interviews'], label },
           {
+            id: 'feed:indieniche-substack-com:https://indieniche.substack.com/p/vague',
+            ask: false,
+            idea: true,
+            wants: ['grow a mobile app'],
+            label: 'successful mobile app',
+            paid: true,
+          },
+          {
             id: 'feed:indieniche-substack-com:https://indieniche.substack.com/p/transcribe',
             ask: false,
             idea: true,
@@ -295,7 +310,7 @@ describe('scanIdeas', () => {
       { db: d, model, fetchJson, archiveGapMs: 0, now: NOW },
       { workspaceId: SEED.workspaceId },
     );
-    expect(result.found).toBe(4);
+    expect(result.found).toBe(4); // the vague "$17K mobile app" story is not an idea
     expect(result.sources.map((s) => s.via)).toContain('feed:signals');
 
     const [idea] = await listIdeas(d, SEED.workspaceId, { now: NOW });

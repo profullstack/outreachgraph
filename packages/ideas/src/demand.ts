@@ -485,3 +485,25 @@ export function worthScore(input: {
           : 'watch';
   return { worth, paid, reach, verdict };
 }
+
+/** Words that say a product exists without saying what it does. */
+const VAGUE = new Set(
+  (
+    'mobile desktop game games successful profitable business businesses startup startups company companies idea ideas ' +
+    'money revenue income mrr arr month monthly year million side project projects new best small big viral digital ai ' +
+    'agent agents assistant own first one simple niche directory marketplace community content newsletter course'
+  ).split(/\s+/),
+);
+
+/**
+ * Does this name a product someone could build, rather than "a successful
+ * mobile app" or "$20K/month app"? It needs one word that is neither generic
+ * nor vague: "timer", "invoice", "transcription", "vet".
+ */
+export function specificLabel(label: string | null | undefined): boolean {
+  if (!label || /\$|\d/.test(label)) return false;
+  return termsOf(label).some(
+    (term) =>
+      !term.includes(' ') && contentful(term) && !GENERIC.has(term) && !VAGUE.has(stem(term)),
+  );
+}
