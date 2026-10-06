@@ -247,6 +247,21 @@ export interface ProspectDetail {
   signals: SignalRow[];
   /** Optional: a cached page from before addresses were proposed has none. */
   emailCandidates?: EmailCandidateRow[];
+  /** The assembled OpenProfile.md, once the job has run for them. */
+  openprofile?: ProspectOpenProfile | null;
+}
+
+/**
+ * What the person's OpenProfile.md says beside their name. Each is exactly as
+ * the file states it, or null for unstated; pronouns are never inferred.
+ */
+export interface ProspectOpenProfile {
+  url: string;
+  public: boolean;
+  /** One emoji, or an OpenEmoji `:shortcode:` as written. Optional on a cached page. */
+  emoji?: string | null;
+  pronouns?: string | null;
+  web?: string | null;
 }
 
 /**

@@ -132,6 +132,10 @@ describe('GET /people/:id/openprofile.md', () => {
       handle: null,
       claimedAt: null,
       editedAt: null,
+      // The file states none of them: unstated, never inferred.
+      emoji: null,
+      pronouns: null,
+      web: null,
     });
 
     expect((await get(app, '/people/per_nobody/openprofile.md')).status).toBe(404);

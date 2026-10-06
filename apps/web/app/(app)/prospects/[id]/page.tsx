@@ -56,6 +56,11 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
   }
 
   const { person, identities, signals } = detail;
+  // Stated in their OpenProfile.md, or absent. A shortcode the browser has
+  // no image for is shown as written rather than dropped.
+  const mark = detail.openprofile?.emoji ?? null;
+  const pronouns = detail.openprofile?.pronouns ?? null;
+  const web = detail.openprofile?.web ?? null;
   // Tolerated as possibly-absent: a browser holding a cached page from before
   // company profiles existed would otherwise crash on `.length`.
   const companyIdentities = detail.companyIdentities ?? [];
@@ -69,8 +74,28 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
       <header className="mt-3 flex items-center gap-4">
         <Avatar name={person.display_name} src={person.avatar_url} size="lg" />
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold">{person.display_name}</h1>
+          <h1 className="text-xl font-semibold">
+            {mark ? (
+              <span className="mr-1.5" title="Their mark, from their OpenProfile">
+                {mark}
+              </span>
+            ) : null}
+            {person.display_name}
+            {pronouns ? (
+              <span className="text-ink-muted ml-2 text-sm font-normal">({pronouns})</span>
+            ) : null}
+          </h1>
           <p className="text-ink-muted text-sm">{person.current_title ?? '—'}</p>
+          {web && /^https?:\/\//i.test(web) ? (
+            <a
+              href={web}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-ink-muted block truncate text-xs underline"
+            >
+              {web.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/+$/, '')}
+            </a>
+          ) : null}
           <p className="text-ink-muted mt-1 text-xs">
             Identity confidence {Math.round((person.identity_confidence ?? 0) * 100)}%
           </p>

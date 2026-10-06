@@ -43,7 +43,9 @@
  */
 
 import { queryAll, type Client } from '@outreachgraph/db';
+import type { Overrides } from '@profullstack/openprofile';
 import { ApiError } from './context';
+import { composeProfile, profileMarks } from './openprofile';
 
 export type DirectoryKind = 'company' | 'site' | 'person';
 
@@ -57,6 +59,13 @@ export interface DirectoryItem {
   readonly country: string | null;
   /** The OpenProfile.md the person serves themselves, or null. */
   readonly openprofile: string | null;
+  /**
+   * A person's mark and pronouns, exactly as their OpenProfile.md states
+   * them (the owner's corrections applied); null for a company or site, and
+   * null when unstated. Pronouns are never inferred.
+   */
+  readonly emoji: string | null;
+  readonly pronouns: string | null;
   /** ISO timestamp of the last change to the row. */
   readonly updated: string;
 }
@@ -91,6 +100,7 @@ interface DirectoryRow {
   company_name: string | null;
   markdown: string | null;
   published_url: string | null;
+  overrides_json: string | null;
   home_url: string | null;
   profile_url: string | null;
   updated_at: string;
@@ -114,13 +124,14 @@ const DIRECTORY_SQL = `
   SELECT * FROM (
     SELECT 'company' AS kind, c.id, c.name, c.domain, c.industry, c.technologies,
            NULL AS title, NULL AS company_name, NULL AS markdown, NULL AS published_url,
-           NULL AS home_url, NULL AS profile_url, c.updated_at
+           NULL AS overrides_json, NULL AS home_url, NULL AS profile_url, c.updated_at
       FROM companies c
      WHERE c.domain IS NOT NULL AND c.domain <> ''
     UNION ALL
     SELECT 'person' AS kind, p.id, p.display_name AS name, NULL AS domain, NULL AS industry,
            NULL AS technologies, p.current_title AS title, co.name AS company_name,
            o.markdown, o.published_url,
+           (SELECT st.overrides_json FROM openprofile_settings st WHERE st.person_id = p.id) AS overrides_json,
            (SELECT s.profile_url FROM social_identities s
              WHERE s.person_id = p.id AND s.network = 'website'
                AND s.profile_url LIKE 'http%'
@@ -178,6 +189,7 @@ function toItem(row: DirectoryRow): DirectoryItem {
       topics: topicsFromOpenProfile(row.markdown),
       country: null,
       openprofile: row.published_url,
+      ...personMarks(row.markdown, row.overrides_json),
       updated: row.updated_at,
     };
   }
@@ -199,8 +211,27 @@ function toItem(row: DirectoryRow): DirectoryItem {
     topics: companyTopics(row.industry, row.technologies),
     country: null,
     openprofile: null,
+    emoji: null,
+    pronouns: null,
     updated: row.updated_at,
   };
+}
+
+/** Emoji and Pronouns from the public view of the file, overlay applied. */
+function personMarks(
+  markdown: string | null,
+  overridesJson: string | null,
+): { emoji: string | null; pronouns: string | null } {
+  if (!markdown) return { emoji: null, pronouns: null };
+  let overrides: Overrides = {};
+  try {
+    const parsed: unknown = JSON.parse(overridesJson || '{}');
+    if (parsed && typeof parsed === 'object') overrides = parsed as Overrides;
+  } catch {
+    // A malformed overlay is no overlay.
+  }
+  const { emoji, pronouns } = profileMarks(composeProfile(markdown, overrides, 'public').doc);
+  return { emoji, pronouns };
 }
 
 /** "VP Engineering at Acme", or just the title, or nothing. Never a bio. */

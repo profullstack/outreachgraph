@@ -46,6 +46,14 @@ export interface ProfileFacts {
   readonly avatar?: string | undefined;
   /** The home page the profile names, when it names one. */
   readonly web?: string | undefined;
+  /**
+   * Pronouns exactly as the person wrote them in a field the network gives
+   * for it. Never inferred from a name, a bio or anything else: absent means
+   * unstated.
+   */
+  readonly pronouns?: string | undefined;
+  /** The person's mark: one emoji or an OpenEmoji `:shortcode:`, when they stated one. */
+  readonly emoji?: string | undefined;
   readonly accounts: readonly ProfileAccount[];
   /** `#tags` and comma topics the bio carried, lower-cased, deduplicated. */
   readonly topics: readonly string[];
@@ -64,6 +72,10 @@ export interface ProfileInput {
   readonly web?: string | undefined;
   readonly avatar?: string | undefined;
   readonly email?: string | undefined;
+  /** As stated by the person; never inferred. */
+  readonly pronouns?: string | undefined;
+  /** One emoji or an OpenEmoji `:shortcode:`. */
+  readonly emoji?: string | undefined;
   readonly accounts: readonly ProfileAccount[];
   readonly topics: readonly string[];
 }
@@ -231,6 +243,24 @@ interface BlueskyActor {
   displayName?: string;
   description?: string;
   avatar?: string;
+  /** The profile's own pronouns field, as the person typed it. */
+  pronouns?: string;
+  /** The profile's own website field. */
+  website?: string;
+}
+
+/** A stated value, trimmed and length-capped; blank is absent. */
+function stated(value: string | null | undefined, max = 40): string | undefined {
+  const trimmed = collapse(value ?? '');
+  return trimmed && trimmed.length <= max ? trimmed : undefined;
+}
+
+/** The mark a field states: an OpenEmoji `:shortcode:` or a short emoji run, nothing else. */
+function statedEmoji(value: string | null | undefined): string | undefined {
+  const raw = stated(value, 64);
+  if (!raw) return undefined;
+  if (/^:[a-z0-9_+-]+:$/i.test(raw)) return raw;
+  return /^\p{Extended_Pictographic}/u.test(raw) && raw.length <= 16 ? raw : undefined;
 }
 
 /** A Bluesky profile from the public AppView. No token, no session. */
@@ -251,7 +281,8 @@ export async function readBlueskyProfile(
 
   const bio = found.description ?? '';
   const links = urlsInText(bio);
-  const web = links.find((url) => !networkForUrl(url));
+  const website = /^https?:\/\//i.test(found.website ?? '') ? found.website : undefined;
+  const web = website ?? links.find((url) => !networkForUrl(url));
   return {
     source: `https://bsky.app/profile/${found.handle}`,
     name: found.displayName?.trim() || undefined,
@@ -261,6 +292,7 @@ export async function readBlueskyProfile(
       .find(Boolean),
     avatar: found.avatar,
     web,
+    pronouns: stated(found.pronouns),
     accounts: links.map((url) => account(url, 'link')),
     topics: hashtagsIn(bio),
     platformUserId: found.did,
@@ -295,7 +327,13 @@ export async function readMastodonProfile(
   const bio = stripTags(found.note ?? '');
   const accounts = new Map<string, ProfileAccount>();
   let web: string | undefined;
+  let pronouns: string | undefined;
+  let emoji: string | undefined;
   for (const field of found.fields ?? []) {
+    // A field the person named for the purpose is a statement; nothing else is.
+    const label = collapse(field.name ?? '').toLowerCase();
+    if (/^pronouns?$/.test(label)) pronouns ??= stated(stripTags(field.value ?? ''));
+    if (label === 'emoji') emoji ??= statedEmoji(stripTags(field.value ?? ''));
     for (const url of urlsInText(stripTags(field.value ?? '')).concat(
       urlsInText(field.value ?? ''),
     )) {
@@ -317,6 +355,8 @@ export async function readMastodonProfile(
     headline: bio.split(/(?<=[.!?])\s+/).find(Boolean),
     avatar: found.avatar,
     web,
+    pronouns,
+    emoji,
     accounts: [...accounts.values()],
     topics: hashtagsIn(bio),
     platformUserId: found.id ? `${parsed.host}:${found.id}` : undefined,
@@ -397,6 +437,8 @@ export function mergeFacts(
     web: first('web') as string | undefined,
     avatar: first('avatar') as string | undefined,
     email,
+    pronouns: first('pronouns') as string | undefined,
+    emoji: first('emoji') as string | undefined,
     accounts: [...accounts.values()].filter((entry) => !/^mailto:/i.test(entry.url)),
     topics,
   };
@@ -423,6 +465,8 @@ export function buildOpenProfile(input: ProfileInput): string {
       identity: {
         Kind: input.kind ?? 'person',
         Handle: `@${handle}`,
+        Emoji: input.emoji,
+        Pronouns: input.pronouns,
         Web: input.web,
         Email: input.email,
         Avatar: input.avatar,
