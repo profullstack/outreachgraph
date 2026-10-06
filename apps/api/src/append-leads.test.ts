@@ -160,6 +160,61 @@ describe('POST /autogtm/campaigns/:id/leads', () => {
   );
 
   test(
+    'enrich runs in the background and the status reports what was filled',
+    async () => {
+      const seeded = await seedDatabase('append-enrich');
+      active = seeded;
+      const asked: string[] = [];
+      const app = createApp({
+        db: seeded.db,
+        authenticate: async () => ACTOR,
+        leadEnrichment: {
+          searcher: {
+            async search(query) {
+              asked.push(query);
+              return query.includes('Scott Perry')
+                ? [
+                    {
+                      title: 'Scott Perry - VP Sales - Northwind | LinkedIn',
+                      link: 'https://www.linkedin.com/in/scott-perry-9',
+                    },
+                  ]
+                : [];
+            },
+          },
+        },
+      });
+
+      await send(app, 'POST', `/autogtm/campaigns/${SEED.campaignId}/leads`, {
+        leads: [{ email: 'scott.perry@northwind.io', company_domain: 'northwind.io' }],
+      });
+
+      const started = await send(app, 'POST', `/autogtm/campaigns/${SEED.campaignId}/enrich`, {});
+      expect(started.status).toBe(202);
+
+      let status: Record<string, unknown> = { running: true };
+      for (let i = 0; i < 100 && status.running; i += 1) {
+        await Bun.sleep(100);
+        status = (await (
+          await app.request(`/api/v1/autogtm/campaigns/${SEED.campaignId}/enrichment`)
+        ).json()) as Record<string, unknown>;
+      }
+      expect(status.running).toBe(false);
+      expect(status.last_run).toMatchObject({ titles: 1, profiles: 1 });
+
+      const scott = await queryOne<{ current_title: string; first_name: string }>(
+        seeded.db,
+        `SELECT p.current_title, p.first_name FROM people p
+           JOIN person_emails pe ON pe.person_id = p.id
+          WHERE pe.address = 'scott.perry@northwind.io'`,
+      );
+      expect(scott).toEqual({ current_title: 'VP Sales', first_name: 'Scott' });
+      expect(asked.some((q) => q.includes('"Scott Perry" northwind'))).toBe(true);
+    },
+    T,
+  );
+
+  test(
     'takes the CSV itself and names a missing email column',
     async () => {
       const { app } = await harness('append-csv');

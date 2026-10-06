@@ -67,6 +67,16 @@ export interface ValueSerpOptions {
 
 const DEFAULT_BASE = 'https://api.valueserp.com';
 
+/** A paid provider answered HTTP 402: no credits left, so stop asking. */
+export class SearchOutOfCredits extends Error {
+  readonly provider: string;
+  constructor(provider: string) {
+    super(`${provider} is out of credits (HTTP 402)`);
+    this.name = 'SearchOutOfCredits';
+    this.provider = provider;
+  }
+}
+
 /** One image result, as much of it as this adapter reads. */
 interface ImageResult {
   readonly title?: string;
@@ -113,6 +123,9 @@ export class ValueSerpClient implements ProfilePhotoFinder, WebSearcher {
         organic_results?: { title?: unknown; link?: unknown; snippet?: unknown }[];
         request_info?: { success?: boolean; message?: string };
       };
+      // Out of credits is not a miss: every search after it would fail too, so
+      // a sweep stops on it rather than stamping people as looked up.
+      if (response.status === 402) throw new SearchOutOfCredits('ValueSERP');
       if (!response.ok || body.request_info?.success === false) {
         throw new Error(
           `ValueSERP refused the search (${response.status}): ${body.request_info?.message ?? 'no reason given'}`,

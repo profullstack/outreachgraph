@@ -33,6 +33,7 @@ export { deriveEvidence, type EvidenceContext } from './evidence';
 
 export {
   ValueSerpClient,
+  SearchOutOfCredits,
   carriesName,
   corroborate,
   isLinkedInProfile,
@@ -43,6 +44,24 @@ export {
   type WebResult,
   type WebSearcher,
 } from './valueserp';
+export {
+  companyQuery,
+  companyToken,
+  linkedinPath,
+  personQuery,
+  pickCompany,
+  pickPerson,
+  registrable,
+  titleFromResult,
+  type LinkedinSubject,
+  type SerpResult,
+} from './valueserp/linkedin';
+export {
+  PeopleDataLabsClient,
+  type PersonEnricher,
+  type PersonEnrichment,
+  type PeopleDataLabsOptions,
+} from './pdl';
 
 export {
   readJobPosting,

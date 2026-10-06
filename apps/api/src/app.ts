@@ -87,6 +87,7 @@ import {
   budgetStatus,
   crawlDedupeKey,
   screenHold,
+  type LeadEnrichDeps,
   startContactImport,
   importContactChunk,
   intakeSocialPeople,
@@ -336,6 +337,12 @@ export interface AppOptions {
    * people by company. Absent without a key, which leaves pasting URLs.
    */
   readonly jobSearcher?: WebSearcher | undefined;
+  /**
+   * Lead enrichment (names from addresses, ValueSERP LinkedIn search, People
+   * Data Labs), for the on-demand run a campaign page can start. Absent: the
+   * route still fills names from addresses.
+   */
+  readonly leadEnrichment?: Omit<LeadEnrichDeps, 'db'> | undefined;
   /** Test seam for the job boards and company sites a posting is read from. */
   readonly jobReader?: JobReaderOptions | undefined;
   /**
@@ -1375,6 +1382,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       approve: (db, actor, recommendation) =>
         approveRecommendation(db, options, actor, recommendation, {}),
       requireVerifiedEmail: (db, actor) => requireVerifiedEmail(db, actor),
+      ...(options.leadEnrichment ? { leadEnrichment: options.leadEnrichment } : {}),
     }),
   );
 

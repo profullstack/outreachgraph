@@ -602,6 +602,51 @@ export const OPERATIONS: readonly Operation[] = [
     },
   },
   {
+    method: 'post',
+    path: '/autogtm/campaigns/{campaign_id}/enrich',
+    id: 'enrichLeads',
+    tag: 'Campaigns',
+    summary: 'Fill in leads’ missing name, job title and LinkedIn',
+    description:
+      'Starts a run and answers 202 at once. Names come from unambiguous addresses ' +
+      '(first.last@), free. Job title and LinkedIn profile come from a Google search of LinkedIn, ' +
+      'taken only when the result carries every part of the name and the company; the company’s ' +
+      'LinkedIn page is the fallback. People Data Labs is used first when configured. Only blanks ' +
+      'are filled, every search is cached so a rerun costs nothing, and searches are capped per ' +
+      'run (`max_searches`) and per day. Read the outcome from GET .../enrichment.',
+    params: [idParam('campaign_id', 'The campaign.')],
+    body: {
+      type: 'object',
+      properties: {
+        max_searches: { type: 'integer', minimum: 0, maximum: 1000 },
+        max_leads: { type: 'integer', minimum: 1, maximum: 5000 },
+      },
+    },
+    status: 202,
+  },
+  {
+    method: 'get',
+    path: '/autogtm/campaigns/{campaign_id}/enrichment',
+    id: 'getEnrichment',
+    tag: 'Campaigns',
+    summary: 'What a campaign’s leads are missing, and the last enrichment run',
+    params: [idParam('campaign_id', 'The campaign.')],
+    response: {
+      type: 'object',
+      properties: {
+        leads: { type: 'integer' },
+        missing_name: { type: 'integer' },
+        missing_title: { type: 'integer' },
+        missing_linkedin: { type: 'integer' },
+        looked_up: { type: 'integer' },
+        providers: { type: 'object' },
+        today: { type: 'object' },
+        running: { type: 'boolean' },
+        last_run: { type: 'object' },
+      },
+    },
+  },
+  {
     method: 'get',
     path: '/autogtm/campaigns/import/{task_id}',
     id: 'getImport',

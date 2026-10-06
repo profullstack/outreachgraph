@@ -90,12 +90,16 @@ import {
   checkLinkedInAcceptances,
   linkedInSessionForWorkspace,
   workspacesWithLinkedInSession,
+  enrichLeads,
+  workspacesAwaitingLeadEnrichment,
+  type LeadEnrichDeps,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
   BlueskyProvider,
   createSmtpProber,
   NostrSource,
+  PeopleDataLabsClient,
   RedditSource,
   RssSource,
   SiteProvider,
@@ -301,6 +305,34 @@ if (!chovy) console.log('no CHOVY_CAMPAIGN_SECRET: ideas are found and ranked, B
 
 const photoLookupsPerDay = Number(process.env.PHOTO_LOOKUPS_PER_DAY ?? 300);
 
+/**
+ * Lead enrichment: a lead's missing name, job title and LinkedIn. Names from
+ * the address are free and always on; the LinkedIn search is the same
+ * ValueSERP account (a shorter per-request timeout, since a sweep at
+ * concurrency ten would rather drop a slow query than wait a minute on it);
+ * People Data Labs only with PDL_API_KEY. Both are capped per workspace per
+ * day, and a 402 pauses that provider until the next UTC day.
+ */
+const leadEnrichment: LeadEnrichDeps = {
+  db,
+  ...(process.env.VALUESERP_API_KEY
+    ? {
+        searcher: new ValueSerpClient({
+          apiKey: process.env.VALUESERP_API_KEY,
+          searchTimeoutMs: 45_000,
+        }),
+      }
+    : {}),
+  ...(process.env.PDL_API_KEY
+    ? { pdl: new PeopleDataLabsClient({ apiKey: process.env.PDL_API_KEY }) }
+    : {}),
+  searchesPerDay: Number(process.env.LINKEDIN_SEARCHES_PER_DAY ?? 300),
+  pdlPerDay: Number(process.env.PDL_LOOKUPS_PER_DAY ?? 3),
+  concurrency: Number(process.env.LEAD_ENRICH_CONCURRENCY ?? 10),
+};
+if (!leadEnrichment.pdl) console.log('no PDL_API_KEY: lead enrichment uses addresses and search');
+let leadEnrichmentRunning = false;
+
 if (!photoFinder)
   console.log('no VALUESERP_API_KEY: lead photos come from public profiles and crawls');
 
@@ -472,6 +504,7 @@ const api = createApp({
   ...(encryptionKey ? { encryptionKey } : {}),
   ...(appUrl ? { appUrl } : {}),
   ...(jobSearcher ? { jobSearcher } : {}),
+  leadEnrichment,
   ...(chovy ? { chovy } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
   // A person editing their own OpenProfile.md carries an OpenAccess bearer
@@ -1097,6 +1130,35 @@ async function tick(): Promise<void> {
   // which is both the cheapest grounded claim the product can make and the
   // fastest-decaying one. Each watch has its own interval, so a workspace
   // watching one Bluesky handle costs one query per tick and nothing else.
+  // A name, a title and a LinkedIn for leads that arrived as a bare address.
+  // A search takes 10-45 s, so the sweep runs beside the tick rather than
+  // inside it, one run at a time, each bounded by its own caps.
+  if (!leadEnrichmentRunning) {
+    const waiting = await workspacesAwaitingLeadEnrichment(db);
+    if (waiting.length) {
+      leadEnrichmentRunning = true;
+      void (async () => {
+        for (const workspaceId of waiting) {
+          try {
+            const r = await enrichLeads(leadEnrichment, { workspaceId, maxSearches: 40 });
+            if (r.looked > 0) {
+              console.log(
+                `lead enrichment: ${workspaceId} looked at ${r.looked}, +${r.names} names, ` +
+                  `+${r.titles} titles, +${r.profiles} profiles, +${r.companies} company pages, ` +
+                  `${r.pdlMatches} PDL matches, ${r.searches} searches (${r.cached} cached)` +
+                  `${r.stopped ? `; stopped: ${r.stopped}` : ''}`,
+              );
+            }
+          } catch (error) {
+            console.error(`lead enrichment failed for ${workspaceId}`, error);
+          }
+        }
+      })().finally(() => {
+        leadEnrichmentRunning = false;
+      });
+    }
+  }
+
   // The Idea Generator: what people keep asking for on Reddit. A scan paces the
   // public archive at ~2.5s a request, so it runs beside the tick rather than
   // inside it, one at a time.

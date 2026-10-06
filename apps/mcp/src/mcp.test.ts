@@ -358,4 +358,19 @@ describe('lead tools', () => {
     expect(calls[1]?.body).toEqual({ allow: true });
     expect(calls[2]?.url).toBe('https://api.test/api/v1/autogtm/campaigns/import/cim_1/report');
   });
+
+  test('enrich_campaign_leads starts a run and reads the status back', async () => {
+    const { fetchImpl, calls } = recorder(ok({ running: true }));
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('enrich_campaign_leads')!, client, {
+      campaignId: 'cmp_1',
+      maxSearches: 20,
+    });
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'POST https://api.test/api/v1/autogtm/campaigns/cmp_1/enrich',
+      'GET https://api.test/api/v1/autogtm/campaigns/cmp_1/enrichment',
+    ]);
+    expect(calls[0]?.body).toEqual({ max_searches: 20 });
+  });
 });
