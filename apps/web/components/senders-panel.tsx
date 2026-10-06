@@ -23,10 +23,10 @@ export function SendersPanel({ initial }: { initial: readonly SenderView[] }) {
   if (initial.length === 0) {
     return (
       <section className="border-border bg-surface-raised rounded-2xl border p-4">
-        <h2 className="text-sm font-semibold">Sending accounts</h2>
+        <h2 className="text-sm font-semibold">Social sending accounts</h2>
         <p className="text-ink-muted mt-1 text-xs">
-          None yet. Connect a mailbox above, or a LinkedIn or X account with <code>og connect</code>
-          . Each one you add raises how much can go out a day.
+          None yet. Connect a LinkedIn or X account with <code>og connect</code>. Each one you add
+          raises how much can go out a day. Mailboxes have their own page above.
         </p>
       </section>
     );

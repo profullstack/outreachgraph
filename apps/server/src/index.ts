@@ -76,6 +76,7 @@ import {
   sendDailyDigest,
   sendLeadAlerts,
   readableMailboxes,
+  recordReplyCheck,
   type ListeningTargets,
   type QueuedJob,
   runEmailDelivery,
@@ -1131,12 +1132,26 @@ async function tick(): Promise<void> {
       // the password no longer decrypts". All three mean the same thing here.
       if (!credentials) continue;
 
-      const received = await receiveReplies({
-        db,
-        workspaceId,
-        reader: new ImapReader(credentials),
-        senderAccountId: accountId,
-      });
+      let received: Awaited<ReturnType<typeof receiveReplies>>;
+      try {
+        received = await receiveReplies({
+          db,
+          workspaceId,
+          reader: new ImapReader(credentials),
+          senderAccountId: accountId,
+        });
+      } catch (error) {
+        // Kept on the mailbox, not only in the log: the Mailboxes page shows
+        // it, so an inbox that will not open stops looking like one nobody
+        // answers.
+        await recordReplyCheck(
+          db,
+          accountId,
+          error instanceof Error ? error.message : String(error),
+        ).catch(() => undefined);
+        throw error;
+      }
+      await recordReplyCheck(db, accountId);
 
       if (received.senderStopped) {
         console.log(`replies ${workspaceId}: mailbox ${accountId} stopped for its bounce rate`);

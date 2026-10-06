@@ -21,6 +21,7 @@ import type {
   ProspectDetail,
   ProspectRow,
   SignalRow,
+  SmtpPresetView,
   TeamView,
 } from './types';
 
@@ -724,6 +725,47 @@ export interface SenderView {
 export async function fetchSenders(): Promise<readonly SenderView[]> {
   const result = await request<{ senders: SenderView[] }>('/senders');
   return result.senders;
+}
+
+// ----------------------------------------------------------------- mailboxes
+
+export type BounceRiskView = 'low' | 'medium' | 'high';
+
+export interface MailboxView extends SenderView {
+  readonly fromEmail: string | null;
+  readonly fromName: string | null;
+  readonly domain: string | null;
+  readonly provider: string;
+  readonly providerLabel: string;
+  readonly smtpHost: string | null;
+  readonly imapHost: string | null;
+  readonly readsReplies: boolean;
+  readonly repliesCheckedAt: string | null;
+  readonly repliesError: string | null;
+  readonly sends30d: number;
+  readonly bounces30d: number;
+  readonly bounceRisk: BounceRiskView;
+  readonly healthScore: number;
+  readonly healthIssues: readonly string[];
+}
+
+export interface MailboxesView {
+  readonly mailboxes: readonly MailboxView[];
+  readonly summary: {
+    readonly mailboxes: number;
+    readonly active: number;
+    readonly sentToday: number;
+    readonly capacityToday: number;
+    readonly warming: number;
+    readonly notReadingReplies: number;
+  };
+  readonly canConnect: boolean;
+  readonly platformFallback: boolean;
+  readonly presets: readonly SmtpPresetView[];
+}
+
+export async function fetchMailboxes(): Promise<MailboxesView> {
+  return request<MailboxesView>('/mailboxes');
 }
 
 // ------------------------------------------------------- bluesky integration

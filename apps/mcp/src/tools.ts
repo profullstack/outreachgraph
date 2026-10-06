@@ -775,6 +775,34 @@ export const TOOLS: readonly ToolDefinition[] = [
     },
   },
   {
+    name: 'list_mailboxes',
+    title: 'List mailboxes',
+    description:
+      'List the email addresses this workspace sends cold email from, each with a 0-100 ' +
+      'health score and the issues lowering it, bounce risk (low/medium/high over 30 days), ' +
+      "today's sends against its cap, warm-up progress, and whether its replies are being " +
+      'read over IMAP (and the last error if not). Use it before blaming copy for a lack of ' +
+      'replies: a mailbox whose inbox cannot be read never shows one.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/mailboxes'),
+  },
+  {
+    name: 'check_mailbox_dns',
+    title: 'Check a mailbox domain',
+    description:
+      'Check SPF, DKIM, DMARC and MX for the domain one mailbox sends from, with what to add ' +
+      'when a record is missing. Cold email from a domain without SPF and DMARC lands in spam.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { mailboxId: { type: 'string', description: 'The id from list_mailboxes.' } },
+      required: ['mailboxId'],
+    },
+    run: (client, args) =>
+      client.get(`/mailboxes/${encodeURIComponent(require(args, 'mailboxId'))}/dns`),
+  },
+  {
     name: 'suppress',
     title: 'Never contact this person again',
     description:

@@ -28,6 +28,7 @@ import {
   registerSchema,
   snoozeRecommendationSchema,
   updateSenderSchema,
+  detectMailboxSchema,
   workspaceProfileSchema,
 } from '@outreachgraph/contracts';
 import {
@@ -111,6 +112,10 @@ import {
   loadListeningTargets,
   loadNotifySettings,
   listSenders,
+  listMailboxes,
+  detectMailbox,
+  mailboxDns,
+  MailboxDetectError,
   mailerForSend,
   normaliseTargets,
   removeSender,
@@ -4790,6 +4795,48 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ removed: true });
+  });
+
+  // ------------------------------------------------------------- mailboxes
+  //
+  // The email half of the pool, as the Mailboxes page shows it: each address
+  // with its provider, health score, bounce risk and whether its replies are
+  // read. Adding one still goes through PUT /integrations/email, which logs
+  // in (SMTP and IMAP) before storing anything; pause, cap, warm-up and
+  // remove are the /senders routes above.
+
+  api.get('/mailboxes', async (c) => {
+    const actor = c.get('actor');
+    const result = await listMailboxes(c.get('db'), actor.workspaceId);
+    return c.json({
+      ...result,
+      canConnect: options.encryptionKey !== undefined,
+      platformFallback: options.mailer !== undefined,
+      presets: SMTP_PRESETS,
+    });
+  });
+
+  /**
+   * Turns an address into its servers, so adding a mailbox asks for nothing
+   * but the address and its password. Public DNS and Mozilla's ISPDB only:
+   * no request goes to a host the caller chose.
+   */
+  api.post('/mailboxes/detect', async (c) => {
+    const body = await parseBody(c.req.raw, detectMailboxSchema);
+    try {
+      return c.json({ detected: await detectMailbox(body.email) });
+    } catch (error) {
+      if (error instanceof MailboxDetectError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+  });
+
+  /** SPF, DKIM, DMARC and MX for the domain one mailbox sends from. */
+  api.get('/mailboxes/:id/dns', async (c) => {
+    const actor = c.get('actor');
+    const report = await mailboxDns(c.get('db'), actor.workspaceId, c.req.param('id'));
+    if (!report) throw ApiError.notFound('mailbox');
+    return c.json({ dns: report });
   });
 
   // ---------------------------------------------------------- integrations

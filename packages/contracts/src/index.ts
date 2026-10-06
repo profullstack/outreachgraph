@@ -410,6 +410,9 @@ export const updateSenderSchema = z
   })
   .strict();
 
+/** `POST /mailboxes/detect`: the address someone is about to add. */
+export const detectMailboxSchema = z.object({ email: z.string().email().max(320) }).strict();
+
 /** Health payload shared by every service (PRD §1.1 Docker requirements). */
 export const healthSchema = z.object({
   status: z.enum(['ok', 'degraded', 'error']),

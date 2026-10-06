@@ -225,4 +225,27 @@ export class ImapReader implements MailReader {
 
     return messages.slice(-limit);
   }
+
+  /**
+   * Logs in and opens the mailbox, then leaves. Run when a mailbox is
+   * connected, so a wrong IMAP host or a password that sends but cannot read
+   * fails on the form rather than as a silent poll error weeks later.
+   */
+  async verify(): Promise<void> {
+    const client = new ImapFlow({
+      host: this.#credentials.host,
+      port: this.#credentials.port,
+      secure: this.#credentials.secure,
+      auth: { user: this.#credentials.username, pass: this.#credentials.password },
+      logger: false,
+    });
+
+    await client.connect();
+    try {
+      const lock = await client.getMailboxLock(this.#mailbox);
+      lock.release();
+    } finally {
+      await client.logout().catch(() => undefined);
+    }
+  }
 }

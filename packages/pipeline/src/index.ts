@@ -126,6 +126,16 @@ export {
   type SenderView,
 } from './sender-pool';
 export {
+  detectMailbox,
+  listMailboxes,
+  mailboxDns,
+  recordReplyCheck,
+  MailboxDetectError,
+  type DetectedMailbox,
+  type MailboxesSummary,
+  type MailboxView,
+} from './mailboxes';
+export {
   runEmailDelivery,
   scheduleEmailDelivery,
   type DeliverEmailJobDeps,
