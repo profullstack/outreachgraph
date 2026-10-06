@@ -17,6 +17,7 @@
     "@outreachgraph/db": "workspace:*",
     "@outreachgraph/domain": "workspace:*",
     "@outreachgraph/email": "workspace:*",
+    "@outreachgraph/ideas": "workspace:*",
     "@outreachgraph/payments": "workspace:*",
     "@outreachgraph/pipeline": "workspace:*",
     "@outreachgraph/policy": "workspace:*",

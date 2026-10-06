@@ -303,6 +303,64 @@ export async function fetchJobPosts(): Promise<JobPostsView> {
   return request<JobPostsView>('/job-posts');
 }
 
+// ----------------------------------------------------------------- ideas
+
+export interface IdeaView {
+  readonly id: string;
+  readonly label: string;
+  readonly status: 'watching' | 'build' | 'building' | 'dismissed';
+  readonly askers: number;
+  readonly asks: number;
+  readonly demand: number;
+  readonly worth: number;
+  readonly verdict: 'build' | 'validate' | 'watch' | 'crowded';
+  readonly paid: number;
+  readonly revenue: string[];
+  readonly subs: string[];
+  readonly feeds: string[];
+  readonly rivals: Array<{ title: string; url: string; postedAt: string }>;
+  readonly wants: string[];
+  readonly firstAt: string;
+  readonly lastAt: string;
+  readonly handoffUrl?: string;
+  readonly handoffAt?: string;
+}
+
+export interface IdeaAskView {
+  readonly id: string;
+  readonly sub: string;
+  readonly title: string;
+  readonly url: string;
+  readonly author: string;
+  readonly postedAt: string;
+  readonly wants: string[];
+  readonly postScore?: number;
+  readonly comments?: number;
+  readonly source: string;
+  readonly paid: boolean;
+  readonly revenue?: string;
+}
+
+export interface IdeasView {
+  readonly ideas: IdeaView[];
+  readonly settings: {
+    readonly subs: string[];
+    readonly feeds: Array<{ slug: string; role: string; name: string }>;
+    readonly enabled: boolean;
+    readonly everyMinutes: number;
+    readonly buildAt: number;
+    readonly windowDays: number;
+    readonly lastScannedAt?: string;
+    readonly lastResult?: { read: number; found: number; rejected: number; judged: boolean };
+  };
+  readonly judgeEnabled: boolean;
+  readonly buildEnabled: boolean;
+}
+
+export async function fetchIdeas(): Promise<IdeasView> {
+  return request<IdeasView>('/ideas');
+}
+
 export async function fetchCampaigns(): Promise<CampaignRow[]> {
   const body = await request<{ campaigns: CampaignRow[] }>('/campaigns');
   return body.campaigns;

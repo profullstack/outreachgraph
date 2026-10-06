@@ -95,6 +95,9 @@ export const ID_PREFIXES = {
   // One warm-up network message, and the token its X-OG-Warmup header carries.
   warmupMessage: 'wum',
   warmupToken: 'wut',
+  // The Idea Generator: a product people keep asking for, and one post that asked.
+  idea: 'ida',
+  ideaAsk: 'iak',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

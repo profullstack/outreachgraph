@@ -329,6 +329,129 @@ async function runJobs({ client, args, flags }: CommandContext): Promise<string>
  * setting one up is whether it works, and waiting half an hour for the
  * interval to come round is not an answer.
  */
+async function runIdeas({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', target, ...rest] = args;
+
+  if (verb === 'list' || verb === 'ls') {
+    const status = flagString(flags, 'status');
+    const result = (await client.get(
+      `/ideas${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    )) as Record<string, unknown>;
+    const ideas = rows(result, 'ideas');
+    if (ideas.length === 0) return 'No ideas yet. Run a scan: og ideas scan';
+    return ideas
+      .map((idea) =>
+        [
+          pad(text(idea, 'id'), 30),
+          pad(text(idea, 'status'), 9),
+          pad(text(idea, 'verdict'), 9),
+          pad(`${text(idea, 'askers')} asked`, 9),
+          pad(`${text(idea, 'paid')} paid`, 7),
+          pad(`worth ${text(idea, 'worth')}`, 11),
+          text(idea, 'label'),
+        ].join(' '),
+      )
+      .join('\n');
+  }
+
+  if (verb === 'show') {
+    if (!target) throw new Error('og ideas show <id>');
+    const { idea } = (await client.get(`/ideas/${encodeURIComponent(target)}`)) as {
+      idea: Record<string, unknown>;
+    };
+    const asks = Array.isArray(idea.asksList)
+      ? (idea.asksList as Array<Record<string, unknown>>)
+      : [];
+    const wants = Array.isArray(idea.wants) ? (idea.wants as string[]) : [];
+    const list = (key: string) => (Array.isArray(idea[key]) ? (idea[key] as unknown[]) : []);
+    const rivals = list('rivals') as Array<Record<string, unknown>>;
+    return [
+      `${text(idea, 'label')}  (${text(idea, 'verdict')}: worth ${text(idea, 'worth')}, ${text(idea, 'askers')} people, ${text(idea, 'paid')} sources showing money, demand ${text(idea, 'demand')}; ${text(idea, 'status')})`,
+      wants.length ? `wants: ${wants.join('; ')}` : '',
+      list('revenue').length ? `revenue: ${list('revenue').join('; ')}` : '',
+      list('feeds').length ? `also in: ${list('feeds').join(', ')}` : '',
+      rivals.length
+        ? `rivals (${rivals.length}):\n${rivals.map((r) => `  ${text(r, 'title')}  ${text(r, 'url')}`).join('\n')}`
+        : '',
+      text(idea, 'handoffUrl') ? `building: ${text(idea, 'handoffUrl')}` : '',
+      ...asks.map(
+        (a) =>
+          `  ${text(a, 'source') === 'feed' ? text(a, 'sub') : `r/${text(a, 'sub')}`}${text(a, 'paid') === 'true' ? ' $' : ''}  ${text(a, 'title')}\n    ${text(a, 'url')}`,
+      ),
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  if (verb === 'scan') {
+    const subs = flagString(flags, 'subs');
+    const feeds = flagString(flags, 'feeds');
+    const { result } = (await client.post('/ideas/scan', {
+      ...(subs ? { subs: subs.split(',') } : {}),
+      ...(feeds ? { feeds: feeds.split(',') } : {}),
+    })) as { result: Record<string, unknown> };
+    const flagged = Array.isArray(result.flagged) ? result.flagged.length : 0;
+    return `read ${text(result, 'read')} posts, ${text(result, 'found')} new asks, ${text(result, 'rejected')} rejected, ${flagged} idea(s) flagged to build${result.judged ? '' : ' (not judged: no model)'}`;
+  }
+
+  if (verb === 'build') {
+    if (!target) throw new Error('og ideas build <id>');
+    const res = (await client.post(`/ideas/${encodeURIComponent(target)}/build`, {})) as Record<
+      string,
+      unknown
+    >;
+    return `Handed to chovy.com. Open to start the build: ${text(res, 'handoffUrl')}`;
+  }
+
+  if (verb === 'dismiss' || verb === 'watch') {
+    if (!target) throw new Error(`og ideas ${verb} <id>`);
+    await client.patch!(`/ideas/${encodeURIComponent(target)}`, {
+      status: verb === 'dismiss' ? 'dismissed' : 'watching',
+    });
+    return `${target} ${verb === 'dismiss' ? 'dismissed' : 'back on the list'}`;
+  }
+
+  if (verb === 'subs') {
+    if (!target) {
+      const { settings } = (await client.get('/ideas/settings')) as {
+        settings: { subs: string[] };
+      };
+      return settings.subs.map((s) => `r/${s}`).join('\n');
+    }
+    const subs = [target, ...rest].flatMap((s) => s.split(','));
+    const { settings } = (await client.put('/ideas/settings', { subs })) as {
+      settings: { subs: string[] };
+    };
+    return `Scanning ${settings.subs.length} subreddits: ${settings.subs.join(', ')}`;
+  }
+
+  if (verb === 'feeds') {
+    type Feed = { slug: string; role: string; name: string };
+    const show = (feeds: Feed[]) =>
+      feeds.map((f) => `${pad(f.role, 8)} ${pad(f.slug, 34)} ${f.name}`).join('\n');
+    if (!target) {
+      const { settings } = (await client.get('/ideas/settings')) as { settings: { feeds: Feed[] } };
+      return show(settings.feeds);
+    }
+    // og ideas feeds slug-a asks:slug-b built:slug-c (a bare slug reads as signals)
+    const feeds = [target, ...rest]
+      .flatMap((s) => s.split(','))
+      .map((s) => {
+        const [role, slug] =
+          s.includes(':') && !s.includes('://') ? s.split(':', 2) : [undefined, s];
+        return role ? { slug: slug!, role } : slug!;
+      });
+    const { settings } = (await client.put('/ideas/settings', { feeds })) as {
+      settings: { feeds: Feed[] };
+    };
+    return show(settings.feeds);
+  }
+
+  throw new Error(
+    'og ideas list [--status build] | show <id> | scan [--subs a,b] [--feeds x,y] | build <id> | dismiss <id> | subs [a b c] | feeds [slug asks:slug built:slug]',
+  );
+}
+
 async function runAudience({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target] = args;
 
@@ -1408,6 +1531,13 @@ export const COMMANDS: readonly Command[] = [
         })
         .join('\n');
     },
+  },
+  {
+    name: 'ideas',
+    usage:
+      'og ideas list [--status build] | show <id> | scan [--subs a,b] | build <id> | dismiss <id> | subs [a b c]',
+    summary: 'What people keep asking for on Reddit, ranked; build one with chovy.com.',
+    run: runIdeas,
   },
   {
     name: 'audience',
