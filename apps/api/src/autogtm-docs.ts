@@ -918,6 +918,26 @@ export function llmsText(baseUrl: string): string {
   }
 
   lines.push('');
+  lines.push('## Idea Generator');
+  lines.push('');
+  lines.push(
+    '> What to build, before who to sell it to. Scans Reddit asks, Ask HN and founder case studies, scores each idea on demand, proof of payment and Show HN competition, and hands the best to chovy.com to build. Same key.',
+  );
+  lines.push('');
+  lines.push(
+    '- `GET /ideas` — ideas, most worth building first, each with `worth`, `verdict` (`build`, `validate`, `watch`, `crowded`), `paid`, `revenue`, `rivals`.',
+  );
+  lines.push('- `GET /ideas/{id}` — one idea and every post that asked for it, with links.');
+  lines.push(
+    '- `POST /ideas/scan` `{ "subs"?, "feeds"? }` — scan now instead of waiting for the six-hourly run.',
+  );
+  lines.push(
+    '- `GET|PUT /ideas/settings` — subreddits and RSS Amplifier feeds (`{ slug, role: asks | signals | built }`).',
+  );
+  lines.push(
+    '- `POST /ideas/{id}/build` — returns a chovy.com link that opens its build intake with the idea filled in.',
+  );
+  lines.push('');
   lines.push('## Rules the engine will not bend');
   lines.push('');
   lines.push(
