@@ -101,6 +101,11 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
   let senderStopped = false;
 
   for (const message of messages) {
+    // Warm-up network mail is the sweeper's, never a reply or a bounce.
+    if (message.warmup) {
+      automated.warmup = (automated.warmup ?? 0) + 1;
+      continue;
+    }
     if (message.automated === 'bulk') {
       automated.bulk = (automated.bulk ?? 0) + 1;
       continue;

@@ -1237,7 +1237,7 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'mailboxes',
     usage:
-      'og mailboxes | og mailboxes detect <email> | og mailboxes dns <id> | og mailboxes add <email> [--name "Jane"] [--cap 50] [--no-warmup]  (password prompted, or OG_MAILBOX_PASSWORD)',
+      'og mailboxes | og mailboxes detect <email> | og mailboxes dns <id> | og mailboxes warmup <id> on|off | og mailboxes add <email> [--name "Jane"] [--cap 50] [--no-warmup]  (password prompted, or OG_MAILBOX_PASSWORD)',
     summary: 'The addresses outreach sends from: health, replies, DNS, and adding one.',
     async run({ client, args, flags }) {
       const [sub, arg] = args;
@@ -1328,7 +1328,29 @@ export const COMMANDS: readonly Command[] = [
         ].join('\n');
       }
 
-      throw new Error('og mailboxes [detect|dns|add] …');
+      if (sub === 'warmup') {
+        const value = args[2];
+        if (!arg || (value !== 'on' && value !== 'off')) {
+          throw new Error('og mailboxes warmup <id> on|off');
+        }
+        if (!client.patch) throw new Error('this client cannot change mailboxes');
+        await client.patch(`/senders/${encodeURIComponent(arg)}`, {
+          warmupNetwork: value === 'on',
+        });
+        const result = (await client.get('/mailboxes')) as Record<string, unknown>;
+        const mailbox = rows(result, 'mailboxes').find((m) => text(m, 'id') === arg) ?? {};
+        const warm = (mailbox.warmupNetwork ?? {}) as Record<string, unknown>;
+        if (value === 'off') return `Warm-up network off for ${arg}.`;
+        return (
+          `Warm-up network on for ${text(mailbox, 'fromEmail', arg)}. ` +
+          `Filter tag: ${text(warm, 'tag', '?')} (Gmail: Has the words "${text(warm, 'tag', '?')}", Skip the Inbox).` +
+          (Number(warm.peers ?? 0) === 0
+            ? ' No other mailbox is in the network yet; add a second one.'
+            : '')
+        );
+      }
+
+      throw new Error('og mailboxes [detect|dns|add|warmup] …');
     },
   },
   {

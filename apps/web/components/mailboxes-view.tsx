@@ -239,6 +239,12 @@ function MailboxCard({ mailbox, onReconnect }: { mailbox: MailboxView; onReconne
 
       <RepliesLine mailbox={mailbox} />
 
+      <WarmupNetworkPanel
+        mailbox={mailbox}
+        busy={busy}
+        onToggle={(on) => send('PATCH', { warmupNetwork: on })}
+      />
+
       {mailbox.healthIssues.filter((issue) => issue !== 'Warming up').length > 0 ? (
         <ul className="mt-2 flex flex-wrap gap-1">
           {mailbox.healthIssues
@@ -358,6 +364,127 @@ function MailboxCard({ mailbox, onReconnect }: { mailbox: MailboxView; onReconne
         </p>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * The warm-up network: on or off, how its mail is landing, and the one word
+ * that filters it out of a forwarded inbox such as Gmail.
+ */
+function WarmupNetworkPanel({
+  mailbox,
+  busy,
+  onToggle,
+}: {
+  mailbox: MailboxView;
+  busy: boolean;
+  onToggle: (on: boolean) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const warm = mailbox.warmupNetwork;
+
+  if (!warm?.network) {
+    return (
+      <div className="border-border mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed p-3">
+        <p className="text-ink-muted min-w-0 flex-1 text-xs">
+          <span className="text-ink font-medium">Warm-up network is off.</span> Turn it on and this
+          mailbox trades short conversations with other mailboxes: rescued from spam, read and
+          answered, so providers learn to trust it. Warm-up mail is filed out of your inbox.
+        </p>
+        <button
+          type="button"
+          disabled={busy || mailbox.status !== 'active' || !mailbox.readsReplies}
+          onClick={() => onToggle(true)}
+          className="bg-accent min-h-[36px] shrink-0 rounded-xl px-3 text-xs font-medium text-white disabled:opacity-50"
+        >
+          Start warm-up
+        </button>
+      </div>
+    );
+  }
+
+  const placement =
+    warm.received14d > 0 ? Math.round((warm.inbox14d / warm.received14d) * 100) : null;
+  const filter = warm.tag ? `"${warm.tag}"` : '';
+
+  return (
+    <div className="border-border mt-3 rounded-xl border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold">Warm-up network · day {(warm.day ?? 0) + 1}</p>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onToggle(false)}
+          className="text-ink-muted text-xs underline disabled:opacity-50"
+        >
+          Stop
+        </button>
+      </div>
+
+      {warm.peers === 0 ? (
+        <p className="text-hot mt-2 text-xs">
+          No other mailbox is in the network yet, so nothing can be sent. Add a second mailbox (any
+          domain) and start its warm-up too.
+        </p>
+      ) : null}
+
+      <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+        <WarmStat label="Sent today" value={`${warm.sentToday}/${warm.targetToday ?? 0}`} />
+        <WarmStat
+          label="Inbox placement"
+          value={placement === null ? '—' : `${placement}%`}
+          tone={
+            placement === null
+              ? ''
+              : placement >= 90
+                ? 'text-good'
+                : placement >= 70
+                  ? 'text-amber-600'
+                  : 'text-hot'
+          }
+        />
+        <WarmStat label="Saved from spam" value={String(warm.spam14d)} />
+        <WarmStat label="Answered" value={String(warm.replied14d)} />
+      </dl>
+
+      {warm.tag ? (
+        <div className="bg-surface mt-3 rounded-lg p-2 text-xs">
+          <p className="text-ink-muted">
+            Every warm-up email this mailbox receives ends with{' '}
+            <code className="text-ink font-mono">{warm.tag}</code>. We file them into an
+            “OutreachGraph Warmup” folder; if this address also forwards to Gmail, filter the copies
+            there: Settings → Filters → Create filter → <em>Has the words</em>:
+          </p>
+          <div className="mt-1 flex items-center gap-2">
+            <code className="border-border flex-1 truncate rounded-md border px-2 py-1 font-mono">
+              {filter}
+            </code>
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard?.writeText(filter).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                });
+              }}
+              className="border-border min-h-[32px] rounded-lg border px-2"
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <p className="text-ink-muted mt-1">Then tick “Skip the Inbox” and “Mark as read”.</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WarmStat({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div>
+      <dt className="text-ink-muted">{label}</dt>
+      <dd className={`text-sm font-semibold tabular-nums ${tone ?? ''}`}>{value}</dd>
+    </div>
   );
 }
 

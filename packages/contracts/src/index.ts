@@ -407,6 +407,8 @@ export const updateSenderSchema = z
     paused: z.boolean().optional(),
     status: z.enum(['active', 'paused']).optional(),
     warmup: z.boolean().optional(),
+    /** The warm-up network: send and receive warm-up mail. Email only. */
+    warmupNetwork: z.boolean().optional(),
   })
   .strict();
 

@@ -55,6 +55,8 @@ export interface IncomingMessage {
   readonly references?: string | undefined;
   /** For a bounce: the address the report says could not be reached. */
   readonly failedRecipient?: string | undefined;
+  /** The `X-OG-Warmup` token: warm-up network mail, never a reply. */
+  readonly warmup?: string | undefined;
 }
 
 /** The seam tests replace, so no socket is opened. */
@@ -80,6 +82,7 @@ const WANTED_HEADERS = [
   'return-path',
   'content-type',
   'references',
+  'x-og-warmup',
 ];
 
 /**
@@ -228,6 +231,7 @@ export class ImapReader implements MailReader {
             ...(bodyText ? { bodyText } : {}),
             ...(headers['references'] ? { references: headers['references'] } : {}),
             ...(failedRecipient ? { failedRecipient } : {}),
+            ...(headers['x-og-warmup'] ? { warmup: headers['x-og-warmup'] } : {}),
           });
         }
       } finally {

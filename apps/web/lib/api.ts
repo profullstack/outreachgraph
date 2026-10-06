@@ -747,6 +747,21 @@ export interface MailboxView extends SenderView {
   readonly bounceRisk: BounceRiskView;
   readonly healthScore: number;
   readonly healthIssues: readonly string[];
+  readonly warmupNetwork: WarmupNetworkView | null;
+}
+
+export interface WarmupNetworkView {
+  readonly network: boolean;
+  /** The word every warm-up message this mailbox receives ends with. */
+  readonly tag: string | null;
+  readonly day: number | null;
+  readonly targetToday: number | null;
+  readonly sentToday: number;
+  readonly received14d: number;
+  readonly inbox14d: number;
+  readonly spam14d: number;
+  readonly replied14d: number;
+  readonly peers: number;
 }
 
 export interface MailboxesView {
