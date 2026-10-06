@@ -86,6 +86,7 @@ import {
   connectBlueskyAccount,
   budgetStatus,
   crawlDedupeKey,
+  screenHold,
   startContactImport,
   importContactChunk,
   intakeSocialPeople,
@@ -248,6 +249,7 @@ import {
   UnknownProductError,
 } from './workspace-profile';
 import { autogtmRoutes } from './autogtm';
+import { importReport, importReportCsv } from './import-report';
 import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
 import { audienceRoutes } from './audience';
@@ -3299,7 +3301,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const batch = await queryOne<Record<string, unknown>>(
       db,
       `SELECT id, filename, consent_basis, consent_source, total_rows, imported, merged,
-              updated, rejected, status, created_at
+              updated, rejected, skipped, flagged, status, created_at
          FROM contact_imports WHERE id = ? AND workspace_id = ?`,
       [importId, actor.workspaceId],
     );
@@ -3308,22 +3310,44 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     // Grouped, plus a sample. "We dropped 900 rows" is not actionable; "412 of
     // them were placeholders, here are twenty" lets somebody fix the export.
+    // The whole list, row by row, is GET .../report (CSV with ?format=csv).
     const [summary, sample] = await Promise.all([
-      queryAll<{ reason: string; n: number }>(
+      queryAll<{ outcome: string; reason: string; n: number }>(
         db,
-        `SELECT reason, count(*) AS n FROM contact_import_rejects
-          WHERE import_id = ? GROUP BY reason ORDER BY n DESC`,
+        `SELECT outcome, reason, count(*) AS n FROM contact_import_rejects
+          WHERE import_id = ? GROUP BY outcome, reason ORDER BY n DESC`,
         [importId],
       ),
       queryAll<{ row_number: number; email: string; reason: string; detail: string }>(
         db,
         `SELECT row_number, email, reason, detail FROM contact_import_rejects
-          WHERE import_id = ? ORDER BY row_number LIMIT 50`,
+          WHERE import_id = ? AND outcome = 'rejected' ORDER BY row_number LIMIT 50`,
         [importId],
       ),
     ]);
 
-    return c.json({ import: batch, rejectsByReason: summary, rejectSample: sample });
+    const by = (outcome: string) =>
+      summary
+        .filter((row) => (row.outcome ?? 'rejected') === outcome)
+        .map((row) => ({ reason: row.reason, n: Number(row.n) }));
+
+    return c.json({
+      import: batch,
+      rejectsByReason: by('rejected'),
+      skippedByReason: by('skipped'),
+      flaggedByReason: by('flagged'),
+      rejectSample: sample,
+      reportUrl: `/api/v1/contacts/imports/${importId}/report?format=csv`,
+    });
+  });
+
+  /** Every row that did not simply become a lead, and why: JSON, or CSV with ?format=csv. */
+  api.get('/contacts/imports/:id/report', async (c) => {
+    const actor = c.get('actor');
+    const report = await importReport(c.get('db'), actor.workspaceId, c.req.param('id'));
+    if (!report) throw ApiError.notFound('import');
+    if (c.req.query('format') === 'csv') return importReportCsv(c, report);
+    return c.json(report);
   });
 
   /**
@@ -6043,6 +6067,7 @@ async function recheckPolicy(
   const matchKeys = await repo.suppressionKeysForPerson(db, recommendation.person_id);
   const suppressed =
     person.status === 'suppressed' || (await repo.isSuppressed(db, actor.workspaceId, matchKeys));
+  const screenedOut = await screenHold(db, actor.workspaceId, recommendation.person_id);
 
   // Counted against the mailbox rather than the person. Skipped entirely when
   // no address resolves — there is nothing to protect and nothing to count.
@@ -6067,6 +6092,7 @@ async function recheckPolicy(
     approvalMode: campaign.approval_mode as 'draft_and_approve',
     hasConnectedAccount: connected || (recommendation.network === 'email' && platformEmailEnabled),
     personSuppressed: suppressed,
+    ...(screenedOut ? { personScreenedOut: screenedOut } : {}),
     personBelievedMinor: person.believed_minor === 1,
     personDeleted: person.status === 'deleted',
     identityConfidence: person.identity_confidence,

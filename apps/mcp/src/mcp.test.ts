@@ -154,6 +154,8 @@ describe('tools', () => {
           urls: ['https://apply.workable.com/raydar/j/C39C58F585/'],
           jobPostId: 'jbp_1',
           contactId: 'jpc_1',
+          campaignId: 'cmp_1',
+          leads: [{ email: 'ada@acme.dev' }],
         })
         .catch(() => undefined);
 
@@ -321,5 +323,39 @@ describe('inbox tools', () => {
     expect(calls[0]?.body).toEqual({ text: 'Thursday?' });
 
     expect(runTool(tool, client, { personId: 'per_1' })).rejects.toThrow('text is required');
+  });
+});
+
+describe('lead tools', () => {
+  test('add_leads_to_campaign appends through the AutoGTM route', async () => {
+    const { fetchImpl, calls } = recorder(ok({ added: 1, report: [] }));
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('add_leads_to_campaign')!, client, {
+      campaignId: 'cmp_1',
+      csv: 'email\nada@acme.dev\n',
+      consentSource: 'signups',
+    });
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/autogtm/campaigns/cmp_1/leads');
+    expect(calls[0]?.body).toEqual({
+      csv: 'email\nada@acme.dev\n',
+      consent_source: 'signups',
+      allow_flagged: false,
+    });
+  });
+
+  test('screening tools read the held list and override one lead', async () => {
+    const { fetchImpl, calls } = recorder(ok({ held: 0, leads: [] }));
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('list_screened_leads')!, client, { campaignId: 'cmp_1' });
+    await runTool(toolByName('allow_screened_lead')!, client, { personId: 'per_1', allow: true });
+    await runTool(toolByName('get_import_report')!, client, { taskId: 'cim_1' });
+
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'POST', 'GET']);
+    expect(calls[0]?.url).toBe('https://api.test/api/v1/autogtm/campaigns/cmp_1/screened');
+    expect(calls[1]?.body).toEqual({ allow: true });
+    expect(calls[2]?.url).toBe('https://api.test/api/v1/autogtm/campaigns/import/cim_1/report');
   });
 });

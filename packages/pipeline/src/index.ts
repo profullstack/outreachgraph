@@ -175,9 +175,19 @@ export {
   finishContactImport,
   importContactChunk,
   startContactImport,
+  type ChunkOptions,
   type ChunkResult,
   type StartImportInput,
+  type StoredRow,
 } from './contact-import';
+export {
+  countScreenedHeld,
+  holdReason,
+  screenedLeads,
+  screenHold,
+  setScreenAllowed,
+  type ScreenedLead,
+} from './lead-screen';
 export {
   enrichContact,
   sweepContactEnrichment,

@@ -15,10 +15,15 @@
 
 import {
   cleanContact,
+  describeFindings,
   newId,
+  screenContext,
+  screenLead,
   type CleanContact,
   type RawContact,
   type RejectReason,
+  type ScreenContext,
+  type ScreenFinding,
 } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 
@@ -77,8 +82,44 @@ export interface ChunkResult {
   /** Of the merged, how many people the row's newer data changed. */
   readonly updated: number;
   readonly rejected: number;
+  /** Of the imported and merged, how many screening holds back from sending. */
+  readonly flagged: number;
   readonly personIds: readonly string[];
+  /** Every row that became (or matched) a person, in file order. */
+  readonly stored: readonly StoredRow[];
 }
+
+/** One row that became, or matched, a person. */
+export interface StoredRow {
+  /** 1-based row number in the file (the header is not counted). */
+  readonly row: number;
+  readonly email: string;
+  readonly personId: string;
+  /** False when the address was already on file. */
+  readonly created: boolean;
+  /** What screening found; empty for a clean lead. */
+  readonly findings: readonly ScreenFinding[];
+}
+
+export interface ChunkOptions {
+  readonly startRow?: number;
+  /**
+   * The whole list's screening context. Without it the chunk is screened
+   * against itself, which still catches everything but a temp-mail domain
+   * whose signups were spread across chunks.
+   */
+  readonly screen?: ScreenContext;
+  /** The importer chose to send to screened leads anyway: hold nobody back. */
+  readonly allowFlagged?: boolean;
+  readonly userId?: string | undefined;
+}
+
+type Unscreened = Omit<StoredRow, 'findings'> & {
+  readonly raw?: RawContact;
+  readonly contact?: CleanContact;
+};
+
+type Unfinished = Omit<ChunkResult, 'flagged' | 'stored'> & { stored: readonly Unscreened[] };
 
 /** True when an insert lost a race against the unique index. */
 function isUniqueViolation(error: unknown): boolean {
@@ -98,7 +139,7 @@ export async function importContactChunk(
   db: Client,
   importId: string,
   rows: readonly RawContact[],
-  options: { readonly startRow?: number } = {},
+  options: ChunkOptions = {},
 ): Promise<ChunkResult> {
   const batch = await queryOne<{
     workspace_id: string;
@@ -117,7 +158,7 @@ export async function importContactChunk(
   // ---------------------------------------------------------------- clean
   // Pure and local: no database, so five hundred rows cost nothing here.
   const seen = new Set<string>();
-  const clean: { row: number; contact: CleanContact }[] = [];
+  const clean: { row: number; contact: CleanContact; raw: RawContact }[] = [];
   const rejects: { row: number; email?: string; reason: string; detail: string }[] = [];
 
   for (const [offset, raw] of rows.entries()) {
@@ -135,7 +176,7 @@ export async function importContactChunk(
     }
 
     seen.add(result.contact.dedupeKey);
-    clean.push({ row: rowNumber, contact: result.contact });
+    clean.push({ row: rowNumber, contact: result.contact, raw });
   }
 
   // ------------------------------------------------------------- existing
@@ -179,7 +220,7 @@ export async function importContactChunk(
   for (const reject of rejects) {
     statements.push({
       sql: `INSERT INTO contact_import_rejects (id, import_id, row_number, email, reason, detail,
-            created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, 'rejected', ?)`,
       args: [
         newId('contactImportReject'),
         importId,
@@ -210,23 +251,7 @@ export async function importContactChunk(
       // The slow path stores and patches row by row, so nothing is left for
       // the batched patch below.
       const retried = await storeOneAtATime(db, importId, batch, clean, rejects.length);
-      await db.execute({
-        sql: `UPDATE contact_imports
-                 SET total_rows = total_rows + ?, imported = imported + ?,
-                     merged = merged + ?, updated = updated + ?, rejected = rejected + ?,
-                     updated_at = ?
-               WHERE id = ?`,
-        args: [
-          rows.length,
-          retried.imported,
-          retried.merged,
-          retried.updated,
-          retried.rejected,
-          now(),
-          importId,
-        ],
-      });
-      return retried;
+      return finishChunk(db, importId, batch.workspace_id, rows, retried, options);
     }
   }
 
@@ -252,15 +277,147 @@ export async function importContactChunk(
     }),
   );
 
-  await db.execute({
+  const stored: Unscreened[] = [
+    ...fresh.map((entry, index) => ({
+      row: entry.row,
+      email: entry.contact.email,
+      personId: freshIds[index]!,
+      created: true,
+      raw: entry.raw,
+      contact: entry.contact,
+    })),
+    ...known.flatMap((entry) => {
+      const personId = existing.get(entry.contact.dedupeKey);
+      return personId
+        ? [
+            {
+              row: entry.row,
+              email: entry.contact.email,
+              personId,
+              created: false,
+              raw: entry.raw,
+              contact: entry.contact,
+            },
+          ]
+        : [];
+    }),
+  ];
+
+  return finishChunk(
+    db,
+    importId,
+    batch.workspace_id,
+    rows,
+    { imported, merged, updated, rejected, personIds, stored },
+    options,
+  );
+}
+
+/**
+ * Screens what was stored, writes the held leads into the report, and closes
+ * the chunk's counters. Shared by the batched path and the slow one.
+ */
+async function finishChunk(
+  db: Client,
+  importId: string,
+  workspaceId: string,
+  rows: readonly RawContact[],
+  result: Unfinished,
+  options: ChunkOptions,
+): Promise<ChunkResult> {
+  const context = options.screen ?? screenContext(rows);
+  const stamp = now();
+  const statements: { sql: string; args: (string | number | null)[] }[] = [];
+  const stored: StoredRow[] = [];
+  let flagged = 0;
+
+  for (const entry of [...result.stored].sort((a, b) => a.row - b.row)) {
+    const raw = entry.raw ?? { email: entry.email };
+    const findings = screenLead(
+      {
+        email: entry.email,
+        name: raw.name,
+        firstName: raw.firstName,
+        lastName: raw.lastName,
+        companyDomain: entry.contact?.companyDomain ?? raw.companyDomain,
+      },
+      context,
+    );
+    stored.push({
+      row: entry.row,
+      email: entry.email,
+      personId: entry.personId,
+      created: entry.created,
+      findings,
+    });
+    if (findings.length === 0) continue;
+
+    flagged += 1;
+    statements.push(
+      {
+        // An earlier "send to them anyway" survives a re-import: a human
+        // already looked at this person.
+        sql: `INSERT INTO lead_screens (workspace_id, person_id, findings, screened_at,
+              allowed_at, allowed_by)
+              VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT (workspace_id, person_id) DO UPDATE SET
+                findings = excluded.findings, screened_at = excluded.screened_at,
+                allowed_at = COALESCE(lead_screens.allowed_at, excluded.allowed_at),
+                allowed_by = COALESCE(lead_screens.allowed_by, excluded.allowed_by)`,
+        args: [
+          workspaceId,
+          entry.personId,
+          JSON.stringify(findings),
+          stamp,
+          options.allowFlagged ? stamp : null,
+          options.allowFlagged ? (options.userId ?? 'import') : null,
+        ],
+      },
+      {
+        sql: `INSERT INTO contact_import_rejects (id, import_id, row_number, email, reason, detail,
+              outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, 'flagged', ?)`,
+        args: [
+          newId('contactImportReject'),
+          importId,
+          entry.row,
+          entry.email,
+          findings.map((finding) => finding.flag).join('+'),
+          describeFindings(findings) +
+            (options.allowFlagged ? ' (allowed at import: will be sent to)' : ''),
+          stamp,
+        ],
+      },
+    );
+  }
+
+  statements.push({
     sql: `UPDATE contact_imports
              SET total_rows = total_rows + ?, imported = imported + ?,
-                 merged = merged + ?, updated = updated + ?, rejected = rejected + ?, updated_at = ?
+                 merged = merged + ?, updated = updated + ?, rejected = rejected + ?,
+                 flagged = flagged + ?, updated_at = ?
            WHERE id = ?`,
-    args: [rows.length, imported, merged, updated, rejected, now(), importId],
+    args: [
+      rows.length,
+      result.imported,
+      result.merged,
+      result.updated,
+      result.rejected,
+      flagged,
+      stamp,
+      importId,
+    ],
   });
+  await db.batch(statements);
 
-  return { imported, merged, updated, rejected, personIds };
+  return {
+    imported: result.imported,
+    merged: result.merged,
+    updated: result.updated,
+    rejected: result.rejected,
+    flagged,
+    personIds: result.personIds,
+    stored,
+  };
 }
 
 /**
@@ -366,10 +523,11 @@ async function storeOneAtATime(
   db: Client,
   importId: string,
   batch: { workspace_id: string; consent_basis: string; consent_source: string | null },
-  clean: readonly { row: number; contact: CleanContact }[],
+  clean: readonly { row: number; contact: CleanContact; raw: RawContact }[],
   alreadyRejected: number,
-): Promise<ChunkResult> {
+): Promise<Unfinished> {
   const personIds: string[] = [];
+  const stored: Unscreened[] = [];
   let imported = 0;
   let merged = 0;
   let updated = 0;
@@ -393,6 +551,14 @@ async function storeOneAtATime(
       if (!outcome.created) updated += changed;
 
       personIds.push(outcome.personId);
+      stored.push({
+        row: entry.row,
+        email: entry.contact.email,
+        personId: outcome.personId,
+        created: outcome.created,
+        raw: entry.raw,
+        contact: entry.contact,
+      });
     } catch (error) {
       rejected += 1;
       await recordReject(
@@ -406,7 +572,7 @@ async function storeOneAtATime(
     }
   }
 
-  return { imported, merged, updated, rejected, personIds };
+  return { imported, merged, updated, rejected, personIds, stored };
 }
 
 async function recordReject(

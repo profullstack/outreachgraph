@@ -82,6 +82,13 @@ export interface PolicyRequest {
   readonly personSuppressed: boolean;
   readonly personBelievedMinor: boolean;
   readonly personDeleted: boolean;
+  /**
+   * Why lead screening holds this person back from cold outreach (a generated
+   * name, a relay mailbox, a role inbox...), until a human allows them.
+   * Omitted when screening has nothing against them. Never blocks a follow-up
+   * on a conversation they opened: someone who wrote back is real enough.
+   */
+  readonly personScreenedOut?: string | undefined;
 
   readonly identityConfidence: number;
   readonly minIdentityConfidence: number;
@@ -306,6 +313,13 @@ export function evaluatePolicy(request: PolicyRequest): PolicyResult {
   }
   if (request.personBelievedMinor) {
     restrict('person_ineligible', 'deny', 'This person is believed to be a minor.');
+  }
+  if (
+    request.personScreenedOut &&
+    isOutboundAction(request.action) &&
+    !(request.isFollowUp === true && request.conversationOpen === true)
+  ) {
+    restrict('person_ineligible', 'deny', `Held by lead screening: ${request.personScreenedOut}`);
   }
 
   // 5. Wrong-person outreach destroys trust, so low-confidence identities may

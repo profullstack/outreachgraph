@@ -466,8 +466,139 @@ export const OPERATIONS: readonly Operation[] = [
             'Of the merged, how many people this import changed. Newer data wins: a value in the import replaces a different stored one, unless the row is dated older.',
         },
         rejected: { type: 'integer' },
+        skipped: { type: 'integer' },
+        flagged: { type: 'integer' },
         crawls_queued: { type: 'integer' },
+        report: { type: 'array', description: 'The import report, first 500 rows.' },
+        report_url: { type: 'string' },
       },
+    },
+  },
+  {
+    method: 'post',
+    path: '/autogtm/campaigns/{campaign_id}/leads',
+    id: 'appendLeads',
+    tag: 'Campaigns',
+    summary: 'Add leads to an existing campaign',
+    description:
+      'Up to 5,000 leads per request, as `leads` (the same fields as an import, plus `name` and ' +
+      '`updated_at`) or as `csv` (the file itself; headers like Email, First Name, Company Domain ' +
+      'and Job Title are recognised). Skips people already in this campaign, already in another ' +
+      'campaign of the project (`skip_project_duplicates`, default true) and anyone on a suppress ' +
+      'list. Screening flags generated names, relay and temp-mail addresses, agent and test ' +
+      'accounts and role inboxes, and holds them back from sending until you allow them ' +
+      '(`allow_flagged: true` sends to them anyway). No row is dropped silently: the response ' +
+      'carries a per-row report with the column or check behind every reject, skip and flag.',
+    params: [idParam('campaign_id', 'The campaign to add to.')],
+    body: {
+      type: 'object',
+      properties: {
+        leads: {
+          type: 'array',
+          maxItems: 5000,
+          items: {
+            type: 'object',
+            properties: {
+              email: { type: 'string' },
+              name: { type: 'string' },
+              first_name: { type: 'string' },
+              last_name: { type: 'string' },
+              company_domain: { type: 'string' },
+              company: { type: 'string' },
+              job_title: { type: 'string' },
+              location: { type: 'string' },
+              linkedin_url: { type: 'string' },
+              updated_at: { type: 'string' },
+            },
+          },
+        },
+        csv: { type: 'string', description: 'A CSV file with a header row. Send this or leads.' },
+        filename: { type: 'string' },
+        consent_basis: { type: 'string' },
+        consent_source: { type: 'string' },
+        allow_flagged: { type: 'boolean', description: 'Send to screened leads too.' },
+        skip_project_duplicates: { type: 'boolean' },
+      },
+    },
+    status: 201,
+    response: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string' },
+        campaign_id: { type: 'string' },
+        received: { type: 'integer' },
+        added: { type: 'integer', description: 'New members of the campaign.' },
+        imported: { type: 'integer', description: 'People new to the workspace.' },
+        merged: { type: 'integer' },
+        updated: { type: 'integer' },
+        rejected: { type: 'integer', description: 'Unusable rows.' },
+        skipped: {
+          type: 'integer',
+          description: 'Already in the campaign/project, or suppressed.',
+        },
+        flagged: { type: 'integer', description: 'Imported, held back by screening.' },
+        report: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              row: { type: 'integer' },
+              email: { type: ['string', 'null'] },
+              outcome: { type: 'string', enum: ['rejected', 'skipped', 'flagged'] },
+              reason: { type: 'string' },
+              why: { type: 'string' },
+              detail: { type: ['string', 'null'] },
+            },
+          },
+        },
+        report_url: { type: 'string', description: 'The whole report as CSV.' },
+      },
+    },
+  },
+  {
+    method: 'get',
+    path: '/autogtm/campaigns/import/{task_id}/report',
+    id: 'getImportReport',
+    tag: 'Campaigns',
+    summary: 'Every row an import rejected, skipped or flagged, and why',
+    description: 'JSON by default; `?format=csv` downloads it as a file.',
+    params: [
+      idParam('task_id', 'The task_id an import returned.'),
+      {
+        name: 'format',
+        in: 'query',
+        description: 'csv for a download.',
+        schema: { type: 'string' },
+      },
+    ],
+  },
+  {
+    method: 'get',
+    path: '/autogtm/campaigns/{campaign_id}/screened',
+    id: 'listScreened',
+    tag: 'Campaigns',
+    summary: 'Leads screening is holding back from sending, with the reasons',
+    params: [
+      idParam('campaign_id', 'The campaign.'),
+      {
+        name: 'include_allowed',
+        in: 'query',
+        description: 'true to list the ones you already allowed too.',
+        schema: { type: 'string' },
+      },
+    ],
+  },
+  {
+    method: 'post',
+    path: '/autogtm/leads/{person_id}/screening',
+    id: 'overrideScreening',
+    tag: 'Campaigns',
+    summary: 'Send to a screened lead anyway, or hold them back again',
+    params: [idParam('person_id', 'The lead.')],
+    body: {
+      type: 'object',
+      required: ['allow'],
+      properties: { allow: { type: 'boolean' } },
     },
   },
   {
@@ -488,6 +619,9 @@ export const OPERATIONS: readonly Operation[] = [
         merged: { type: 'integer' },
         updated: { type: 'integer' },
         rejected: { type: 'integer' },
+        skipped: { type: 'integer' },
+        flagged: { type: 'integer' },
+        report_url: { type: 'string' },
       },
     },
   },
@@ -904,7 +1038,7 @@ export function llmsText(baseUrl: string): string {
     '6. `POST /autogtm/suppress-list/people` `{ "list_name", "emails" }` or `/companies` `{ "list_name", "domains" }` — never write to these. Halts anything queued for them.',
   );
   lines.push(
-    '7. `POST /autogtm/campaigns/import` `{ "name", "leads": [{ "email", "first_name", "last_name", "company_domain", "job_title" }] }` — a campaign from your own list, up to 5,000 per call.',
+    '7. `POST /autogtm/campaigns/import` `{ "name", "leads": [{ "email", "first_name", "last_name", "company_domain", "job_title" }] }` — a campaign from your own list, up to 5,000 per call. `POST /autogtm/campaigns/{id}/leads` `{ "leads" }` or `{ "csv" }` adds to an existing one, deduped, with a per-row report.',
   );
   lines.push(
     '8. `GET /autogtm/billing/balance` — allowance, credits, and whether sending is exhausted.',

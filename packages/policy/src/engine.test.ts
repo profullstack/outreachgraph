@@ -205,6 +205,36 @@ describe('person eligibility', () => {
     }
   });
 
+  test('a lead held by screening gets no cold message, but an answer still goes', () => {
+    const cold = evaluatePolicy(
+      request({
+        network: 'email',
+        action: 'send_email',
+        personScreenedOut: 'relay_address: passmail.net is a forwarding relay',
+      }),
+    );
+    expect(cold.decision).toBe('deny');
+    expect(cold.gate).toBe('person_ineligible');
+    expect(cold.reason).toContain('Held by lead screening: relay_address');
+
+    const answer = evaluatePolicy(
+      request({
+        network: 'email',
+        action: 'send_email',
+        personScreenedOut: 'role_address: info@ is a team inbox',
+        isFollowUp: true,
+        conversationOpen: true,
+      }),
+    );
+    expect(answer.decision).not.toBe('deny');
+
+    // Research is not contact: a held lead can still be read about.
+    const research = evaluatePolicy(
+      request({ action: 'refresh_research', personScreenedOut: 'generated_name' }),
+    );
+    expect(research.decision).not.toBe('deny');
+  });
+
   test('suppression outranks trusted automation', () => {
     const result = evaluatePolicy(
       request({ personSuppressed: true, approvalMode: 'trusted_automation' }),

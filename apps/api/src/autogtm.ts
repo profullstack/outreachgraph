@@ -26,17 +26,24 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import {
+  applyMapping,
   autogtmStatus,
   CONTACT_PRICE_USD,
+  isConsumerMailDomain,
+  mapHeaders,
   newId,
+  parseCsv,
   replyRate,
+  screenContext,
   usdForContacts,
+  type RawContact,
 } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
   applyProjectBudget,
   budgetStatus,
   campaignBudgetFrom,
+  countScreenedHeld,
   crawlDedupeKey,
   domainMatchKey,
   emailMatchKey,
@@ -46,8 +53,11 @@ import {
   normaliseDomain,
   peopleMatchingKeys,
   recordDiscovered,
+  screenedLeads,
   setCampaignDailyBudget,
+  setScreenAllowed,
   startContactImport,
+  type StoredRow,
 } from '@outreachgraph/pipeline';
 import { POLICY_VERSION } from '@outreachgraph/policy';
 import {
@@ -57,6 +67,7 @@ import {
   setCampaignStatus,
 } from './campaigns';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
+import { importReport, importReportCsv, reasonText } from './import-report';
 import * as repo from './repository';
 import { UnknownProductError } from './workspace-profile';
 
@@ -164,7 +175,49 @@ const importBody = z.object({
   autopilot: z.boolean().optional(),
   consent_basis: z.string().max(200).optional(),
   consent_source: z.string().max(500).optional(),
+  allow_flagged: z.boolean().optional(),
 });
+
+/**
+ * A lead as appended to an existing campaign.
+ *
+ * Looser than `importLead` on purpose: nothing here is validated by the
+ * schema, because a schema failure answers 400 for the whole request and
+ * says nothing about the other 4,999 rows. Every row is judged on its own by
+ * the importer and the bad ones come back in the report with the column or
+ * check that failed.
+ */
+const appendLead = z.object({
+  email: z.string().max(320).optional(),
+  name: z.string().max(200).optional(),
+  first_name: z.string().max(100).optional(),
+  last_name: z.string().max(100).optional(),
+  company_domain: z.string().max(253).optional(),
+  company: z.string().max(200).optional(),
+  job_title: z.string().max(200).optional(),
+  location: z.string().max(200).optional(),
+  linkedin_url: z.string().max(500).optional(),
+  updated_at: z.string().max(64).optional(),
+});
+
+const appendBody = z
+  .object({
+    leads: z.array(appendLead).min(1).max(IMPORT_MAX_LEADS).optional(),
+    /** The file itself, for callers that would rather not parse it. */
+    csv: z.string().min(1).max(10_000_000).optional(),
+    filename: z.string().max(300).optional(),
+    consent_basis: z.string().max(200).optional(),
+    consent_source: z.string().max(500).optional(),
+    /** Send to screened leads too, instead of holding them back. */
+    allow_flagged: z.boolean().optional(),
+    /** Skip people already in another campaign of the same project (default true). */
+    skip_project_duplicates: z.boolean().optional(),
+  })
+  .refine((body) => Boolean(body.leads) !== Boolean(body.csv), {
+    message: 'send exactly one of leads or csv',
+  });
+
+const allowBody = z.object({ allow: z.boolean() });
 
 // ------------------------------------------------------------------ rows
 
@@ -759,104 +812,20 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
     });
     await inheritFilters(db, campaignId, actor.workspaceId, offering.id, stamp);
 
-    const importId = await startContactImport(db, {
-      workspaceId: actor.workspaceId,
-      userId: actor.userId,
+    const outcome = await importIntoCampaign(db, actor, {
       campaignId,
+      projectId: offering.id,
+      rows: body.leads.map(rawFromLead),
       filename: `autogtm:${body.name}`,
       consentBasis: body.consent_basis ?? 'opt_in',
-      ...(body.consent_source ? { consentSource: body.consent_source } : {}),
+      consentSource: body.consent_source,
+      allowFlagged: body.allow_flagged === true,
+      // A new campaign's whole point may be to re-approach part of a project.
+      skipProjectDuplicates: false,
+      event: 'autogtm.campaign_imported',
     });
 
-    let imported = 0;
-    let merged = 0;
-    let updated = 0;
-    let rejected = 0;
-    const personIds = new Set<string>();
-
-    for (let offset = 0; offset < body.leads.length; offset += IMPORT_CHUNK) {
-      const rows = body.leads.slice(offset, offset + IMPORT_CHUNK).map((lead) => ({
-        email: lead.email,
-        ...(lead.first_name ? { firstName: lead.first_name } : {}),
-        ...(lead.last_name ? { lastName: lead.last_name } : {}),
-        ...(lead.company ? { company: lead.company } : {}),
-        ...(lead.job_title ? { title: lead.job_title } : {}),
-        ...(lead.location ? { location: lead.location } : {}),
-        ...(lead.company_domain ? { companyDomain: lead.company_domain } : {}),
-        ...(lead.linkedin_url ? { linkedinUrl: lead.linkedin_url } : {}),
-      }));
-
-      const result = await importContactChunk(db, importId, rows, { startRow: offset });
-      imported += result.imported;
-      merged += result.merged;
-      updated += result.updated;
-      rejected += result.rejected;
-      for (const id of result.personIds) personIds.add(id);
-    }
-
-    // The importer makes people; a campaign is a membership. Without this the
-    // leads exist and the campaign is empty, which is the bug the old
-    // `/contacts/imports` path shipped with.
-    for (const personId of personIds) {
-      const inserted = await db.execute({
-        sql: `INSERT OR IGNORE INTO campaign_people (campaign_id, person_id, workspace_id, status,
-              interaction_state, discovered_at, updated_at)
-              VALUES (?, ?, ?, 'discovered', 'never_contacted', ?, ?)`,
-        args: [campaignId, personId, actor.workspaceId, stamp, stamp],
-      });
-      if (inserted.rowsAffected > 0) {
-        await recordDiscovered(db, { workspaceId: actor.workspaceId, campaignId, personId });
-      }
-    }
-
-    // Research is what makes a lead sendable: every message is grounded in
-    // something read about them, so their company site is queued under this
-    // campaign. One crawl per domain however many colleagues were listed.
-    const domains = new Set<string>();
-    for (const lead of body.leads) {
-      const domain = lead.company_domain
-        ? normaliseDomain(lead.company_domain)
-        : normaliseDomain(lead.email.split('@')[1] ?? '');
-      if (domain && !FREEMAIL.has(domain)) domains.add(domain);
-    }
-    let crawls = 0;
-    for (const domain of domains) {
-      const url = `https://${domain}`;
-      const queued = await enqueue(db, {
-        workspaceId: actor.workspaceId,
-        kind: 'crawl_site',
-        payload: { url, campaignId },
-        dedupeKey: crawlDedupeKey(url),
-      });
-      if (queued.queued) crawls += 1;
-    }
-
-    await finishContactImport(db, importId);
-
-    await repo.audit(db, {
-      workspaceId: actor.workspaceId,
-      actorKind: 'user',
-      actorId: actor.userId,
-      eventType: 'autogtm.campaign_imported',
-      entityKind: 'campaign',
-      entityId: campaignId,
-      detail: { importId, imported, merged, rejected, crawls },
-    });
-
-    return c.json(
-      {
-        task_id: importId,
-        campaign_id: campaignId,
-        project_id: offering.id,
-        status: 'completed',
-        imported,
-        merged,
-        updated,
-        rejected,
-        crawls_queued: crawls,
-      },
-      201,
-    );
+    return c.json({ ...outcome, project_id: offering.id }, 201);
   });
 
   r.get('/campaigns/import/:task_id', async (c) => {
@@ -870,12 +839,14 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
       merged: number;
       updated: number;
       rejected: number;
+      skipped: number | null;
+      flagged: number | null;
       created_at: string;
       updated_at: string;
     }>(
       c.get('db'),
-      `SELECT id, campaign_id, status, total_rows, imported, merged, updated, rejected, created_at,
-              updated_at
+      `SELECT id, campaign_id, status, total_rows, imported, merged, updated, rejected, skipped,
+              flagged, created_at, updated_at
          FROM contact_imports WHERE id = ? AND workspace_id = ?`,
       [c.req.param('task_id'), actor.workspaceId],
     );
@@ -891,9 +862,126 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
       merged: row.merged,
       updated: Number(row.updated ?? 0),
       rejected: row.rejected,
+      skipped: Number(row.skipped ?? 0),
+      flagged: Number(row.flagged ?? 0),
+      report_url: `/api/v1/autogtm/campaigns/import/${row.id}/report?format=csv`,
       created_at: row.created_at,
       updated_at: row.updated_at,
     });
+  });
+
+  r.get('/campaigns/import/:task_id/report', async (c) => {
+    const actor = c.get('actor');
+    const report = await importReport(c.get('db'), actor.workspaceId, c.req.param('task_id'));
+    if (!report) throw ApiError.notFound('import');
+    if (c.req.query('format') === 'csv') return importReportCsv(c, report);
+    return c.json({
+      ...report,
+      rows: report.rows.map((row) => ({ ...row, why: reasonText(row.reason) })),
+    });
+  });
+
+  // ------------------------------------------------------- leads, screening
+
+  r.post('/campaigns/:id/leads', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    requireWriter(actor, 'adding leads');
+    await deps.requireVerifiedEmail(db, actor);
+
+    const campaign = await ownedCampaign(db, actor.workspaceId, c.req.param('id'));
+    if (campaign.status === 'archived') {
+      throw ApiError.badRequest('an archived campaign takes no new leads');
+    }
+    const body = await parse(c.req.raw, appendBody);
+
+    let rows: RawContact[];
+    if (body.csv) {
+      const [head, ...data] = parseCsv(body.csv);
+      if (!head) throw ApiError.badRequest('the csv has no rows');
+      const mapping = mapHeaders(head);
+      if (mapping.email === undefined) {
+        throw ApiError.badRequest(
+          `the csv has no email column (columns seen: ${head.join(', ')}); ` +
+            'rename one to "email"',
+        );
+      }
+      if (data.length > IMPORT_MAX_LEADS) {
+        throw ApiError.badRequest(
+          `${data.length} rows is more than ${IMPORT_MAX_LEADS} per request; split the file`,
+        );
+      }
+      rows = applyMapping(data, mapping);
+    } else {
+      rows = (body.leads ?? []).map(rawFromLead);
+    }
+
+    const outcome = await importIntoCampaign(db, actor, {
+      campaignId: campaign.id,
+      projectId: campaign.offering_id,
+      rows,
+      filename: body.filename ?? `autogtm:${campaign.name}:append`,
+      consentBasis: body.consent_basis ?? 'opt_in',
+      consentSource: body.consent_source,
+      allowFlagged: body.allow_flagged === true,
+      skipProjectDuplicates: body.skip_project_duplicates !== false,
+      event: 'autogtm.leads_appended',
+    });
+
+    return c.json({ ...outcome, project_id: campaign.offering_id }, 201);
+  });
+
+  r.get('/campaigns/:id/screened', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaign = await ownedCampaign(db, actor.workspaceId, c.req.param('id'));
+    const leads = await screenedLeads(db, {
+      workspaceId: actor.workspaceId,
+      campaignId: campaign.id,
+      includeAllowed: c.req.query('include_allowed') === 'true',
+      limit: clampPage(c.req.query('limit')),
+    });
+    return c.json({
+      campaign_id: campaign.id,
+      held: await countScreenedHeld(db, actor.workspaceId, campaign.id),
+      leads: leads.map((lead) => ({
+        person_id: lead.personId,
+        name: lead.name,
+        email: lead.email,
+        flags: lead.findings.map((finding) => finding.flag),
+        reasons: lead.findings,
+        screened_at: lead.screenedAt,
+        allowed_at: lead.allowedAt,
+        held: lead.allowedAt === null,
+      })),
+    });
+  });
+
+  r.post('/leads/:person_id/screening', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    requireWriter(actor, 'overriding lead screening');
+    const personId = c.req.param('person_id');
+    const body = await parse(c.req.raw, allowBody);
+    const changed = await setScreenAllowed(db, {
+      workspaceId: actor.workspaceId,
+      personId,
+      allow: body.allow,
+      userId: actor.userId,
+    });
+    if (!changed) throw ApiError.notFound('screened lead');
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: body.allow ? 'lead.screening_allowed' : 'lead.screening_held',
+      entityKind: 'person',
+      entityId: personId,
+      detail: {},
+    });
+
+    return c.json({ person_id: personId, held: !body.allow });
   });
 
   r.get('/campaigns/:id', async (c) => {
@@ -1541,23 +1629,298 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
 
 // ----------------------------------------------------------------- helpers
 
-/** Addresses that name a mailbox provider, not a company worth crawling. */
-const FREEMAIL = new Set([
-  'gmail.com',
-  'googlemail.com',
-  'yahoo.com',
-  'hotmail.com',
-  'outlook.com',
-  'live.com',
-  'icloud.com',
-  'me.com',
-  'aol.com',
-  'protonmail.com',
-  'proton.me',
-  'mail.com',
-  'gmx.com',
-  'yandex.com',
-]);
+type LeadFields = {
+  readonly email?: string | undefined;
+  readonly name?: string | undefined;
+  readonly first_name?: string | undefined;
+  readonly last_name?: string | undefined;
+  readonly company?: string | undefined;
+  readonly company_domain?: string | undefined;
+  readonly job_title?: string | undefined;
+  readonly location?: string | undefined;
+  readonly linkedin_url?: string | undefined;
+  readonly updated_at?: string | undefined;
+};
+
+/** An API lead (Explee's column names) as the importer's row. */
+function rawFromLead(lead: LeadFields): RawContact {
+  return {
+    ...(lead.email ? { email: lead.email } : {}),
+    ...(lead.name ? { name: lead.name } : {}),
+    ...(lead.first_name ? { firstName: lead.first_name } : {}),
+    ...(lead.last_name ? { lastName: lead.last_name } : {}),
+    ...(lead.company ? { company: lead.company } : {}),
+    ...(lead.job_title ? { title: lead.job_title } : {}),
+    ...(lead.location ? { location: lead.location } : {}),
+    ...(lead.company_domain ? { companyDomain: lead.company_domain } : {}),
+    ...(lead.linkedin_url ? { linkedinUrl: lead.linkedin_url } : {}),
+    ...(lead.updated_at ? { updatedAt: lead.updated_at } : {}),
+  };
+}
+
+/** Rows of the report a response carries inline; the rest are one GET away. */
+const INLINE_REPORT_ROWS = 500;
+
+interface ImportIntoCampaignInput {
+  readonly campaignId: string;
+  readonly projectId: string;
+  readonly rows: readonly RawContact[];
+  readonly filename: string;
+  readonly consentBasis: string;
+  readonly consentSource?: string | undefined;
+  readonly allowFlagged: boolean;
+  /** Also skip people already in another campaign of the project. */
+  readonly skipProjectDuplicates: boolean;
+  readonly event: string;
+}
+
+/**
+ * The one way leads enter a campaign through this API, new or existing.
+ *
+ * In order: the importer cleans every row and makes or patches the person
+ * (newest data wins), screening flags the ones not worth a message, people
+ * already in the campaign (or, appending, anywhere in the project) and anyone
+ * on a suppress list are skipped, and the rest become members with their
+ * company queued for research. Every row that did not simply become a lead is
+ * written to the import's report with the reason.
+ */
+async function importIntoCampaign(db: Client, actor: RequestActor, input: ImportIntoCampaignInput) {
+  const importId = await startContactImport(db, {
+    workspaceId: actor.workspaceId,
+    userId: actor.userId,
+    campaignId: input.campaignId,
+    filename: input.filename,
+    consentBasis: input.consentBasis,
+    ...(input.consentSource ? { consentSource: input.consentSource } : {}),
+  });
+
+  // Screened against the whole list, not a chunk: a temp-mail domain is
+  // only visible once its signups are counted together.
+  const screen = screenContext(input.rows);
+  let imported = 0;
+  let merged = 0;
+  let updated = 0;
+  let rejected = 0;
+  let flagged = 0;
+  const stored: StoredRow[] = [];
+
+  for (let offset = 0; offset < input.rows.length; offset += IMPORT_CHUNK) {
+    const result = await importContactChunk(
+      db,
+      importId,
+      input.rows.slice(offset, offset + IMPORT_CHUNK),
+      { startRow: offset, screen, allowFlagged: input.allowFlagged, userId: actor.userId },
+    );
+    imported += result.imported;
+    merged += result.merged;
+    updated += result.updated;
+    rejected += result.rejected;
+    flagged += result.flagged;
+    stored.push(...result.stored);
+  }
+
+  const skips = await skipReasons(db, actor.workspaceId, input, stored);
+  const stamp = now();
+  const statements: { sql: string; args: (string | number | null)[] }[] = [];
+  const added: StoredRow[] = [];
+  const seenPeople = new Set<string>();
+
+  for (const entry of stored) {
+    const skip = skips.get(entry.personId);
+    if (skip || seenPeople.has(entry.personId)) {
+      statements.push({
+        sql: `INSERT INTO contact_import_rejects (id, import_id, row_number, email, reason, detail,
+              outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, 'skipped', ?)`,
+        args: [
+          newId('contactImportReject'),
+          importId,
+          entry.row,
+          entry.email,
+          skip?.reason ?? 'duplicate',
+          skip?.detail ?? 'the same person appears earlier in the file',
+          stamp,
+        ],
+      });
+      continue;
+    }
+    seenPeople.add(entry.personId);
+    added.push(entry);
+  }
+
+  // The importer makes people; a campaign is a membership. Without this the
+  // leads exist and the campaign is empty, which is the bug the old
+  // `/contacts/imports` path shipped with.
+  for (const entry of added) {
+    statements.push({
+      sql: `INSERT OR IGNORE INTO campaign_people (campaign_id, person_id, workspace_id, status,
+            interaction_state, discovered_at, updated_at)
+            VALUES (?, ?, ?, 'discovered', 'never_contacted', ?, ?)`,
+      args: [input.campaignId, entry.personId, actor.workspaceId, stamp, stamp],
+    });
+  }
+  const skipped = stored.length - added.length;
+  statements.push({
+    sql: `UPDATE contact_imports SET skipped = skipped + ?, updated_at = ? WHERE id = ?`,
+    args: [skipped, stamp, importId],
+  });
+  for (let offset = 0; offset < statements.length; offset += IMPORT_CHUNK) {
+    await db.batch(statements.slice(offset, offset + IMPORT_CHUNK));
+  }
+  for (const entry of added) {
+    await recordDiscovered(db, {
+      workspaceId: actor.workspaceId,
+      campaignId: input.campaignId,
+      personId: entry.personId,
+    });
+  }
+
+  // Research is what makes a lead sendable: every message is grounded in
+  // something read about them, so their company site is queued under this
+  // campaign. One crawl per domain however many colleagues were listed, and
+  // never a mailbox provider's homepage.
+  const byRow = new Map(input.rows.map((row, index) => [index + 1, row] as const));
+  const domains = new Set<string>();
+  for (const entry of added) {
+    const raw = byRow.get(entry.row);
+    const domain = normaliseDomain(raw?.companyDomain ?? entry.email.split('@')[1] ?? '');
+    if (domain && domain.includes('.') && !isConsumerMailDomain(domain)) domains.add(domain);
+  }
+  let crawls = 0;
+  for (const domain of domains) {
+    const url = `https://${domain}`;
+    const queued = await enqueue(db, {
+      workspaceId: actor.workspaceId,
+      kind: 'crawl_site',
+      payload: { url, campaignId: input.campaignId },
+      dedupeKey: crawlDedupeKey(url),
+    });
+    if (queued.queued) crawls += 1;
+  }
+
+  await finishContactImport(db, importId);
+
+  await repo.audit(db, {
+    workspaceId: actor.workspaceId,
+    actorKind: 'user',
+    actorId: actor.userId,
+    eventType: input.event,
+    entityKind: 'campaign',
+    entityId: input.campaignId,
+    detail: { importId, imported, merged, rejected, skipped, flagged, added: added.length, crawls },
+  });
+
+  const report = await importReport(db, actor.workspaceId, importId);
+  const reportRows = report?.rows ?? [];
+
+  return {
+    task_id: importId,
+    campaign_id: input.campaignId,
+    status: 'completed' as const,
+    received: input.rows.length,
+    added: added.length,
+    imported,
+    merged,
+    updated,
+    rejected,
+    skipped,
+    flagged,
+    flagged_held: input.allowFlagged ? 0 : flagged,
+    crawls_queued: crawls,
+    report: reportRows
+      .slice(0, INLINE_REPORT_ROWS)
+      .map((row) => ({ ...row, why: reasonText(row.reason) })),
+    report_truncated: reportRows.length > INLINE_REPORT_ROWS,
+    report_url: `/api/v1/autogtm/campaigns/import/${importId}/report?format=csv`,
+  };
+}
+
+/**
+ * Why each stored person is not added, keyed by person id: already in this
+ * campaign, already in the project, or suppressed. A handful of reads for
+ * the whole import rather than a few per row.
+ */
+async function skipReasons(
+  db: Client,
+  workspaceId: string,
+  input: ImportIntoCampaignInput,
+  stored: readonly StoredRow[],
+): Promise<Map<string, { reason: string; detail: string }>> {
+  const reasons = new Map<string, { reason: string; detail: string }>();
+  const ids = [...new Set(stored.map((entry) => entry.personId))];
+  const chunks = (list: readonly string[]) =>
+    Array.from({ length: Math.ceil(list.length / 400) }, (_, i) =>
+      list.slice(i * 400, i * 400 + 400),
+    );
+
+  // Suppression first: it is the reason that matters most if several apply.
+  const keysFor = new Map<string, string[]>();
+  for (const entry of stored) {
+    const domain = entry.email.split('@')[1] ?? '';
+    const keys = [`person:${entry.personId}`, emailMatchKey(entry.email)];
+    if (domain && !isConsumerMailDomain(domain)) keys.push(domainMatchKey(domain));
+    keysFor.set(entry.personId, [...(keysFor.get(entry.personId) ?? []), ...keys]);
+  }
+  const allKeys = [...new Set([...keysFor.values()].flat())];
+  const hits = new Map<string, string>();
+  for (const slice of chunks(allKeys)) {
+    const rows = await queryAll<{ match_key: string; name: string | null; reason: string | null }>(
+      db,
+      `SELECT k.match_key, e.name, e.reason
+         FROM suppression_keys k LEFT JOIN suppression_entries e ON e.id = k.suppression_id
+        WHERE k.match_key IN (${slice.map(() => '?').join(', ')})
+          AND (k.scope = 'global' OR k.workspace_id = ?)`,
+      [...slice, workspaceId],
+    );
+    for (const row of rows) {
+      hits.set(
+        row.match_key,
+        row.name ? `on the suppress list "${row.name}"` : `suppressed (${row.reason ?? 'opt-out'})`,
+      );
+    }
+  }
+  for (const slice of chunks(ids)) {
+    const rows = await queryAll<{ id: string; status: string }>(
+      db,
+      `SELECT id, status FROM people
+        WHERE id IN (${slice.map(() => '?').join(', ')}) AND status IN ('suppressed', 'deleted')`,
+      slice,
+    );
+    for (const row of rows) hits.set(`person:${row.id}`, `the person is ${row.status}`);
+  }
+  for (const [personId, keys] of keysFor) {
+    const hit = keys.find((key) => hits.has(key));
+    if (hit) reasons.set(personId, { reason: 'suppressed', detail: hits.get(hit)! });
+  }
+
+  // Then membership: this campaign, then (appending) the rest of the project.
+  for (const slice of chunks(ids)) {
+    const rows = await queryAll<{ person_id: string; campaign_id: string; name: string }>(
+      db,
+      `SELECT cp.person_id, cp.campaign_id, c.name
+         FROM campaign_people cp JOIN campaigns c ON c.id = cp.campaign_id
+        WHERE cp.workspace_id = ? AND c.offering_id = ?
+          AND cp.person_id IN (${slice.map(() => '?').join(', ')})`,
+      [workspaceId, input.projectId, ...slice],
+    );
+    for (const row of rows) {
+      if (reasons.has(row.person_id)) continue;
+      if (row.campaign_id === input.campaignId) {
+        reasons.set(row.person_id, {
+          reason: 'already_in_campaign',
+          detail: 'already a lead in this campaign (their details were updated from the file)',
+        });
+      } else if (input.skipProjectDuplicates) {
+        reasons.set(row.person_id, {
+          reason: 'already_in_project',
+          detail: `already a lead in "${row.name}" in this project`,
+        });
+      }
+    }
+  }
+  // An earlier row of the same import already claimed "this campaign"; the
+  // first occurrence wins, which the caller handles by order.
+  return reasons;
+}
 
 interface LeadMember {
   readonly person_id: string;

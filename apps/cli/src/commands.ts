@@ -180,6 +180,112 @@ function jobPostDetail(post: Record<string, unknown>): string {
  * worker reads each posting and searches for its people; `resolve` does that
  * now and prints them.
  */
+function csvCell(value: unknown): string {
+  const text = value === null || value === undefined ? '' : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** An import report as CSV, the same columns the API's ?format=csv download has. */
+export function reportCsv(report: readonly Record<string, unknown>[]): string {
+  const columns = ['row', 'email', 'outcome', 'reason', 'why', 'detail'];
+  return `${[columns.join(','), ...report.map((r) => columns.map((c) => csvCell(r[c])).join(','))].join('\n')}\n`;
+}
+
+/** One line per reported row: what happened to it and why. */
+export function reportLines(report: readonly Record<string, unknown>[]): string[] {
+  return report.map(
+    (row) =>
+      `  row ${pad(text(row, 'row', '?'), 6)} ${pad(text(row, 'outcome'), 9)} ` +
+      `${pad(text(row, 'email', '-'), 32)} ${text(row, 'detail', text(row, 'why'))}`,
+  );
+}
+
+/**
+ * `og leads`: append a CSV to a running campaign, read an import's report,
+ * and review the leads screening is holding back.
+ */
+async function runLeads({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb, target, file] = args;
+  const fs = await import('node:fs');
+
+  if (verb === 'add') {
+    if (!target || !file) {
+      throw new Error('usage: og leads add <campaignId> <file.csv> --consent-source "<where>"');
+    }
+    const result = (await client.post(`/autogtm/campaigns/${encodeURIComponent(target)}/leads`, {
+      csv: fs.readFileSync(file, 'utf8'),
+      filename: file.split('/').pop(),
+      ...(flagString(flags, 'consent-source')
+        ? { consent_source: flagString(flags, 'consent-source') }
+        : {}),
+      allow_flagged: flags['allow-flagged'] === true,
+      skip_project_duplicates: flags['keep-project-duplicates'] !== true,
+    })) as Record<string, unknown>;
+
+    const report = rows(result, 'report');
+    const out = flagString(flags, 'report');
+    if (out) fs.writeFileSync(out, reportCsv(report));
+
+    return [
+      `${text(result, 'added', '0')} of ${text(result, 'received', '0')} added to ${target} ` +
+        `(task ${text(result, 'task_id')}): ${text(result, 'skipped', '0')} skipped, ` +
+        `${text(result, 'rejected', '0')} not usable, ${text(result, 'flagged', '0')} flagged by screening` +
+        (Number(result.flagged_held ?? 0) > 0 ? ' and held back from sending' : ''),
+      ...reportLines(report),
+      ...(result.report_truncated ? ['  … the rest: og leads report <task> --csv'] : []),
+      ...(out ? [`Report written to ${out}`] : []),
+    ].join('\n');
+  }
+
+  if (verb === 'report') {
+    if (!target) throw new Error('usage: og leads report <taskId> [--csv]');
+    const result = (await client.get(
+      `/autogtm/campaigns/import/${encodeURIComponent(target)}/report`,
+    )) as Record<string, unknown>;
+    const report = rows(result, 'rows');
+    if (flags.csv === true) return reportCsv(report).trimEnd();
+    return [
+      `${text(result, 'total_rows', '0')} rows: ${text(result, 'imported', '0')} new, ` +
+        `${text(result, 'merged', '0')} known, ${text(result, 'rejected', '0')} not usable, ` +
+        `${text(result, 'skipped', '0')} skipped, ${text(result, 'flagged', '0')} flagged`,
+      ...reportLines(report),
+    ].join('\n');
+  }
+
+  if (verb === 'screened') {
+    if (!target) throw new Error('usage: og leads screened <campaignId> [--all]');
+    const result = (await client.get(
+      `/autogtm/campaigns/${encodeURIComponent(target)}/screened`,
+      flags.all === true ? { include_allowed: 'true' } : {},
+    )) as Record<string, unknown>;
+    const leads = rows(result, 'leads');
+    if (leads.length === 0) return 'Screening is holding nobody back in this campaign.';
+    return [
+      `${text(result, 'held', '0')} held back from sending:`,
+      ...leads.map((lead) => {
+        const reasons = (lead.reasons as { flag: string; detail: string }[] | undefined) ?? [];
+        return (
+          `${pad(text(lead, 'person_id'), 30)} ${lead.held ? 'held   ' : 'allowed'} ` +
+          `${pad(text(lead, 'email', '-'), 32)} ${reasons.map((r) => r.detail).join('; ')}`
+        );
+      }),
+      'Send to one anyway: og leads allow <personId>',
+    ].join('\n');
+  }
+
+  if (verb === 'allow' || verb === 'hold') {
+    if (!target) throw new Error(`usage: og leads ${verb} <personId>`);
+    await client.post(`/autogtm/leads/${encodeURIComponent(target)}/screening`, {
+      allow: verb === 'allow',
+    });
+    return verb === 'allow'
+      ? `${target} allowed: screening no longer holds them back.`
+      : `${target} held back from sending again.`;
+  }
+
+  throw new Error('usage: og leads add|report|screened|allow|hold …  (og help)');
+}
+
 async function runJobs({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', ...rest] = args;
   const target = rest[0];
@@ -1552,6 +1658,13 @@ export const COMMANDS: readonly Command[] = [
       'og jobs list [--status s] | search "<keyword>" [--boards a,b] [--limit n] | add <url…> [--campaign <id>] | show <id> | resolve <id> | promote <id> <contactId> [--campaign <id>] | status <id> <status> | note <id> <text> | rm <id>',
     summary: 'Job postings by URL or keyword, and the real people behind each one.',
     run: runJobs,
+  },
+  {
+    name: 'leads',
+    usage:
+      'og leads add <campaignId> <file.csv> --consent-source "<where>" [--allow-flagged] [--keep-project-duplicates] [--report out.csv] | report <taskId> [--csv] | screened <campaignId> [--all] | allow <personId> | hold <personId>',
+    summary: 'Add a CSV of leads to a running campaign, with a per-row report and screening.',
+    run: runLeads,
   },
   {
     name: 'webhooks',

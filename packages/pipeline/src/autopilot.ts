@@ -48,6 +48,7 @@ import {
   AUTOPILOT_ACTOR,
 } from './outreach-email';
 import { budgetStatus } from './metering';
+import { holdReason } from './lead-screen';
 import { ownDomains, refuseRecipient } from './recipient-guard';
 
 export interface AutopilotDeps {
@@ -132,6 +133,8 @@ interface Candidate {
   readonly believed_minor: number;
   readonly outreach_eligible: number;
   readonly identity_confidence: number;
+  /** Lead screening's findings while they hold this person back; null otherwise. */
+  readonly screen_findings: string | null;
   readonly min_outreach_confidence: number;
   readonly draft_id: string | null;
   readonly subject: string | null;
@@ -360,6 +363,9 @@ export async function runAutopilot(
             c.approval_mode, c.budget_json,
             p.display_name, p.status AS person_status, p.believed_minor,
             p.outreach_eligible, p.identity_confidence,
+            (SELECT ls.findings FROM lead_screens ls
+              WHERE ls.workspace_id = r.workspace_id AND ls.person_id = p.id
+                AND ls.allowed_at IS NULL) AS screen_findings,
             w.min_outreach_confidence,
             d.id AS draft_id, d.subject, d.body, d.checks_json,
             co.name AS company_name, co.contact_email AS company_contact_email,
@@ -531,6 +537,9 @@ export async function runAutopilot(
       approvalMode: row.approval_mode as 'trusted_automation',
       hasConnectedAccount: sender !== undefined,
       personSuppressed: row.person_status === 'suppressed' || row.outreach_eligible === 0,
+      ...(holdReason(row.screen_findings)
+        ? { personScreenedOut: holdReason(row.screen_findings) }
+        : {}),
       personBelievedMinor: row.believed_minor === 1,
       personDeleted: row.person_status === 'deleted',
       identityConfidence: row.identity_confidence,
