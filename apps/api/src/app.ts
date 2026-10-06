@@ -227,6 +227,7 @@ import {
   decodeCursor,
   encodeCursor,
   listingEntry,
+  profileMarks,
   loadSettings,
   overridesFromRequest,
   saveSettings,
@@ -1182,7 +1183,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       ).claim = { userId: null, method: editor.method };
 
     const saved = await saveSettings(db, personId, patch, stamp);
-    const { markdown } = composeProfile(
+    const { doc, markdown } = composeProfile(
       profile.markdown,
       saved.overrides,
       editor.kind === 'subject' || saved.public ? 'public' : 'private',
@@ -1206,6 +1207,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       public: saved.public,
       handle: saved.handle,
       editedBy: editor.kind,
+      ...profileMarks(doc),
     });
   });
 
@@ -2760,9 +2762,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
             LIMIT 1`,
         [personId, actor.workspaceId],
       ),
-      queryOne<{ generated_at: string; published_url: string | null }>(
+      queryOne<{ markdown: string; generated_at: string; published_url: string | null }>(
         db,
-        'SELECT generated_at, published_url FROM openprofiles WHERE person_id = ?',
+        'SELECT markdown, generated_at, published_url FROM openprofiles WHERE person_id = ?',
         [personId],
       ),
       loadSettings(db, personId),
@@ -2786,6 +2788,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
             handle: profileSettings.handle,
             claimedAt: profileSettings.claimedAt,
             editedAt: profileSettings.updatedAt,
+            // Emoji, Pronouns and Web as the file states them, owner's
+            // corrections applied. Null is unstated, never a guess.
+            ...profileMarks(
+              composeProfile(openprofile.markdown, profileSettings.overrides, 'private').doc,
+            ),
           }
         : null,
     });

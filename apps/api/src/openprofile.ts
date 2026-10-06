@@ -22,13 +22,15 @@ import {
   EDIT_SCOPE,
   accounts,
   applyOverrides,
-  identityValue,
+  emoji,
   mergeOverrides,
   normaliseEmail,
   normaliseUrl,
   overridesFromDocument,
   parseOpenProfile,
+  pronouns,
   renderOpenProfile,
+  web,
   type OpenProfileDoc,
   type Overrides,
 } from '@profullstack/openprofile';
@@ -286,6 +288,30 @@ export function bearerMayEdit(
   return { ok: false, reason: 'the token is not for the person this profile is about' };
 }
 
+/**
+ * The three identity lines every surface shows beside a name (OpenProfile
+ * 0.4): the person's mark, their pronouns, their home page. Read from the
+ * document so an owner's correction wins; `Website`, `Homepage` and `Site`
+ * count as `Web`. Pronouns are only ever what the file states: null means
+ * unstated, and nothing here guesses.
+ */
+export interface ProfileMarks {
+  /** One grapheme, or an OpenEmoji `:shortcode:` as written. */
+  readonly emoji: string | null;
+  readonly pronouns: string | null;
+  readonly web: string | null;
+}
+
+export function profileMarks(doc: OpenProfileDoc): ProfileMarks {
+  return { emoji: emoji(doc), pronouns: pronouns(doc), web: web(doc) };
+}
+
+/** The marks of a stored Markdown file, or all null when there is none. */
+export function marksOfMarkdown(markdown: string | null | undefined): ProfileMarks {
+  if (!markdown) return { emoji: null, pronouns: null, web: null };
+  return profileMarks(parseOpenProfile(markdown));
+}
+
 /** What the listing says about one public profile, derived from the served document. */
 export function listingEntry(
   doc: OpenProfileDoc,
@@ -299,8 +325,7 @@ export function listingEntry(
   page: string;
   updatedAt: string;
   accounts: string[];
-  web: string | null;
-} {
+} & ProfileMarks {
   const url = `${origin}/api/v1/people/${encodeURIComponent(personId)}/openprofile.md`;
   return {
     id: personId,
@@ -312,7 +337,7 @@ export function listingEntry(
     accounts: accounts(doc)
       .map((entry) => entry.url)
       .filter((entry) => /^https?:\/\//i.test(entry)),
-    web: identityValue(doc, 'Web'),
+    ...profileMarks(doc),
   };
 }
 

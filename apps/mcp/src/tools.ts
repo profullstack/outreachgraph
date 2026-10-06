@@ -660,7 +660,8 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: 'get_openprofile',
     title: "Get a person's OpenProfile.md",
     description:
-      'The OpenProfile.md (logicsrc.com/openprofile) assembled for one person: name, handle, home ' +
+      'The OpenProfile.md (logicsrc.com/openprofile) assembled for one person: name, handle, Emoji and ' +
+      'Pronouns when they stated them (never inferred), home ' +
       'page, the accounts that are theirs, topics. Absent until the openprofile job has run for them.',
     readOnly: true,
     inputSchema: {

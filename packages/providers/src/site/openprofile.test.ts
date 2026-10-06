@@ -21,6 +21,7 @@ import {
   urlsInText,
   wellKnownOpenProfile,
 } from './openprofile';
+import { emoji, parseOpenProfile, pronouns, web } from '@profullstack/openprofile';
 
 const SITE = `<!doctype html><html><head>
 <title>Ada Lovelace</title>
@@ -180,6 +181,54 @@ describe('network readers', () => {
     ]);
   });
 
+  test('Bluesky pronouns and website fields are taken as written; no field means unstated', async () => {
+    const facts = await readBlueskyProfile('ada.example', {
+      fetchImpl: async () =>
+        jsonResponse({
+          did: 'did:plc:ada',
+          handle: 'ada.example',
+          displayName: 'Ada',
+          description: 'Engines. https://github.com/ada',
+          pronouns: ' she/her ',
+          website: 'https://ada.example/',
+        }),
+    });
+    expect(facts?.pronouns).toBe('she/her');
+    expect(facts?.web).toBe('https://ada.example/');
+
+    const bare = await readBlueskyProfile('bob.example', {
+      fetchImpl: async () => jsonResponse({ handle: 'bob.example', displayName: 'Bob' }),
+    });
+    expect(bare?.pronouns).toBeUndefined();
+    expect(bare?.emoji).toBeUndefined();
+  });
+
+  test('Mastodon Pronouns and Emoji fields are statements; other fields are not', async () => {
+    const facts = await readMastodonProfile('https://mathstodon.xyz/@ada', {
+      fetchImpl: async () =>
+        jsonResponse({
+          id: '42',
+          acct: 'ada',
+          display_name: 'Ada Lovelace',
+          note: '<p>She builds engines.</p>',
+          fields: [
+            { name: 'Pronouns', value: 'they/them' },
+            { name: 'Emoji', value: ':telescope:' },
+            { name: 'Code', value: '<a href="https://github.com/ada">github.com/ada</a>' },
+          ],
+        }),
+    });
+    expect(facts?.pronouns).toBe('they/them');
+    expect(facts?.emoji).toBe(':telescope:');
+
+    // A bio that says "she" is not a pronouns field.
+    const bare = await readMastodonProfile('https://mathstodon.xyz/@bob', {
+      fetchImpl: async () =>
+        jsonResponse({ id: '7', acct: 'bob', note: '<p>She said hi.</p>', fields: [] }),
+    });
+    expect(bare?.pronouns).toBeUndefined();
+  });
+
   test('a network that answers 404 yields nothing rather than a half profile', async () => {
     expect(
       await readBlueskyProfile('nobody.example', {
@@ -266,6 +315,23 @@ describe('mergeFacts and buildOpenProfile', () => {
     );
     // One heading, and it is the name.
     expect(markdown.match(/^# /gm)).toHaveLength(1);
+  });
+
+  test('stated Emoji and Pronouns are written in the identity block and read back', () => {
+    const merged = mergeFacts('ada.example', 'https://bsky.app/profile/ada.example', [
+      { source: 'bsky', name: 'Ada', pronouns: 'she/her', accounts: [], topics: [] },
+      { source: 'mastodon', emoji: ':telescope:', pronouns: 'they/them', accounts: [], topics: [] },
+    ]);
+    expect(merged.pronouns).toBe('she/her');
+    expect(merged.emoji).toBe(':telescope:');
+    const markdown = buildOpenProfile({ ...merged, web: 'https://ada.example' });
+    expect(markdown).toContain(
+      '- **Handle**: @ada.example\n- **Emoji**: :telescope:\n- **Pronouns**: she/her\n- **Web**: https://ada.example\n',
+    );
+    const doc = parseOpenProfile(markdown);
+    expect(emoji(doc)).toBe(':telescope:');
+    expect(pronouns(doc)).toBe('she/her');
+    expect(web(doc)).toBe('https://ada.example');
   });
 
   test('a person with nothing but a handle still gets a valid file', () => {

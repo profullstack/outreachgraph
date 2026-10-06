@@ -28,7 +28,10 @@ const GENERATED = [
   '',
   '- **Kind**: person',
   '- **Handle**: @jane',
-  '- **Web**: https://jane.example',
+  '- **Emoji**: :compass:',
+  '- **Pronouns**: she/her',
+  // An alias the spec accepts for Web.
+  '- **Website**: https://jane.example',
   '- **Email**: jane@example.com',
   '- **Avatar**: https://jane.example/jane.png',
   '',
@@ -163,11 +166,18 @@ describe('public profiles', () => {
       url: `https://og.test/api/v1/people/${SEED.personId}/openprofile.md`,
       accounts: ['https://github.com/jane'],
       web: 'https://jane.example',
+      emoji: ':compass:',
+      pronouns: 'she/her',
     });
 
     // The detail says so, for the operator's screen.
     const detail = await (await get(app, `/people/${SEED.personId}`)).json();
-    expect(detail.openprofile.public).toBe(true);
+    expect(detail.openprofile).toMatchObject({
+      public: true,
+      emoji: ':compass:',
+      pronouns: 'she/her',
+      web: 'https://jane.example',
+    });
 
     // And back to private: gone from the listing, 404 again.
     expect((await post(app, `${profilePath}/publish`, { public: false })).status).toBe(200);
@@ -266,6 +276,26 @@ describe('corrections', () => {
     expect(after).toContain('Payments, from the rails up.');
     expect(after).not.toContain('Regenerated.');
     expect(after).toContain('- **Location**: Lisbon');
+  });
+
+  test("the owner's Emoji and Pronouns win, and a removed one is unstated, not guessed", async () => {
+    const { app } = await harness('openprofile-marks');
+
+    const patched = await putJson(app, profilePath, {
+      identity: { Pronouns: 'they/them', Emoji: null, Homepage: 'https://jane.dev' },
+    });
+    expect(patched.status).toBe(200);
+    const body = await patched.json();
+    expect(body).toMatchObject({ emoji: null, pronouns: 'they/them', web: 'https://jane.dev' });
+    expect(body.markdown).toContain('- **Pronouns**: they/them');
+    expect(body.markdown).not.toContain('**Emoji**');
+
+    const detail = await (await get(app, `/people/${SEED.personId}`)).json();
+    expect(detail.openprofile).toMatchObject({
+      emoji: null,
+      pronouns: 'they/them',
+      web: 'https://jane.dev',
+    });
   });
 
   test('a whole edited file stores the same overlay as JSON, and public and handle ride along', async () => {

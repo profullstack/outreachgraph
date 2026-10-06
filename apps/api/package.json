@@ -25,7 +25,7 @@
     "@outreachgraph/secrets": "workspace:*",
     "@outreachgraph/signals": "workspace:*",
     "@profullstack/form-guard": "^0.1.1",
-    "@profullstack/openprofile": "^0.1.2",
+    "@profullstack/openprofile": "^0.2.0",
     "hono": "^4.6.14",
     "zod": "^3.24.1"
   }

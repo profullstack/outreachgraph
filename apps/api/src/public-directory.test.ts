@@ -136,6 +136,8 @@ describe('public directory', () => {
       topics: ['saas', 'postgres', 'bun'],
       country: null,
       openprofile: null,
+      emoji: null,
+      pronouns: null,
       updated: expect.any(String),
     });
   });
@@ -182,7 +184,7 @@ describe('public directory', () => {
       name: 'Ada Publishes',
       publishedUrl: 'https://ada.example/.well-known/openprofile.md',
       markdown:
-        '# Ada\n\n- **Handle**: @ada\n- **Email**: ada@example.com\n\n## Topics\n\n- #rust, distributed systems, Rust\n',
+        '# Ada\n\n- **Handle**: @ada\n- **Emoji**: 🦀\n- **Pronouns**: she/her\n- **Email**: ada@example.com\n\n## Topics\n\n- #rust, distributed systems, Rust\n',
     });
     await identity(seeded, 'per_published', 'website', 'ada.example', 'https://ada.example');
     await identity(seeded, 'per_published', 'email', 'ada@example.com', null);
@@ -227,12 +229,17 @@ describe('public directory', () => {
       topics: ['rust', 'distributed systems'],
       country: null,
       openprofile: 'https://ada.example/.well-known/openprofile.md',
+      emoji: '🦀',
+      pronouns: 'she/her',
       updated: T1,
     });
 
     const rel = body.items.find((item) => item.id === 'per_relme');
     expect(rel?.url).toBe('https://hachyderm.io/@rel');
     expect(rel?.openprofile).toBeNull();
+    // Unstated is null: nothing is inferred from a name.
+    expect(rel?.emoji).toBeNull();
+    expect(rel?.pronouns).toBeNull();
   });
 
   test('never carries an address, a location, a score or a workspace', async () => {
@@ -264,10 +271,12 @@ describe('public directory', () => {
       expect(Object.keys(item).sort()).toEqual([
         'country',
         'description',
+        'emoji',
         'id',
         'kind',
         'name',
         'openprofile',
+        'pronouns',
         'topics',
         'updated',
         'url',
