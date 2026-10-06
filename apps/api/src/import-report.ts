@@ -55,11 +55,25 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   suppressed: 'on a suppress list',
 };
 
+/**
+ * Screening's words for its flags. `role_address` means something different
+ * there: the cleaner rejects a mailbox nobody reads (noreply@), screening
+ * holds back one a team reads (info@).
+ */
+const FLAG_TEXT: Readonly<Record<string, string>> = {
+  generated_name: 'a generated name, held back from sending',
+  relay_address: 'a relay address that hides the person, held back from sending',
+  temp_mail_domain: 'a temp-mail domain, held back from sending',
+  agent_account: 'a bot, agent or test account, held back from sending',
+  role_address: 'a team inbox, not a person, held back from sending',
+};
+
 /** A reason as words, for the UI and the CSV `why` column. */
-export function reasonText(reason: string): string {
+export function reasonText(reason: string, outcome?: string): string {
+  const words = outcome === 'flagged' ? { ...REASON_TEXT, ...FLAG_TEXT } : REASON_TEXT;
   return reason
     .split('+')
-    .map((part) => REASON_TEXT[part] ?? part.replace(/_/g, ' '))
+    .map((part) => words[part] ?? part.replace(/_/g, ' '))
     .join('; ');
 }
 
@@ -130,7 +144,7 @@ export function importReportCsv(c: Context, report: ImportReport): Response {
       email: row.email,
       outcome: row.outcome,
       reason: row.reason,
-      why: reasonText(row.reason),
+      why: reasonText(row.reason, row.outcome),
       detail: row.detail,
     })),
     ['row', 'email', 'outcome', 'reason', 'why', 'detail'],

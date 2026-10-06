@@ -891,7 +891,7 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
     if (c.req.query('format') === 'csv') return importReportCsv(c, report);
     return c.json({
       ...report,
-      rows: report.rows.map((row) => ({ ...row, why: reasonText(row.reason) })),
+      rows: report.rows.map((row) => ({ ...row, why: reasonText(row.reason, row.outcome) })),
     });
   });
 
@@ -1911,7 +1911,7 @@ async function importIntoCampaign(db: Client, actor: RequestActor, input: Import
     crawls_queued: crawls,
     report: reportRows
       .slice(0, INLINE_REPORT_ROWS)
-      .map((row) => ({ ...row, why: reasonText(row.reason) })),
+      .map((row) => ({ ...row, why: reasonText(row.reason, row.outcome) })),
     report_truncated: reportRows.length > INLINE_REPORT_ROWS,
     report_url: `/api/v1/autogtm/campaigns/import/${importId}/report?format=csv`,
   };
