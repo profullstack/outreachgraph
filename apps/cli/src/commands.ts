@@ -1235,6 +1235,103 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
+    name: 'mailboxes',
+    usage:
+      'og mailboxes | og mailboxes detect <email> | og mailboxes dns <id> | og mailboxes add <email> [--name "Jane"] [--cap 50] [--no-warmup]  (password prompted, or OG_MAILBOX_PASSWORD)',
+    summary: 'The addresses outreach sends from: health, replies, DNS, and adding one.',
+    async run({ client, args, flags }) {
+      const [sub, arg] = args;
+
+      if (!sub) {
+        const result = (await client.get('/mailboxes')) as Record<string, unknown>;
+        const list = rows(result, 'mailboxes');
+        if (list.length === 0) {
+          return 'No mailboxes yet. og mailboxes add you@company.com';
+        }
+        return list
+          .map((mailbox) => {
+            const replies = mailbox.readsReplies
+              ? text(mailbox, 'repliesError')
+                ? `replies FAILING: ${text(mailbox, 'repliesError')}`
+                : 'replies read'
+              : 'replies NOT read (no IMAP)';
+            return (
+              `${text(mailbox, 'id')}  ${pad(text(mailbox, 'fromEmail') || '?', 30)} ` +
+              `${pad(text(mailbox, 'status'), 7)} health ${pad(text(mailbox, 'healthScore'), 3)} ` +
+              `bounce ${pad(text(mailbox, 'bounceRisk'), 6)} ` +
+              `${text(mailbox, 'sentToday')}/${text(mailbox, 'effectiveCapToday')} today  ${replies}`
+            );
+          })
+          .join('\n');
+      }
+
+      if (sub === 'detect' || sub === 'add') {
+        if (!arg) throw new Error(`og mailboxes ${sub} <email>`);
+        const { detected } = (await client.post('/mailboxes/detect', { email: arg })) as {
+          detected: {
+            providerLabel: string;
+            source: string;
+            smtp: { host: string; port: number; secure: boolean };
+            imap: { host: string; port: number } | null;
+            note: string | null;
+          };
+        };
+        const found =
+          `${detected.providerLabel} (${detected.source}): sends via ${detected.smtp.host}:${detected.smtp.port}` +
+          (detected.imap ? `, reads via ${detected.imap.host}:${detected.imap.port}` : '');
+        if (sub === 'detect') return detected.note ? `${found}\n${detected.note}` : found;
+
+        // From the environment or a hidden prompt, never a flag: a flag lands
+        // in shell history.
+        if (detected.note) process.stderr.write(`${detected.note}\n`);
+        const password =
+          process.env.OG_MAILBOX_PASSWORD ||
+          (await readSecret(`password for ${arg} (input hidden): `));
+        if (!password) throw new Error('no password entered');
+
+        const name = flagString(flags, 'name');
+        const result = (await client.put('/integrations/email', {
+          host: detected.smtp.host,
+          port: detected.smtp.port,
+          secure: detected.smtp.secure,
+          username: arg,
+          password,
+          fromEmail: arg,
+          ...(name ? { fromName: name } : {}),
+          ...(detected.imap
+            ? { imapHost: detected.imap.host, imapPort: detected.imap.port, imapSecure: true }
+            : {}),
+        })) as { account?: { accountId?: string } };
+
+        const id = result.account?.accountId;
+        const cap = Number(flagString(flags, 'cap'));
+        if (id && client.patch) {
+          await client.patch(`/senders/${id}`, {
+            ...(Number.isInteger(cap) && cap >= 0 ? { dailyCap: cap } : {}),
+            warmup: flags['no-warmup'] !== true,
+          });
+        }
+        return `Connected ${arg} (${id ?? '?'}). ${found}. Check its domain: og mailboxes dns ${id ?? '<id>'}`;
+      }
+
+      if (sub === 'dns') {
+        if (!arg) throw new Error('og mailboxes dns <id>');
+        const { dns } = (await client.get(`/mailboxes/${encodeURIComponent(arg)}/dns`)) as {
+          dns: Record<string, unknown>;
+        };
+        return [
+          `${text(dns, 'domain')}: ${text(dns, 'status')}`,
+          ...['spf', 'dkim', 'dmarc', 'mx'].map((key) => {
+            const check = (dns[key] ?? {}) as Record<string, unknown>;
+            return `  ${pad(key.toUpperCase(), 6)} ${pad(text(check, 'status'), 5)} ${text(check, 'detail')}`;
+          }),
+        ].join('\n');
+      }
+
+      throw new Error('og mailboxes [detect|dns|add] …');
+    },
+  },
+  {
     name: 'inbox',
     usage:
       'og inbox [--filter need_reply|replied|sent|all] [--label <label>] | og inbox show <personId> | og inbox reply <personId> "text"',

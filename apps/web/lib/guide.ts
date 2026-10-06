@@ -311,7 +311,7 @@ export function nextActions(state: GuideState): readonly NextAction[] {
       id: 'mailbox',
       label: 'Connect your own mailbox',
       detail: 'Optional. Without it, outreach goes out from our domain instead of yours.',
-      href: '/settings',
+      href: '/mailboxes',
       blocking: false,
     });
   }
@@ -321,7 +321,7 @@ export function nextActions(state: GuideState): readonly NextAction[] {
       id: 'verify-mailbox',
       label: 'Verify your mailbox',
       detail: 'It is connected but unverified, so outreach still leaves from our domain.',
-      href: '/settings',
+      href: '/mailboxes',
       blocking: false,
     });
   }

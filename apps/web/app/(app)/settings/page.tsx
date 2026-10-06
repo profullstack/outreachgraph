@@ -3,7 +3,6 @@ import { redirect } from 'next/navigation';
 import { SignOutButton } from '../../../components/sign-out-button';
 import { WorkspaceSwitcher } from '../../../components/workspace-switcher';
 import { SettingsForm } from '../../../components/settings-form';
-import { MailboxForm } from '../../../components/mailbox-form';
 import { BlueskyForm } from '../../../components/bluesky-form';
 import { ApiKeysForm } from '../../../components/api-keys-form';
 import { SendersPanel } from '../../../components/senders-panel';
@@ -17,7 +16,6 @@ import {
   fetchMe,
   fetchBlueskyIntegration,
   fetchCrmIntegration,
-  fetchEmailIntegration,
   fetchSenders,
   fetchSettings,
   fetchWebhooks,
@@ -28,7 +26,6 @@ import {
   type SettingsView,
   type WebhooksView,
 } from '../../../lib/api';
-import type { EmailIntegrationView } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -70,7 +67,6 @@ const TOOLS = [
  */
 export default async function SettingsPage() {
   let settings: SettingsView | undefined;
-  let mailbox: EmailIntegrationView | undefined;
   let bluesky: BlueskyIntegrationView | undefined;
   let apiKeys: readonly ApiKeyView[] = [];
   let senders: readonly SenderView[] = [];
@@ -82,9 +78,8 @@ export default async function SettingsPage() {
   try {
     // Webhooks and CRM are approver-only, and a viewer's 403 must hide the
     // two sections rather than bounce the whole page to the login screen.
-    [settings, mailbox, bluesky, apiKeys, senders, webhooks, crm, me] = await Promise.all([
+    [settings, bluesky, apiKeys, senders, webhooks, crm, me] = await Promise.all([
       fetchSettings(),
-      fetchEmailIntegration(),
       fetchBlueskyIntegration(),
       fetchApiKeys(),
       fetchSenders(),
@@ -109,8 +104,7 @@ export default async function SettingsPage() {
         ) : null}
       </header>
 
-      {/* The mailbox items point at the form directly below. */}
-      <PageGuide page="settings" suppress={['mailbox', 'verify-mailbox']} />
+      <PageGuide page="settings" />
 
       {me ? (
         <WorkspaceSwitcher
@@ -128,8 +122,8 @@ export default async function SettingsPage() {
         <div className="flex flex-col gap-6">
           <Section title="Sending">
             {/* First: nothing leaves without a mailbox to leave through. */}
-            {mailbox ? <MailboxForm initial={mailbox} /> : null}
-            <SendersPanel initial={senders} />
+            <MailboxesLink senders={senders} />
+            <SendersPanel initial={senders.filter((sender) => sender.network !== 'email')} />
             {bluesky ? <BlueskyForm initial={bluesky} /> : null}
           </Section>
 
@@ -170,6 +164,33 @@ export default async function SettingsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+/** The way to the Mailboxes page, with enough on it to know whether to go. */
+function MailboxesLink({ senders }: { senders: readonly SenderView[] }) {
+  const mailboxes = senders.filter((sender) => sender.network === 'email');
+  const active = mailboxes.filter((sender) => sender.status === 'active').length;
+  const sent = mailboxes.reduce((sum, sender) => sum + sender.sentToday, 0);
+  const cap = mailboxes.reduce((sum, sender) => sum + sender.effectiveCapToday, 0);
+
+  return (
+    <Link
+      href="/mailboxes"
+      className="border-border bg-surface-raised flex items-center justify-between gap-3 rounded-2xl border p-4"
+    >
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold">Mailboxes</span>
+        <span className="text-ink-muted block text-xs">
+          {mailboxes.length === 0
+            ? 'None connected yet. Add the address your outreach sends from.'
+            : `${active} of ${mailboxes.length} active · ${sent}/${cap} sent today`}
+        </span>
+      </span>
+      <span className="text-accent shrink-0 text-sm font-medium">
+        {mailboxes.length === 0 ? 'Add mailbox' : 'Manage'} ›
+      </span>
+    </Link>
   );
 }
 

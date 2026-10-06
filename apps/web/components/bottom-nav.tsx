@@ -32,6 +32,7 @@ const OWNED_BY: Record<string, string> = {
   '/outreach': '/products',
   '/jobs': '/products',
   '/today': '/settings',
+  '/mailboxes': '/settings',
   '/more': '/settings',
   '/team': '/settings',
   '/billing': '/settings',

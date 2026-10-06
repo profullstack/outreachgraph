@@ -410,6 +410,67 @@ describe('explain', () => {
   });
 });
 
+describe('og mailboxes', () => {
+  test('lists health, bounce risk and whether replies are read', async () => {
+    const { client: api } = client({
+      mailboxes: [
+        {
+          id: 'ita_1',
+          fromEmail: 'ana@acme.com',
+          status: 'active',
+          healthScore: 80,
+          bounceRisk: 'low',
+          sentToday: 3,
+          effectiveCapToday: 8,
+          readsReplies: false,
+          repliesError: null,
+        },
+      ],
+    });
+    const output = await commandByName('mailboxes')!.run({ client: api, args: [], flags: {} });
+    expect(output).toContain('ana@acme.com');
+    expect(output).toContain('health 80');
+    expect(output).toContain('replies NOT read');
+  });
+
+  test('add detects the servers, connects, then sets cap and warm-up', async () => {
+    const { client: api, calls } = client({
+      detected: {
+        providerLabel: 'Forward Email',
+        source: 'mx',
+        smtp: { host: 'smtp.forwardemail.net', port: 465, secure: true },
+        imap: { host: 'imap.forwardemail.net', port: 993 },
+        note: null,
+      },
+      account: { accountId: 'ita_9' },
+    });
+    process.env.OG_MAILBOX_PASSWORD = 'pw';
+    try {
+      const output = await commandByName('mailboxes')!.run({
+        client: api,
+        args: ['add', 'ana@acme.com'],
+        flags: { cap: '30', 'no-warmup': true },
+      });
+      expect(output).toContain('Connected ana@acme.com (ita_9)');
+    } finally {
+      delete process.env.OG_MAILBOX_PASSWORD;
+    }
+
+    expect(calls.map((call) => [call.method, call.url])).toEqual([
+      ['POST', 'https://api.test/api/v1/mailboxes/detect'],
+      ['PUT', 'https://api.test/api/v1/integrations/email'],
+      ['PATCH', 'https://api.test/api/v1/senders/ita_9'],
+    ]);
+    expect(calls[1]!.body).toMatchObject({
+      host: 'smtp.forwardemail.net',
+      imapHost: 'imap.forwardemail.net',
+      username: 'ana@acme.com',
+      password: 'pw',
+    });
+    expect(calls[2]!.body).toEqual({ dailyCap: 30, warmup: false });
+  });
+});
+
 describe('og senders', () => {
   test('lists each account with today’s numbers and warm-up day', async () => {
     const { client: api } = client({

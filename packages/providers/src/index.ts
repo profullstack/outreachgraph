@@ -161,6 +161,17 @@ export {
   type SmtpProberOptions,
   type VerifierDeps,
 } from './email/verify';
+export {
+  checkSendingDomain,
+  lookupMailboxSettings,
+  parseAutoconfig,
+  type DnsCheck,
+  type DnsStatus,
+  type MailboxDnsDeps,
+  type MailboxLookup,
+  type SendingDomainReport,
+  type ServerSettings,
+} from './email/mailbox-setup';
 
 export {
   BlueskyProvider,

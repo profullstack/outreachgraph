@@ -27,6 +27,7 @@
 import { newId } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import {
+  ImapReader,
   SmtpMailer,
   type ImapCredentials,
   type Mailer,
@@ -139,6 +140,8 @@ export async function connectEmailAccount(
     readonly verify?: boolean;
     /** Injected by tests so no socket is opened. */
     readonly mailerFor?: (credentials: SmtpCredentials) => { verify(): Promise<void> };
+    /** Injected by tests; the IMAP half of the same check. */
+    readonly readerFor?: (credentials: ImapCredentials) => { verify(): Promise<void> };
   },
 ): Promise<EmailAccountSummary> {
   if (!input.encryptionKey) {
@@ -167,6 +170,28 @@ export async function connectEmailAccount(
       throw new EmailAccountError('verification_failed', detail);
     } finally {
       if (mailer instanceof SmtpMailer) mailer.close();
+    }
+
+    // Reading is checked too. A mailbox that sends but cannot be read looks
+    // connected and never shows a reply, which is worse than failing here.
+    if (input.account.imapHost) {
+      const imap: ImapCredentials = {
+        host: input.account.imapHost,
+        port: input.account.imapPort ?? 993,
+        secure: input.account.imapSecure ?? true,
+        username: input.account.username,
+        password: input.account.password,
+      };
+      const reader = input.readerFor?.(imap) ?? new ImapReader(imap);
+      try {
+        await reader.verify();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new EmailAccountError(
+          'verification_failed',
+          `Sending works, but the inbox could not be read over IMAP (${imap.host}:${imap.port}): ${detail}`,
+        );
+      }
     }
   }
 
