@@ -174,6 +174,9 @@ export interface SignalRow {
   source_url: string | null;
   source_timestamp: string | null;
   relevance: number;
+  /** positive, neutral or negative; listening sets it from the post's type. */
+  sentiment?: string;
+  observed_at?: string;
 }
 
 export interface ProspectRow {

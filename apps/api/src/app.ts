@@ -5320,12 +5320,17 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // --------------------------------------------------------------- signals
   api.get('/signals', async (c) => {
     const actor = c.get('actor');
+    const limit = clampLimit(c.req.query('limit'));
     const signals = await repo.listSignals(
       c.get('db'),
       actor.workspaceId,
-      clampLimit(c.req.query('limit')),
+      limit,
+      repo.parseSignalCursor(c.req.query('before')),
     );
-    return c.json({ signals });
+    // A full page may have more behind it; a short one is the end.
+    const next =
+      signals.length >= limit ? repo.signalCursorOf(signals[signals.length - 1] as never) : null;
+    return c.json({ signals, next_cursor: next });
   });
 
   // ---------------------------------------------------------- suppressions

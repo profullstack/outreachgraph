@@ -223,8 +223,18 @@ export async function fetchHandoffs(limit = 200): Promise<HandoffView[]> {
 }
 
 export async function fetchSignals(): Promise<SignalRow[]> {
-  const body = await request<{ signals: SignalRow[] }>('/signals?limit=50');
-  return body.signals;
+  return (await fetchSignalPage()).signals;
+}
+
+/** One page of the feed, and the cursor for the next (null at the end). */
+export async function fetchSignalPage(): Promise<{
+  signals: SignalRow[];
+  nextCursor: string | null;
+}> {
+  const body = await request<{ signals: SignalRow[]; next_cursor?: string | null }>(
+    '/signals?limit=50',
+  );
+  return { signals: body.signals, nextCursor: body.next_cursor ?? null };
 }
 
 export async function fetchProspects(): Promise<ProspectRow[]> {
