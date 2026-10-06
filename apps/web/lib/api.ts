@@ -762,6 +762,7 @@ export interface WarmupNetworkView {
   readonly spam14d: number;
   readonly replied14d: number;
   readonly peers: number;
+  readonly lastError: string | null;
 }
 
 export interface MailboxesView {

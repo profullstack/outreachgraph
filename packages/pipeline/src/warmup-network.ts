@@ -265,7 +265,29 @@ async function deliver(
     });
     return true;
   } catch (error) {
-    console.error(`warm-up send ${from.id} -> ${to.id} failed`, error);
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`warm-up send ${from.id} -> ${to.id} failed: ${detail.slice(0, 300)}`);
+    // Recorded like a send, so the pacing that spaces sends hours apart also
+    // spaces the retries: a provider that refuses the mailbox is not asked
+    // again every minute. `kind = 'failed'` keeps it out of every count shown
+    // as sent, and its text is what the Mailboxes page shows as the error.
+    await db
+      .execute({
+        sql: `INSERT INTO warmup_messages (id, sender_account_id, recipient_account_id, kind,
+                token, thread_token, depth, subject, sent_at)
+              VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, ?)`,
+        args: [
+          newId('warmupMessage'),
+          from.id,
+          to.id,
+          message.token,
+          message.threadToken,
+          message.depth,
+          detail.slice(0, 500),
+          message.at.toISOString(),
+        ],
+      })
+      .catch(() => undefined);
     return false;
   } finally {
     if (mailer instanceof SmtpMailer) mailer.close();
@@ -396,6 +418,8 @@ export interface WarmupStats {
   readonly replied14d: number;
   /** Network members this mailbox could write to, itself excluded. */
   readonly peers: number;
+  /** The last warm-up send's error, when it failed after the last success. */
+  readonly lastError: string | null;
 }
 
 export async function warmupStats(
@@ -408,7 +432,7 @@ export async function warmupStats(
   const marks = accountIds.map(() => '?').join(', ');
   const since = new Date(at.getTime() - 14 * 86_400_000).toISOString();
 
-  const [accounts, sent, received, total] = await Promise.all([
+  const [accounts, sent, received, total, latest] = await Promise.all([
     queryAll<{
       id: string;
       warmup_network: number;
@@ -423,7 +447,8 @@ export async function warmupStats(
     queryAll<{ id: string; n: number }>(
       db,
       `SELECT sender_account_id AS id, COUNT(*) AS n FROM warmup_messages
-        WHERE sender_account_id IN (${marks}) AND sent_at >= ? GROUP BY sender_account_id`,
+        WHERE sender_account_id IN (${marks}) AND sent_at >= ? AND kind <> 'failed'
+        GROUP BY sender_account_id`,
       [...accountIds, startOfDay(at)],
     ),
     queryAll<{ id: string; landed: string | null; n: number; replied: number }>(
@@ -431,7 +456,7 @@ export async function warmupStats(
       `SELECT recipient_account_id AS id, landed, COUNT(*) AS n,
               SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) AS replied
          FROM warmup_messages
-        WHERE recipient_account_id IN (${marks}) AND sent_at >= ?
+        WHERE recipient_account_id IN (${marks}) AND sent_at >= ? AND kind <> 'failed'
         GROUP BY recipient_account_id, landed`,
       [...accountIds, since],
     ),
@@ -440,6 +465,15 @@ export async function warmupStats(
       `SELECT COUNT(*) AS n FROM integration_accounts
         WHERE network = 'email' AND status = 'active' AND warmup_network = 1`,
       [],
+    ),
+    // Each mailbox's most recent warm-up send, success or failure.
+    queryAll<{ id: string; kind: string; subject: string }>(
+      db,
+      `SELECT w.sender_account_id AS id, w.kind, w.subject FROM warmup_messages w
+        WHERE w.sender_account_id IN (${marks})
+          AND w.sent_at = (SELECT MAX(x.sent_at) FROM warmup_messages x
+                            WHERE x.sender_account_id = w.sender_account_id)`,
+      [...accountIds],
     ),
   ]);
 
@@ -467,6 +501,10 @@ export async function warmupStats(
       spam14d: count('spam'),
       replied14d: rows.reduce((sum, row) => sum + Number(row.replied ?? 0), 0),
       peers: Math.max(0, members - (network ? 1 : 0)),
+      lastError: (() => {
+        const last = latest.find((row) => row.id === account.id);
+        return last?.kind === 'failed' ? last.subject : null;
+      })(),
     });
   }
   return out;
