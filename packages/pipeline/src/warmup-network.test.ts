@@ -128,6 +128,44 @@ describe('warm-up network', () => {
     });
   });
 
+  test('a refused send is paced like a send, and shown as the mailbox’s error', async () => {
+    seeded = await seedDatabase('warmup-refused');
+    const { db } = seeded;
+    const ana = await mailbox(db, 'ana@acme.test', 'Ana');
+    const bo = await mailbox(db, 'bo@other.test', 'Bo');
+    await setWarmupNetwork(db, ana, true);
+    await setWarmupNetwork(db, bo, true);
+
+    let attempts = 0;
+    const refusing = () => ({
+      send: async () => {
+        attempts += 1;
+        throw new Error('535 Domain is not configured for outbound SMTP');
+      },
+    });
+    const run = (minutes: number) =>
+      runWarmupSends(db, {
+        encryptionKey: KEY,
+        at: new Date(AT.getTime() + minutes * 60_000),
+        random: () => 0.5,
+        mailerFor: refusing,
+      });
+
+    expect((await run(0)).failed).toBe(2);
+    // A minute later nobody is asked again.
+    expect((await run(1)).failed).toBe(0);
+    expect(attempts).toBe(2);
+
+    const { mailboxes } = await listMailboxes(
+      db,
+      SEED.workspaceId,
+      new Date(AT.getTime() + 60_000),
+    );
+    const view = mailboxes.find((m) => m.id === ana)!.warmupNetwork!;
+    expect(view.lastError).toContain('not configured for outbound SMTP');
+    expect(view.sentToday).toBe(0);
+  });
+
   test('a lone member has nobody to write to', async () => {
     seeded = await seedDatabase('warmup-alone');
     const { db } = seeded;

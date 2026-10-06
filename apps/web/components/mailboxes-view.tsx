@@ -428,6 +428,12 @@ function WarmupNetworkPanel({
         </p>
       ) : null}
 
+      {warm.lastError ? (
+        <p className="text-hot mt-2 text-xs break-words">
+          The last warm-up email from this mailbox failed: {warm.lastError}
+        </p>
+      ) : null}
+
       <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
         <WarmStat label="Sent today" value={`${warm.sentToday}/${warm.targetToday ?? 0}`} />
         <WarmStat

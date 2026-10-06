@@ -111,9 +111,13 @@ export async function listMailboxes(
     ),
     queryAll<{ id: string; n: number }>(
       db,
-      `SELECT account_id AS id, COUNT(*) AS n FROM sender_events
-        WHERE account_id IN (${marks}) AND kind = 'bounce' AND occurred_at >= ?
-        GROUP BY account_id`,
+      // Since the last resume too, as the stop rule counts them: a mailbox a
+      // human cleared does not keep the bounces that stopped it.
+      `SELECT e.account_id AS id, COUNT(*) AS n FROM sender_events e
+         JOIN integration_accounts ia ON ia.id = e.account_id
+        WHERE e.account_id IN (${marks}) AND e.kind = 'bounce' AND e.occurred_at >= ?
+          AND e.occurred_at > COALESCE(ia.health_reset_at, '')
+        GROUP BY e.account_id`,
       [...ids, windowStart(at)],
     ),
   ]);
