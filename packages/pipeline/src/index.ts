@@ -126,6 +126,14 @@ export {
   type SenderView,
 } from './sender-pool';
 export {
+  runWarmupInbox,
+  runWarmupSends,
+  setWarmupNetwork,
+  warmupStats,
+  type WarmupDeps,
+  type WarmupStats,
+} from './warmup-network';
+export {
   detectMailbox,
   listMailboxes,
   mailboxDns,

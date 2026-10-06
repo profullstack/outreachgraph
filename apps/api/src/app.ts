@@ -113,6 +113,7 @@ import {
   loadNotifySettings,
   listSenders,
   listMailboxes,
+  setWarmupNetwork,
   detectMailbox,
   mailboxDns,
   MailboxDetectError,
@@ -4786,6 +4787,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         ...(paused === undefined ? {} : { paused }),
         ...(body.warmup === undefined ? {} : { warmup: body.warmup }),
       });
+
+      if (body.warmupNetwork !== undefined) {
+        if (sender.network !== 'email') {
+          throw ApiError.badRequest('only a mailbox can join the warm-up network');
+        }
+        await setWarmupNetwork(db, sender.id, body.warmupNetwork);
+      }
 
       await repo.audit(db, {
         workspaceId: actor.workspaceId,

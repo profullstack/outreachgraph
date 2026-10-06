@@ -55,6 +55,8 @@ export interface IncomingMessage {
   readonly references?: string | undefined;
   /** For a bounce: the address the report says could not be reached. */
   readonly failedRecipient?: string | undefined;
+  /** The `X-OG-Warmup` token: warm-up network mail, never a reply. */
+  readonly warmup?: string | undefined;
 }
 
 /** The seam tests replace, so no socket is opened. */
@@ -80,6 +82,7 @@ const WANTED_HEADERS = [
   'return-path',
   'content-type',
   'references',
+  'x-og-warmup',
 ];
 
 /**
@@ -100,17 +103,33 @@ const MACHINE_LOCAL_PARTS = new Set([
   'bounce',
 ]);
 
+/** Local-parts of the mail system itself; what they send is a delivery report. */
+const DAEMON_LOCAL_PARTS = new Set(['mailer-daemon', 'postmaster']);
+
 export function classifyAutomated(
   fromAddress: string,
   headers: Readonly<Record<string, string>>,
 ): IncomingMessage['automated'] {
   const local = fromAddress.split('@')[0]?.toLowerCase() ?? '';
 
-  // An empty return path is the null sender, which is how a bounce is
-  // required to be addressed. It is the most reliable signal here.
+  // A bounce is a delivery report: from the mail system itself, or a
+  // multipart/report of type delivery-status. Only those. Calling every
+  // noreply@ newsletter a bounce stopped a real mailbox on 2026-10-06 for
+  // "3 bounces in 5 sends" that were Bluesky digests and app notifications.
+  const contentType = headers['content-type']?.toLowerCase() ?? '';
+  if (DAEMON_LOCAL_PARTS.has(local)) return 'bounce';
+  if (contentType.includes('multipart/report') && contentType.includes('delivery-status')) {
+    return 'bounce';
+  }
+
+  // The null sender is also how auto-replies are addressed, so on its own it
+  // means "a machine answered", not "the message failed".
   const returnPath = headers['return-path']?.trim();
-  if (returnPath === '<>' || returnPath === '') return 'bounce';
-  if (MACHINE_LOCAL_PARTS.has(local)) return 'bounce';
+  if (returnPath === '<>' || returnPath === '') return 'auto_reply';
+
+  // noreply@ and friends never represent a person, but they are notices and
+  // newsletters, not failures: never counted against the mailbox.
+  if (MACHINE_LOCAL_PARTS.has(local)) return 'bulk';
 
   const autoSubmitted = headers['auto-submitted']?.trim().toLowerCase();
   if (autoSubmitted && autoSubmitted !== 'no') return 'auto_reply';
@@ -212,6 +231,7 @@ export class ImapReader implements MailReader {
             ...(bodyText ? { bodyText } : {}),
             ...(headers['references'] ? { references: headers['references'] } : {}),
             ...(failedRecipient ? { failedRecipient } : {}),
+            ...(headers['x-og-warmup'] ? { warmup: headers['x-og-warmup'] } : {}),
           });
         }
       } finally {

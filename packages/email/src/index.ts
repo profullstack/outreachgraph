@@ -40,6 +40,12 @@ export {
   type IncomingMessage,
   type MailReader,
 } from './imap';
+export {
+  ImapWarmupSweeper,
+  WARMUP_FOLDER,
+  type SweptWarmup,
+  type WarmupSweeper,
+} from './warmup-inbox';
 export { failedRecipientFromSource, plainTextFromSource } from './mime';
 export { invitationEmail, passwordResetEmail, verificationEmail } from './templates';
 export {

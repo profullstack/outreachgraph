@@ -27,6 +27,7 @@ import {
   type ServerSettings,
 } from '@outreachgraph/providers';
 import { listSenders, type SenderView } from './sender-pool';
+import { warmupStats, type WarmupStats } from './warmup-network';
 
 /** Bounce risk and health are judged over this many days of sending. */
 const HEALTH_WINDOW_DAYS = 30;
@@ -49,6 +50,8 @@ export interface MailboxView extends SenderView {
   readonly bounceRisk: BounceRisk;
   readonly healthScore: number;
   readonly healthIssues: readonly string[];
+  /** The warm-up network: whether it is on, its filter tag, and how its mail lands. */
+  readonly warmupNetwork: WarmupStats | null;
 }
 
 export interface MailboxesSummary {
@@ -108,9 +111,13 @@ export async function listMailboxes(
     ),
     queryAll<{ id: string; n: number }>(
       db,
-      `SELECT account_id AS id, COUNT(*) AS n FROM sender_events
-        WHERE account_id IN (${marks}) AND kind = 'bounce' AND occurred_at >= ?
-        GROUP BY account_id`,
+      // Since the last resume too, as the stop rule counts them: a mailbox a
+      // human cleared does not keep the bounces that stopped it.
+      `SELECT e.account_id AS id, COUNT(*) AS n FROM sender_events e
+         JOIN integration_accounts ia ON ia.id = e.account_id
+        WHERE e.account_id IN (${marks}) AND e.kind = 'bounce' AND e.occurred_at >= ?
+          AND e.occurred_at > COALESCE(ia.health_reset_at, '')
+        GROUP BY e.account_id`,
       [...ids, windowStart(at)],
     ),
   ]);
@@ -119,12 +126,14 @@ export async function listMailboxes(
   const sendsById = new Map(sends.map((row) => [row.id, Number(row.n)]));
   const bouncesById = new Map(bounces.map((row) => [row.id, Number(row.n)]));
 
+  const warm = await warmupStats(db, ids, at);
   const mailboxes = senders.map((sender) =>
     toMailbox(
       sender,
       extraById.get(sender.id),
       sendsById.get(sender.id) ?? 0,
       bouncesById.get(sender.id) ?? 0,
+      warm.get(sender.id) ?? null,
     ),
   );
 
@@ -146,6 +155,7 @@ function toMailbox(
   extra: ExtraRow | undefined,
   sends: number,
   bounces: number,
+  warm: WarmupStats | null,
 ): MailboxView {
   const config = parseConfig(extra?.config_json ?? null);
   const fromEmail = config.fromEmail ?? sender.handle;
@@ -183,6 +193,7 @@ function toMailbox(
     bounceRisk: health.bounceRisk,
     healthScore: health.score,
     healthIssues: health.issues,
+    warmupNetwork: warm,
   };
 }
 

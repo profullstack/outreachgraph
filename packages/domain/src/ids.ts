@@ -92,6 +92,9 @@ export const ID_PREFIXES = {
   // A job posting the workspace is working from, and a person found behind it.
   jobPost: 'jbp',
   jobPostContact: 'jpc',
+  // One warm-up network message, and the token its X-OG-Warmup header carries.
+  warmupMessage: 'wum',
+  warmupToken: 'wut',
   // The Idea Generator: a product people keep asking for, and one post that asked.
   idea: 'ida',
   ideaAsk: 'iak',

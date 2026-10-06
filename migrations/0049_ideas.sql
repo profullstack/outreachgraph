@@ -1,4 +1,4 @@
--- 0048_ideas.sql: the Idea Generator.
+-- 0049_ideas.sql: the Idea Generator.
 --
 -- People on Reddit ask for tools: "is there an app that tracks X and warns me",
 -- "I wish someone made Y". One ask is an anecdote; five different people asking

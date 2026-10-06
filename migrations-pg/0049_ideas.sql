@@ -1,4 +1,4 @@
--- 0048_ideas.sql (Postgres). See migrations/0048_ideas.sql for the reasoning.
+-- 0049_ideas.sql (Postgres). See migrations/0049_ideas.sql for the reasoning.
 
 create table if not exists idea_scans (
   workspace_id text PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,

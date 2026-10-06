@@ -101,6 +101,11 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
   let senderStopped = false;
 
   for (const message of messages) {
+    // Warm-up network mail is the sweeper's, never a reply or a bounce.
+    if (message.warmup) {
+      automated.warmup = (automated.warmup ?? 0) + 1;
+      continue;
+    }
     if (message.automated === 'bulk') {
       automated.bulk = (automated.bulk ?? 0) + 1;
       continue;
@@ -131,8 +136,10 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
       // A bounce also counts against the mailbox it landed in, which is the
       // one that sent the message — before the person match, because a
       // bounce for an address we cannot place still costs the sender its
-      // reputation. Header-flagged and rule-detected bounces count alike.
-      if (machine === 'bounce' && input.senderAccountId) {
+      // reputation. Only a delivery report the headers confirm counts: a
+      // subject that merely reads like a failure is filed to its thread but
+      // never stops a mailbox, since a wrong stop halts all of its sending.
+      if (message.automated === 'bounce' && input.senderAccountId) {
         const bounce = await recordSenderBounce(input.db, {
           workspaceId: input.workspaceId,
           accountId: input.senderAccountId,
