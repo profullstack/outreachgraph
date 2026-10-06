@@ -15,12 +15,14 @@ import { useEffect, useState } from 'react';
  * page opened most, behind "More".
  *
  * Everything that lost its tab is still a route, and Settings lists it.
- * Import got its tab back: behind More, nobody could find it.
+ * Import got its tab back: behind More, nobody could find it. Ideas got one
+ * for the same reason: as a link inside Products it was invisible.
  */
 const TABS = [
   { href: '/inbox', label: 'Inbox', icon: InboxIcon, badge: true },
   { href: '/approvals', label: 'Approve', icon: CheckIcon },
   { href: '/products', label: 'Products', icon: BoxIcon },
+  { href: '/ideas', label: 'Ideas', icon: BulbIcon },
   { href: '/funnel', label: 'Results', icon: FunnelIcon },
   { href: '/import', label: 'Import', icon: UploadIcon },
   { href: '/settings', label: 'Settings', icon: GearIcon },
@@ -31,7 +33,6 @@ const OWNED_BY: Record<string, string> = {
   '/setup': '/products',
   '/outreach': '/products',
   '/jobs': '/products',
-  '/ideas': '/products',
   '/today': '/settings',
   '/mailboxes': '/settings',
   '/more': '/settings',
@@ -182,6 +183,15 @@ function BoxIcon() {
     <svg {...ICON_PROPS}>
       <path d="M21 8 12 3 3 8v8l9 5 9-5V8z" />
       <path d="m3 8 9 5 9-5M12 13v8" />
+    </svg>
+  );
+}
+
+function BulbIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M9 18h6M10 22h4" />
+      <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z" />
     </svg>
   );
 }

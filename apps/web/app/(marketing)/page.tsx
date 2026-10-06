@@ -35,6 +35,7 @@ export default async function LandingPage() {
       <Hero />
       <EvidenceSection />
       <CapabilitiesSection />
+      <IdeasSection />
       <RefusalSection />
       <ClosingCta />
       <SiteFooter />
@@ -43,9 +44,17 @@ export default async function LandingPage() {
 }
 
 /** Content sits on one measure; bands paint full width around it. */
-function Band({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+function Band({
+  children,
+  className = '',
+  id,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  id?: string;
+}) {
   return (
-    <section className={className}>
+    <section id={id} className={className}>
       <div className="mx-auto w-full max-w-5xl px-5 sm:px-8">{children}</div>
     </section>
   );
@@ -260,6 +269,58 @@ function CapabilitiesSection() {
           </li>
         ))}
       </ul>
+    </Band>
+  );
+}
+
+/**
+ * The Idea Generator: what to build before who to sell it to.
+ *
+ * Same rule as the capabilities above: every line is something a scan does
+ * today. The sources named are the defaults it reads.
+ */
+function IdeasSection() {
+  const steps = [
+    [
+      'People asking for a tool',
+      'r/SomebodyMakeThis, r/AppIdeas, r/webapps, Ask HN and r/bootstrapping. "Is there an app that does X" is demand, in the asker’s own words.',
+    ],
+    [
+      'Proof that people pay',
+      'Founder case studies from Starter Story, Indieniche, Micro SaaS Idea and Startup Acquisition Stories. "$25K/month Stagetimer app" says a stage timer is a business.',
+    ],
+    [
+      'Who already shipped it',
+      'Recent Show HN launches that match an idea count against it. One is a market, four is crowded.',
+    ],
+  ];
+
+  return (
+    <Band id="ideas" className="bg-surface-raised border-border border-t py-16 sm:py-20">
+      <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-balance sm:text-[34px]">
+        Not sure what to build? It finds ideas people pay for.
+      </h2>
+      <p className="text-ink-muted mt-4 max-w-[42em] text-[17px] leading-relaxed">
+        The Idea Generator reads where people ask for tools and where founders show what sells, then
+        scores each idea on demand, proof of payment and competition. Build it hands the winner to
+        chovy.com with the requirements filled in.
+      </p>
+
+      <ul className="mt-8 grid gap-4 sm:grid-cols-3">
+        {steps.map(([title, detail]) => (
+          <li key={title} className="border-border bg-surface rounded-2xl border p-5">
+            <div className="text-[15px] font-semibold">{title}</div>
+            <p className="text-ink-muted mt-1.5 text-[13.5px] leading-relaxed">{detail}</p>
+          </li>
+        ))}
+      </ul>
+
+      <Link
+        href="/ideas"
+        className="bg-accent mt-7 inline-flex items-center justify-center rounded-xl px-5 py-3 text-sm font-medium text-white"
+      >
+        Open the Idea Generator
+      </Link>
     </Band>
   );
 }
