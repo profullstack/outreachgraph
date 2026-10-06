@@ -314,17 +314,52 @@ export async function approvalCounts(db: Client, workspaceId: string): Promise<A
   };
 }
 
-export async function listSignals(db: Client, workspaceId: string, limit: number) {
+/**
+ * The signal feed, newest first, a page at a time.
+ *
+ * `before` is the cursor the previous page handed back: the timestamp and id of
+ * its last row. Both are needed, because listening often stamps several posts
+ * with the same second, and a timestamp alone would skip or repeat them.
+ */
+export async function listSignals(
+  db: Client,
+  workspaceId: string,
+  limit: number,
+  before?: SignalCursor | null,
+) {
+  const when = 'COALESCE(s.source_timestamp, s.observed_at)';
   return queryAll(
     db,
     `SELECT s.*, p.display_name
        FROM signals s
   LEFT JOIN people p ON p.id = s.person_id
       WHERE s.workspace_id = ?
-   ORDER BY COALESCE(s.source_timestamp, s.observed_at) DESC
+        ${before ? `AND (${when} < ? OR (${when} = ? AND s.id < ?))` : ''}
+   ORDER BY ${when} DESC, s.id DESC
       LIMIT ?`,
-    [workspaceId, limit],
+    before ? [workspaceId, before.at, before.at, before.id, limit] : [workspaceId, limit],
   );
+}
+
+export interface SignalCursor {
+  at: string;
+  id: string;
+}
+
+/** `<timestamp>|<id>`, as the feed hands it out. Anything else reads as no cursor. */
+export function parseSignalCursor(raw: string | undefined | null): SignalCursor | null {
+  if (!raw) return null;
+  const at = raw.lastIndexOf('|');
+  if (at <= 0 || at === raw.length - 1) return null;
+  return { at: raw.slice(0, at), id: raw.slice(at + 1) };
+}
+
+export function signalCursorOf(
+  row: { source_timestamp?: unknown; observed_at?: unknown; id?: unknown } | undefined,
+): string | null {
+  if (!row?.id) return null;
+  const at = row.source_timestamp ?? row.observed_at;
+  return at ? `${String(at)}|${String(row.id)}` : null;
 }
 
 export async function listPersonSignals(db: Client, workspaceId: string, personId: string) {
