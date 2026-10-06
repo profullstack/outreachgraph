@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { worthScore, rivalsFor } from './demand';
+import { worthScore, rivalsFor, specificLabel } from './demand';
 import { classifySignal, cleanFeeds, feedPostId, readFeed, DEFAULT_FEEDS, PAYS } from './feeds';
 
 describe('classifySignal', () => {
@@ -129,5 +129,32 @@ describe('worthScore', () => {
       { title: 'Show HN: A faster JSON parser', url: 'b' },
     ]);
     expect(found.map((f) => f.url)).toEqual(['a']);
+  });
+});
+
+describe('specificLabel', () => {
+  test('the vague labels the live judge let through on 2026-10-06 fail', () => {
+    for (const label of [
+      'successful mobile app',
+      '$20K/month app',
+      'online game',
+      'AI tool',
+      'SaaS business',
+      '',
+      null,
+    ])
+      expect(specificLabel(label)).toBe(false);
+  });
+
+  test('labels that say what the product does pass', () => {
+    for (const label of [
+      'simple timer app',
+      'AI scheduling tool',
+      'Excel formula tool',
+      'communication tool',
+      'vet clinic appointment scheduler',
+      'transcription for existing audio files',
+    ])
+      expect(specificLabel(label)).toBe(true);
   });
 });

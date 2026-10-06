@@ -32,7 +32,13 @@ Keep a post (idea: true) only when it points at one specific product or tool:
 - a pain the author or their customers have that a tool would fix,
 - a product the author says someone should build, or one they built for themselves or one customer.
 
-Not an idea: general advice (how to validate, how to market, how to price), news, opinion, hiring, fundraising, a list of many unrelated ideas with nothing specific, or a launch of a general-purpose platform.
+Not an idea:
+- general advice (how to validate, how to market, how to price), news, opinion, hiring, fundraising;
+- a list of many unrelated ideas with nothing specific;
+- a launch of a general-purpose platform;
+- a revenue story that never says what the product does. "I built a $1M app in 5 hours", "How I grew my mobile app to $17K per month" and "Bro's directory website does $35k per month" are NOT ideas unless the summary names what the product does for whom. If you cannot say what it does in a few concrete words, answer idea: false.
+
+The label must name what the product does, never how well it sells or what kind of software it is. Bad labels: "successful mobile app", "$20K/month app", "online game", "AI tool", "SaaS business". Good labels: "Excel formula generator", "vet clinic appointment scheduler", "screenshot to code converter". No numbers or money in labels.
 
 For each post return:
 - idea: true or false.
