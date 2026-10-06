@@ -181,6 +181,19 @@ export {
   type StoredRow,
 } from './contact-import';
 export {
+  DEFAULT_PDL_PER_DAY,
+  DEFAULT_SEARCHES_PER_DAY,
+  enrichLeads,
+  enrichmentPausedUntil,
+  enrichmentStatus,
+  lookupsToday,
+  resetEnrichmentPauses,
+  workspacesAwaitingLeadEnrichment,
+  type LeadEnrichDeps,
+  type LeadEnrichInput,
+  type LeadEnrichResult,
+} from './lead-enrichment';
+export {
   countScreenedHeld,
   holdReason,
   screenedLeads,

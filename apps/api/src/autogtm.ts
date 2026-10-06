@@ -48,6 +48,9 @@ import {
   domainMatchKey,
   emailMatchKey,
   enqueue,
+  enrichLeads,
+  enrichmentStatus,
+  type LeadEnrichDeps,
   finishContactImport,
   importContactChunk,
   normaliseDomain,
@@ -101,7 +104,12 @@ export interface AutogtmDeps {
   ) => Promise<ApproveResult>;
   /** Refuses an unverified account anything that reaches a stranger. */
   readonly requireVerifiedEmail: (db: Client, actor: RequestActor) => Promise<void>;
+  /** The enrichment providers; absent means names from addresses only. */
+  readonly leadEnrichment?: Omit<LeadEnrichDeps, 'db'>;
 }
+
+/** Campaigns with an on-demand enrichment run in flight, and the last result of each. */
+const enrichRuns = new Map<string, { running: boolean; startedAt: string; last?: unknown }>();
 
 // ------------------------------------------------------------------ schemas
 
@@ -218,6 +226,12 @@ const appendBody = z
   });
 
 const allowBody = z.object({ allow: z.boolean() });
+
+const enrichBody = z.object({
+  /** New (uncached) searches this run may spend; the daily cap still applies. */
+  max_searches: z.number().int().min(0).max(1_000).optional(),
+  max_leads: z.number().int().min(1).max(5_000).optional(),
+});
 
 // ------------------------------------------------------------------ rows
 
@@ -877,7 +891,7 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
     if (c.req.query('format') === 'csv') return importReportCsv(c, report);
     return c.json({
       ...report,
-      rows: report.rows.map((row) => ({ ...row, why: reasonText(row.reason) })),
+      rows: report.rows.map((row) => ({ ...row, why: reasonText(row.reason, row.outcome) })),
     });
   });
 
@@ -955,6 +969,75 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
         held: lead.allowedAt === null,
       })),
     });
+  });
+
+  r.get('/campaigns/:id/enrichment', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaign = await ownedCampaign(db, actor.workspaceId, c.req.param('id'));
+    const status = await enrichmentStatus(
+      { db, ...deps.leadEnrichment },
+      { workspaceId: actor.workspaceId, campaignId: campaign.id },
+    );
+    const run = enrichRuns.get(campaign.id);
+    return c.json({
+      campaign_id: campaign.id,
+      ...status,
+      running: run?.running === true,
+      ...(run?.last ? { last_run: run.last } : {}),
+    });
+  });
+
+  /**
+   * Starts a run over this campaign's leads and answers at once: searches take
+   * 10-45 s each, so the run continues after the response and its outcome is
+   * read back from GET .../enrichment.
+   */
+  r.post('/campaigns/:id/enrich', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    requireWriter(actor, 'enriching leads');
+    const campaign = await ownedCampaign(db, actor.workspaceId, c.req.param('id'));
+    const body = await parse(c.req.raw, enrichBody);
+
+    const current = enrichRuns.get(campaign.id);
+    if (current?.running) {
+      return c.json({ campaign_id: campaign.id, started: false, running: true }, 202);
+    }
+    const startedAt = now();
+    enrichRuns.set(campaign.id, {
+      running: true,
+      startedAt,
+      ...(current?.last ? { last: current.last } : {}),
+    });
+    void enrichLeads(
+      { db, ...deps.leadEnrichment },
+      {
+        workspaceId: actor.workspaceId,
+        campaignId: campaign.id,
+        limit: body.max_leads ?? 200,
+        maxSearches: body.max_searches ?? 100,
+      },
+    )
+      .then((result) => {
+        enrichRuns.set(campaign.id, {
+          running: false,
+          startedAt,
+          last: { ...result, started_at: startedAt, finished_at: now() },
+        });
+      })
+      .catch((error: unknown) => {
+        enrichRuns.set(campaign.id, {
+          running: false,
+          startedAt,
+          last: {
+            error: error instanceof Error ? error.message : String(error),
+            started_at: startedAt,
+          },
+        });
+      });
+
+    return c.json({ campaign_id: campaign.id, started: true, running: true }, 202);
   });
 
   r.post('/leads/:person_id/screening', async (c) => {
@@ -1828,7 +1911,7 @@ async function importIntoCampaign(db: Client, actor: RequestActor, input: Import
     crawls_queued: crawls,
     report: reportRows
       .slice(0, INLINE_REPORT_ROWS)
-      .map((row) => ({ ...row, why: reasonText(row.reason) })),
+      .map((row) => ({ ...row, why: reasonText(row.reason, row.outcome) })),
     report_truncated: reportRows.length > INLINE_REPORT_ROWS,
     report_url: `/api/v1/autogtm/campaigns/import/${importId}/report?format=csv`,
   };

@@ -273,6 +273,39 @@ async function runLeads({ client, args, flags }: CommandContext): Promise<string
     ].join('\n');
   }
 
+  if (verb === 'enrich' || verb === 'enrichment') {
+    if (!target) throw new Error(`usage: og leads ${verb} <campaignId>`);
+    const base = `/autogtm/campaigns/${encodeURIComponent(target)}`;
+    if (verb === 'enrich') {
+      const max = flagString(flags, 'max');
+      await client.post(`${base}/enrich`, max ? { max_searches: Number(max) } : {});
+    }
+    const status = (await client.get(`${base}/enrichment`)) as Record<string, unknown>;
+    const today = (status.today ?? {}) as Record<string, unknown>;
+    const last = status.last_run as Record<string, unknown> | undefined;
+    return [
+      verb === 'enrich'
+        ? 'Started. It runs in the background; check: og leads enrichment ' + target
+        : '',
+      `${text(status, 'leads', '0')} leads: missing ${text(status, 'missing_title', '0')} titles, ` +
+        `${text(status, 'missing_linkedin', '0')} LinkedIn, ${text(status, 'missing_name', '0')} names`,
+      `searches today: ${text(today, 'searches', '0')} of ${text(today, 'searches_cap', '0')}` +
+        `${status.running ? ' (a run is in progress)' : ''}`,
+      ...(last
+        ? [
+            last.error
+              ? `last run failed: ${text(last, 'error')}`
+              : `last run: +${text(last, 'names', '0')} names, +${text(last, 'titles', '0')} titles, ` +
+                `+${text(last, 'profiles', '0')} profiles, +${text(last, 'companies', '0')} company pages, ` +
+                `${text(last, 'searches', '0')} searches (${text(last, 'cached', '0')} cached)` +
+                `${last.stopped ? `; stopped: ${text(last, 'stopped')}` : ''}`,
+          ]
+        : []),
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
   if (verb === 'allow' || verb === 'hold') {
     if (!target) throw new Error(`usage: og leads ${verb} <personId>`);
     await client.post(`/autogtm/leads/${encodeURIComponent(target)}/screening`, {
@@ -283,7 +316,7 @@ async function runLeads({ client, args, flags }: CommandContext): Promise<string
       : `${target} held back from sending again.`;
   }
 
-  throw new Error('usage: og leads add|report|screened|allow|hold …  (og help)');
+  throw new Error('usage: og leads add|report|screened|enrich|enrichment|allow|hold …  (og help)');
 }
 
 async function runJobs({ client, args, flags }: CommandContext): Promise<string> {
@@ -1662,7 +1695,7 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'leads',
     usage:
-      'og leads add <campaignId> <file.csv> --consent-source "<where>" [--allow-flagged] [--keep-project-duplicates] [--report out.csv] | report <taskId> [--csv] | screened <campaignId> [--all] | allow <personId> | hold <personId>',
+      'og leads add <campaignId> <file.csv> --consent-source "<where>" [--allow-flagged] [--keep-project-duplicates] [--report out.csv] | report <taskId> [--csv] | screened <campaignId> [--all] | enrich <campaignId> [--max <searches>] | enrichment <campaignId> | allow <personId> | hold <personId>',
     summary: 'Add a CSV of leads to a running campaign, with a per-row report and screening.',
     run: runLeads,
   },

@@ -3,6 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { Avatar } from '../../../../components/avatar';
 import { AddLeads } from '../../../../components/add-leads';
 import { CampaignControls } from '../../../../components/campaign-controls';
+import { LeadEnrichment } from '../../../../components/lead-enrichment';
 import { ScreenedLeads } from '../../../../components/screened-leads';
 import {
   ApiUnavailableError,
@@ -140,6 +141,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
         {campaign ? (
           <>
             <AddLeads campaignId={campaign.id} />
+            <LeadEnrichment campaignId={campaign.id} />
             <ScreenedLeads campaignId={campaign.id} />
           </>
         ) : null}

@@ -1007,6 +1007,50 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'enrich_campaign_leads',
+    title: 'Fill in leads’ missing name, title and LinkedIn',
+    description:
+      'Starts a background run over a campaign’s leads: names from unambiguous addresses ' +
+      '(first.last@, free), then People Data Labs when configured, then a Google search of ' +
+      'LinkedIn taken only when the result carries the full name and the company. Fills blanks ' +
+      'only, caches every search, and is capped per run and per day. Returns the status; call ' +
+      'get_lead_enrichment later for the outcome.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaignId: { type: 'string' },
+        maxSearches: { type: 'number', description: 'New searches this run may spend.' },
+      },
+      required: ['campaignId'],
+    },
+    run: async (client, args) => {
+      const base = `/autogtm/campaigns/${encodeURIComponent(require(args, 'campaignId'))}`;
+      await client.post(
+        `${base}/enrich`,
+        typeof args.maxSearches === 'number' ? { max_searches: args.maxSearches } : {},
+      );
+      return client.get(`${base}/enrichment`);
+    },
+  },
+  {
+    name: 'get_lead_enrichment',
+    title: 'What a campaign’s leads are missing',
+    description:
+      'How many of a campaign’s leads lack a name, job title or LinkedIn, which enrichment ' +
+      'providers are configured, searches spent today against the cap, and the last run.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { campaignId: { type: 'string' } },
+      required: ['campaignId'],
+    },
+    run: (client, args) =>
+      client.get(
+        `/autogtm/campaigns/${encodeURIComponent(require(args, 'campaignId'))}/enrichment`,
+      ),
+  },
+  {
     name: 'list_inbox',
     title: 'List conversations',
     description:
