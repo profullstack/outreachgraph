@@ -146,6 +146,44 @@ function jsonObject(raw: string): Record<string, unknown> | undefined {
   }
 }
 
+/**
+ * Every `{"network": ...}` object in a reply whose whole is not valid JSON.
+ *
+ * Production's gpt-4o-mini answered for outreachgraph.com with a stray `}`
+ * after the Reddit post: four good posts and one bad brace, and a strict parse
+ * threw all four away. Each post is parsed on its own instead, so one bad
+ * brace costs at most the post it is in.
+ */
+export function postObjects(raw: string): Record<string, unknown>[] {
+  const found: Record<string, unknown>[] = [];
+  const starts = /\{\s*"network"\s*:/g;
+  let match: RegExpExecArray | null;
+  while ((match = starts.exec(raw))) {
+    let depth = 0;
+    let inString = false;
+    for (let i = match.index; i < raw.length; i += 1) {
+      const ch = raw[i];
+      if (inString) {
+        if (ch === '\\') i += 1;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}' && --depth === 0) {
+        try {
+          found.push(JSON.parse(raw.slice(match.index, i + 1)) as Record<string, unknown>);
+        } catch {
+          // This one is broken too; the others still count.
+        }
+        starts.lastIndex = i + 1;
+        break;
+      }
+    }
+  }
+  return found;
+}
+
 /** Dashes out, the link out, quotes and stray whitespace off. */
 export function cleanPostText(text: string, url?: string): string {
   let out = text;
@@ -190,7 +228,9 @@ export function parseLinkPosts(
   url: string,
 ): LinkPostDraft[] {
   const parsed = jsonObject(raw);
-  const posts = Array.isArray(parsed?.posts) ? (parsed.posts as Record<string, unknown>[]) : [];
+  const posts = Array.isArray(parsed?.posts)
+    ? (parsed.posts as Record<string, unknown>[])
+    : postObjects(raw);
   const drafts: LinkPostDraft[] = [];
 
   for (const network of networks) {

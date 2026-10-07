@@ -69,6 +69,18 @@ describe('link post drafting', () => {
     });
   });
 
+  test('one stray brace does not lose the whole batch (prod gpt-4o-mini, outreachgraph.com)', () => {
+    const raw =
+      '{"posts":[{"network":"linkedin","title":null,"text":"First.","text":"Second {braced}.","subreddit":null},' +
+      '{"network":"x","title":null,"text":"Short one.","subreddit":null},' +
+      '{"network":"reddit","title":"Signal-led outreach","text":"Worth a look.","subreddit":"Entrepreneur"}},' +
+      '{"network":"hackernews","title":"OutreachGraph","text":"","subreddit":null}]}';
+    const posts = parseLinkPosts(raw, ['linkedin', 'x', 'reddit', 'hackernews'], URL);
+    expect(posts.map((p) => p.network)).toEqual(['linkedin', 'x', 'reddit', 'hackernews']);
+    expect(posts[0]!.text).toBe('Second {braced}.');
+    expect(posts[2]!.subreddit).toBe('Entrepreneur');
+  });
+
   test('drafts through the model and reports which one answered', async () => {
     const model = new StubModel(JSON.stringify({ posts: [{ network: 'x', text: 'Fast.' }] }));
     const result = await draftLinkPosts(model, { page: { url: URL }, networks: ['x'] });
