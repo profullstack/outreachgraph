@@ -27,12 +27,21 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
    - Bluesky through `api.bsky.app` (`public.api.bsky.app` answers
      `searchPosts` with 403 to anonymous callers).
    - A post must contain a keyword as whole words; `exclude` words drop it.
-3. **Score.** The model scores up to 60 new posts per scan, 10 per call, for
-   buyer intent 0-100 with a one-line reason. Vendors announcing their own
-   product, contests, changelogs and job posts score low. With no model the
-   wording classifier scores and the lead says so (`judged: false`).
-   Every matched post is stored once (`community_leads`, unique per monitor,
-   source and post id), lead or not, so nothing is scored twice.
+3. **Score.** The model classifies each post rather than picking a number
+   (asked for a number, it anchored on the floor):
+   - `kind`: `seeking` 88, `problem` 72, `discussion` 35, `promo` 5 (vendors,
+     ads, courses, launches, job and hiring threads), `offtopic` 0;
+   - `fit` of the brand: `high` x1, `medium` x0.85, `low` x0.5;
+   - a one-line reason.
+
+   Up to 60 posts per scan, 10 per call, best wording first within each source
+   with sources taking turns. A post waits at 45 (below the floor) until judged,
+   and every scan judges the last 7 days' backlog first. With no model at all
+   the wording classifier scores, and only a request for recommendations clears
+   60 (`judged: false`). Every matched post is stored once (`community_leads`,
+   unique per monitor, source and post id), lead or not, so nothing is scored
+   twice.
+
 4. **Reply.** `Draft AI reply` writes 40-120 words: answer the question first,
    disclose the affiliation, name the product at most once.
 5. **Digest.** Once per UTC day after the workspace's digest hour
@@ -57,4 +66,5 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
   `update_buyer_lead_monitor`, `scan_buyer_lead_monitor`,
   `draft_buyer_lead_reply`, `update_buyer_lead`.
 
-Tables: `lead_monitors`, `community_leads` (migration 0059).
+Tables: `lead_monitors`, `community_leads` (migration 0059; 0060 and 0061 re-queued
+rows scored by the earlier rules).

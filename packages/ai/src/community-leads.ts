@@ -48,19 +48,36 @@ function brandBlock(brand: LeadBrand): string {
     .join('\n');
 }
 
-const JUDGE_SYSTEM = `You read public posts from Reddit, Hacker News and Bluesky and score each one for BUYER INTENT toward one brand: how likely the author is a potential customer who would welcome hearing about a product like it right now.
+const JUDGE_SYSTEM = `You read public posts from Reddit, Hacker News and Bluesky and classify each one for a salesperson at one brand. Answer two questions per post; the score is computed from your answers.
 
-Score 0-100:
-- 80-100: the author is actively looking for, comparing, or asking for recommendations on a tool/service in the brand's category, or is unhappy with a competitor and wants an alternative.
-- 60-79: the author has a concrete problem the brand solves, right now, and is asking for help with it.
-- 30-59: on-topic but no sign this author wants a product: news, opinions, tutorials, people already happily using a tool, learning or studying a topic, general discussion.
-- 0-29: not a buyer. Vendors announcing or promoting their own product, courses and training ads, changelogs, contests, challenges, games, job posts, memes, the brand's own posts, or posts where the keyword means something else.
+kind: what the AUTHOR is doing in this post.
+- "seeking": asking for a tool, service, recommendation or alternative in the brand's area, or comparing options to pick one.
+- "problem": describes a concrete problem they have right now that the brand's product would solve, and asks for help with it.
+- "discussion": on-topic talk with no sign this author wants a product: news, opinions, tutorials, sharing a setup, already happy with a tool, learning or studying, career questions, rants.
+- "promo": the author is selling or recruiting: a vendor or reseller advertising a product, a course or training, a changelog or launch, a job post, a "who is hiring" or "who wants to be hired" thread, a contest or game.
+- "offtopic": the keyword means something else here, or the post has nothing to do with the brand's area.
 
-Be strict: 60 or more only when this author would plausibly welcome a product suggestion today. When unsure, score below 50.
+fit: how well the brand's product answers this author's need. "high": directly. "medium": partly or adjacent. "low": not really.
 
-Return exactly one result for every post, in the order given.
+When torn between two kinds, pick the less buyer-like one. Return exactly one result for every post, in the order given.
 reason: one short sentence a salesperson would find useful ("asking for a SIEM alternative to Splunk for a 20-person team").
-Return only JSON: {"results": [{"id": "<id>", "intent": 0, "reason": "..."}]}.`;
+Return only JSON: {"results": [{"id": "<id>", "kind": "seeking", "fit": "high", "reason": "..."}]}.`;
+
+/** Intent from the judge's two answers. Deterministic, so a model cannot anchor on a number. */
+const KIND_INTENT: Record<string, number> = {
+  seeking: 88,
+  problem: 72,
+  discussion: 35,
+  promo: 5,
+  offtopic: 0,
+};
+const FIT_FACTOR: Record<string, number> = { high: 1, medium: 0.85, low: 0.5 };
+
+export function intentFromJudgement(kind: string, fit: string): number {
+  const base = KIND_INTENT[kind.trim().toLowerCase()];
+  if (base === undefined) return 0;
+  return Math.round(base * (FIT_FACTOR[fit.trim().toLowerCase()] ?? 0.5));
+}
 
 /** Judge up to ten posts per call. Returns [] when the model gives nothing usable. */
 export async function judgeLeads(
@@ -101,10 +118,18 @@ export function parseLeadJudgements(raw: string): LeadJudgement[] {
   return results
     .filter((entry) => typeof entry.id === 'string' || typeof entry.id === 'number')
     .map((entry) => {
-      const intent = Number(entry.intent);
+      // Classified answers (kind + fit) are the current format; a bare number
+      // is still read, for older prompts and test fixtures.
+      const raw = Number(entry.intent);
+      const intent =
+        typeof entry.kind === 'string'
+          ? intentFromJudgement(entry.kind, typeof entry.fit === 'string' ? entry.fit : 'low')
+          : Number.isFinite(raw)
+            ? Math.max(0, Math.min(100, Math.round(raw)))
+            : 0;
       return {
         id: String(entry.id).trim(),
-        intent: Number.isFinite(intent) ? Math.max(0, Math.min(100, Math.round(intent))) : 0,
+        intent,
         reason: typeof entry.reason === 'string' ? entry.reason.trim().slice(0, 240) : '',
       };
     });
