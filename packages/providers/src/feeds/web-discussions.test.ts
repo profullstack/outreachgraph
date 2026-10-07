@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { WebSearcher } from '../valueserp';
+import { SearchOutOfCredits, type WebSearcher } from '../valueserp';
 import { quoteGroups, redditPostId, WebDiscussionSource } from './web-discussions';
 
 describe('WebDiscussionSource', () => {
@@ -32,6 +32,7 @@ describe('WebDiscussionSource', () => {
     const archiveCalls: string[] = [];
     const source = new WebDiscussionSource({
       searcher,
+      concurrency: 1,
       sites: ['reddit.com', 'serverfault.com'],
       termsPerQuery: 2,
       fetchImpl: (async (url: string) => {
@@ -82,16 +83,49 @@ describe('WebDiscussionSource', () => {
     });
   });
 
-  test('a refusal from the search propagates instead of reading as nothing found', async () => {
-    const source = new WebDiscussionSource({
+  test('one slow query is retried and costs only itself; all failing, or no credits, fails the source', async () => {
+    let calls = 0;
+    const flaky = new WebDiscussionSource({
+      searcher: {
+        search: async (q) => {
+          calls += 1;
+          if (q.includes('quora') || (q.includes('serverfault') && calls < 2))
+            throw new Error('ValueSERP did not answer within 90 s');
+          return q.includes('serverfault')
+            ? [{ title: 'IDS?', link: 'https://serverfault.com/questions/1/ids', snippet: 'siem?' }]
+            : [];
+        },
+      },
+      sites: ['serverfault.com', 'quora.com'],
+      concurrency: 1,
+      archiveUrl: null,
+    });
+    const posts = await flaky.search({ terms: ['siem'] });
+    expect(posts.map((p) => p.externalId)).toEqual(['https://serverfault.com/questions/1/ids']);
+
+    const down = new WebDiscussionSource({
       searcher: {
         search: async () => {
-          throw new Error('ValueSERP is out of credits (HTTP 402)');
+          throw new Error('ValueSERP did not answer within 90 s');
         },
       },
       archiveUrl: null,
     });
-    await expect(source.search({ terms: ['siem'] })).rejects.toThrow('out of credits');
+    await expect(down.search({ terms: ['siem'] })).rejects.toThrow('did not answer');
+
+    let searched = 0;
+    const broke = new WebDiscussionSource({
+      searcher: {
+        search: async () => {
+          searched += 1;
+          throw new SearchOutOfCredits('ValueSERP');
+        },
+      },
+      concurrency: 1,
+      archiveUrl: null,
+    });
+    await expect(broke.search({ terms: ['siem'] })).rejects.toThrow('out of credits');
+    expect(searched).toBe(1);
   });
 
   test('helpers', () => {
