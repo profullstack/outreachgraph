@@ -18,6 +18,7 @@ import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/t
 import {
   buildLeadSources,
   containsKeyword,
+  judgeOrder,
   createLeadMonitor,
   draftCommunityLeadReply,
   listCommunityLeads,
@@ -227,7 +228,69 @@ describe('scanning', () => {
     );
     expect(r.judged).toBe(0);
     const [lead] = await listCommunityLeads(client, SEED.workspaceId);
-    expect(lead).toMatchObject({ externalId: 'r1', intent: 75, judged: false });
+    expect(lead).toMatchObject({ externalId: 'r1', intent: 70, judged: false });
+  });
+
+  test('with a model, an unjudged post waits below the floor and the next scan judges it', async () => {
+    const client = await db('leads-backlog');
+    const monitor = await createLeadMonitor({ db: client }, SEED.workspaceId, {
+      name: 'ThreatCrush',
+      keywords: ['siem', 'threat intel', 'intrusion detection'],
+      subreddits: ['devsecops'],
+    });
+    const sources = () => [fake('reddit', POSTS), fake('hackernews', HN)];
+    const down = {
+      generate: async () => {
+        throw new Error('429 insufficient_quota');
+      },
+    };
+
+    const first = await scanLeadMonitor(
+      { db: client, model: down, sources, now: NOW },
+      SEED.workspaceId,
+      monitor.id,
+    );
+    expect(first).toMatchObject({ stored: 3, judged: 0, leads: 0 });
+    expect(first.failures[0]).toMatchObject({ source: 'judge' });
+    // The wording guess for "Any recommendations for…" is 70, held at 45.
+    expect(await listCommunityLeads(client, SEED.workspaceId)).toEqual([]);
+
+    const second = await scanLeadMonitor(
+      {
+        db: client,
+        model: new StubModel(JUDGED),
+        sources,
+        now: new Date(NOW.getTime() + 3_600_000),
+      },
+      SEED.workspaceId,
+      monitor.id,
+    );
+    expect(second).toMatchObject({ stored: 0, judged: 3, leads: 2 });
+    expect((await listCommunityLeads(client, SEED.workspaceId)).map((l) => l.externalId)).toEqual([
+      '42',
+      'r1',
+    ]);
+  });
+
+  test('judging order: best wording first per source, sources take turns', () => {
+    const row = (source: string, pattern: number, hoursAgo: number) => ({
+      source,
+      pattern,
+      postedAt: ago(hoursAgo),
+      key: `${source}-${pattern}-${hoursAgo}`,
+    });
+    const rows = [
+      ...Array.from({ length: 5 }, (_, i) => row('bluesky', 15, i)),
+      row('bluesky', 70, 9),
+      row('reddit', 35, 1),
+      row('reddit', 70, 8),
+    ];
+    expect(judgeOrder(rows, 4).map((r) => r.key)).toEqual([
+      'bluesky-70-9',
+      'reddit-70-8',
+      'bluesky-15-0',
+      'reddit-35-1',
+    ]);
   });
 
   test('a failing source costs that source, and is reported', async () => {
