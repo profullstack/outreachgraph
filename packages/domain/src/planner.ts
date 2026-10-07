@@ -45,6 +45,8 @@ export interface Segment {
   readonly contacted: { readonly quarters: readonly number[] } | { readonly lastDays: number };
   /** People already reached by these plays this year are left out. */
   readonly excludePlays?: readonly string[];
+  /** People at companies whose site runs a competitor the product names go first. */
+  readonly preferCompetitorUsers?: boolean;
 }
 
 export interface PlayTouch {
@@ -177,7 +179,11 @@ export const PLANNER_YEAR: readonly PlannerMonth[] = [
         key: 'switchers_q1_unengaged',
         title: 'Competitor-aware angle to Q1 unengaged',
         sequence: 'direct',
-        segment: { engagement: 'unengaged', contacted: { quarters: [1] } },
+        segment: {
+          engagement: 'unengaged',
+          contacted: { quarters: [1] },
+          preferCompetitorUsers: true,
+        },
         touches: [
           {
             delayHours: 0,

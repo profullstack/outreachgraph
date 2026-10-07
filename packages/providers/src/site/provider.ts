@@ -8,6 +8,7 @@
  * ones that do are exactly the bespoke marketing pages parsing cannot read.
  */
 
+import { detectTechnologies, type DetectedTechnology } from './technologies';
 import type {
   PersonCandidate,
   PersonEnrichmentInput,
@@ -70,6 +71,8 @@ export interface CrawlResult {
    * to reach the company, not a profile belonging to it.
    */
   readonly contactEmail?: string;
+  /** Tools the entry page loads (chat widget, CRM forms, store platform), with the marker for each. */
+  readonly technologies?: readonly DetectedTechnology[];
 }
 
 function emptyCompany(): ExtractedCompany {
@@ -392,6 +395,7 @@ export class SiteProvider implements PersonEnrichmentProvider {
       // The entry page's prose, not the whole site's. A caller reading its own
       // site to draft a profile means the page it named.
       pageText: visibleText(page.html),
+      technologies: detectTechnologies(page.html),
     };
   }
 }

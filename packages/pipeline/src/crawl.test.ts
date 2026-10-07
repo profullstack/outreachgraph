@@ -317,6 +317,43 @@ describe('URL to approval card', () => {
     SLOW_CHAIN_MS,
   );
 
+  test('records what the site runs, and a competitor it runs as a grounded signal', async () => {
+    const { db } = await setup('e2e-tech-stack');
+    await db.execute({
+      sql: `UPDATE offerings SET competitors = '["Intercom"]' WHERE id = ?`,
+      args: [SEED.offeringId],
+    });
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      payload: { url: 'https://familyshop.example' },
+    });
+
+    const html = INBOX_ONLY_HTML.replace(
+      '</head>',
+      '<script src="https://widget.intercom.io/widget/x"></script><script src="https://js.stripe.com/v3/"></script></head>',
+    );
+    const site = new SiteProvider({ fetchImpl: stubNetwork(html) });
+    await drainQueue(db, async (job: QueuedJob) => {
+      await runCrawlJob({ db, site, providers: [], emailSendingEnabled: true }, job);
+    });
+
+    const company = await queryOne<{ id: string; technologies: string }>(
+      db,
+      `SELECT id, technologies FROM companies WHERE domain = 'familyshop.example'`,
+    );
+    expect(JSON.parse(company!.technologies).sort()).toEqual(['Intercom', 'Stripe']);
+
+    const signal = await queryOne<{ summary: string; evidence: string; signal_type: string }>(
+      db,
+      `SELECT summary, evidence, signal_type FROM signals WHERE company_id = ?`,
+      [company!.id],
+    );
+    expect(signal?.signal_type).toBe('technology_adoption');
+    expect(signal?.summary).toBe("Family Shop's site runs Intercom");
+    expect(signal?.evidence).toContain('widget.intercom.io');
+  });
+
   test('a page naming someone does not also queue the inbox', async () => {
     const { db } = await setup('e2e-inbox-not-doubled');
 

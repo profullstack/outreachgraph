@@ -347,7 +347,11 @@ export async function segmentPeople(
               CASE WHEN EXISTS (SELECT 1 FROM interactions r
                      WHERE r.workspace_id = ? AND r.person_id = p.id AND r.direction = 'inbound'
                        AND r.reply_label IN ('interested', 'question', 'referral'))
-                   THEN 1 ELSE 0 END AS positive
+                   THEN 1 ELSE 0 END AS positive,
+              CASE WHEN EXISTS (SELECT 1 FROM signals cs
+                     WHERE cs.workspace_id = ? AND cs.company_id = p.current_company_id
+                       AND cs.signal_type = 'technology_adoption' AND cs.subtype = 'competitor')
+                   THEN 1 ELSE 0 END AS competitor_user
          FROM people p
         WHERE p.status = 'active' AND p.outreach_eligible = 1
           AND EXISTS (SELECT 1 FROM campaign_people cp JOIN campaigns c ON c.id = cp.campaign_id
@@ -376,7 +380,7 @@ export async function segmentPeople(
      WHERE first_at IS NOT NULL AND (${rangeSql})
        AND (last_out IS NULL OR last_out < ?)
        AND ${engagementSql[segment.engagement]}
-     ORDER BY first_at ASC
+     ORDER BY ${segment.preferCompetitorUsers ? 'competitor_user DESC, ' : ''}first_at ASC
      LIMIT ?`,
     [
       workspaceId,
@@ -385,6 +389,8 @@ export async function segmentPeople(
       workspaceId,
       workspaceId,
       workspaceId,
+      workspaceId,
+      // competitor_user
       workspaceId,
       workspaceId,
       offeringId,

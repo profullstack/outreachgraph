@@ -348,6 +348,11 @@ export {
   type LinkedInSessionOptions,
 } from './linkedin/session';
 export {
+  competitorMatches,
+  detectTechnologies,
+  type DetectedTechnology,
+} from './site/technologies';
+export {
   checkBlacklists,
   reverseIp,
   type BlacklistDeps,
