@@ -81,22 +81,21 @@ export interface LeadershipHeadline {
   readonly title: string;
 }
 
-const COMPANY = String.raw`([A-Z][\w.&'’+-]*(?:\s+[A-Z0-9][\w.&'’+-]*){0,4})`;
+const COMPANY = String.raw`([A-Z][\w.&'’+-]*(?:\s+[A-Z0-9][\w.&'’+-]*){0,4}(?:,\s+(?:Inc|LLC|Ltd|Corp)\.?)?)`;
+/** A decision-maker's title, as a headline writes it. */
+const ROLE = String.raw`((?:Senior\s+|Executive\s+|Global\s+|Group\s+)?(?:Chief|VP|Vice President|SVP|EVP|Head|Director|Executive Director|Managing Director|General Manager|President|CEO|CFO|CTO|CRO|CMO|COO|CPO)[\w\s,&-]{0,60})`;
 const AMOUNT = String.raw`(\$|€|£)\s?\d[\d.,]*\s?(?:million|billion|[MBK])?`;
 
-const FUNDING = new RegExp(
-  String.raw`^${COMPANY}\s+(?:raises|secures|closes|lands|nabs|bags|announces)\s+(?:an?\s+)?(${AMOUNT})?[^.]*?(pre-seed|seed|series\s+[a-h]\b|growth|funding|round)`,
-  'i',
-);
 const APPOINTS = new RegExp(
-  String.raw`^${COMPANY}\s+(?:appoints|names|hires|welcomes|taps|promotes)\s+(?:former\s+[\w\s-]+?\s+)?([A-Z][a-zA-Z'’.-]+(?:\s+[A-Z][a-zA-Z'’.-]+){1,3})\s+(?:as\s+(?:its\s+|new\s+)*|to\s+)?((?:Chief|VP|Vice President|SVP|EVP|Head|Director|General Manager|President|CEO|CFO|CTO|CRO|CMO|COO|CPO)[\w\s,&-]{0,60})`,
+  String.raw`^${COMPANY}\s+(?:appoints|names|hires|welcomes|taps|promotes)\s+(?:former\s+[\w\s-]+?\s+)?([A-Z][a-zA-Z'’.-]+(?:\s+[A-Z][a-zA-Z'’.-]+){1,3})\s+(?:as\s+(?:its\s+|new\s+)*|to\s+)?${ROLE}`,
 );
 const JOINS = new RegExp(
-  String.raw`^([A-Z][a-zA-Z'’.-]+(?:\s+[A-Z][a-zA-Z'’.-]+){1,3})\s+(?:joins|named|appointed)\s+${COMPANY}\s+as\s+((?:Chief|VP|Vice President|SVP|EVP|Head|Director|General Manager|President|CEO|CFO|CTO|CRO|CMO|COO|CPO)[\w\s,&-]{0,60})`,
+  String.raw`^([A-Z][a-zA-Z'’.-]+(?:\s+[A-Z][a-zA-Z'’.-]+){1,3})\s+(?:joins|named|appointed)\s+${COMPANY}\s+as\s+${ROLE}`,
 );
 
 /** Generic words that open a headline but are not a company. */
-const NOT_A_COMPANY = /^(the|a|an|this|startup|report|exclusive|why|how|ai|fintech|new|top|meet)$/i;
+const NOT_A_COMPANY =
+  /^(the|a|an|this|that|who|which|it|they|startup|report|exclusive|why|how|ai|fintech|new|top|meet|company|firm)$/i;
 
 function cleanCompany(raw: string): string | undefined {
   const name = raw
@@ -109,20 +108,117 @@ function cleanCompany(raw: string): string | undefined {
 
 function cleanTitle(raw: string): string {
   return raw
-    .split(/\s+(?:to|in|amid|after|as|following|for)\s+/i)[0]!
+    .split(/\s+(?:to|in|amid|after|as|following|for|and|ahead)\s+/i)[0]!
     .replace(/[,\s-]+$/, '')
     .trim();
 }
 
+/** Words that describe a company in a headline rather than name it. */
+const DESCRIPTORS = new Set([
+  'startup',
+  'start-up',
+  'firm',
+  'company',
+  'platform',
+  'provider',
+  'maker',
+  'fintech',
+  'insurtech',
+  'proptech',
+  'healthtech',
+  'edtech',
+  'payments',
+  'payment',
+  'stablecoin',
+  'ai',
+  'saas',
+  'software',
+  'unicorn',
+  'scaleup',
+  'developer',
+  'egyptian',
+  'indian',
+  'european',
+  'british',
+  'german',
+  'french',
+  'estonian',
+  'nigerian',
+  'israeli',
+  'canadian',
+  'us',
+  'u.s.',
+  'based',
+  'backed',
+  'and',
+  'the',
+  'a',
+  'an',
+  'its',
+  'of',
+  'for',
+  'to',
+  'in',
+  'as',
+  'by',
+  'with',
+  'rebrands',
+  'exclusive',
+  'breaking',
+  'report',
+  'mena',
+  'cybersecurity',
+  'security',
+  'data',
+  'cloud',
+  'crypto',
+  'web3',
+  'b2b',
+  'logistics',
+  'climate',
+  'robotics',
+  'biotech',
+  'legal',
+]);
+
+const FUNDING_VERB =
+  /\s(raises|raised|secures|secured|closes|closed|lands|nabs|bags|gets|announces)\s/i;
+const ROUND = /(pre-seed|seed|series\s+[a-h]\b|growth round|funding|round|\$|€|£)/i;
+
 export function parseFundingHeadline(title: string): FundingHeadline | undefined {
-  const match = FUNDING.exec(title.trim());
-  if (!match) return undefined;
-  const company = cleanCompany(match[1] ?? '');
-  if (!company) return undefined;
+  // "Exclusive: Split Pay raises..." / "Startup wrap — ..." prefixes go.
+  const text = title.trim().replace(/^[\w\s]{1,20}:\s+/, '');
+  const verb = FUNDING_VERB.exec(text);
+  if (!verb || verb.index === undefined) return undefined;
+  const after = text.slice(verb.index + verb[0].length);
+  if (!ROUND.test(after.slice(0, 80))) return undefined;
+
+  // The company is the words just before the verb, read backwards until a
+  // descriptor ("fintech startup"), and with an appositive dropped: in
+  // "Latitude, founded by Stripe alums, raises" the subject is before the
+  // first comma.
+  let before = text.slice(0, verb.index).trim();
+  if (before.includes(',')) before = before.split(',')[0]!.trim();
+  const words = before.split(/\s+/);
+  // "Pay-i rebrands as Ascerta and raises": the conjunction is not the name.
+  while (words.length > 0 && /^(and|which|who|that|now)$/i.test(words[words.length - 1]!)) {
+    words.pop();
+  }
+  const name: string[] = [];
+  for (let i = words.length - 1; i >= 0 && name.length < 4; i -= 1) {
+    const word = words[i]!.replace(/[’']s$/i, '');
+    if (DESCRIPTORS.has(word.toLowerCase())) break;
+    name.unshift(word);
+  }
+  const company = cleanCompany(name.join(' '));
+  if (!company || company.length < 2) return undefined;
+
+  const amount = new RegExp(`^(?:an?\\s+)?(${AMOUNT})`, 'i').exec(after)?.[1];
+  const round = /(pre-seed|seed|series\s+[a-h]\b)/i.exec(after)?.[1];
   return {
     company,
-    ...(match[2] ? { amount: match[2].replace(/\s+/g, ' ').trim() } : {}),
-    ...(match[4] ? { round: match[4].replace(/\s+/g, ' ').trim() } : {}),
+    ...(amount ? { amount: amount.replace(/\s+/g, ' ').trim() } : {}),
+    ...(round ? { round: round.replace(/\s+/g, ' ').trim() } : {}),
   };
 }
 
@@ -162,4 +258,14 @@ export function isEventPeoplePage(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * True when a page is about a past edition: every year it names (in the URL
+ * or title) is before `year`. "PlatformCon 2024 speakers" is not a 2026
+ * contact list; a page naming no year at all is taken.
+ */
+export function isPastEvent(url: string, title: string, year: number): boolean {
+  const years = `${url} ${title}`.match(/\b20\d{2}\b/g)?.map(Number) ?? [];
+  return years.length > 0 && years.every((found) => found < year);
 }
