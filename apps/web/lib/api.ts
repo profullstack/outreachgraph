@@ -858,6 +858,7 @@ export interface PlannerView {
     readonly sequence: string;
   }>;
   readonly next: { readonly period: string; readonly label: string };
+  readonly tracksEngagement: boolean;
   readonly offerings: ReadonlyArray<{
     readonly offeringId: string;
     readonly name: string;
