@@ -52,9 +52,11 @@ const JUDGE_SYSTEM = `You read public posts from Reddit, Hacker News and Bluesky
 
 Score 0-100:
 - 80-100: the author is actively looking for, comparing, or asking for recommendations on a tool/service in the brand's category, or is unhappy with a competitor and wants an alternative.
-- 60-79: the author describes a concrete problem the brand solves and is asking for help with it.
-- 30-59: on-topic discussion or question, but no sign they want a product.
-- 0-29: not a buyer. Vendors announcing or promoting their own product, changelogs, contests, challenges, news links, job posts, memes, the brand's own posts, or off-topic matches.
+- 60-79: the author has a concrete problem the brand solves, right now, and is asking for help with it.
+- 30-59: on-topic but no sign this author wants a product: news, opinions, tutorials, people already happily using a tool, learning or studying a topic, general discussion.
+- 0-29: not a buyer. Vendors announcing or promoting their own product, courses and training ads, changelogs, contests, challenges, games, job posts, memes, the brand's own posts, or posts where the keyword means something else.
+
+Be strict: 60 or more only when this author would plausibly welcome a product suggestion today. When unsure, score below 50.
 
 Return exactly one result for every post, in the order given.
 reason: one short sentence a salesperson would find useful ("asking for a SIEM alternative to Splunk for a 20-person team").

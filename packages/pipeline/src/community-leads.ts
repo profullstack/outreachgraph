@@ -62,17 +62,64 @@ const JUDGE_BATCH = 10;
 const DIGEST_LIMIT = 15;
 const DAY_MS = 86_400_000;
 
-/** The wording classifier's guess at intent, when there is no model. */
+/**
+ * The wording classifier's guess at intent, when there is no model. Only a
+ * request for recommendations clears the default floor of 60 on wording
+ * alone: "demo" or "evaluating" in a post is as often a game demo as a buyer.
+ */
 const PATTERN_INTENT: Partial<Record<SignalType, number>> = {
-  recommendation_request: 75,
-  purchase_intent: 72,
-  competitor_mention: 65,
-  public_complaint: 55,
-  pain: 55,
-  public_question: 40,
-  content_topic: 20,
-  hiring: 10,
+  recommendation_request: 70,
+  competitor_mention: 60,
+  purchase_intent: 55,
+  public_complaint: 50,
+  pain: 50,
+  public_question: 35,
+  content_topic: 15,
+  hiring: 5,
 };
+
+/**
+ * Where an unjudged post sits while it waits for the model: below any sensible
+ * floor, so a wording guess never reaches the digest when a model is there to
+ * be asked. The next scan judges the backlog first.
+ */
+const PENDING_INTENT_CAP = 45;
+/** How far back the backlog of unjudged posts is still worth judging. */
+const BACKLOG_DAYS = 7;
+
+export function patternIntent(text: string): number {
+  return PATTERN_INTENT[classifyPost(text).type] ?? 15;
+}
+
+/**
+ * Picks what the model judges this scan: best wording first within each
+ * source, then round-robin across sources, so one chatty source (Bluesky)
+ * cannot spend the whole budget while Reddit's few real asks wait.
+ */
+export function judgeOrder<T extends { source: string; pattern: number; postedAt: string }>(
+  rows: readonly T[],
+  limit: number,
+): T[] {
+  const bySource = new Map<string, T[]>();
+  for (const row of rows) {
+    const queue = bySource.get(row.source) ?? [];
+    queue.push(row);
+    bySource.set(row.source, queue);
+  }
+  for (const queue of bySource.values()) {
+    queue.sort((a, b) => b.pattern - a.pattern || Date.parse(b.postedAt) - Date.parse(a.postedAt));
+  }
+  const out: T[] = [];
+  const queues = [...bySource.values()];
+  while (out.length < limit && queues.some((q) => q.length > 0)) {
+    for (const queue of queues) {
+      const next = queue.shift();
+      if (next) out.push(next);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
 
 /* ---------------------------------------------------------------- types -- */
 
@@ -662,43 +709,21 @@ export async function scanLeadMonitor(
     }
   }
 
-  // Newest first, so the judged ones are the ones a reply can still land on.
-  fresh.sort((a, b) => Date.parse(b.post.postedAt) - Date.parse(a.post.postedAt));
-
-  const verdicts = new Map<string, LeadJudgement>();
-  if (deps.model && fresh.length > 0) {
-    const toJudge = fresh.slice(0, JUDGE_LIMIT);
-    for (let i = 0; i < toJudge.length; i += JUDGE_BATCH) {
-      const batch = toJudge.slice(i, i + JUDGE_BATCH).map(({ post }, j) => ({
-        id: String(i + j),
-        source: post.network,
-        title: post.title,
-        text: post.text,
-      }));
-      try {
-        for (const verdict of await judgeLeads(deps.model, brandOf(monitor), batch)) {
-          verdicts.set(verdict.id, verdict);
-        }
-      } catch (error) {
-        failures.push({ source: 'judge', reason: (error as Error).message });
-        break;
-      }
-    }
-  }
-
   const createdAt = at.toISOString();
-  let judged = 0;
   let leads = 0;
-  for (const [index, { post, term }] of fresh.entries()) {
-    const verdict = verdicts.get(String(index));
-    const intent = verdict ? verdict.intent : (PATTERN_INTENT[classifyPost(post.text).type] ?? 20);
-    if (verdict) judged += 1;
-    if (intent >= monitor.minIntent) leads += 1;
+
+  // Every new post is stored first. With a model, its wording guess is capped
+  // below the floor until the model has looked at it; without one, the guess
+  // is the score.
+  for (const { post, term } of fresh) {
+    const guess = patternIntent(post.text);
+    const intent = deps.model ? Math.min(guess, PENDING_INTENT_CAP) : guess;
+    if (!deps.model && intent >= monitor.minIntent) leads += 1;
     await db.execute({
       sql: `INSERT INTO community_leads (id, workspace_id, monitor_id, source, external_id, url, title, excerpt,
               author, author_url, container, posted_at, matched_term, intent, reason, judged, status,
               created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 'new', ?, ?)
             ON CONFLICT (monitor_id, source, external_id) DO NOTHING`,
       args: [
         newId('communityLead'),
@@ -715,12 +740,67 @@ export async function scanLeadMonitor(
         post.postedAt,
         term ?? null,
         intent,
-        verdict?.reason || null,
-        verdict ? 1 : 0,
         createdAt,
         createdAt,
       ],
     });
+  }
+
+  // Then the model judges the backlog: this scan's posts and any earlier ones
+  // a previous scan had no budget (or no working model) for.
+  let judged = 0;
+  if (deps.model) {
+    const backlog = await queryAll<{
+      id: string;
+      source: string;
+      title: string | null;
+      excerpt: string;
+      posted_at: string;
+    }>(
+      db,
+      `SELECT id, source, title, excerpt, posted_at FROM community_leads
+        WHERE monitor_id = ? AND judged = 0 AND posted_at >= ?
+        ORDER BY posted_at DESC LIMIT 1000`,
+      [monitor.id, new Date(at.getTime() - BACKLOG_DAYS * DAY_MS).toISOString()],
+    );
+    const chosen = judgeOrder(
+      backlog.map((row) => ({
+        ...row,
+        postedAt: row.posted_at,
+        pattern: patternIntent(`${row.title ?? ''}\n${row.excerpt}`),
+      })),
+      JUDGE_LIMIT,
+    );
+    for (let i = 0; i < chosen.length; i += JUDGE_BATCH) {
+      const batch = chosen.slice(i, i + JUDGE_BATCH);
+      let verdicts: LeadJudgement[];
+      try {
+        verdicts = await judgeLeads(
+          deps.model,
+          brandOf(monitor),
+          batch.map((row, j) => ({
+            id: String(j),
+            source: row.source,
+            title: row.title ?? undefined,
+            text: row.excerpt,
+          })),
+        );
+      } catch (error) {
+        failures.push({ source: 'judge', reason: (error as Error).message });
+        break;
+      }
+      for (const verdict of verdicts) {
+        const row = batch[Number(verdict.id)];
+        if (!row) continue;
+        await db.execute({
+          sql: `UPDATE community_leads SET intent = ?, reason = ?, judged = 1, updated_at = ?
+                WHERE id = ? AND judged = 0`,
+          args: [verdict.intent, verdict.reason || null, createdAt, row.id],
+        });
+        judged += 1;
+        if (verdict.intent >= monitor.minIntent) leads += 1;
+      }
+    }
   }
 
   const result: LeadScanResult = {
