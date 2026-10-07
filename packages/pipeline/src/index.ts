@@ -551,3 +551,16 @@ export {
   type IdeaStatus,
   type IdeaSummary,
 } from './ideas';
+export {
+  applyCampaignBounceGate,
+  campaignBounceState,
+  listHealthReport,
+  markAddressBounced,
+  readVerification,
+  recordVerification,
+  resumeCampaign,
+  verifyAddress,
+  type CampaignBounceState,
+  type ListHealthReport,
+  type VerifyOutcome,
+} from './list-quality';

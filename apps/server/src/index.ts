@@ -1390,6 +1390,9 @@ async function tick(): Promise<void> {
           // reported. Without this the sweep only ever says "no drafted
           // message", once per tick, forever.
           ...(model ? { model } : {}),
+          // Verify before sending: MX always, an SMTP RCPT probe while port 25
+          // answers. A blocked port degrades to MX-only, never to a hold.
+          verifier: smtpProber && !smtpProber.blocked() ? { smtp: smtpProber } : {},
         },
         workspace.id,
       );

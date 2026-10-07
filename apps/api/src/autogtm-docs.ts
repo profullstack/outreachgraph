@@ -648,6 +648,33 @@ export const OPERATIONS: readonly Operation[] = [
   },
   {
     method: 'get',
+    path: '/autogtm/campaigns/{campaign_id}/list-health',
+    id: 'getListHealth',
+    tag: 'Campaigns',
+    summary: 'Bounce rate, the 2% pause, and address verdicts',
+    description:
+      'Every address is verified before its first message and again after 90 days (MX, then an ' +
+      'SMTP RCPT probe where the host allows port 25). A campaign whose bounce rate passes 2% over ' +
+      '50+ sends pauses itself, re-verifies every queued address, drops the ones that fail and ' +
+      'resumes on a fresh window. Accept-all addresses only send while the campaign bounces at or ' +
+      'under 1%. A bounced address is never sent to again.',
+    params: [idParam('campaign_id', 'The campaign.')],
+    response: {
+      type: 'object',
+      properties: {
+        sends: { type: 'integer' },
+        bounces: { type: 'integer' },
+        bounce_rate: { type: 'number' },
+        max_bounce_rate: { type: 'number' },
+        window_start: { type: ['string', 'null'] },
+        paused: { type: 'boolean' },
+        paused_at: { type: ['string', 'null'] },
+        addresses: { type: 'object' },
+      },
+    },
+  },
+  {
+    method: 'get',
     path: '/autogtm/campaigns/import/{task_id}',
     id: 'getImport',
     tag: 'Campaigns',
