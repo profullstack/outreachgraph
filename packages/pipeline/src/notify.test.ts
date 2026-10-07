@@ -232,6 +232,73 @@ describe('sendDailyDigest', () => {
   });
 });
 
+describe('what the digest counts', () => {
+  test('counts the last 24 hours, not since midnight, and names the workspace', async () => {
+    seeded = await seedDatabase('digest-window');
+    const { db } = seeded;
+    await setDigestHour(db, 9);
+
+    const sendAt = at(12);
+    const hoursAgo = (h: number): string =>
+      new Date(sendAt.getTime() - h * 60 * 60 * 1000).toISOString();
+
+    // Two went out yesterday afternoon, after yesterday's digest: a midnight
+    // window never counts them, in any digest. One is older than a day.
+    const sends = [
+      ['act_morning', hoursAgo(2)],
+      ['act_afternoon', hoursAgo(20)],
+      ['act_evening', hoursAgo(16)],
+      ['act_stale', hoursAgo(30)],
+    ];
+    for (const [id, executedAt] of sends) {
+      await db.execute({
+        sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
+              mode, status, created_at, executed_at)
+              VALUES (?, ?, ?, ?, 'send_email', 'email', 'customer_managed', 'completed', ?, ?)`,
+        args: [
+          id!,
+          SEED.workspaceId,
+          SEED.recommendationId,
+          SEED.personId,
+          executedAt!,
+          executedAt!,
+        ],
+      });
+    }
+
+    const { sent, mailer } = recordingMailer();
+    await sendDailyDigest({ db, mailer, appUrl: APP_URL, now: sendAt }, SEED.workspaceId);
+
+    const mail = sent[0];
+    expect(mail?.text).toContain('Messages sent:     3');
+    expect(mail?.text).toContain('Last 24 hours');
+    expect(mail?.subject).toBe('0 new leads, 3 sent · Test · OutreachGraph');
+  });
+
+  test('holds that read the same are one note, not two', async () => {
+    seeded = await seedDatabase('digest-notes');
+    const { db } = seeded;
+    await setDigestHour(db, 9);
+
+    const ledger = new HoldLedger();
+    ledger.observe(SEED.workspaceId, 'rec_a', 'support@a.example is a support desk, not a buyer');
+    ledger.observe(SEED.workspaceId, 'rec_b', 'support@a.example is a support desk, not a buyer');
+    ledger.observe(SEED.workspaceId, 'rec_c', 'abuse@b.example is an abuse desk, not a buyer');
+
+    const { sent, mailer } = recordingMailer();
+    await sendDailyDigest(
+      { db, mailer, appUrl: APP_URL, now: at(12), holdLedger: ledger },
+      SEED.workspaceId,
+    );
+
+    const text = sent[0]?.text ?? '';
+    expect(text).toContain(
+      '3 held in the autopilot queue: the address is a support or abuse desk.',
+    );
+    expect(text.match(/support or abuse desk/g)).toHaveLength(1);
+  });
+});
+
 describe('what the digest says about the queue', () => {
   test('splits the queue into what autopilot will send and what needs a human', async () => {
     seeded = await seedDatabase('digest-queue');

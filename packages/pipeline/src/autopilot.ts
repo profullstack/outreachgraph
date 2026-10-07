@@ -256,12 +256,15 @@ export class HoldLedger {
 
   /** The holds in force, grouped by reason, largest group first. */
   summary(workspaceId: string): readonly HeldGroup[] {
+    // Grouped by what the reader sees, not by the raw reason: two desks at
+    // different addresses are one line, not "4 held: a desk" and "1 held: a desk".
     const groups = new Map<string, { label: string; count: number }>();
 
     for (const entry of this.held.get(workspaceId)?.values() ?? []) {
-      const group = groups.get(entry.key);
+      const label = describeHold(entry.reason);
+      const group = groups.get(label);
       if (group) group.count += 1;
-      else groups.set(entry.key, { label: describeHold(entry.reason), count: 1 });
+      else groups.set(label, { label, count: 1 });
     }
 
     return [...groups.values()].sort((a, b) => b.count - a.count);
@@ -322,6 +325,7 @@ export function describeHold(reason: string): string {
   if (/no address published/i.test(reason)) return 'no address to write to';
   if (/own products/i.test(reason)) return "the address is one of this workspace's own";
   if (/desk, not a buyer/i.test(reason)) return 'the address is a support or abuse desk';
+  if (/outside business hours/i.test(reason)) return "waiting for the recipient's business hours";
   if (/no drafted message/i.test(reason)) return 'no message written yet';
   if (/quality checks/i.test(reason)) return 'the draft failed its quality checks';
   if (/giving up after/i.test(reason)) return 'sending failed repeatedly';

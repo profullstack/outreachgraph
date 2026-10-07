@@ -154,6 +154,13 @@ export interface DigestLead {
 export interface DailyDigest {
   /** The UTC date this digest covers, `YYYY-MM-DD`. */
   readonly date: string;
+  /**
+   * Whose digest this is. One person can own several workspaces (a test one
+   * among them), and two digests that differ only in their numbers read as
+   * one product contradicting itself.
+   */
+  readonly workspaceName?: string;
+  /** The counts below cover the 24 hours before the digest was sent. */
   readonly sitesCrawled: number;
   readonly peopleFound: number;
   readonly messagesSent: number;
@@ -190,10 +197,11 @@ export function dailyDigestEmail(to: string, digest: DailyDigest, appUrl: string
   const base = appUrl.replace(/\/$/, '');
   const quiet = digest.peopleFound === 0 && digest.messagesSent === 0;
 
+  const whose = digest.workspaceName ? ` · ${digest.workspaceName}` : '';
   const subject = quiet
-    ? `Nothing new today · OutreachGraph`
+    ? `Nothing new today${whose} · OutreachGraph`
     : `${digest.peopleFound} new ${digest.peopleFound === 1 ? 'lead' : 'leads'}, ` +
-      `${digest.messagesSent} sent · OutreachGraph`;
+      `${digest.messagesSent} sent${whose} · OutreachGraph`;
 
   // "Awaiting approval: 1117" was the line that got this digest replied to
   // with "why is it not sending?". Most of those cards were not waiting for
@@ -231,13 +239,15 @@ export function dailyDigestEmail(to: string, digest: DailyDigest, appUrl: string
 
   const text = [
     `OutreachGraph · ${digest.date}`,
+    digest.workspaceName ? `Workspace: ${digest.workspaceName}` : '',
+    'Last 24 hours:',
     '',
     ...counts,
     '',
     quiet
       ? 'Nothing new came back today. Campaigns are still running.'
       : leadLines.length
-        ? `Today's leads:\n${leadLines.join('\n')}`
+        ? `New leads:\n${leadLines.join('\n')}`
         : '',
     digest.notes?.length ? `\nNotes:\n${digest.notes.map((n) => `  · ${n}`).join('\n')}` : '',
     '',
@@ -248,7 +258,10 @@ export function dailyDigestEmail(to: string, digest: DailyDigest, appUrl: string
 
   const html = [
     markHtml(base),
-    `<p style="font-size:18px;margin:0 0 12px"><strong>${escapeHtml(digest.date)}</strong></p>`,
+    `<p style="font-size:18px;margin:0 0 4px"><strong>${escapeHtml(digest.date)}</strong></p>`,
+    `<p style="margin:0 0 12px;color:#555">${
+      digest.workspaceName ? `${escapeHtml(digest.workspaceName)} · ` : ''
+    }last 24 hours</p>`,
     '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 16px">',
     row('Sites read', digest.sitesCrawled),
     row('New people', digest.peopleFound),
