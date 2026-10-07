@@ -18,6 +18,7 @@ import {
   LIST_SOURCE_KINDS,
   LIST_SOURCE_MAX_ITEMS,
   isEventPeoplePage,
+  isPastEvent,
   listSourceQuery,
   marketTerms,
   newId,
@@ -174,7 +175,11 @@ async function scanOne(
 
   if (kind === 'event') {
     for (const result of await searcher.search(query, { num: 20 })) {
-      if (result.link && isEventPeoplePage(result.link)) {
+      if (
+        result.link &&
+        isEventPeoplePage(result.link) &&
+        !isPastEvent(result.link, result.title ?? '', at.getUTCFullYear())
+      ) {
         found.push({ url: result.link, title: result.title ?? result.link });
       }
     }
