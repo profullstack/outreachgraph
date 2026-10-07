@@ -531,7 +531,7 @@ const api = createApp({
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
-  version: process.env.APP_VERSION ?? '0.12.3',
+  version: process.env.APP_VERSION ?? '0.13.0',
   ...(commitHash ? { commitHash } : {}),
 });
 
