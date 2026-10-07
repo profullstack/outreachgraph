@@ -1051,6 +1051,22 @@ export const TOOLS: readonly ToolDefinition[] = [
       ),
   },
   {
+    name: 'get_campaign_accounts',
+    title: 'Account expansion per company',
+    description:
+      'Each company in a campaign with its contacts classified as budget holder, pain feeler, ' +
+      'blocker or champion; who was contacted, who replied, who is next in line (one contact per ' +
+      'company at a time, 21 days apart), and which personas nobody covers yet.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { campaignId: { type: 'string' } },
+      required: ['campaignId'],
+    },
+    run: (client, args) =>
+      client.get(`/autogtm/campaigns/${encodeURIComponent(require(args, 'campaignId'))}/accounts`),
+  },
+  {
     name: 'get_list_health',
     title: 'A campaign’s bounce rate and address verdicts',
     description:

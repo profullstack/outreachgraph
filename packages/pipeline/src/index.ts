@@ -564,3 +564,11 @@ export {
   type ListHealthReport,
   type VerifyOutcome,
 } from './list-quality';
+export {
+  campaignAccounts,
+  companyHeldBy,
+  describeCompanyHold,
+  type Account,
+  type AccountContact,
+  type CompanyBusy,
+} from './account-expansion';
