@@ -102,6 +102,34 @@ describe('scanListSources', () => {
     expect(calls.length).toBe(before);
   });
 
+  test('a timed-out search is tried again on the next sweep, not closed for the week', async () => {
+    seeded = await seedDatabase('lists-retry');
+    const { db } = seeded;
+    await productIsPlanned(db);
+    const { searcher } = fakeSearcher();
+    let fail = true;
+    const flaky = {
+      search: searcher.search,
+      async searchNews(query: string) {
+        if (fail) throw new Error('ValueSERP news did not answer within 150 s');
+        return searcher.searchNews(query);
+      },
+    };
+
+    const first = await scanListSources({ db, searcher: flaky, now: AT }, SEED.workspaceId);
+    expect(first.filter((scan) => scan.error).map((scan) => scan.kind)).toEqual([
+      'funding',
+      'leadership',
+    ]);
+
+    fail = false;
+    const second = await scanListSources({ db, searcher: flaky, now: AT }, SEED.workspaceId);
+    expect(second.map((scan) => [scan.kind, scan.items])).toEqual([
+      ['funding', 1],
+      ['leadership', 0],
+    ]);
+  });
+
   test('stops at the daily search cap', async () => {
     seeded = await seedDatabase('lists-cap');
     const { db } = seeded;

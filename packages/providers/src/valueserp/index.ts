@@ -177,8 +177,11 @@ export class ValueSerpClient implements ProfilePhotoFinder, WebSearcher, NewsSea
     url.searchParams.set('gl', 'us');
     url.searchParams.set('hl', 'en');
 
+    // Google News through ValueSERP is slower than web search: answers of
+    // 60-120 s are normal, and a minute's timeout lost most of them.
+    const newsTimeoutMs = Math.max(this.searchTimeoutMs, 150_000);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.searchTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), newsTimeoutMs);
     try {
       const response = await this.fetchImpl(url, {
         signal: controller.signal,
@@ -216,7 +219,7 @@ export class ValueSerpClient implements ProfilePhotoFinder, WebSearcher, NewsSea
       );
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new Error(`ValueSERP did not answer within ${this.searchTimeoutMs / 1000} s`);
+        throw new Error(`ValueSERP news did not answer within ${newsTimeoutMs / 1000} s`);
       }
       throw error;
     } finally {

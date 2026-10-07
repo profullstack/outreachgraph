@@ -132,15 +132,21 @@ export async function scanListSources(
           break outer;
         }
       }
-      await recordRun(db, {
-        workspaceId,
-        offeringId: offering.id,
-        kind,
-        key,
-        items,
-        ...(error ? { error } : {}),
-        at,
-      });
+      // A failed search (ValueSERP news routinely takes over a minute) is not
+      // a finished scan: left unrecorded, it is tried again on the next hourly
+      // sweep, each try still counted against the daily cap. Only a scan that
+      // completed — even one that found nothing — closes the week.
+      if (!error || items > 0) {
+        await recordRun(db, {
+          workspaceId,
+          offeringId: offering.id,
+          kind,
+          key,
+          items,
+          ...(error ? { error } : {}),
+          at,
+        });
+      }
       scans.push({ offeringId: offering.id, kind, items, ...(error ? { error } : {}) });
     }
   }
