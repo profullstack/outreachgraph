@@ -202,7 +202,11 @@ import {
   nichedbFirstDedupeKey,
   NICHEDB_DEFAULT_COLLECTIONS,
   NICHEDB_DEFAULT_EVERY_MS,
+  plannerOverview,
+  plannerYear,
   runPipeline,
+  runPlanner,
+  setPlannerEnabled,
   stopNichedbDiscovery,
   variantStats,
 } from '@outreachgraph/pipeline';
@@ -4487,6 +4491,47 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       // or every arm has 200+ (then the best wins, a tie keeps A).
       decided,
     });
+  });
+
+  // ------------------------------------------------------------- planner
+  //
+  // The Outreach Planner: this month's plays (from Hunter's 12-month planner)
+  // launched per product by the worker on the first sweep of each month.
+
+  /** This month's plan, next month's, and what was launched per product. */
+  api.get('/planner', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    return c.json(await plannerOverview(db, actor.workspaceId));
+  });
+
+  /** All twelve months: buying mode, benchmark, plays and their angles. */
+  api.get('/planner/year', (c) => c.json({ months: plannerYear() }));
+
+  /** Turns the planner on or off for one product. */
+  api.put('/planner/offerings/:id', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('changing the planner');
+    const body = safeJson(await c.req.raw.text());
+    if (typeof body.enabled !== 'boolean') {
+      throw ApiError.badRequest('enabled must be true or false');
+    }
+    const changed = await setPlannerEnabled(db, actor.workspaceId, c.req.param('id'), body.enabled);
+    if (!changed) throw ApiError.notFound('product');
+    return c.json({ offeringId: c.req.param('id'), enabled: body.enabled });
+  });
+
+  /**
+   * Runs this month's plays now rather than on the next sweep. Idempotent:
+   * a play already launched this month is not launched again.
+   */
+  api.post('/planner/run', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('running the planner');
+    const launched = await runPlanner({ db }, actor.workspaceId);
+    return c.json({ launched });
   });
 
   /** Every decided A/B test in the workspace, newest first. */

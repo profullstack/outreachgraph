@@ -1172,6 +1172,26 @@ export function llmsText(baseUrl: string): string {
     '- `POST /ideas/{id}/build` — returns a chovy.com link that opens its build intake with the idea filled in.',
   );
   lines.push('');
+  lines.push('## Outreach Planner');
+  lines.push('');
+  lines.push(
+    "> Twelve months of outreach plays (Hunter's outreach planner), run by the worker. Each month every product gets that month's plays launched from its own engagement: a case study to people who opened or clicked and never replied, a roundtable invite to slow movers, a competitor-aware sequence to the unengaged, research requests and year-end check-ins to the engaged. Same key.",
+  );
+  lines.push('');
+  lines.push(
+    '- `GET /planner` — this month (quarter, buying mode, benchmark, plays), next month, and per product what launched into which campaign for how many people.',
+  );
+  lines.push("- `GET /planner/year` — all twelve months with each play's segment and touches.");
+  lines.push(
+    "- `POST /planner/run` — launch this month's plays now. Idempotent per product, month and play.",
+  );
+  lines.push(
+    '- `PUT /planner/offerings/{id}` `{ "enabled": bool }` — on by default for every product.',
+  );
+  lines.push(
+    '- `GET /cadences/{id}/variants`, `GET /ab-results` — A/B tests decide themselves at 50+ sends per arm by reply rate; the winner becomes the step intent.',
+  );
+  lines.push('');
   lines.push('## Rules the engine will not bend');
   lines.push('');
   lines.push(
@@ -1182,6 +1202,15 @@ export function llmsText(baseUrl: string): string {
   );
   lines.push(
     '- Daily caps, the project ceiling and the monthly allowance are checked at send time, not at approval time.',
+  );
+  lines.push(
+    '- Every address is verified before its first message and every 90 days; a bounced address is never sent to again, and a campaign over 2% bounce pauses, re-verifies its queue and resumes by itself.',
+  );
+  lines.push(
+    '- One contact per company at a time, budget holder first, then pain feeler, blocker and champion, 21 days apart.',
+  );
+  lines.push(
+    "- Cold mail goes out Monday to Friday 08:00-17:00 in the recipient's inferred timezone.",
   );
   lines.push('- Nothing is posted to LinkedIn, and GitHub is read, never written.');
   lines.push('');

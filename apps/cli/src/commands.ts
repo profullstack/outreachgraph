@@ -965,6 +965,72 @@ export function parseStepSpec(spec: string, position: number): Record<string, un
   };
 }
 
+/** `og planner`, `og planner year`, `og planner run`, `og planner on|off <productId>`. */
+async function runPlannerCommand(client: ApiClient, args: readonly string[]): Promise<string> {
+  const [verb, id] = args;
+
+  if (!verb || verb === 'status') {
+    const view = (await client.get('/planner')) as Record<string, unknown>;
+    const next = (view.next ?? {}) as Record<string, unknown>;
+    const lines = [
+      `${text(view, 'period')} · Q${text(view, 'quarter')} M${text(view, 'month')} · ${text(view, 'label')}`,
+      `buying mode: ${text(view, 'buyingMode')}`,
+      `good looks like: ${text(view, 'benchmark')}`,
+      `next month: ${text(next, 'label')}`,
+      '',
+    ];
+    for (const offering of rows(view, 'offerings')) {
+      const runs = rows(offering, 'runs').filter(
+        (run) => text(run, 'period') === text(view, 'period'),
+      );
+      lines.push(
+        `${text(offering, 'name')} (${text(offering, 'offeringId')})${offering.enabled === false ? ' [planner off]' : ''}`,
+      );
+      if (runs.length === 0) lines.push('  nothing launched yet this month');
+      for (const run of runs) {
+        lines.push(
+          `  ${text(run, 'playKey')}${run.campaignId ? ` -> ${text(run, 'campaignId')}, ${text(run, 'people', '0')} people` : ''}`,
+        );
+      }
+    }
+    return lines.join('\n');
+  }
+
+  if (verb === 'year') {
+    const year = (await client.get('/planner/year')) as Record<string, unknown>;
+    return rows(year, 'months')
+      .map(
+        (month) =>
+          `Q${text(month, 'quarter')} M${text(month, 'month')}  ${text(month, 'label')}` +
+          rows(month, 'plays')
+            .map((play) => `\n    ${text(play, 'sequence')}: ${text(play, 'title')}`)
+            .join(''),
+      )
+      .join('\n');
+  }
+
+  if (verb === 'run') {
+    const result = (await client.post('/planner/run', {})) as Record<string, unknown>;
+    const launched = rows(result, 'launched');
+    return launched.length === 0
+      ? 'Nothing new to launch: this month’s plays already ran, or their segments are empty.'
+      : launched
+          .map(
+            (play) =>
+              `${text(play, 'playKey')}${play.campaignId ? ` -> ${text(play, 'campaignId')}, ${text(play, 'people', '0')} people` : ''}`,
+          )
+          .join('\n');
+  }
+
+  if (verb === 'on' || verb === 'off') {
+    if (!id) throw new Error(`usage: og planner ${verb} <productId>`);
+    await client.put(`/planner/offerings/${encodeURIComponent(id)}`, { enabled: verb === 'on' });
+    return `Planner ${verb} for ${id}.`;
+  }
+
+  throw new Error('og planner [status] | year | run | on <productId> | off <productId>');
+}
+
 /** `og cadences`, `og cadences show <id>`, `og cadences create …`. */
 async function runCadences({ client, args, flags }: CommandContext): Promise<string> {
   const [verb, id] = args;
@@ -1332,6 +1398,13 @@ export const COMMANDS: readonly Command[] = [
         )
         .join('\n');
     },
+  },
+  {
+    name: 'planner',
+    usage: 'og planner [status] | og planner year | og planner run | og planner on|off <productId>',
+    summary:
+      'The 12-month outreach planner: this month’s play per product, launched automatically from engagement.',
+    run: ({ client, args }) => runPlannerCommand(client, args),
   },
   {
     name: 'cadences',

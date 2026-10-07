@@ -173,11 +173,28 @@ async function writeCadenceRecommendation(
     [enrollment.campaign_id, enrollment.person_id],
   );
 
+  // The evidence the message is grounded in. A cold draft without a trigger
+  // signal is refused (`no_trigger_signal`, PRD §14.1), so a step card with
+  // none was a card autopilot could never write: every cadence email step
+  // stalled at "no drafted message". The person's strongest live signal,
+  // then their company's, is what the step's angle is applied to.
+  const signal = await queryOne<{ id: string }>(
+    db,
+    `SELECT s.id FROM signals s
+      WHERE s.workspace_id = ?
+        AND (s.person_id = ? OR (s.person_id IS NULL AND s.company_id =
+              (SELECT current_company_id FROM people WHERE id = ?)))
+        AND (s.expires_at IS NULL OR s.expires_at > ?)
+      ORDER BY (s.person_id IS NULL) ASC, s.relevance * s.confidence DESC, s.observed_at DESC
+      LIMIT 1`,
+    [enrollment.workspace_id, enrollment.person_id, enrollment.person_id, now()],
+  );
+
   await db.execute({
     sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
           priority, reason, guidance, variant, policy_status, policy_version, expected_goal,
-          status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'start_conversation', 'pending', ?)`,
+          status, created_at, trigger_signal_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'start_conversation', 'pending', ?, ?)`,
     args: [
       id,
       enrollment.workspace_id,
@@ -192,6 +209,7 @@ async function writeCadenceRecommendation(
       input.decision,
       input.policyVersion,
       now(),
+      signal?.id ?? null,
     ],
   });
 

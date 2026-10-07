@@ -842,6 +842,60 @@ export async function fetchMailboxes(): Promise<MailboxesView> {
   return request<MailboxesView>('/mailboxes');
 }
 
+// ------------------------------------------------------------------ planner
+
+export interface PlannerView {
+  readonly period: string;
+  readonly quarter: number;
+  readonly month: number;
+  readonly label: string;
+  readonly buyingMode: string;
+  readonly whatBuyersAreDoing: string;
+  readonly benchmark: string;
+  readonly plays: ReadonlyArray<{
+    readonly key: string;
+    readonly title: string;
+    readonly sequence: string;
+  }>;
+  readonly next: { readonly period: string; readonly label: string };
+  readonly offerings: ReadonlyArray<{
+    readonly offeringId: string;
+    readonly name: string;
+    readonly enabled: boolean;
+    readonly runs: ReadonlyArray<{
+      readonly period: string;
+      readonly playKey: string;
+      readonly campaignId: string | null;
+      readonly people: number;
+      readonly createdAt: string;
+    }>;
+  }>;
+}
+
+export interface PlannerYearView {
+  readonly months: ReadonlyArray<{
+    readonly quarter: number;
+    readonly month: number;
+    readonly label: string;
+    readonly buyingMode: string;
+    readonly benchmark: string;
+    readonly refreshLists: boolean;
+    readonly plays: ReadonlyArray<{
+      readonly key: string;
+      readonly title: string;
+      readonly sequence: string;
+    }>;
+  }>;
+}
+
+export async function fetchPlanner(): Promise<PlannerView> {
+  return request<PlannerView>('/planner');
+}
+
+export async function fetchPlannerYear(): Promise<PlannerYearView> {
+  return request<PlannerYearView>('/planner/year');
+}
+
 // ------------------------------------------------------- bluesky integration
 
 export interface BlueskyIntegrationView {
