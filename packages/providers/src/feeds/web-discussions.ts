@@ -14,7 +14,7 @@
  */
 
 import type { FetchLike } from '../site/fetch';
-import type { WebResult, WebSearcher } from '../valueserp';
+import { SearchOutOfCredits, type WebResult, type WebSearcher } from '../valueserp';
 import {
   excerpt,
   mentionsTerm,
@@ -41,6 +41,8 @@ export interface WebDiscussionSourceOptions {
   readonly archiveUrl?: string | null;
   readonly fetchImpl?: FetchLike;
   readonly timeoutMs?: number;
+  /** Searches in flight at once. */
+  readonly concurrency?: number;
 }
 
 interface ArchivePost {
@@ -93,8 +95,10 @@ export class WebDiscussionSource implements FeedSource {
   readonly #archiveUrl: string | null;
   readonly #fetch: FetchLike;
   readonly #timeoutMs: number;
+  readonly #concurrency: number;
 
   constructor(options: WebDiscussionSourceOptions) {
+    this.#concurrency = Math.max(1, options.concurrency ?? 4);
     this.#searcher = options.searcher;
     this.#sites = options.sites?.length ? options.sites : DEFAULT_DISCUSSION_SITES;
     this.#termsPerQuery = Math.max(1, options.termsPerQuery ?? 5);
@@ -109,20 +113,39 @@ export class WebDiscussionSource implements FeedSource {
     const ageMs = input.since ? Date.now() - input.since.getTime() : Infinity;
     const period = ageMs <= 36 * 3_600_000 ? 'last_day' : 'last_week';
 
-    const hits = new Map<string, { result: WebResult; site: string }>();
-    for (const site of this.#sites) {
-      for (const group of groups) {
-        // A refusal or out-of-credits error propagates: the scan reports it as
-        // this source failing, rather than as "nothing found".
-        const results = await this.#searcher.search(`site:${site} (${group})`, {
-          num: 30,
-          period,
-        });
-        for (const result of results) {
-          if (!result.link || !isThread(result.link, site)) continue;
-          const key = redditPostId(result.link) ?? result.link.split('#')[0]!;
-          if (!hits.has(key)) hits.set(key, { result, site });
+    // A query takes 8-60 s, so they run a few at a time. One slow or refused
+    // query costs that query, retried once; out of credits stops everything,
+    // and the source only fails when no query answered at all.
+    const queries = this.#sites.flatMap((site) =>
+      groups.map((group) => ({ site, q: `site:${site} (${group})` })),
+    );
+    const answered: { site: string; results: readonly WebResult[] }[] = [];
+    let lastError: unknown;
+    let next = 0;
+    const worker = async () => {
+      while (next < queries.length) {
+        const query = queries[next++]!;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const results = await this.#searcher.search(query.q, { num: 30, period });
+            answered.push({ site: query.site, results });
+            break;
+          } catch (error) {
+            if (error instanceof SearchOutOfCredits) throw error;
+            lastError = error;
+          }
         }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(this.#concurrency, queries.length) }, worker));
+    if (answered.length === 0 && lastError) throw lastError;
+
+    const hits = new Map<string, { result: WebResult; site: string }>();
+    for (const { site, results } of answered) {
+      for (const result of results) {
+        if (!result.link || !isThread(result.link, site)) continue;
+        const key = redditPostId(result.link) ?? result.link.split('#')[0]!;
+        if (!hits.has(key)) hits.set(key, { result, site });
       }
     }
 

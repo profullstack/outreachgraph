@@ -367,6 +367,8 @@ export interface AppOptions {
   readonly ideaArchiveGapMs?: number | undefined;
   /** Test seam for buyer-lead monitors: the sources a monitor reads. */
   readonly leadSources?: ((monitor: LeadMonitor) => readonly FeedSource[]) | undefined;
+  /** Buyer leads' web source (ValueSERP with a longer timeout). Defaults to jobSearcher. */
+  readonly leadSearcher?: WebSearcher | undefined;
   /** Overrides for the abuse throttles (`./throttle`); tests shrink them. */
   readonly throttles?: ThrottleConfig | undefined;
   /**
@@ -1482,7 +1484,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     leadRoutes({
       model: options.model,
       leadSources: options.leadSources,
-      searcher: options.jobSearcher,
+      searcher: options.leadSearcher ?? options.jobSearcher,
     }),
   );
 

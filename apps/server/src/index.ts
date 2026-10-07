@@ -307,6 +307,14 @@ const photoFinder = valueSerp;
  * same ValueSERP account; without it postings can still be pasted and read.
  */
 const jobSearcher = valueSerp;
+
+/**
+ * Buyer leads' web source: the same ValueSERP account with a longer per-query
+ * timeout, since its site: queries over a week of results take 8-60 s.
+ */
+const leadSearcher = process.env.VALUESERP_API_KEY
+  ? new ValueSerpClient({ apiKey: process.env.VALUESERP_API_KEY, searchTimeoutMs: 90_000 })
+  : undefined;
 if (!jobSearcher)
   console.log('no VALUESERP_API_KEY: job posts are read but nobody is searched for');
 
@@ -522,6 +530,7 @@ const api = createApp({
   ...(encryptionKey ? { encryptionKey } : {}),
   ...(appUrl ? { appUrl } : {}),
   ...(jobSearcher ? { jobSearcher } : {}),
+  ...(leadSearcher ? { leadSearcher } : {}),
   leadEnrichment,
   ...(chovy ? { chovy } : {}),
   ...(process.env.API_TOKEN ? { serviceToken: process.env.API_TOKEN } : {}),
@@ -1215,7 +1224,11 @@ async function tick(): Promise<void> {
         for (const { workspaceId, monitorId } of due) {
           try {
             const r = await scanLeadMonitor(
-              { db, ...(model ? { model } : {}), ...(valueSerp ? { searcher: valueSerp } : {}) },
+              {
+                db,
+                ...(model ? { model } : {}),
+                ...(leadSearcher ? { searcher: leadSearcher } : {}),
+              },
               workspaceId,
               monitorId,
             );
