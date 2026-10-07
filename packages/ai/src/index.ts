@@ -100,6 +100,7 @@ export { judgeAsks, parseJudgements, type AskJudgeInput, type AskJudgement } fro
 export { judgeSignals, parseSignalJudgements, type SignalJudgement } from './judge-signals';
 export {
   draftLeadReply,
+  intentFromJudgement,
   judgeLeads,
   parseLeadJudgements,
   parseMonitorSuggestion,
