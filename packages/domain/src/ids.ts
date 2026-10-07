@@ -55,6 +55,8 @@ export const ID_PREFIXES = {
   stageEvent: 'stg',
   // A decided A/B test on a cadence step.
   abResult: 'abr',
+  // One play the Outreach Planner launched for one product in one month.
+  plannerRun: 'plr',
   notification: 'ntf',
   socialPost: 'spo',
   workflowEvent: 'wfe',

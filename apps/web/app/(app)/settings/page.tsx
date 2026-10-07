@@ -123,6 +123,18 @@ export default async function SettingsPage() {
           <Section title="Sending">
             {/* First: nothing leaves without a mailbox to leave through. */}
             <MailboxesLink senders={senders} />
+            <Link
+              href="/planner"
+              className="border-border bg-surface-raised flex items-center justify-between gap-3 rounded-2xl border p-4"
+            >
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">Outreach planner</span>
+                <span className="text-ink-muted block text-xs">
+                  Twelve months of plays, launched for every product automatically.
+                </span>
+              </span>
+              <span className="text-accent shrink-0 text-sm font-medium">Open ›</span>
+            </Link>
             <SendersPanel initial={senders.filter((sender) => sender.network !== 'email')} />
             {bluesky ? <BlueskyForm initial={bluesky} /> : null}
           </Section>

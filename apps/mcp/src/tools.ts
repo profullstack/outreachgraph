@@ -211,6 +211,53 @@ export const TOOLS: readonly ToolDefinition[] = [
       client.get(`/cadences/${encodeURIComponent(require(args, 'cadenceId'))}`),
   },
   {
+    name: 'get_planner',
+    title: 'The outreach planner this month',
+    description:
+      'This month in the 12-month outreach planner: quarter, buying mode, benchmark, the plays ' +
+      '(e.g. case study to people who opened but never replied, roundtable invite to slow ' +
+      'movers, year-end check-ins) and, per product, which plays launched into which campaign ' +
+      'for how many people. Plays launch automatically on the first sweep of each month.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/planner'),
+  },
+  {
+    name: 'get_planner_year',
+    title: 'The whole 12-month plan',
+    description:
+      'Every month of the outreach planner with its buying mode, what buyers are doing, the ' +
+      'benchmark, and each play’s segment and touches.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/planner/year'),
+  },
+  {
+    name: 'run_planner',
+    title: 'Launch this month’s plays now',
+    readOnly: false,
+    description:
+      'Runs this month’s plays now instead of waiting for the next hourly sweep. Idempotent: ' +
+      'a play already launched this month for a product is not launched again.',
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.post('/planner/run', {}),
+  },
+  {
+    name: 'set_planner',
+    title: 'Turn the planner on or off for a product',
+    readOnly: false,
+    description: 'The planner is on by default for every product.',
+    inputSchema: {
+      type: 'object',
+      properties: { offeringId: { type: 'string' }, enabled: { type: 'boolean' } },
+      required: ['offeringId', 'enabled'],
+    },
+    run: (client, args) =>
+      client.put(`/planner/offerings/${encodeURIComponent(require(args, 'offeringId'))}`, {
+        enabled: args.enabled === true,
+      }),
+  },
+  {
     name: 'get_ab_results',
     title: 'A/B test results for a plan',
     description:

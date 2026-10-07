@@ -70,6 +70,7 @@ import {
   workspacesAwaitingPhotos,
   runCadences,
   promoteAbWinners,
+  runPlanner,
   bumpQuietThreads,
   runCrawlJob,
   runDiscoveryJob,
@@ -126,6 +127,7 @@ const RECEIVE_POLL_MS = Number(process.env.RECEIVE_POLL_MS ?? 300_000);
 const AB_SWEEP_MS = 3_600_000;
 const lastAbSweepAt = new Map<string, number>();
 const lastBumpSweepAt = new Map<string, number>();
+const lastPlannerSweepAt = new Map<string, number>();
 
 /** Last successful poll per workspace, so the slower clock survives a tick. */
 const lastPolledAt = new Map<string, number>();
@@ -1385,6 +1387,23 @@ async function tick(): Promise<void> {
         }
       } catch (error) {
         console.error(`quiet-thread bumps failed for ${workspace.id}`, error);
+      }
+    }
+
+    // The Outreach Planner: this month's plays, launched once per product per
+    // month from engagement data. Checked hourly so a play whose segment was
+    // empty on the 1st still launches once the data arrives.
+    if (Date.now() - (lastPlannerSweepAt.get(workspace.id) ?? 0) >= AB_SWEEP_MS) {
+      lastPlannerSweepAt.set(workspace.id, Date.now());
+      try {
+        for (const play of await runPlanner({ db }, workspace.id)) {
+          console.log(
+            `planner ${workspace.id}: ${play.playKey} for ${play.offeringId}` +
+              (play.campaignId ? ` -> ${play.campaignId}, ${play.people} people` : ''),
+          );
+        }
+      } catch (error) {
+        console.error(`planner failed for ${workspace.id}`, error);
       }
     }
 

@@ -156,6 +156,8 @@ describe('tools', () => {
           contactId: 'jpc_1',
           campaignId: 'cmp_1',
           leads: [{ email: 'ada@acme.dev' }],
+          offeringId: 'off_1',
+          enabled: true,
         })
         .catch(() => undefined);
 
