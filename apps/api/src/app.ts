@@ -156,6 +156,7 @@ import {
   createCampaignFromIntake,
   IntakeError,
   listCampaigns,
+  normaliseBookingUrl,
   renameCampaign,
   saveWorkspaceSettings,
   setCampaignAutopilot,
@@ -4727,9 +4728,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       track_links: number | null;
       tracking_origin: string | null;
       track_opens: number | null;
+      booking_url: string | null;
     }>(
       db,
-      `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin, track_opens
+      `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin, track_opens,
+              booking_url
          FROM workspace_settings WHERE workspace_id = ?`,
       [actor.workspaceId],
     );
@@ -4749,6 +4752,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       trackLinks: (cap?.track_links ?? 0) === 1,
       trackingOrigin: cap?.tracking_origin ?? null,
       trackOpens: (cap?.track_opens ?? 0) === 1,
+      // Sent with every answer to an interested reply.
+      bookingUrl: cap?.booking_url ?? null,
       // Where tracked links would actually point if switched on. The setting
       // alone is not enough to tell a user whether tracking will work, since
       // an unset origin falls back to the service's own APP_URL.
@@ -4765,7 +4770,17 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     const body = safeJson(await c.req.raw.text());
 
+    // Absent leaves the link alone; null or "" clears it; anything else must
+    // be an https URL, since it goes into messages under the workspace's name.
+    let bookingUrl: string | null | undefined;
+    if (body.bookingUrl === null || body.bookingUrl === '') bookingUrl = null;
+    else if (body.bookingUrl !== undefined) {
+      bookingUrl = normaliseBookingUrl(String(body.bookingUrl));
+      if (!bookingUrl) throw ApiError.badRequest('bookingUrl must be an https link');
+    }
+
     await saveWorkspaceSettings(db, actor.workspaceId, {
+      ...(bookingUrl === undefined ? {} : { bookingUrl }),
       ...(body.notifyEmail === undefined
         ? {}
         : { notifyEmail: body.notifyEmail === null ? null : String(body.notifyEmail) }),

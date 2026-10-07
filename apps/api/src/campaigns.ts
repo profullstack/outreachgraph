@@ -561,6 +561,18 @@ export interface WorkspaceSettingsInput {
   readonly trackLinks?: boolean;
   readonly trackingOrigin?: string | null;
   readonly trackOpens?: boolean;
+  /** A validated https scheduling link; null clears it, absent leaves it alone. */
+  readonly bookingUrl?: string | null;
+}
+
+/** The link normalised, or undefined when it is not an https URL. */
+export function normaliseBookingUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'https:' && url.hostname.includes('.') ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -612,6 +624,13 @@ export async function saveWorkspaceSettings(
       stamp,
     ],
   });
+
+  if (input.bookingUrl !== undefined) {
+    await db.execute({
+      sql: 'UPDATE workspace_settings SET booking_url = ? WHERE workspace_id = ?',
+      args: [input.bookingUrl, workspaceId],
+    });
+  }
 }
 
 function clampInt(value: unknown, min: number, max: number, fallback: number): number {

@@ -369,6 +369,11 @@ export interface ReplyComposeInput {
    * their message to nudging ours.
    */
   readonly followUp?: { readonly ourLastMessage: string; readonly quietDays: number };
+  /**
+   * The workspace's scheduling link, for an `interested` reply (Hunter's
+   * planner: positive reply, answer within three hours, send the link).
+   */
+  readonly bookingUrl?: string;
 }
 
 const FOLLOW_UP_GUIDANCE =
@@ -418,6 +423,7 @@ export async function composeReply(
       // on its way out.
       ...ours,
       ...(input.followUp ? [input.followUp.ourLastMessage] : []),
+      ...(input.bookingUrl ? [input.bookingUrl] : []),
     ].filter(Boolean),
     offering: [
       input.offering.name,
@@ -520,6 +526,9 @@ function buildReplySystem(input: ReplyComposeInput): string {
     limit ? `Hard limit: ${limit} characters.` : '',
     words ? `Aim for at most ${words} words.` : 'Aim for at most 90 words.',
     input.followUp ? FOLLOW_UP_GUIDANCE : (REPLY_GUIDANCE[input.label] ?? ''),
+    input.bookingUrl && input.label === 'interested' && !input.followUp
+      ? `The next step is a call: include this booking link exactly once, as it is: ${input.bookingUrl}`
+      : '',
   ]
     .filter(Boolean)
     .join('\n');

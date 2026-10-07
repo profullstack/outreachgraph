@@ -424,6 +424,7 @@ export interface SettingsView {
   readonly alertMinOpportunity: number;
   readonly autopilotDailyCap: number;
   readonly replyToEmail: string | null;
+  readonly bookingUrl: string | null;
   readonly trackLinks: boolean;
   readonly trackingOrigin: string | null;
   readonly trackOpens: boolean;

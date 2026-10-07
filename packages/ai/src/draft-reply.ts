@@ -131,6 +131,13 @@ export async function draftReplyForRecommendation(
     [recommendation.workspace_id],
   );
 
+  const settings = await queryOne<{ booking_url: string | null }>(
+    db,
+    'SELECT booking_url FROM workspace_settings WHERE workspace_id = ?',
+    [recommendation.workspace_id],
+  );
+  const bookingUrl = settings?.booking_url?.trim() || undefined;
+
   const result = await composeReply(model, {
     network: recommendation.network as Network,
     offering: context.offering,
@@ -142,6 +149,7 @@ export async function draftReplyForRecommendation(
     minIdentityConfidence: context.minIdentityConfidence,
     priorDraftHashes: priorHashes.map((r) => r.similarity_hash),
     ...(followUp ? { followUp } : {}),
+    ...(bookingUrl ? { bookingUrl } : {}),
   });
 
   if (!result.ok) {
