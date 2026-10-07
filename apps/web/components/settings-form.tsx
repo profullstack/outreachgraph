@@ -32,6 +32,7 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
         body: JSON.stringify({
           notifyEmail: form.notifyEmail || null,
           replyToEmail: form.replyToEmail || null,
+          bookingUrl: form.bookingUrl || null,
           instantAlerts: form.instantAlerts,
           dailyDigest: form.dailyDigest,
           digestHourUtc: form.digestHourUtc,
@@ -101,6 +102,22 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
         <p className="text-ink-muted mt-1 text-xs">
           Where a prospect&rsquo;s reply lands — the one part you handle. Connecting your own mail
           server above overrides this with its own reply address.
+        </p>
+
+        <label htmlFor="booking" className="text-ink-muted mt-4 block text-xs">
+          Booking link
+        </label>
+        <input
+          id="booking"
+          type="url"
+          value={form.bookingUrl ?? ''}
+          onChange={(e) => update('bookingUrl', e.target.value)}
+          placeholder="https://calendly.com/you/intro"
+          className="border-border bg-surface mt-1 w-full rounded-xl border px-3 py-2.5"
+        />
+        <p className="text-ink-muted mt-1 text-xs">
+          Sent in every answer to someone who says they are interested, so they can book a call
+          straight away.
         </p>
       </section>
 

@@ -57,6 +57,29 @@ describe('composeReply', () => {
     expect(model.calls).toHaveLength(2);
   });
 
+  test('an interested reply is asked to carry the booking link, and the link passes the checks', async () => {
+    const link = 'https://calendly.com/jane-acme/intro';
+    const model = new StubModel(
+      `Hi Jane, glad it is useful. Cross-border payouts settle same day. Pick a time that suits you: ${link}`,
+    );
+    const result = await composeReply(model, {
+      ...INPUT,
+      label: 'interested',
+      inbound: { body: 'This sounds useful, can we talk?' },
+      bookingUrl: link,
+    });
+    expect(result.ok).toBe(true);
+    expect(model.calls[0]?.system).toContain(link);
+  });
+
+  test('a question is not answered with the booking link', async () => {
+    const model = new StubModel(
+      'Hi Jane, cross-border payouts settle same day, so settlement stops taking days.',
+    );
+    await composeReply(model, { ...INPUT, bookingUrl: 'https://calendly.com/x/y' });
+    expect(model.calls[0]?.system).not.toContain('calendly');
+  });
+
   test('nothing to answer means no draft and no model call', async () => {
     const model = new StubModel('anything');
     const result = await composeReply(model, { ...INPUT, inbound: { body: '> quoted only' } });

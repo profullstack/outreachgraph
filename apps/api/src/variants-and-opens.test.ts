@@ -97,6 +97,31 @@ describe('settings', () => {
     };
     expect(after.trackOpens).toBe(true);
   });
+
+  test('the booking link is https-only, kept across unrelated saves, and clearable', async () => {
+    const { app } = await harness('settings-booking');
+    const put = (body: unknown) =>
+      app.request('/api/v1/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const read = async () =>
+      ((await (await app.request('/api/v1/settings')).json()) as { bookingUrl: string | null })
+        .bookingUrl;
+
+    expect((await put({ bookingUrl: 'javascript:alert(1)' })).status).toBe(400);
+    expect((await put({ bookingUrl: 'http://calendly.com/x' })).status).toBe(400);
+    expect((await put({ bookingUrl: 'https://calendly.com/jane/intro' })).status).toBe(200);
+    expect(await read()).toBe('https://calendly.com/jane/intro');
+
+    // A save that does not mention it leaves it alone.
+    expect((await put({ trackOpens: false })).status).toBe(200);
+    expect(await read()).toBe('https://calendly.com/jane/intro');
+
+    expect((await put({ bookingUrl: '' })).status).toBe(200);
+    expect(await read()).toBeNull();
+  });
 });
 
 describe('cadence variants', () => {
