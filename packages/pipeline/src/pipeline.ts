@@ -907,10 +907,19 @@ async function createRecommendation(
     expires_at: string | null;
   }>(
     db,
+    // The person's own signals, plus timely news about their company — it
+    // raised, it named a new leader, its site runs a competitor. Those are
+    // company-level rows (no person), and without them a lead found because
+    // their company just raised would be written to about their homepage.
     `SELECT id, network, signal_type, summary, evidence, source_url, source_timestamp,
             observed_at, confidence, relevance, expires_at
-       FROM signals WHERE workspace_id = ? AND person_id = ?`,
-    [workspaceId, personId],
+       FROM signals
+      WHERE workspace_id = ?
+        AND (person_id = ?
+             OR (person_id IS NULL
+                 AND signal_type IN ('funding', 'role_change', 'technology_adoption')
+                 AND company_id = (SELECT current_company_id FROM people WHERE id = ?)))`,
+    [workspaceId, personId, personId],
   );
 
   const signals: CandidateSignal[] = signalRows.map((row) => ({

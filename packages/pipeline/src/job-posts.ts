@@ -696,7 +696,7 @@ async function fail(db: Client, post: JobPost, error: unknown): Promise<void> {
  * the first result for "Close" is not necessarily close.com, but a host that
  * does not even contain the name is certainly not theirs.
  */
-async function findCompanyDomain(
+export async function findCompanyDomain(
   searcher: WebSearcher,
   company: string,
 ): Promise<string | undefined> {

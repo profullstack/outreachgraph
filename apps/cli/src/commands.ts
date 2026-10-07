@@ -1400,6 +1400,32 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
+    name: 'lists',
+    usage: 'og lists [funding|leadership|event] [--limit <n>]',
+    summary:
+      'Newly funded companies, new leaders and conference pages found in the news for your products.',
+    run: async ({ client, args, flags }) => {
+      const kind = args[0];
+      const limit = flagString(flags, 'limit');
+      const query = new URLSearchParams({
+        ...(kind ? { kind } : {}),
+        ...(limit ? { limit } : {}),
+      }).toString();
+      const items = rows(await client.get(`/list-sources${query ? `?${query}` : ''}`), 'items');
+      if (items.length === 0) {
+        return 'Nothing found yet. Each product is scanned weekly for funding, appointments and events.';
+      }
+      return items
+        .map(
+          (item) =>
+            `${pad(text(item, 'kind'), 10)} ${text(item, 'company', '-')}` +
+            `${item.person ? ` · ${text(item, 'person')}, ${text(item, 'role')}` : ''}` +
+            `${item.domain ? ` (${text(item, 'domain')})` : ''}\n           ${text(item, 'title')}`,
+        )
+        .join('\n');
+    },
+  },
+  {
     name: 'planner',
     usage: 'og planner [status] | og planner year | og planner run | og planner on|off <productId>',
     summary:

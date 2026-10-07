@@ -103,6 +103,23 @@ describe('ValueSerpClient', () => {
     return { calls, fetchImpl };
   }
 
+  test('news search asks Google News for the window and keeps titled links', async () => {
+    const { calls, fetchImpl } = respond({
+      request_info: { success: true },
+      news_results: [
+        { title: 'Acme raises $5M seed', link: 'https://n.example/a', source: 'TechNews' },
+        { title: 'no link' },
+      ],
+    });
+    const client = new ValueSerpClient({ apiKey: 'k', fetchImpl });
+    const results = await client.searchNews('payments raises', { period: 'last_month' });
+    expect(results).toEqual([
+      { title: 'Acme raises $5M seed', link: 'https://n.example/a', source: 'TechNews' },
+    ]);
+    expect(calls[0]?.searchParams.get('search_type')).toBe('news');
+    expect(calls[0]?.searchParams.get('time_period')).toBe('last_month');
+  });
+
   test('searches images for the quoted name with title and company', async () => {
     const { calls, fetchImpl } = respond({
       image_results: [
