@@ -103,6 +103,7 @@ import {
   workspacesAwaitingLeadEnrichment,
   type FinderSlot,
   type LeadEnrichDeps,
+  runBlueskyAutopilot,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
@@ -1637,6 +1638,20 @@ async function tick(): Promise<void> {
       }
     } catch (error) {
       console.error(`autopilot failed for ${workspace.id}`, error);
+    }
+
+    try {
+      // Bluesky follows and replies, for workspaces that opted in: one at most
+      // per tick, spaced and capped per day inside the function.
+      const bluesky = await runBlueskyAutopilot(
+        { db, ...(encryptionKey ? { encryptionKey } : {}) },
+        workspace.id,
+      );
+      if (bluesky.acted) {
+        console.log(`bluesky autopilot ${workspace.id}: ${bluesky.kind} ${bluesky.url}`);
+      }
+    } catch (error) {
+      console.error(`bluesky autopilot failed for ${workspace.id}`, error);
     }
 
     if (!appUrl) continue;

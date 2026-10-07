@@ -563,6 +563,8 @@ export interface WorkspaceSettingsInput {
   readonly trackOpens?: boolean;
   /** A validated https scheduling link; null clears it, absent leaves it alone. */
   readonly bookingUrl?: string | null;
+  /** Autopilot carries out Bluesky follows and replies. Absent leaves it alone. */
+  readonly blueskyAutopilot?: boolean;
 }
 
 /** The link normalised, or undefined when it is not an https URL. */
@@ -629,6 +631,15 @@ export async function saveWorkspaceSettings(
     await db.execute({
       sql: 'UPDATE workspace_settings SET booking_url = ? WHERE workspace_id = ?',
       args: [input.bookingUrl, workspaceId],
+    });
+  }
+
+  // Opt-in, and only changed when asked: a settings form that predates the
+  // toggle must not switch it off on every save.
+  if (input.blueskyAutopilot !== undefined) {
+    await db.execute({
+      sql: 'UPDATE workspace_settings SET bluesky_autopilot = ? WHERE workspace_id = ?',
+      args: [input.blueskyAutopilot ? 1 : 0, workspaceId],
     });
   }
 }

@@ -43,6 +43,7 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
           // tracking off whenever anybody saved an unrelated preference.
           trackLinks: form.trackLinks,
           trackOpens: form.trackOpens,
+          blueskyAutopilot: form.blueskyAutopilot,
           trackingOrigin: form.trackingOrigin || null,
         }),
       });
@@ -259,6 +260,24 @@ export function SettingsForm({ initial }: { initial: SettingsView }) {
               fetches every image on delivery, so an “open” is often a mail server rather than a
               person. Opens are reported next to each A/B variant and never raise a prospect’s
               score.
+            </span>
+          </span>
+        </label>
+
+        <label className="mt-4 flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.blueskyAutopilot}
+            onChange={(e) => update('blueskyAutopilot', e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-medium">Autopilot follows and replies on Bluesky</span>
+            <span className="text-ink-muted block text-[13px] leading-relaxed">
+              Off by default. On autopilot campaigns, Bluesky follows and drafted replies go out
+              from your connected account instead of waiting in Needs you: one at a time, at least
+              six minutes apart, at most 40 follows and 10 replies a day. Direct messages are never
+              sent automatically.
             </span>
           </span>
         </label>

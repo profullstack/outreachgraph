@@ -639,3 +639,11 @@ export {
   type ListSourceItemView,
   type ListSourceScan,
 } from './list-sources';
+export {
+  blueskyAutopilotEnabled,
+  resetBlueskyAutopilotPauses,
+  runBlueskyAutopilot,
+  DAILY_CAPS as BLUESKY_AUTOPILOT_CAPS,
+  type BlueskyAutopilotDeps,
+  type BlueskyAutopilotResult,
+} from './bluesky-autopilot';
