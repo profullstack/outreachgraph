@@ -292,7 +292,16 @@ export async function sendDailyDigest(deps: NotifyDeps, workspaceId: string): Pr
 
   if (!(await claim(deps.db, workspaceId, 'daily_digest', today, to))) return false;
 
-  const since = `${today}T00:00:00.000Z`;
+  // The last 24 hours, not "since midnight UTC". The digest goes out at its
+  // hour (13:00 by default), so a midnight window only ever saw the morning:
+  // a day that sent 64 reported 3, and everything sent after the digest hour
+  // was never counted by any digest at all.
+  const since = new Date(at.getTime() - DAY_MS).toISOString();
+  const workspace = await queryOne<{ name: string }>(
+    deps.db,
+    `SELECT name FROM workspaces WHERE id = ?`,
+    [workspaceId],
+  );
 
   const internal = INTERNAL_ACTION_KINDS.map(() => '?').join(', ');
 
@@ -399,6 +408,7 @@ export async function sendDailyDigest(deps: NotifyDeps, workspaceId: string): Pr
 
   const digest: DailyDigest = {
     date: today,
+    ...(workspace?.name ? { workspaceName: workspace.name } : {}),
     sitesCrawled: crawled,
     peopleFound: found,
     messagesSent: sent,
@@ -435,6 +445,8 @@ export async function sendDailyDigest(deps: NotifyDeps, workspaceId: string): Pr
 
   return true;
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 async function countOne(db: Client, sql: string, args: unknown[]): Promise<number> {
   const row = await queryOne<{ n: number }>(db, sql, args as never);
