@@ -702,7 +702,13 @@ export async function scanLeadMonitor(
   for (const source of sources) {
     let posts: readonly FeedPost[];
     try {
-      posts = await source.search({ terms: monitor.keywords, since, limit: 100 });
+      // The web search runs daily, so its window starts at its own last run,
+      // not at the last scan of the free sources a few hours ago.
+      const sourceSince =
+        source.slug === 'web'
+          ? new Date(lastWeb ? Math.max(lastWeb - OVERLAP_MS, earliest) : earliest)
+          : since;
+      posts = await source.search({ terms: monitor.keywords, since: sourceSince, limit: 100 });
     } catch (error) {
       failures.push({
         source: source.slug,
