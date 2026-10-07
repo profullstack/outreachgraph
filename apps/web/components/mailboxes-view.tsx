@@ -536,6 +536,7 @@ interface DnsReportView {
   spf: DnsCheckView;
   dkim: DnsCheckView;
   dmarc: DnsCheckView;
+  blacklist?: DnsCheckView;
   status: 'pass' | 'warn' | 'fail';
 }
 
@@ -571,6 +572,9 @@ function DnsTable({ report, error }: { report?: DnsReportView; error?: string })
     ['DKIM', report.dkim],
     ['DMARC', report.dmarc],
     ['MX', report.mx],
+    ...(report.blacklist
+      ? ([['Blocklists', report.blacklist]] as Array<[string, DnsCheckView]>)
+      : []),
   ];
 
   return (

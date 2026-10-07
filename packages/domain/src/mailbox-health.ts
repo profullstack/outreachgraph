@@ -119,6 +119,8 @@ export interface MailboxHealthInput {
   readonly replyCheckFailed: boolean;
   /** Warm-up progress, 0 to 1; 1 when off or finished. */
   readonly warmupProgress: number;
+  /** Public blocklists that name the sending domain or server, from the daily check. */
+  readonly blacklistedOn?: readonly string[];
 }
 
 export interface MailboxHealth {
@@ -162,6 +164,13 @@ export function mailboxHealth(input: MailboxHealthInput): MailboxHealth {
   } else if (input.replyCheckFailed) {
     score -= 20;
     issues.push('Could not read the inbox on the last check');
+  }
+
+  if (input.blacklistedOn && input.blacklistedOn.length > 0) {
+    score -= 40;
+    issues.unshift(
+      `Listed on ${input.blacklistedOn.join(', ')}: request delisting before sending more`,
+    );
   }
 
   if (progress < 1) issues.push('Warming up');

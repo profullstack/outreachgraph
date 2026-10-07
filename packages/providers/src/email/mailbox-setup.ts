@@ -26,6 +26,8 @@ export interface MailboxDnsDeps {
     domain: string,
   ) => Promise<ReadonlyArray<{ exchange: string; priority: number }>>;
   readonly resolveTxt?: (name: string) => Promise<string[][]>;
+  /** For the blocklist check. Injected so tests never touch the network. */
+  readonly resolve4?: (name: string) => Promise<string[]>;
   /** Fetches the ISPDB document. Return undefined for "none". */
   readonly fetchAutoconfig?: (domain: string) => Promise<string | undefined>;
 }
@@ -127,6 +129,8 @@ export interface SendingDomainReport {
   readonly spf: DnsCheck;
   readonly dkim: DnsCheck;
   readonly dmarc: DnsCheck;
+  /** Public blocklists, when the caller ran that check too. */
+  readonly blacklist?: DnsCheck;
   /** Worst of the four. */
   readonly status: DnsStatus;
   readonly checkedAt: string;

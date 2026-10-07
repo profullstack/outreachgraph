@@ -5,8 +5,8 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Hono } from 'hono';
-import { now, type Client } from '@outreachgraph/db';
-import { recordReplyCheck } from '@outreachgraph/pipeline';
+import { now, queryAll, type Client } from '@outreachgraph/db';
+import { recordReplyCheck, sweepBlacklists } from '@outreachgraph/pipeline';
 import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
@@ -135,6 +135,51 @@ describe('GET /mailboxes', () => {
     await recordReplyCheck(db, ana.id);
     body = (await (await call(app, 'GET', '/mailboxes')).json()) as typeof body;
     expect(body.mailboxes.find((m) => m.id === ana.id)!.repliesError).toBeNull();
+  });
+
+  test('the daily blocklist sweep records a listing, alerts once, and drops health', async () => {
+    const { app, db } = await harness('mailboxes-blocklist');
+    await call(app, 'PUT', '/integrations/email', {
+      host: 'mail.acme.test',
+      port: 587,
+      secure: false,
+      username: 'cy@acme.test',
+      password: 'pw',
+      fromEmail: 'cy@acme.test',
+      imapHost: 'mail.acme.test',
+      skipVerification: true,
+    });
+
+    const resolve4 = async (name: string): Promise<string[]> => {
+      if (name === 'acme.test.dbl.spamhaus.org') return ['127.0.1.2'];
+      throw Object.assign(new Error('not found'), { code: 'ENOTFOUND' });
+    };
+    const before = (
+      (await (await call(app, 'GET', '/mailboxes')).json()) as { mailboxes: MailboxJson[] }
+    ).mailboxes[0]!;
+
+    const swept = await sweepBlacklists(db, SEED.workspaceId, { deps: { resolve4 } });
+    expect(swept).toEqual({ checked: 1, listed: 1 });
+
+    const after = (
+      (await (await call(app, 'GET', '/mailboxes')).json()) as {
+        mailboxes: Array<MailboxJson & { blacklistedOn: string[] }>;
+      }
+    ).mailboxes[0]!;
+    expect(after.blacklistedOn).toEqual(['Spamhaus DBL']);
+    expect(after.healthIssues[0]).toContain('Spamhaus DBL');
+    expect(after.healthScore).toBeLessThan(before.healthScore);
+
+    // Checked today: the next sweep leaves it alone, so no second alert.
+    expect(await sweepBlacklists(db, SEED.workspaceId, { deps: { resolve4 } })).toEqual({
+      checked: 0,
+      listed: 0,
+    });
+    const alerts = await queryAll<{ message: string }>(
+      db,
+      `SELECT message FROM workflow_events WHERE message LIKE '%is listed on%'`,
+    );
+    expect(alerts).toHaveLength(1);
   });
 
   test('404s the DNS report for a mailbox in another workspace', async () => {

@@ -20,12 +20,16 @@ import {
 import { now, queryAll, type Client } from '@outreachgraph/db';
 import { SMTP_PRESETS } from '@outreachgraph/email';
 import {
+  checkBlacklists,
   checkSendingDomain,
   lookupMailboxSettings,
+  type BlacklistDeps,
+  type BlacklistReport,
   type MailboxDnsDeps,
   type SendingDomainReport,
   type ServerSettings,
 } from '@outreachgraph/providers';
+import { emitEvent } from './events';
 import { listSenders, type SenderView } from './sender-pool';
 import { warmupStats, type WarmupStats } from './warmup-network';
 
@@ -52,6 +56,9 @@ export interface MailboxView extends SenderView {
   readonly healthIssues: readonly string[];
   /** The warm-up network: whether it is on, its filter tag, and how its mail lands. */
   readonly warmupNetwork: WarmupStats | null;
+  /** Blocklists naming this mailbox at the last daily check; empty when clean. */
+  readonly blacklistedOn: readonly string[];
+  readonly blacklistCheckedAt: string | null;
 }
 
 export interface MailboxesSummary {
@@ -126,6 +133,14 @@ export async function listMailboxes(
   const sendsById = new Map(sends.map((row) => [row.id, Number(row.n)]));
   const bouncesById = new Map(bounces.map((row) => [row.id, Number(row.n)]));
 
+  const checks = await queryAll<{ account_id: string; listed_on: string; checked_at: string }>(
+    db,
+    `SELECT account_id, listed_on, checked_at FROM mailbox_blacklist_checks
+      WHERE account_id IN (${marks})`,
+    ids,
+  );
+  const checkById = new Map(checks.map((row) => [row.account_id, row]));
+
   const warm = await warmupStats(db, ids, at);
   const mailboxes = senders.map((sender) =>
     toMailbox(
@@ -134,6 +149,7 @@ export async function listMailboxes(
       sendsById.get(sender.id) ?? 0,
       bouncesById.get(sender.id) ?? 0,
       warm.get(sender.id) ?? null,
+      checkById.get(sender.id),
     ),
   );
 
@@ -156,7 +172,9 @@ function toMailbox(
   sends: number,
   bounces: number,
   warm: WarmupStats | null,
+  check?: { listed_on: string; checked_at: string },
 ): MailboxView {
+  const blacklistedOn = parseList(check?.listed_on);
   const config = parseConfig(extra?.config_json ?? null);
   const fromEmail = config.fromEmail ?? sender.handle;
   const preset = SMTP_PRESETS.find((p) => p.host && p.host === config.host);
@@ -174,6 +192,7 @@ function toMailbox(
     readsReplies,
     replyCheckFailed: Boolean(extra?.replies_error),
     warmupProgress: progress,
+    blacklistedOn,
   });
 
   return {
@@ -194,7 +213,19 @@ function toMailbox(
     healthScore: health.score,
     healthIssues: health.issues,
     warmupNetwork: warm,
+    blacklistedOn,
+    blacklistCheckedAt: check?.checked_at ?? null,
   };
+}
+
+function parseList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -316,11 +347,127 @@ export async function mailboxDns(
   const { mailboxes } = await listMailboxes(db, workspaceId);
   const mailbox = mailboxes.find((m) => m.id === accountId);
   if (!mailbox?.domain) return undefined;
-  return checkSendingDomain(
-    mailbox.domain,
-    mailbox.provider === 'custom' ? {} : { provider: mailbox.provider },
-    deps,
+  const [report, blacklist] = await Promise.all([
+    checkSendingDomain(
+      mailbox.domain,
+      mailbox.provider === 'custom' ? {} : { provider: mailbox.provider },
+      deps,
+    ),
+    checkBlacklists(
+      {
+        domain: mailbox.domain,
+        smtpHost: mailbox.smtpHost,
+        ...(mailbox.provider === 'custom' ? {} : { provider: mailbox.provider }),
+      },
+      deps,
+    ),
+  ]);
+  await recordBlacklistCheck(db, workspaceId, accountId, blacklist);
+  const check = blacklistCheck(blacklist);
+  return {
+    ...report,
+    blacklist: check,
+    status: check.status === 'fail' ? 'fail' : report.status,
+  };
+}
+
+/** The blocklist answer in the same shape as the other DNS checks. */
+export function blacklistCheck(report: BlacklistReport): {
+  status: 'pass' | 'warn' | 'fail';
+  value?: string;
+  detail: string;
+} {
+  if (report.listedOn.length > 0) {
+    return {
+      status: 'fail',
+      value: report.listedOn.join(', '),
+      detail: `Listed on ${report.listedOn.join(', ')}. Mail is likely to be rejected or filtered; request delisting from each list, then stop and clean the list that caused it.`,
+    };
+  }
+  const unknown = report.results.filter((r) => r.verdict === 'unknown').map((r) => r.list);
+  if (unknown.length === report.results.length) {
+    return {
+      status: 'warn',
+      detail: 'No blocklist would answer from this server, so this could not be checked.',
+    };
+  }
+  return {
+    status: 'pass',
+    detail: `Not on ${report.results
+      .filter((r) => r.verdict === 'clean')
+      .map((r) => r.list)
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .join(', ')}.`,
+  };
+}
+
+export async function recordBlacklistCheck(
+  db: Client,
+  workspaceId: string,
+  accountId: string,
+  report: BlacklistReport,
+): Promise<{ newlyListed: readonly string[] }> {
+  const previous = await queryAll<{ listed_on: string }>(
+    db,
+    'SELECT listed_on FROM mailbox_blacklist_checks WHERE account_id = ?',
+    [accountId],
   );
+  const before = new Set(parseList(previous[0]?.listed_on));
+  await db.execute({
+    sql: `INSERT INTO mailbox_blacklist_checks (account_id, workspace_id, listed_on, results_json,
+          checked_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (account_id) DO UPDATE SET listed_on = excluded.listed_on,
+            results_json = excluded.results_json, checked_at = excluded.checked_at`,
+    args: [
+      accountId,
+      workspaceId,
+      JSON.stringify(report.listedOn),
+      JSON.stringify(report.results),
+      report.checkedAt,
+    ],
+  });
+  return { newlyListed: report.listedOn.filter((list) => !before.has(list)) };
+}
+
+/** Daily: every active mailbox not checked in the last day, a few per run. */
+export async function sweepBlacklists(
+  db: Client,
+  workspaceId: string,
+  options: { readonly at?: Date; readonly deps?: BlacklistDeps; readonly limit?: number } = {},
+): Promise<{ checked: number; listed: number }> {
+  const at = options.at ?? new Date();
+  const dayAgo = new Date(at.getTime() - 86_400_000).toISOString();
+  const { mailboxes } = await listMailboxes(db, workspaceId, at);
+  const due = mailboxes
+    .filter((m) => m.status === 'active' && m.domain)
+    .filter((m) => !m.blacklistCheckedAt || m.blacklistCheckedAt < dayAgo)
+    .slice(0, options.limit ?? 5);
+
+  let listed = 0;
+  for (const mailbox of due) {
+    const report = await checkBlacklists(
+      {
+        domain: mailbox.domain as string,
+        smtpHost: mailbox.smtpHost,
+        ...(mailbox.provider === 'custom' ? {} : { provider: mailbox.provider }),
+      },
+      options.deps ?? {},
+    );
+    const { newlyListed } = await recordBlacklistCheck(db, workspaceId, mailbox.id, report);
+    if (report.listedOn.length > 0) listed += 1;
+    if (newlyListed.length > 0) {
+      await emitEvent(db, {
+        workspaceId,
+        phase: 'send',
+        level: 'error',
+        message:
+          `${mailbox.fromEmail ?? mailbox.domain} is listed on ${newlyListed.join(', ')}. ` +
+          'Mail from it is likely to be rejected; request delisting and clean the list that caused it.',
+        detail: { accountId: mailbox.id, listedOn: report.listedOn },
+      });
+    }
+  }
+  return { checked: due.length, listed };
 }
 
 // ------------------------------------------------------------------ plumbing
