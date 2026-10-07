@@ -41,6 +41,7 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
    60 (`judged: false`). Every matched post is stored once (`community_leads`,
    unique per monitor, source and post id), lead or not, so nothing is scored
    twice.
+
 4. **Reply.** `Draft AI reply` writes 40-120 words: answer the question first,
    disclose the affiliation, name the product at most once.
 5. **Digest.** Once per UTC day after the workspace's digest hour
