@@ -111,3 +111,16 @@ export {
   type LeadReplyInput,
   type MonitorSuggestion,
 } from './community-leads';
+export {
+  cleanPostText,
+  draftLinkPosts,
+  fitToNetwork,
+  linkPostPrompt,
+  parseLinkPosts,
+  type LinkPage,
+  type LinkPostBrand,
+  type LinkPostDraft,
+  type LinkPostRequest,
+  type LinkPostResult,
+  type LinkPostVoice,
+} from './link-post';

@@ -10,7 +10,7 @@
 
 import { cache } from 'react';
 import { cookies } from 'next/headers';
-import type { Channel } from '@outreachgraph/domain';
+import type { Channel, LinkPostNetwork } from '@outreachgraph/domain';
 import type {
   ApprovalCard,
   CurrentUser,
@@ -221,6 +221,43 @@ export async function fetchApprovals(
 export async function fetchHandoffs(limit = 200): Promise<HandoffView[]> {
   const body = await request<{ handoffs: HandoffView[] }>(`/handoffs?limit=${limit}`);
   return body.handoffs;
+}
+
+/** One post about a link, for one network: a hand-off card the person posts. */
+export interface LinkPostView {
+  readonly id: string;
+  readonly batchId: string;
+  readonly network: LinkPostNetwork;
+  readonly label: string;
+  readonly url: string;
+  readonly pageTitle?: string;
+  /** Ready to paste (Reddit, HN: the first comment). */
+  readonly text: string;
+  /** The post without the link; what an edit starts from. */
+  readonly body: string;
+  readonly title?: string;
+  readonly subreddit?: string;
+  readonly mastodonInstance?: string;
+  readonly chars: number;
+  readonly limit?: number;
+  readonly overLimit: boolean;
+  readonly openUrl?: string;
+  readonly openLabel: string;
+  readonly steps: string[];
+  readonly notes?: string;
+  readonly status: 'open' | 'done' | 'skipped';
+  readonly postedUrl?: string;
+  readonly regenerations: number;
+  readonly createdAt: string;
+}
+
+export interface LinkPostsView {
+  readonly posts: LinkPostView[];
+  readonly draftingEnabled: boolean;
+}
+
+export async function fetchLinkPosts(): Promise<LinkPostsView> {
+  return request<LinkPostsView>('/link-posts?status=open&limit=200');
 }
 
 export async function fetchSignals(): Promise<SignalRow[]> {

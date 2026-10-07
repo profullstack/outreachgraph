@@ -17,6 +17,7 @@ export * from './campaign';
 export * from './intake';
 export * from './funnel';
 export * from './share-links';
+export * from './link-posts';
 export * from './engagement';
 export * from './audience';
 export * from './job-posts';

@@ -265,6 +265,7 @@ import { audienceRoutes } from './audience';
 import { jobPostRoutes } from './job-posts';
 import { ideaRoutes } from './ideas';
 import { leadRoutes } from './buyer-leads';
+import { linkPostRoutes } from './link-posts';
 import type { LeadMonitor } from '@outreachgraph/pipeline';
 import type { FeedSource } from '@outreachgraph/providers';
 import type { ChovyConfig, Fetcher as RedditFetcher } from '@outreachgraph/ideas';
@@ -369,6 +370,9 @@ export interface AppOptions {
   readonly leadSources?: ((monitor: LeadMonitor) => readonly FeedSource[]) | undefined;
   /** Buyer leads' web source (ValueSERP with a longer timeout). Defaults to jobSearcher. */
   readonly leadSearcher?: WebSearcher | undefined;
+  /** Test seams for posts from a link: the network a page is read over, and its DNS. */
+  readonly linkFetch?: ProviderFetchLike | undefined;
+  readonly linkLookup?: HostLookup | undefined;
   /** Overrides for the abuse throttles (`./throttle`); tests shrink them. */
   readonly throttles?: ThrottleConfig | undefined;
   /**
@@ -1485,6 +1489,20 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       model: options.model,
       leadSources: options.leadSources,
       searcher: options.leadSearcher ?? options.jobSearcher,
+    }),
+  );
+
+  // ----------------------------------------------------------- link posts
+  //
+  // "Draft a post from a link": a page becomes one hand-off card per network,
+  // written in the workspace's voice. Drafts only; a person posts each one.
+  api.route(
+    '/link-posts',
+    linkPostRoutes({
+      model: options.model,
+      fetchImpl: options.linkFetch,
+      lookup: options.linkLookup,
+      throttles,
     }),
   );
 

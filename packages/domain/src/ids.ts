@@ -107,6 +107,8 @@ export const ID_PREFIXES = {
   // Buyer leads: a brand's community monitor, and one post it matched.
   leadMonitor: 'lmn',
   communityLead: 'cld',
+  // A post about a link, drafted for one network and posted by a person.
+  linkPost: 'lpo',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

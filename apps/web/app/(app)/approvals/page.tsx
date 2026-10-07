@@ -2,17 +2,22 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ApprovalQueue as Queue } from '../../../components/approval-queue';
 import { HandoffCards } from '../../../components/handoff-cards';
+import { LinkPostComposer } from '../../../components/link-post-composer';
 import { PageGuide } from '../../../components/page-guide';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchApprovals,
   fetchHandoffs,
+  fetchLinkPosts,
+  fetchProducts,
   type ApprovalFilter,
   type ApprovalQueue,
   type ChannelFilter,
   type HandoffView,
+  type LinkPostsView,
 } from '../../../lib/api';
+import type { ProductSummaryView } from '../../../lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,9 +57,20 @@ export default async function ApprovalsPage({
 
   let queue: ApprovalQueue;
   let handoffs: HandoffView[];
+  let linkPosts: LinkPostsView;
+  let products: ProductSummaryView[];
+
+  // Like hand-offs, posts from a link are the second thing on this page: a
+  // failure (an API without the route yet) must not take the queue down.
+  const soft =
+    <T,>(fallback: T) =>
+    (error: unknown) => {
+      if (error instanceof NotAuthenticatedError) throw error;
+      return fallback;
+    };
 
   try {
-    [queue, handoffs] = await Promise.all([
+    [queue, handoffs, linkPosts, products] = await Promise.all([
       fetchApprovals('all', QUEUE_LIMIT, 'all'),
       // A failure here must not take the queue down with it: hand-offs are
       // the second thing on this page, not the first.
@@ -62,6 +78,10 @@ export default async function ApprovalsPage({
         if (error instanceof NotAuthenticatedError) throw error;
         return [] as HandoffView[];
       }),
+      fetchLinkPosts().catch(soft<LinkPostsView>({ posts: [], draftingEnabled: false })),
+      tab === 'handoffs'
+        ? fetchProducts().catch(soft<ProductSummaryView[]>([]))
+        : Promise.resolve([] as ProductSummaryView[]),
     ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
@@ -83,6 +103,11 @@ export default async function ApprovalsPage({
             Back to the queue ({queue.counts.buckets.all ?? 0})
           </Link>
         </header>
+        <LinkPostComposer
+          initialPosts={linkPosts.posts}
+          products={products}
+          draftingEnabled={linkPosts.draftingEnabled}
+        />
         <HandoffCards handoffs={handoffs} />
       </div>
     );
@@ -94,13 +119,13 @@ export default async function ApprovalsPage({
       counts={queue.counts}
       initialFilter={filter}
       initialChannel={channel}
-      manualPosts={handoffs.length}
+      manualPosts={handoffs.length + linkPosts.posts.length}
       // Handed in as a slot so it lands under the heading the queue owns.
       // `approve` is suppressed: the queue it would link to is this page.
       guide={
         <>
           <PageGuide page="approvals" suppress={['approve']} />
-          <HandoffBanner count={handoffs.length} />
+          <HandoffBanner count={handoffs.length + linkPosts.posts.length} />
         </>
       }
     />

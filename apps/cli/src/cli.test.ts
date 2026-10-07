@@ -644,3 +644,52 @@ describe('og leads', () => {
     expect(calls[0]?.body).toEqual({ allow: true });
   });
 });
+
+describe('og linkpost', () => {
+  test('a link becomes a draft request with the networks asked for', async () => {
+    const { client: api, calls } = client({
+      page: { read: true, title: 'Fast builds' },
+      posts: [
+        {
+          id: 'lpo_1',
+          label: 'LinkedIn',
+          status: 'open',
+          chars: 40,
+          limit: 3000,
+          text: 'Our CI got faster.',
+          openUrl: 'https://www.linkedin.com/feed/?shareActive=true&text=x',
+          steps: ['Press Copy.', 'Press Mark done.'],
+        },
+      ],
+      missing: [],
+    });
+    const out = await commandByName('linkpost')!.run({
+      client: api,
+      args: ['https://blog.example.com/fast'],
+      flags: { to: 'linkedin,X', notes: 'open source' },
+    });
+    expect(calls[0]).toMatchObject({
+      method: 'POST',
+      body: {
+        url: 'https://blog.example.com/fast',
+        networks: ['linkedin', 'x'],
+        notes: 'open source',
+      },
+    });
+    expect(calls[0]!.url).toEndWith('/api/v1/link-posts');
+    expect(out).toContain('Fast builds');
+    expect(out).toContain('lpo_1  LinkedIn');
+    expect(out).toContain('1. Press Copy.');
+  });
+
+  test('done records where it was posted', async () => {
+    const { client: api, calls } = client({ post: {} });
+    await commandByName('linkpost')!.run({
+      client: api,
+      args: ['done', 'lpo_1'],
+      flags: { url: 'https://x.com/me/status/1' },
+    });
+    expect(calls[0]!.url).toEndWith('/api/v1/link-posts/lpo_1/done');
+    expect(calls[0]!.body).toEqual({ postedUrl: 'https://x.com/me/status/1' });
+  });
+});

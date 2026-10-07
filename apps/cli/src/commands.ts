@@ -814,6 +814,108 @@ async function runBuyers({ client, args, flags }: CommandContext): Promise<strin
   throw new Error(BUYERS_USAGE);
 }
 
+const LINKPOST_USAGE =
+  'og linkpost <url> [--to linkedin,x,reddit,hackernews,facebook,bluesky,mastodon,threads] [--product <offeringId>] [--notes "angle"] | list [--status open|done|skipped|all] | show <id> | regen <id> [--notes "angle"] | done <id> [--url <posted-url>] | skip <id>';
+
+/**
+ * `og linkpost` — draft posts about a link, one per network, for you to post.
+ *
+ * The API reads the page and writes each post in the workspace's voice, sized
+ * to the network; each comes back as a card with the text, a link that opens
+ * the network's composer, and the steps. Nothing is posted for you.
+ */
+async function runLinkPost({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', target] = args;
+  const card = (p: Record<string, unknown>) => {
+    const steps = Array.isArray(p.steps) ? (p.steps as string[]) : [];
+    const limit = p.limit ? ` / ${text(p, 'limit')}` : '';
+    return [
+      `${text(p, 'id')}  ${text(p, 'label')}${p.subreddit ? `  r/${text(p, 'subreddit')}` : ''}  ${text(p, 'status')}  ${text(p, 'chars')}${limit} chars${p.overLimit ? ' (OVER)' : ''}`,
+      p.title ? `title: ${text(p, 'title')}` : '',
+      text(p, 'text') ? `${p.title ? 'first comment:\n' : ''}${text(p, 'text')}` : '',
+      p.openUrl ? `open: ${text(p, 'openUrl')}` : '',
+      ...steps.map((step, i) => `  ${i + 1}. ${step}`),
+    ]
+      .filter(Boolean)
+      .join('\n');
+  };
+  const many = (list: readonly Record<string, unknown>[]) =>
+    list.length ? list.map(card).join('\n\n---\n\n') : 'No posts.';
+
+  if (verb === 'list' || verb === 'ls') {
+    const status = flagString(flags, 'status') ?? 'open';
+    const result = await client.get('/link-posts', { status });
+    const posts = rows(result, 'posts');
+    return posts.length
+      ? many(posts)
+      : 'No posts waiting. Draft some: og linkpost <url> --to linkedin,x';
+  }
+
+  if (verb === 'show') {
+    if (!target) throw new Error('og linkpost show <id>');
+    const { post } = (await client.get(`/link-posts/${encodeURIComponent(target)}`)) as {
+      post: Record<string, unknown>;
+    };
+    return card(post);
+  }
+
+  if (verb === 'regen' || verb === 'regenerate') {
+    if (!target) throw new Error('og linkpost regen <id> [--notes "angle"]');
+    const notes = flagString(flags, 'notes');
+    const { post } = (await client.post(
+      `/link-posts/${encodeURIComponent(target)}/regenerate`,
+      notes ? { notes } : {},
+    )) as { post: Record<string, unknown> };
+    return card(post);
+  }
+
+  if (verb === 'done') {
+    if (!target) throw new Error('og linkpost done <id> [--url <posted-url>]');
+    const posted = flagString(flags, 'url');
+    await client.post(
+      `/link-posts/${encodeURIComponent(target)}/done`,
+      posted ? { postedUrl: posted } : {},
+    );
+    return `${target} marked done`;
+  }
+
+  if (verb === 'skip') {
+    if (!target) throw new Error('og linkpost skip <id>');
+    await client.post(`/link-posts/${encodeURIComponent(target)}/skip`, {});
+    return `${target} skipped`;
+  }
+
+  // Anything else is the link itself: `og linkpost https://…`.
+  const url = verb === 'draft' || verb === 'new' ? target : verb;
+  if (!url || !/^(https?:\/\/)?[^\s/]+\.[^\s]+/i.test(url))
+    throw new Error(`usage: ${LINKPOST_USAGE}`);
+  const to = flagString(flags, 'to')
+    ?.split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const product = flagString(flags, 'product');
+  const notes = flagString(flags, 'notes');
+  const result = (await client.post('/link-posts', {
+    url,
+    ...(to?.length ? { networks: to } : {}),
+    ...(product ? { offeringId: product } : {}),
+    ...(notes ? { notes } : {}),
+  })) as Record<string, unknown>;
+  const page = (result.page ?? {}) as Record<string, unknown>;
+  const missing = Array.isArray(result.missing) ? (result.missing as string[]) : [];
+  return [
+    page.read === false
+      ? `(could not read the page: ${text(page, 'detail', 'no content')}; written from your notes)`
+      : `${text(page, 'title', url)}`,
+    '',
+    many(rows(result, 'posts')),
+    missing.length ? `\nNothing came back for: ${missing.join(', ')}` : '',
+    '\nPost each yourself, then: og linkpost done <id> [--url <where>]',
+  ]
+    .filter((line) => line !== undefined)
+    .join('\n');
+}
+
 const BUYERS_USAGE =
   'og buyers list [--status new|replied|dismissed] [--monitor <id>] [--min-intent 60] | show <leadId> | draft <leadId> | replied|dismiss|reopen <leadId> | monitors | add <name> [--url u] [--product <offeringId>] [--keywords a,b] [--subreddits x,y] [--sources reddit,hackernews,bluesky,web] [--min-intent 60] [--every 360] | set <monitorId> [same flags] [--pause|--resume] | scan <monitorId> | rm <monitorId>';
 
@@ -2041,6 +2143,13 @@ export const COMMANDS: readonly Command[] = [
     summary:
       'Buyer leads: Reddit, Hacker News and Bluesky posts scored for intent; draft replies you post yourself.',
     run: runBuyers,
+  },
+  {
+    name: 'linkpost',
+    usage: LINKPOST_USAGE,
+    summary:
+      'Draft a post from a link for LinkedIn, X, Reddit, HN and more, in your voice; you post it.',
+    run: runLinkPost,
   },
   {
     name: 'audience',
