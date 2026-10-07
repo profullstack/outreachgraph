@@ -572,3 +572,12 @@ export {
   type AccountContact,
   type CompanyBusy,
 } from './account-expansion';
+export {
+  abResults,
+  latestWinningIntent,
+  promoteAbWinners,
+  variantStats,
+  type AbResultRow,
+  type PromotedWinner,
+  type VariantRow,
+} from './ab-winners';

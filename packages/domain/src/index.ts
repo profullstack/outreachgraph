@@ -40,4 +40,5 @@ export * from './webhooks';
 export * from './mailbox-health';
 export * from './list-quality';
 export * from './personas';
+export * from './ab-testing';
 export * from './warmup';

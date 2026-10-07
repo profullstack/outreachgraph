@@ -211,6 +211,22 @@ export const TOOLS: readonly ToolDefinition[] = [
       client.get(`/cadences/${encodeURIComponent(require(args, 'cadenceId'))}`),
   },
   {
+    name: 'get_ab_results',
+    title: 'A/B test results for a plan',
+    description:
+      'Sent and replied per arm (A = the step intent, B-D = variants) and every decided test. ' +
+      'Tests decide themselves: at 50+ sends per arm a leader ahead at 95% confidence wins, and ' +
+      'at 200+ per arm the best wins (a tie keeps A). The winner becomes the step intent.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { cadenceId: { type: 'string' } },
+      required: ['cadenceId'],
+    },
+    run: (client, args) =>
+      client.get(`/cadences/${encodeURIComponent(require(args, 'cadenceId'))}/variants`),
+  },
+  {
     name: 'create_cadence',
     title: 'Write a plan',
     description:

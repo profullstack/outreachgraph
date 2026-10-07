@@ -69,6 +69,7 @@ import {
   sweepProfilePhotos,
   workspacesAwaitingPhotos,
   runCadences,
+  promoteAbWinners,
   runCrawlJob,
   runDiscoveryJob,
   runNichedbDiscoveryJob,
@@ -120,6 +121,9 @@ const TICK_MS = Number(process.env.WORKER_TICK_MS ?? 60_000);
  * receives a handful of replies a day.
  */
 const RECEIVE_POLL_MS = Number(process.env.RECEIVE_POLL_MS ?? 300_000);
+/** How often A/B tests are checked for a decision. */
+const AB_SWEEP_MS = 3_600_000;
+const lastAbSweepAt = new Map<string, number>();
 
 /** Last successful poll per workspace, so the slower clock survives a tick. */
 const lastPolledAt = new Map<string, number>();
@@ -1341,6 +1345,23 @@ async function tick(): Promise<void> {
   // others from being processed, and a failed digest must not prevent the
   // outreach sweep that follows it.
   for (const workspace of workspaces) {
+    // A/B tests decide themselves, hourly: a step whose arms each have 50+
+    // sends and a leader ahead at 95% (or 200+ each) gets the winning angle
+    // as its intent before the cadence runner drafts the next touch.
+    if (Date.now() - (lastAbSweepAt.get(workspace.id) ?? 0) >= AB_SWEEP_MS) {
+      lastAbSweepAt.set(workspace.id, Date.now());
+      try {
+        const promoted = await promoteAbWinners(db, workspace.id);
+        for (const winner of promoted) {
+          console.log(
+            `a/b ${workspace.id}: ${winner.cadenceId} step ${winner.step + 1} -> ${winner.winner} (${winner.reason})`,
+          );
+        }
+      } catch (error) {
+        console.error(`a/b promotion failed for ${workspace.id}`, error);
+      }
+    }
+
     // Cadences run before autopilot, not after. A step that falls due this
     // tick writes a recommendation, and running the sweep first means that
     // card waits a whole cycle before anything looks at it — which for an

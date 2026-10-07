@@ -53,6 +53,8 @@ export const ID_PREFIXES = {
   personEmail: 'pem',
   auditEvent: 'aud',
   stageEvent: 'stg',
+  // A decided A/B test on a cadence step.
+  abResult: 'abr',
   notification: 'ntf',
   socialPost: 'spo',
   workflowEvent: 'wfe',
