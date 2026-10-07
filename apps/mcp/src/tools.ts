@@ -1051,6 +1051,24 @@ export const TOOLS: readonly ToolDefinition[] = [
       ),
   },
   {
+    name: 'get_list_health',
+    title: 'A campaign’s bounce rate and address verdicts',
+    description:
+      'Bounces against the 2% stop line, whether the campaign is paused re-verifying its queue ' +
+      '(it resumes by itself), and how many sent-to addresses are valid, accept-all, MX-only, ' +
+      'invalid or unchecked.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { campaignId: { type: 'string' } },
+      required: ['campaignId'],
+    },
+    run: (client, args) =>
+      client.get(
+        `/autogtm/campaigns/${encodeURIComponent(require(args, 'campaignId'))}/list-health`,
+      ),
+  },
+  {
     name: 'list_inbox',
     title: 'List conversations',
     description:

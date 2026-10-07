@@ -50,6 +50,14 @@ import {
 import { budgetStatus } from './metering';
 import { holdReason } from './lead-screen';
 import { ownDomains, refuseRecipient } from './recipient-guard';
+import { catchAllAllowed, formatRate } from '@outreachgraph/domain';
+import type { VerifierDeps } from '@outreachgraph/providers';
+import {
+  applyCampaignBounceGate,
+  resumeCampaign,
+  verifyAddress,
+  type CampaignBounceState,
+} from './list-quality';
 
 export interface AutopilotDeps {
   readonly db: Client;
@@ -89,6 +97,14 @@ export interface AutopilotDeps {
    */
   readonly model?: TextModel;
   readonly now?: Date;
+  /**
+   * How addresses are checked before their first message and every 90 days
+   * after (MX, then an SMTP RCPT probe where port 25 allows). Omit it and only
+   * verdicts already cached are enforced — a known bounce still never sends.
+   */
+  readonly verifier?: VerifierDeps | undefined;
+  /** Fresh checks one run may make; the rest wait for the next tick. */
+  readonly maxVerificationsPerRun?: number;
   /** Where holds are remembered between runs. Defaults to the process-wide one. */
   readonly holdLedger?: HoldLedger;
 }
@@ -167,6 +183,13 @@ const MAX_SEND_ATTEMPTS = 3;
  * is. A held card costs an in-memory check, not a slot.
  */
 const CANDIDATE_CEILING = 2000;
+
+/**
+ * Fresh address checks per run. Each is a DNS lookup and possibly an SMTP
+ * session of up to eight seconds, and a tick runs every minute; a 600-lead
+ * queue is verified in under half an hour without one tick stalling the rest.
+ */
+const DEFAULT_VERIFICATIONS_PER_RUN = 25;
 
 /**
  * Why a card is currently held, remembered across runs.
@@ -293,6 +316,12 @@ export function describeHold(reason: string): string {
   if (/talking to this person is paused/i.test(reason)) {
     return 'the mailbox already talking to them is paused';
   }
+  if (/campaign paused/i.test(reason)) return 'the campaign bounced over 2% and is re-verifying';
+  if (/failed verification/i.test(reason)) return 'the address failed verification';
+  if (/accept-all/i.test(reason)) return 'an accept-all address, held while bounces are above 1%';
+  if (/address to be verified|could not be checked/i.test(reason)) {
+    return 'waiting for the address to be verified';
+  }
   if (/budget/i.test(reason)) return "over the plan's monthly allowance";
   return reason;
 }
@@ -373,9 +402,13 @@ export async function runAutopilot(
               (SELECT si.handle FROM social_identities si
                 WHERE si.person_id = p.id AND si.network = 'email'
                   AND si.handle IS NOT NULL AND trim(si.handle) <> ''
+                  AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+                    WHERE ev.address = lower(trim(si.handle)) AND ev.status = 'invalid')
                 ORDER BY si.confidence DESC LIMIT 1),
               (SELECT pe.address FROM person_emails pe
                 WHERE pe.person_id = p.id AND pe.workspace_id = r.workspace_id
+                  AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+                    WHERE ev.address = lower(trim(pe.address)) AND ev.status = 'invalid')
                 ORDER BY pe.created_at LIMIT 1)
             ) AS person_email,
             (SELECT COUNT(*) FROM actions a
@@ -424,6 +457,14 @@ export async function runAutopilot(
 
   const seen = new Set<string>();
   let completed = true;
+
+  // List quality, per run: each campaign's bounce gate is read once, fresh
+  // address checks are budgeted, and a paused campaign counts what it still
+  // has waiting so a complete pass with nothing left can start it again.
+  const campaignStates = new Map<string, CampaignBounceState>();
+  const awaitingRecheck = new Map<string, number>();
+  const droppedOnRecheck = new Map<string, number>();
+  let verificationsLeft = deps.maxVerificationsPerRun ?? DEFAULT_VERIFICATIONS_PER_RUN;
 
   for (const row of candidates) {
     if (today >= cap) {
@@ -483,6 +524,55 @@ export async function runAutopilot(
     const refused = refuseRecipient(recipient.address, own);
     if (refused) {
       await note(refused);
+      continue;
+    }
+
+    // ------------------------------------------------------- list quality
+    //
+    // Verify before sending, under 2% bounce, accept-all kept apart. Checked
+    // before the address limits because a paused campaign spends this pass
+    // re-verifying its queue instead of sending, and a card whose address is
+    // dead should say so rather than "already written to this week".
+    let campaignState = campaignStates.get(row.campaign_id);
+    if (!campaignState) {
+      campaignState = await applyCampaignBounceGate(db, workspaceId, row.campaign_id, at);
+      campaignStates.set(row.campaign_id, campaignState);
+    }
+
+    const verified = await verifyAddress(db, recipient.address, {
+      verifier: deps.verifier,
+      at,
+      notBefore: campaignState.pausedAt,
+      allowCheck: verificationsLeft > 0,
+    });
+    if (verified.kind === 'known' && verified.checked) verificationsLeft -= 1;
+
+    if (campaignState.pausedAt) {
+      if (verified.kind === 'pending') {
+        awaitingRecheck.set(row.campaign_id, (awaitingRecheck.get(row.campaign_id) ?? 0) + 1);
+      } else if (verified.verification.status === 'invalid') {
+        droppedOnRecheck.set(row.campaign_id, (droppedOnRecheck.get(row.campaign_id) ?? 0) + 1);
+      }
+      await note(
+        `campaign paused: ${formatRate(campaignState.rate)} of its messages bounced, ` +
+          're-verifying its list before sending again',
+      );
+      continue;
+    }
+
+    if (verified.kind === 'pending') {
+      await note(verified.reason);
+      continue;
+    }
+    if (verified.verification.status === 'invalid') {
+      await note(`the address failed verification (${verified.verification.reason ?? 'invalid'})`);
+      continue;
+    }
+    if (verified.verification.status === 'catch_all' && !catchAllAllowed(campaignState.window)) {
+      await note(
+        `an accept-all address, held while this campaign's bounce rate ` +
+          `(${formatRate(campaignState.rate)}) is above 1%`,
+      );
       continue;
     }
 
@@ -824,7 +914,17 @@ export async function runAutopilot(
     }
   }
 
-  if (completed) ledger.retain(workspaceId, seen);
+  if (completed) {
+    ledger.retain(workspaceId, seen);
+
+    // A paused campaign whose whole queue was re-checked on a complete pass
+    // starts again. An incomplete pass proves nothing about cards it never
+    // reached, so it never resumes anything.
+    for (const [campaignId, state] of campaignStates) {
+      if (!state.pausedAt || (awaitingRecheck.get(campaignId) ?? 0) > 0) continue;
+      await resumeCampaign(db, workspaceId, campaignId, at, droppedOnRecheck.get(campaignId) ?? 0);
+    }
+  }
   for (const transport of transports.values()) transport.close();
   if (sender?.mailer instanceof SmtpMailer) sender.mailer.close();
 

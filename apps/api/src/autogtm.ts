@@ -31,6 +31,7 @@ import {
   CONTACT_PRICE_USD,
   isConsumerMailDomain,
   mapHeaders,
+  MAX_BOUNCE_RATE,
   newId,
   parseCsv,
   replyRate,
@@ -53,6 +54,7 @@ import {
   type LeadEnrichDeps,
   finishContactImport,
   importContactChunk,
+  listHealthReport,
   normaliseDomain,
   peopleMatchingKeys,
   recordDiscovered,
@@ -968,6 +970,29 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
         allowed_at: lead.allowedAt,
         held: lead.allowedAt === null,
       })),
+    });
+  });
+
+  /**
+   * The campaign's list quality: bounce rate on the current window, whether
+   * the 2% gate has it paused for re-verification, and the verdicts on the
+   * addresses it has sent to.
+   */
+  r.get('/campaigns/:id/list-health', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaign = await ownedCampaign(db, actor.workspaceId, c.req.param('id'));
+    const report = await listHealthReport(db, campaign.id);
+    return c.json({
+      campaign_id: campaign.id,
+      sends: report.sends,
+      bounces: report.bounces,
+      bounce_rate: report.bounceRate,
+      max_bounce_rate: MAX_BOUNCE_RATE,
+      window_start: report.windowStart,
+      paused: report.pausedAt !== null,
+      paused_at: report.pausedAt,
+      addresses: report.addresses,
     });
   });
 

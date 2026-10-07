@@ -39,6 +39,7 @@ import type { MailReader, IncomingMessage } from '@outreachgraph/email';
 import { enqueue } from './queue';
 import { recordStatus } from './stages';
 import { recordSenderBounce } from './sender-pool';
+import { markAddressBounced } from './list-quality';
 import { emitWebhookEvent } from './webhooks';
 
 export interface ReceiveRepliesInput {
@@ -172,6 +173,24 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
 
       const written = await recordAutomated(input.db, input.workspaceId, person, message, label);
       if (written) automatedRecorded += 1;
+
+      // A bounce the report can pin to an address retires that address for
+      // good and ends the person's cadences. Only a confirmed delivery report
+      // or one naming the failed recipient counts — a subject that merely
+      // reads like a failure is not evidence the mailbox is gone.
+      if (written && machine === 'bounce') {
+        const address =
+          message.failedRecipient ??
+          (message.automated === 'bounce' && !person.shared ? person.address : undefined);
+        if (address) {
+          await markAddressBounced(input.db, {
+            workspaceId: input.workspaceId,
+            address,
+            personId: person.personId,
+            detail: message.subject,
+          });
+        }
+      }
       continue;
     }
 
