@@ -41,4 +41,5 @@ export * from './mailbox-health';
 export * from './list-quality';
 export * from './personas';
 export * from './ab-testing';
+export * from './timing';
 export * from './warmup';
