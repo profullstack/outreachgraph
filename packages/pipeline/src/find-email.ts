@@ -47,9 +47,12 @@ import {
   verifyDomainCandidates,
   type AddressCandidate,
   type DomainVerification,
+  type EmailFinder,
   type EmailPattern,
+  type FinderAnswer,
   type MxRecord,
   type SmtpProber,
+  SearchOutOfCredits,
 } from '@outreachgraph/providers';
 import { markEmailSearched } from './find-email-queue';
 import { regenerateFor } from './pipeline';
@@ -90,6 +93,18 @@ export interface FindEmailDeps {
   /** Passed through to the re-decision, as for every other chain entry. */
   readonly emailSendingEnabled?: boolean;
   readonly threshold?: number;
+  /**
+   * Free-tier finders, asked in order only when the domain's own pattern and
+   * mail servers could not settle the address. Each has its own quota.
+   */
+  readonly finders?: readonly FinderSlot[];
+}
+
+/** One finder and what it may spend, counted across every workspace. */
+export interface FinderSlot {
+  readonly finder: EmailFinder;
+  readonly perDay: number;
+  readonly perMonth: number;
 }
 
 export type FindEmailOutcome =
@@ -113,6 +128,8 @@ export interface FindEmailResult {
   readonly smtp?: string;
   /** New cards written by the re-decision after a promotion. */
   readonly recommendationIds: readonly string[];
+  /** The finder that supplied the promoted address, when one did. */
+  readonly via?: string;
 }
 
 interface PersonRow {
@@ -240,6 +257,39 @@ export async function findEmail(
   }
 
   const threshold = deps.threshold ?? PROMOTE_THRESHOLD;
+
+  // The domain could not settle it on its own: ask the free-tier finders, and
+  // take their answer only through the same checks as a derived address.
+  if ((!best || best.confidence < threshold) && deps.finders?.length && name.lastName) {
+    const found = await askFinders(deps, {
+      workspaceId,
+      personId,
+      name: { firstName: name.firstName, lastName: name.lastName },
+      domain,
+      companyInbox,
+      rejected: decided.rejected,
+      threshold,
+    });
+    if (found) {
+      await promote(db, {
+        workspaceId,
+        personId,
+        address: found.address,
+        verified: found.verified,
+      });
+      return {
+        personId,
+        outcome: 'promoted',
+        domain,
+        smtp,
+        address: found.address,
+        confidence: found.confidence,
+        candidates: proposals.length + 1,
+        recommendationIds: await redecide(deps, workspaceId, personId),
+        via: found.via,
+      };
+    }
+  }
 
   if (!best || best.confidence < threshold) {
     return {
@@ -725,4 +775,146 @@ async function redecide(
     if (id) created.push(id);
   }
   return created;
+}
+
+// ---------------------------------------------------------------- finders
+
+/** Finders that said "out of credits", and until when they are left alone. */
+const finderPausedUntil = new Map<string, string>();
+
+/** Forgets every pause. For tests, and for an operator who just topped up. */
+export function resetFinderPauses(): void {
+  finderPausedUntil.clear();
+}
+
+/** Lookups spent with a finder today and this month, across every workspace. */
+export async function finderSpend(
+  db: Client,
+  provider: string,
+  at: Date = new Date(),
+): Promise<{ today: number; month: number }> {
+  const day = at.toISOString().slice(0, 10);
+  const row = await queryOne<{ today: number | null; month: number | null }>(
+    db,
+    `SELECT SUM(CASE WHEN day = ? THEN lookups ELSE 0 END) AS today,
+            SUM(lookups) AS month
+       FROM enrichment_usage WHERE provider = ? AND day LIKE ?`,
+    [day, `finder:${provider}`, `${day.slice(0, 7)}%`],
+  );
+  return { today: Number(row?.today ?? 0), month: Number(row?.month ?? 0) };
+}
+
+async function countFinderLookup(db: Client, workspaceId: string, provider: string, at: Date) {
+  await db.execute({
+    sql: `INSERT INTO enrichment_usage (workspace_id, day, provider, lookups) VALUES (?, ?, ?, 1)
+          ON CONFLICT (workspace_id, day, provider) DO UPDATE
+            SET lookups = enrichment_usage.lookups + 1`,
+    args: [workspaceId, at.toISOString().slice(0, 10), `finder:${provider}`],
+  });
+}
+
+function firstOfNextMonth(at: Date): string {
+  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 1)).toISOString();
+}
+
+/**
+ * What a finder's answer is worth before the mail server is asked.
+ *
+ * A page that printed the address next to the person's name is the
+ * strongest; a finder that verified it itself is next; a bare score is
+ * capped below the promotion floor, so on its own it can only ever be
+ * promoted by the mail server confirming the mailbox.
+ */
+export function finderConfidence(found: FinderAnswer, via: string): number {
+  if (found.status === 'invalid') return 0;
+  if (via === 'search' || via === 'valueserp') return 0.9;
+  if (found.status === 'valid') return 0.9;
+  return Math.min(found.score, 0.8);
+}
+
+async function askFinders(
+  deps: FindEmailDeps,
+  input: {
+    readonly workspaceId: string;
+    readonly personId: string;
+    readonly name: { readonly firstName: string; readonly lastName: string };
+    readonly domain: string;
+    readonly companyInbox: string | undefined;
+    readonly rejected: ReadonlySet<string>;
+    readonly threshold: number;
+  },
+): Promise<{ address: string; confidence: number; verified: boolean; via: string } | undefined> {
+  const { db } = deps;
+  const at = new Date();
+
+  for (const slot of deps.finders ?? []) {
+    const provider = slot.finder.name;
+    const paused = finderPausedUntil.get(provider);
+    if (paused && paused > at.toISOString()) continue;
+
+    const spent = await finderSpend(db, provider, at);
+    if (spent.today >= slot.perDay || spent.month >= slot.perMonth) continue;
+
+    let found: FinderAnswer | undefined;
+    try {
+      await countFinderLookup(db, input.workspaceId, provider, at);
+      found = await slot.finder.find({ ...input.name, domain: input.domain });
+    } catch (error) {
+      if (error instanceof SearchOutOfCredits) {
+        finderPausedUntil.set(provider, firstOfNextMonth(at));
+        console.log(`find_email: ${provider} is out of credits until next month`);
+      } else {
+        console.log(`find_email: ${provider} failed: ${(error as Error).message.slice(0, 200)}`);
+      }
+      continue;
+    }
+    if (!found) continue;
+
+    const address = found.address.trim().toLowerCase();
+    // Their name, in a shape companies use, at their employer. Anything else
+    // is somebody else's address, or a provider's sample data, and is dropped.
+    const shapes = inferPatterns(address, input.name, input.domain);
+    const pattern = shapes[0];
+    if (!pattern || looksLikeRoleMailbox(address)) continue;
+    if (input.rejected.has(address) || address === input.companyInbox) continue;
+    if (await heldByAnotherPerson(db, input.workspaceId, input.personId, address)) continue;
+    if (await anySuppressed(db, input.workspaceId, [emailMatchKey(address)])) continue;
+
+    const base = finderConfidence(found, provider);
+    if (base === 0) continue;
+
+    const verification = await verifyDomainCandidates(input.domain, [address], {
+      ...(deps.resolveMx ? { resolveMx: deps.resolveMx } : {}),
+      ...(deps.smtp ? { smtp: deps.smtp } : {}),
+    });
+    if (verification.mx.length === 0) return undefined;
+
+    const verdict = verification.verdicts.get(address) ?? 'unknown';
+    const candidate: AddressCandidate = { address, pattern, derived: true, confidence: base };
+    const confidence = scoreCandidate(candidate, verdict, verification);
+
+    await recordCandidate(db, {
+      workspaceId: input.workspaceId,
+      personId: input.personId,
+      candidate,
+      confidence,
+      basis:
+        `Found by ${provider}` +
+        (found.status ? ` (it says ${found.status.replace('_', '-')})` : '') +
+        `, in their ${pattern} shape at ${input.domain}.` +
+        (verdict === 'accepted'
+          ? ' Its mail server confirmed the mailbox.'
+          : verdict === 'rejected'
+            ? ' Its mail server said the mailbox does not exist.'
+            : ''),
+      evidence: evidenceFor(verification, address, 0),
+      rejectedByServer: verdict === 'rejected',
+    });
+
+    if (verdict === 'rejected') continue;
+    if (confidence >= input.threshold) {
+      return { address, confidence, verified: verdict === 'accepted', via: provider };
+    }
+  }
+  return undefined;
 }

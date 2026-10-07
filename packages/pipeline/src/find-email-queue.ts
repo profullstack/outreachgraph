@@ -80,16 +80,19 @@ export async function enqueueFindEmail(
  * The people a sweep would queue: held on a hand-carried card, with nothing to
  * email, not searched recently, and not already queued.
  *
- * Scoped to held (`manual_only`) cards because that is exactly the population
- * the search exists for. Someone with a company inbox already has an email
- * card; someone with no card at all was excluded for a reason the engine will
- * reach again without our help.
+ * Held (`manual_only`) cards, and email cards with no personal address behind
+ * them. The second group was left out on the theory that a company inbox is
+ * an address; in production it was 490 named people whose only route was a
+ * support@ or info@ desk, which the guard refuses or the shared-inbox limit
+ * holds to two a week, and none of them had ever been searched. Someone with
+ * no card at all was excluded for a reason the engine will reach again
+ * without our help.
  */
 const AWAITING = `
   FROM recommendations r
   JOIN people p ON p.id = r.person_id
  WHERE r.status = 'pending'
-   AND r.policy_status = 'manual_only'
+   AND (r.policy_status = 'manual_only' OR (r.network = 'email' AND r.action = 'send_email'))
    AND p.status = 'active' AND p.kind = 'person' AND p.outreach_eligible = 1
    AND (p.email_searched_at IS NULL OR p.email_searched_at < ?)
    AND NOT EXISTS (SELECT 1 FROM person_emails pe WHERE pe.person_id = p.id)

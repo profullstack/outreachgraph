@@ -366,3 +366,15 @@ export {
   type BlacklistResult,
   type BlacklistVerdict,
 } from './email/blacklists';
+
+export {
+  addressesAt,
+  ContactOutEmailFinder,
+  HunterEmailFinder,
+  isContactOutSample,
+  PublishedEmailFinder,
+  SerperClient,
+  type EmailFinder,
+  type FinderQuery,
+  type FinderAnswer,
+} from './email-finder';
