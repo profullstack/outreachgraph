@@ -1183,6 +1183,9 @@ export function llmsText(baseUrl: string): string {
   );
   lines.push("- `GET /planner/year` — all twelve months with each play's segment and touches.");
   lines.push(
+    '- `GET /list-sources?kind=funding|leadership|event` — newly funded companies, new leaders and conference pages found weekly in the news for each product, each crawled into its signals campaign with the news as evidence.',
+  );
+  lines.push(
     "- `POST /planner/run` — launch this month's plays now. Idempotent per product, month and play.",
   );
   lines.push(
