@@ -53,9 +53,12 @@ jobs:
           VALUESERP_API_KEY: ${{ secrets.VALUESERP_API_KEY }}
           CHOVY_CAMPAIGN_SECRET: ${{ secrets.CHOVY_CAMPAIGN_SECRET }}
           PDL_API_KEY: ${{ secrets.PDL_API_KEY }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
+          CONTACTOUT_API_KEY: ${{ secrets.CONTACTOUT_API_KEY }}
         run: |
           lines=""
-          for key in VALUESERP_API_KEY CHOVY_CAMPAIGN_SECRET PDL_API_KEY; do
+          for key in VALUESERP_API_KEY CHOVY_CAMPAIGN_SECRET PDL_API_KEY SERPER_API_KEY HUNTER_API_KEY CONTACTOUT_API_KEY; do
             value=$(printenv "$key" || true)
             [ -n "$value" ] && lines="$lines$key=$value"$'\n'
           done

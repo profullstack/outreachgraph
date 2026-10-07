@@ -56,8 +56,12 @@ export {
 export { reseedIdleCampaigns, type ReseedResult } from './reseed';
 export {
   findEmail,
+  finderConfidence,
+  finderSpend,
+  resetFinderPauses,
   scoreCandidate,
   PROMOTE_THRESHOLD,
+  type FinderSlot,
   type FindEmailDeps,
   type FindEmailOutcome,
   type FindEmailResult,
