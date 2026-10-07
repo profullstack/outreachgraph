@@ -50,7 +50,14 @@ import {
 import { budgetStatus } from './metering';
 import { holdReason } from './lead-screen';
 import { ownDomains, refuseRecipient } from './recipient-guard';
-import { catchAllAllowed, formatRate } from '@outreachgraph/domain';
+import {
+  catchAllAllowed,
+  classifyPersona,
+  EXPANSION_GAP_DAYS,
+  formatRate,
+  orderForExpansion,
+} from '@outreachgraph/domain';
+import { companyHeldBy, describeCompanyHold, type CompanyBusy } from './account-expansion';
 import type { VerifierDeps } from '@outreachgraph/providers';
 import {
   applyCampaignBounceGate,
@@ -158,6 +165,8 @@ interface Candidate {
   readonly checks_json: string | null;
   readonly company_name: string | null;
   readonly company_contact_email: string | null;
+  readonly company_id: string | null;
+  readonly person_title: string | null;
   readonly person_email: string | null;
   readonly failed_attempts: number;
 }
@@ -316,6 +325,9 @@ export function describeHold(reason: string): string {
   if (/talking to this person is paused/i.test(reason)) {
     return 'the mailbox already talking to them is paused';
   }
+  if (/one contact per company/i.test(reason)) {
+    return 'a colleague at the same company is mid-sequence';
+  }
   if (/campaign paused/i.test(reason)) return 'the campaign bounced over 2% and is re-verifying';
   if (/failed verification/i.test(reason)) return 'the address failed verification';
   if (/accept-all/i.test(reason)) return 'an accept-all address, held while bounces are above 1%';
@@ -392,6 +404,7 @@ export async function runAutopilot(
             c.approval_mode, c.budget_json,
             p.display_name, p.status AS person_status, p.believed_minor,
             p.outreach_eligible, p.identity_confidence,
+            p.current_company_id AS company_id, p.current_title AS person_title,
             (SELECT ls.findings FROM lead_screens ls
               WHERE ls.workspace_id = r.workspace_id AND ls.person_id = p.id
                 AND ls.allowed_at IS NULL) AS screen_findings,
@@ -466,7 +479,17 @@ export async function runAutopilot(
   const droppedOnRecheck = new Map<string, number>();
   let verificationsLeft = deps.maxVerificationsPerRun ?? DEFAULT_VERIFICATIONS_PER_RUN;
 
-  for (const row of candidates) {
+  // Account expansion: one contact per company at a time, opened by the
+  // budget holder and widened persona by persona. Each company's cards move
+  // up behind its best one; the order between companies is untouched.
+  const queue = orderForExpansion(
+    candidates,
+    (row) => row.company_id,
+    (row) => classifyPersona(row.person_title),
+  );
+  const companyHolds = new Map<string, CompanyBusy | null>();
+
+  for (const row of queue) {
     if (today >= cap) {
       completed = false;
       break;
@@ -614,6 +637,29 @@ export async function runAutopilot(
     if (breach) {
       await note(breach.reason);
       continue;
+    }
+
+    // ---------------------------------------------------------- company gate
+    //
+    // Never two contacts at one company at once. A colleague written to in
+    // the last 21 days (or on an active cadence) who has not answered holds
+    // the company; a send in this run holds it too, from the cache below.
+    if (row.company_id) {
+      let held = companyHolds.get(row.company_id);
+      if (held === undefined) {
+        held =
+          (await companyHeldBy(db, {
+            workspaceId,
+            companyId: row.company_id,
+            personId: row.person_id,
+            at,
+          })) ?? null;
+        companyHolds.set(row.company_id, held);
+      }
+      if (held && held.personId !== row.person_id) {
+        await note(describeCompanyHold(held, row.company_name));
+        continue;
+      }
     }
 
     // ------------------------------------------------------------- policy
@@ -868,6 +914,16 @@ export async function runAutopilot(
 
       today += 1;
       ledger.release(workspaceId, row.recommendation_id);
+
+      // This person now holds their company for the rest of the run.
+      if (row.company_id) {
+        companyHolds.set(row.company_id, {
+          personId: row.person_id,
+          name: row.display_name,
+          persona: classifyPersona(row.person_title),
+          until: new Date(at.getTime() + EXPANSION_GAP_DAYS * 86_400_000).toISOString(),
+        });
+      }
 
       // The mailbox just received one; colleagues behind it on this run must
       // see that without re-reading the table.

@@ -648,6 +648,27 @@ export const OPERATIONS: readonly Operation[] = [
   },
   {
     method: 'get',
+    path: '/autogtm/campaigns/{campaign_id}/accounts',
+    id: 'getAccounts',
+    tag: 'Campaigns',
+    summary: 'Account expansion: who at each company was reached, who is next',
+    description:
+      'Contacts are classified from their job title as budget holder, pain feeler (end user), ' +
+      'blocker (legal, security, IT, finance) or champion (manager). One contact per company is ' +
+      'written to at a time: a colleague emailed in the last 21 days, or on an active cadence, ' +
+      'holds the company until they answer or the window closes. Queued colleagues go in persona ' +
+      'order, each drafted with an angle for their role. `missing` lists personas nobody covers yet.',
+    params: [idParam('campaign_id', 'The campaign.')],
+    response: {
+      type: 'object',
+      properties: {
+        gap_days: { type: 'integer' },
+        accounts: { type: 'array', items: { type: 'object' } },
+      },
+    },
+  },
+  {
+    method: 'get',
     path: '/autogtm/campaigns/{campaign_id}/list-health',
     id: 'getListHealth',
     tag: 'Campaigns',

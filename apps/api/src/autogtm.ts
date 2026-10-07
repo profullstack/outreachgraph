@@ -30,6 +30,7 @@ import {
   autogtmStatus,
   CONTACT_PRICE_USD,
   isConsumerMailDomain,
+  EXPANSION_GAP_DAYS,
   mapHeaders,
   MAX_BOUNCE_RATE,
   newId,
@@ -43,6 +44,7 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
   applyProjectBudget,
   budgetStatus,
+  campaignAccounts,
   campaignBudgetFrom,
   countScreenedHeld,
   crawlDedupeKey,
@@ -993,6 +995,37 @@ export function autogtmRoutes(deps: AutogtmDeps): Hono<AppEnv> {
       paused: report.pausedAt !== null,
       paused_at: report.pausedAt,
       addresses: report.addresses,
+    });
+  });
+
+  /**
+   * Account expansion: each company in the campaign with who has been reached,
+   * who is next, and which of the four personas nobody covers yet.
+   */
+  r.get('/campaigns/:id/accounts', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    const campaign = await ownedCampaign(db, actor.workspaceId, c.req.param('id'));
+    const accounts = await campaignAccounts(db, {
+      workspaceId: actor.workspaceId,
+      campaignId: campaign.id,
+    });
+    return c.json({
+      campaign_id: campaign.id,
+      gap_days: EXPANSION_GAP_DAYS,
+      accounts: accounts.map((account) => ({
+        company_id: account.companyId,
+        company: account.company,
+        missing: account.missing,
+        contacts: account.contacts.map((contact) => ({
+          person_id: contact.personId,
+          name: contact.name,
+          title: contact.title,
+          persona: contact.persona,
+          state: contact.state,
+          last_contacted_at: contact.lastContactedAt,
+        })),
+      })),
     });
   });
 

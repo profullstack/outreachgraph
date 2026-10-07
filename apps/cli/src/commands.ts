@@ -306,6 +306,29 @@ async function runLeads({ client, args, flags }: CommandContext): Promise<string
       .join('\n');
   }
 
+  if (verb === 'accounts') {
+    if (!target) throw new Error('usage: og leads accounts <campaignId>');
+    const result = (await client.get(
+      `/autogtm/campaigns/${encodeURIComponent(target)}/accounts`,
+    )) as Record<string, unknown>;
+    const accounts = (result.accounts ?? []) as Record<string, unknown>[];
+    if (accounts.length === 0) return 'No companies in this campaign yet.';
+    return accounts
+      .map((account) => {
+        const contacts = (account.contacts ?? []) as Record<string, unknown>[];
+        const missing = (account.missing ?? []) as string[];
+        return [
+          `${text(account, 'company')}${missing.length ? `  (missing: ${missing.join(', ')})` : ''}`,
+          ...contacts.map(
+            (contact) =>
+              `  ${text(contact, 'state').padEnd(10)} ${text(contact, 'persona').padEnd(13)} ` +
+              `${text(contact, 'name')}${contact.title ? `, ${text(contact, 'title')}` : ''}`,
+          ),
+        ].join('\n');
+      })
+      .join('\n');
+  }
+
   if (verb === 'health') {
     if (!target) throw new Error('usage: og leads health <campaignId>');
     const health = (await client.get(
@@ -336,7 +359,7 @@ async function runLeads({ client, args, flags }: CommandContext): Promise<string
   }
 
   throw new Error(
-    'usage: og leads add|report|screened|enrich|enrichment|health|allow|hold …  (og help)',
+    'usage: og leads add|report|screened|enrich|enrichment|health|accounts|allow|hold …  (og help)',
   );
 }
 
@@ -1716,7 +1739,7 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'leads',
     usage:
-      'og leads add <campaignId> <file.csv> --consent-source "<where>" [--allow-flagged] [--keep-project-duplicates] [--report out.csv] | report <taskId> [--csv] | screened <campaignId> [--all] | enrich <campaignId> [--max <searches>] | enrichment <campaignId> | health <campaignId> | allow <personId> | hold <personId>',
+      'og leads add <campaignId> <file.csv> --consent-source "<where>" [--allow-flagged] [--keep-project-duplicates] [--report out.csv] | report <taskId> [--csv] | screened <campaignId> [--all] | enrich <campaignId> [--max <searches>] | enrichment <campaignId> | health <campaignId> | accounts <campaignId> | allow <personId> | hold <personId>',
     summary: 'Add a CSV of leads to a running campaign, with a per-row report and screening.',
     run: runLeads,
   },

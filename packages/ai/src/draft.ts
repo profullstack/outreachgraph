@@ -11,7 +11,14 @@
  * fabricated one.
  */
 
-import { newId, type ActionKind, type Network, type OutreachStyle } from '@outreachgraph/domain';
+import {
+  classifyPersona,
+  newId,
+  PERSONA_ANGLES,
+  type ActionKind,
+  type Network,
+  type OutreachStyle,
+} from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { composeDraft, type ComposeResult, type TextModel } from '@outreachgraph/ai';
 import { draftReplyForRecommendation } from './draft-reply';
@@ -65,6 +72,17 @@ export async function draftForRecommendation(
   if (recommendation.reply_to_interaction_id) {
     return draftReplyForRecommendation(db, model, recommendation.id);
   }
+
+  // A fresh angle per role (account expansion): the budget holder hears the
+  // outcome, the end user the friction, the reviewer the objection answered,
+  // the manager the proof to forward. Added to whatever the step asked for.
+  const titled = await queryOne<{ current_title: string | null }>(
+    db,
+    'SELECT current_title FROM people WHERE id = ?',
+    [recommendation.person_id],
+  );
+  const angle = PERSONA_ANGLES[classifyPersona(titled?.current_title)];
+  const guidance = [recommendation.guidance?.trim(), angle].filter(Boolean).join(' ') || undefined;
 
   // No trigger means nothing to quote, and §14.1 forbids personalising
   // without evidence.
@@ -189,7 +207,7 @@ export async function draftForRecommendation(
       : {}),
     minIdentityConfidence: workspace?.min_outreach_confidence ?? 0.85,
     priorDraftHashes: priorHashes.map((r) => r.similarity_hash),
-    ...(recommendation.guidance ? { guidance: recommendation.guidance } : {}),
+    ...(guidance ? { guidance } : {}),
   });
 
   if (!result.ok) {

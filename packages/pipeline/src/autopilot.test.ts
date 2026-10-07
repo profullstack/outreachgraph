@@ -504,9 +504,10 @@ describe('one mailbox, several colleagues', () => {
     expect(result.skipped[0]?.reason).toMatch(/address|company inbox/i);
   });
 
-  test('still writes to two different mailboxes', async () => {
-    // The guard must not become "one email per company" — two people with
-    // their own addresses are two conversations.
+  test('two colleagues with their own mailboxes are written to one at a time', async () => {
+    // Account expansion (Hunter's planner): never two contacts at one company
+    // at once. The second waits for the first one's 21-day window, and is not
+    // lost — its card stays pending.
     seeded = await seedDatabase('autopilot-distinct-inboxes');
     const { db } = seeded;
 
@@ -522,8 +523,14 @@ describe('one mailbox, several colleagues', () => {
     });
 
     const { sent, mailer } = recordingMailer();
-    await runAutopilot({ db, mailer }, SEED.workspaceId);
+    const result = await runAutopilot({ db, mailer }, SEED.workspaceId);
 
+    expect(sent).toHaveLength(1);
+    expect(result.skipped.some((skip) => /one contact per company/.test(skip.reason))).toBe(true);
+
+    // Three weeks later the colleague's turn comes.
+    const later = new Date(Date.now() + 22 * 86_400_000);
+    await runAutopilot({ db, mailer, now: later }, SEED.workspaceId);
     expect(sent.map((message) => message.to).sort()).toEqual(['jane@acme.com', 'tom@acme.com']);
   });
 
