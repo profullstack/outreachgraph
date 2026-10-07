@@ -32,7 +32,12 @@ import {
   DRAFTABLE_REPLY_LABELS,
   isAutoReplyMode,
   isReplyLabel,
+  inBusinessHours,
   newId,
+  QUIET_BUMP_DAYS,
+  QUIET_BUMP_GUIDANCE,
+  QUIET_BUMP_MAX_AGE_DAYS,
+  recipientTimezone,
   type ActionKind,
   type AutoReplyMode,
   type Network,
@@ -317,6 +322,7 @@ async function answer(
   workspaceId: string,
   row: InboundRow,
   label: ReplyClassification,
+  bump?: { readonly quietDays: number },
 ): Promise<TriageResult> {
   const { db } = deps;
 
@@ -349,9 +355,10 @@ async function answer(
     return { outcome: 'labelled', label, reason: `${row.network} replies are answered by hand` };
   }
 
-  const recommendationId =
-    (await replyCardFor(db, row.id)) ??
-    (await createReplyCard(db, workspaceId, campaign.id, row, label));
+  const recommendationId = bump
+    ? await createReplyCard(db, workspaceId, campaign.id, row, label, bump)
+    : ((await replyCardFor(db, row.id)) ??
+      (await createReplyCard(db, workspaceId, campaign.id, row, label)));
 
   const drafted = deps.model
     ? await draftReplyForRecommendation(db, deps.model, recommendationId).catch(
@@ -415,8 +422,12 @@ async function createReplyCard(
   campaignId: string,
   row: InboundRow,
   label: ReplyClassification,
+  bump?: { readonly quietDays: number },
 ): Promise<string> {
   const recommendationId = newId('recommendation');
+  const reason = bump
+    ? `Gone quiet for ${bump.quietDays} days after our answer: one follow-up`
+    : `They replied (${label.label.replace(/_/g, ' ')}): "${snippet(row.body)}"`;
 
   // `send_email` because that is the one email capability the matrix
   // describes; `continue_conversation` and the answered message are what mark
@@ -425,18 +436,19 @@ async function createReplyCard(
   await db.execute({
     sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
           priority, reason, trigger_signal_id, policy_status, policy_version, expected_goal,
-          status, created_at, reply_to_interaction_id)
+          status, created_at, reply_to_interaction_id, guidance)
           VALUES (?, ?, ?, ?, 'send_email', 'email', 100, ?, NULL, 'allow_with_approval', ?,
-          'continue_conversation', 'pending', ?, ?)`,
+          'continue_conversation', 'pending', ?, ?, ?)`,
     args: [
       recommendationId,
       workspaceId,
       campaignId,
       row.person_id,
-      `They replied (${label.label.replace(/_/g, ' ')}): "${snippet(row.body)}"`,
+      reason,
       POLICY_VERSION,
       now(),
       row.id,
+      bump ? QUIET_BUMP_GUIDANCE : null,
     ],
   });
 
@@ -683,6 +695,94 @@ async function sendUnattended(
   };
 }
 
+// ------------------------------------------------------------- quiet bumps
+
+export interface BumpResult {
+  readonly considered: number;
+  readonly sent: number;
+  readonly carded: number;
+}
+
+/** Threads bumped per run, so a backlog drains over hours rather than at once. */
+const BUMPS_PER_RUN = 20;
+
+/**
+ * Gone quiet: one bump at 7 days (Hunter's planner).
+ *
+ * A thread qualifies when someone answered `interested` or `question`, we
+ * answered them, and seven days have passed since our last message with
+ * nothing back. Threads older than 30 days are left alone, so the first run
+ * after a deploy does not wake conversations from last spring. One bump per
+ * inbound message, ever: the card's guidance marks it.
+ *
+ * The bump goes through the same path as an answer: a card, a draft, the
+ * policy engine re-asked from live rows and `decideAutoReply`. It is sent
+ * unattended only where autonomous replies are already allowed; everywhere
+ * else it waits on the approval queue like any drafted answer. It is only
+ * created inside the recipient's business hours.
+ */
+export async function bumpQuietThreads(deps: TriageDeps, workspaceId: string): Promise<BumpResult> {
+  const { db } = deps;
+  const at = deps.now ?? new Date();
+  const quietBefore = new Date(at.getTime() - QUIET_BUMP_DAYS * 86_400_000).toISOString();
+  const oldest = new Date(at.getTime() - QUIET_BUMP_MAX_AGE_DAYS * 86_400_000).toISOString();
+
+  const rows = await queryAll<
+    InboundRow & {
+      last_ours: string;
+      person_location: string | null;
+      company_location: string | null;
+    }
+  >(
+    db,
+    `SELECT * FROM (
+       SELECT i.id, i.person_id, i.campaign_id, i.network, i.direction, i.body, i.subject,
+              i.contact_address, i.reply_label, i.reply_confidence, i.reply_label_source,
+              i.reply_label_reason, i.occurred_at,
+              p.location AS person_location, co.location AS company_location,
+              (SELECT MAX(o.occurred_at) FROM interactions o
+                WHERE o.workspace_id = i.workspace_id AND o.person_id = i.person_id
+                  AND o.direction = 'outbound' AND o.occurred_at > i.occurred_at) AS last_ours
+         FROM interactions i
+         JOIN people p ON p.id = i.person_id
+         LEFT JOIN companies co ON co.id = p.current_company_id
+        WHERE i.workspace_id = ? AND i.direction = 'inbound' AND i.network = 'email'
+          AND i.state IN ('replied', 'responded')
+          AND i.reply_label IN ('interested', 'question')
+          AND i.occurred_at >= ?
+          AND p.status = 'active'
+          AND NOT EXISTS (SELECT 1 FROM interactions later
+                WHERE later.workspace_id = i.workspace_id AND later.person_id = i.person_id
+                  AND later.direction = 'inbound' AND later.occurred_at > i.occurred_at)
+          AND NOT EXISTS (SELECT 1 FROM recommendations r
+                WHERE r.reply_to_interaction_id = i.id AND r.guidance = ?)
+     ) quiet
+     WHERE last_ours IS NOT NULL AND last_ours <= ?
+     ORDER BY occurred_at ASC
+     LIMIT ?`,
+    [workspaceId, oldest, QUIET_BUMP_GUIDANCE, quietBefore, BUMPS_PER_RUN],
+  );
+
+  let sent = 0;
+  let carded = 0;
+  for (const row of rows) {
+    const { zone } = recipientTimezone({
+      personLocation: row.person_location,
+      companyLocation: row.company_location,
+      address: row.contact_address,
+    });
+    if (!inBusinessHours(at, zone)) continue;
+
+    const label = await labelFor(deps, workspaceId, row);
+    const quietDays = Math.round((at.getTime() - Date.parse(row.last_ours)) / 86_400_000);
+    const result = await answer(deps, workspaceId, row, label, { quietDays });
+    if (result.outcome === 'sent') sent += 1;
+    else if (result.recommendationId) carded += 1;
+  }
+
+  return { considered: rows.length, sent, carded };
+}
+
 // ------------------------------------------------------------------ helpers
 
 /** The campaign whose settings answer this reply: the one that wrote last. */
@@ -715,8 +815,9 @@ async function campaignFor(
 async function replyCardFor(db: Client, interactionId: string): Promise<string | undefined> {
   const existing = await queryOne<{ id: string }>(
     db,
-    'SELECT id FROM recommendations WHERE reply_to_interaction_id = ? LIMIT 1',
-    [interactionId],
+    `SELECT id FROM recommendations WHERE reply_to_interaction_id = ?
+        AND (guidance IS NULL OR guidance <> ?) LIMIT 1`,
+    [interactionId, QUIET_BUMP_GUIDANCE],
   );
   return existing?.id;
 }

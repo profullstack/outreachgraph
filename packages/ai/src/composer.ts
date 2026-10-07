@@ -362,7 +362,17 @@ export interface ReplyComposeInput {
   readonly minIdentityConfidence: number;
   readonly priorDraftHashes?: readonly string[];
   readonly maxAttempts?: number;
+  /**
+   * Set when this is the one bump to a thread that went quiet after we
+   * answered (Hunter's planner: "gone quiet: one bump at 7 days"). Our last
+   * message is part of the context, and the guidance changes from answering
+   * their message to nudging ours.
+   */
+  readonly followUp?: { readonly ourLastMessage: string; readonly quietDays: number };
 }
+
+const FOLLOW_UP_GUIDANCE =
+  'They have not answered our last message. Write one short, friendly follow-up of two or three sentences that refers back to it, adds nothing new beyond the CONTEXT, and ends with a question that takes seconds to answer. No guilt, no "just checking in", no pressure.';
 
 const REPLY_GUIDANCE: Partial<Record<ReplyLabel, string>> = {
   interested:
@@ -407,6 +417,7 @@ export async function composeReply(
       // Everything we already said is ours to repeat: it passed these gates
       // on its way out.
       ...ours,
+      ...(input.followUp ? [input.followUp.ourLastMessage] : []),
     ].filter(Boolean),
     offering: [
       input.offering.name,
@@ -508,7 +519,7 @@ function buildReplySystem(input: ReplyComposeInput): string {
     `Channel: ${input.network}. This is a reply in a conversation they started answering.`,
     limit ? `Hard limit: ${limit} characters.` : '',
     words ? `Aim for at most ${words} words.` : 'Aim for at most 90 words.',
-    REPLY_GUIDANCE[input.label] ?? '',
+    input.followUp ? FOLLOW_UP_GUIDANCE : (REPLY_GUIDANCE[input.label] ?? ''),
   ]
     .filter(Boolean)
     .join('\n');
@@ -533,8 +544,14 @@ function buildReplyUser(input: ReplyComposeInput, fresh: string, failed?: CheckR
     ...(history.length > 0 ? ['Earlier in this conversation:', ...history] : []),
     `Their latest message${input.inbound.subject ? ` (subject: ${input.inbound.subject})` : ''}:`,
     `"""\n${fresh.slice(0, 4000)}\n"""`,
+    ...(input.followUp
+      ? [
+          `We answered ${input.followUp.quietDays} days ago and have heard nothing since:`,
+          `"""\n${input.followUp.ourLastMessage.slice(0, 1500)}\n"""`,
+        ]
+      : []),
     '',
-    `Write the reply to ${name}.`,
+    input.followUp ? `Write the one follow-up to ${name}.` : `Write the reply to ${name}.`,
   ];
 
   if (failed) {

@@ -293,6 +293,7 @@ export {
 } from './receive-email';
 export {
   triageReply,
+  bumpQuietThreads,
   type TriageDeps,
   type TriageInput,
   type TriageOutcome,

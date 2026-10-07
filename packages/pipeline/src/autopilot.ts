@@ -55,7 +55,10 @@ import {
   classifyPersona,
   EXPANSION_GAP_DAYS,
   formatRate,
+  inBusinessHours,
+  nextBusinessOpening,
   orderForExpansion,
+  recipientTimezone,
 } from '@outreachgraph/domain';
 import { companyHeldBy, describeCompanyHold, type CompanyBusy } from './account-expansion';
 import type { VerifierDeps } from '@outreachgraph/providers';
@@ -112,6 +115,12 @@ export interface AutopilotDeps {
   readonly verifier?: VerifierDeps | undefined;
   /** Fresh checks one run may make; the rest wait for the next tick. */
   readonly maxVerificationsPerRun?: number;
+  /**
+   * Send cold messages only Monday-Friday 08:00-17:00 in the recipient's
+   * inferred timezone. The worker turns this on; tests leave it off so they
+   * do not depend on the hour they run at.
+   */
+  readonly businessHours?: boolean;
   /** Where holds are remembered between runs. Defaults to the process-wide one. */
   readonly holdLedger?: HoldLedger;
 }
@@ -167,6 +176,8 @@ interface Candidate {
   readonly company_contact_email: string | null;
   readonly company_id: string | null;
   readonly person_title: string | null;
+  readonly person_location: string | null;
+  readonly company_location: string | null;
   readonly person_email: string | null;
   readonly failed_attempts: number;
 }
@@ -325,6 +336,7 @@ export function describeHold(reason: string): string {
   if (/talking to this person is paused/i.test(reason)) {
     return 'the mailbox already talking to them is paused';
   }
+  if (/outside business hours/i.test(reason)) return "outside the recipient's business hours";
   if (/one contact per company/i.test(reason)) {
     return 'a colleague at the same company is mid-sequence';
   }
@@ -405,6 +417,7 @@ export async function runAutopilot(
             p.display_name, p.status AS person_status, p.believed_minor,
             p.outreach_eligible, p.identity_confidence,
             p.current_company_id AS company_id, p.current_title AS person_title,
+            p.location AS person_location, co.location AS company_location,
             (SELECT ls.findings FROM lead_screens ls
               WHERE ls.workspace_id = r.workspace_id AND ls.person_id = p.id
                 AND ls.allowed_at IS NULL) AS screen_findings,
@@ -548,6 +561,24 @@ export async function runAutopilot(
     if (refused) {
       await note(refused);
       continue;
+    }
+
+    // Business hours where they are, inferred from their location, their
+    // company's, then their mail domain. Costs no query, so it runs before
+    // anything that does; a held card simply goes out on a later tick.
+    if (deps.businessHours) {
+      const { zone } = recipientTimezone({
+        personLocation: row.person_location,
+        companyLocation: row.company_location,
+        address: recipient.address,
+      });
+      if (!inBusinessHours(at, zone)) {
+        const opens = nextBusinessOpening(at, zone);
+        await note(
+          `outside business hours in ${zone}; sends after ${opens.toISOString().slice(0, 16)}Z`,
+        );
+        continue;
+      }
     }
 
     // ------------------------------------------------------- list quality

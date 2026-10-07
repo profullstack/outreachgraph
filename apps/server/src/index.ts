@@ -70,6 +70,7 @@ import {
   workspacesAwaitingPhotos,
   runCadences,
   promoteAbWinners,
+  bumpQuietThreads,
   runCrawlJob,
   runDiscoveryJob,
   runNichedbDiscoveryJob,
@@ -124,6 +125,7 @@ const RECEIVE_POLL_MS = Number(process.env.RECEIVE_POLL_MS ?? 300_000);
 /** How often A/B tests are checked for a decision. */
 const AB_SWEEP_MS = 3_600_000;
 const lastAbSweepAt = new Map<string, number>();
+const lastBumpSweepAt = new Map<string, number>();
 
 /** Last successful poll per workspace, so the slower clock survives a tick. */
 const lastPolledAt = new Map<string, number>();
@@ -1362,6 +1364,30 @@ async function tick(): Promise<void> {
       }
     }
 
+    // Gone quiet: one bump at 7 days, hourly, in the recipient's business
+    // hours. Sent unattended only where autonomous replies are allowed;
+    // otherwise it is a drafted card on the approval queue.
+    if (Date.now() - (lastBumpSweepAt.get(workspace.id) ?? 0) >= AB_SWEEP_MS) {
+      lastBumpSweepAt.set(workspace.id, Date.now());
+      try {
+        const bumps = await bumpQuietThreads(
+          {
+            db,
+            ...(model ? { model } : {}),
+            ...(mailer ? { mailer } : {}),
+            ...(encryptionKey ? { encryptionKey } : {}),
+            ...(appUrl ? { appUrl } : {}),
+          },
+          workspace.id,
+        );
+        if (bumps.sent > 0 || bumps.carded > 0) {
+          console.log(`bumps ${workspace.id}: ${bumps.sent} sent, ${bumps.carded} for approval`);
+        }
+      } catch (error) {
+        console.error(`quiet-thread bumps failed for ${workspace.id}`, error);
+      }
+    }
+
     // Cadences run before autopilot, not after. A step that falls due this
     // tick writes a recommendation, and running the sweep first means that
     // card waits a whole cycle before anything looks at it — which for an
@@ -1414,6 +1440,8 @@ async function tick(): Promise<void> {
           // Verify before sending: MX always, an SMTP RCPT probe while port 25
           // answers. A blocked port degrades to MX-only, never to a hold.
           verifier: smtpProber && !smtpProber.blocked() ? { smtp: smtpProber } : {},
+          // Cold mail lands in the recipient's working day, not at 3am.
+          businessHours: true,
         },
         workspace.id,
       );

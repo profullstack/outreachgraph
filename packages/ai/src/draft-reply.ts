@@ -13,6 +13,7 @@
 import {
   isReplyLabel,
   newId,
+  QUIET_BUMP_GUIDANCE,
   replySubject,
   type Network,
   type OutreachStyle,
@@ -58,9 +59,10 @@ export async function draftReplyForRecommendation(
     person_id: string;
     network: string;
     reply_to_interaction_id: string | null;
+    guidance: string | null;
   }>(
     db,
-    `SELECT id, workspace_id, campaign_id, person_id, network, reply_to_interaction_id
+    `SELECT id, workspace_id, campaign_id, person_id, network, reply_to_interaction_id, guidance
        FROM recommendations WHERE id = ?`,
     [recommendationId],
   );
@@ -95,6 +97,25 @@ export async function draftReplyForRecommendation(
     body: row.body ?? '',
   }));
 
+  // The one bump to a thread that went quiet after we answered: our latest
+  // message is what it follows up on.
+  let followUp: { ourLastMessage: string; quietDays: number } | undefined;
+  if (recommendation.guidance === QUIET_BUMP_GUIDANCE) {
+    const ours = await queryOne<{ body: string | null; occurred_at: string }>(
+      db,
+      `SELECT body, occurred_at FROM interactions
+        WHERE workspace_id = ? AND person_id = ? AND direction = 'outbound'
+          AND occurred_at > ? AND body IS NOT NULL AND trim(body) <> ''
+        ORDER BY occurred_at DESC LIMIT 1`,
+      [recommendation.workspace_id, recommendation.person_id, inbound.occurred_at],
+    );
+    if (!ours?.body) return { ok: false, reason: 'no_evidence' };
+    followUp = {
+      ourLastMessage: ours.body,
+      quietDays: Math.max(1, Math.round((Date.now() - Date.parse(ours.occurred_at)) / 86_400_000)),
+    };
+  }
+
   const context = await draftingContext(
     db,
     recommendation.workspace_id,
@@ -120,6 +141,7 @@ export async function draftReplyForRecommendation(
     label: isReplyLabel(inbound.reply_label) ? inbound.reply_label : 'question',
     minIdentityConfidence: context.minIdentityConfidence,
     priorDraftHashes: priorHashes.map((r) => r.similarity_hash),
+    ...(followUp ? { followUp } : {}),
   });
 
   if (!result.ok) {
