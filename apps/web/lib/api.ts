@@ -483,6 +483,8 @@ export interface SettingsView {
   readonly trackLinks: boolean;
   readonly trackingOrigin: string | null;
   readonly trackOpens: boolean;
+  /** Autopilot carries out Bluesky follows and replies, spaced and capped. */
+  readonly blueskyAutopilot: boolean;
   /** Where tracked links would point if switched on. */
   readonly effectiveTrackingOrigin: string | null;
   readonly lastDigestSentOn: string | null;
