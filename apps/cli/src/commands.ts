@@ -815,7 +815,7 @@ async function runBuyers({ client, args, flags }: CommandContext): Promise<strin
 }
 
 const BUYERS_USAGE =
-  'og buyers list [--status new|replied|dismissed] [--monitor <id>] [--min-intent 60] | show <leadId> | draft <leadId> | replied|dismiss|reopen <leadId> | monitors | add <name> [--url u] [--product <offeringId>] [--keywords a,b] [--subreddits x,y] [--sources reddit,hackernews,bluesky] [--min-intent 60] [--every 360] | set <monitorId> [same flags] [--pause|--resume] | scan <monitorId> | rm <monitorId>';
+  'og buyers list [--status new|replied|dismissed] [--monitor <id>] [--min-intent 60] | show <leadId> | draft <leadId> | replied|dismiss|reopen <leadId> | monitors | add <name> [--url u] [--product <offeringId>] [--keywords a,b] [--subreddits x,y] [--sources reddit,hackernews,bluesky,web] [--min-intent 60] [--every 360] | set <monitorId> [same flags] [--pause|--resume] | scan <monitorId> | rm <monitorId>';
 
 async function runAudience({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target] = args;

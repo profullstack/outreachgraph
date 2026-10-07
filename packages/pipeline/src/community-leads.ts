@@ -37,12 +37,14 @@ import {
   FeedRateLimitError,
   HackerNewsSource,
   RedditSource,
+  WebDiscussionSource,
+  type WebSearcher,
   type FeedPost,
   type FeedSource,
 } from '@outreachgraph/providers';
 import { loadNotifySettings, notifyAddress } from './notify';
 
-export const LEAD_SOURCES = ['reddit', 'hackernews', 'bluesky'] as const;
+export const LEAD_SOURCES = ['reddit', 'hackernews', 'bluesky', 'web'] as const;
 export type LeadSource = (typeof LEAD_SOURCES)[number];
 
 export const LEAD_STATUSES = ['new', 'replied', 'dismissed'] as const;
@@ -84,6 +86,8 @@ const PATTERN_INTENT: Partial<Record<SignalType, number>> = {
  * be asked. The next scan judges the backlog first.
  */
 const PENDING_INTENT_CAP = 45;
+/** Least time between two web (ValueSERP) searches for one monitor. */
+const WEB_EVERY_MS = 20 * 3_600_000;
 /** How far back the backlog of unjudged posts is still worth judging. */
 const BACKLOG_DAYS = 7;
 
@@ -149,7 +153,8 @@ export interface CommunityLead {
   readonly id: string;
   readonly monitorId: string;
   readonly monitorName: string;
-  readonly source: LeadSource;
+  /** Where the post lives: 'reddit' | 'hackernews' | 'bluesky' | 'website'. */
+  readonly source: string;
   readonly externalId: string;
   readonly url: string;
   readonly title?: string | undefined;
@@ -182,6 +187,8 @@ export interface LeadScanResult {
   readonly bySource: Readonly<Record<string, number>>;
   readonly failures: readonly { readonly source: string; readonly reason: string }[];
   readonly at: string;
+  /** When the web search (ValueSERP) last ran for this monitor; it runs at most daily. */
+  readonly webAt?: string | undefined;
 }
 
 interface MonitorRow {
@@ -270,7 +277,7 @@ function toLead(row: LeadRow): CommunityLead {
     id: row.id,
     monitorId: row.monitor_id,
     monitorName: row.monitor_name,
-    source: row.source as LeadSource,
+    source: row.source,
     externalId: row.external_id,
     url: row.url,
     ...(row.title ? { title: row.title } : {}),
@@ -552,6 +559,8 @@ export interface LeadSourceOptions {
   /** Pacing for the Reddit archive; it answers 422 to anything faster than ~2s. */
   readonly archiveGapMs?: number | undefined;
   readonly hnGapMs?: number | undefined;
+  /** Google search (ValueSERP) for the `web` source; without it `web` reads nothing. */
+  readonly searcher?: WebSearcher | undefined;
 }
 
 /**
@@ -587,6 +596,14 @@ export function buildLeadSources(
         }),
       );
     }
+    if (source === 'web' && options.searcher) {
+      sources.push(
+        new WebDiscussionSource({
+          searcher: options.searcher,
+          ...(fetchImpl ? { fetchImpl } : {}),
+        }),
+      );
+    }
     if (source === 'bluesky') {
       // public.api.bsky.app answers searchPosts with 403 to anonymous callers;
       // the AppView itself still serves it.
@@ -606,6 +623,8 @@ export interface LeadScanDeps {
   readonly model?: TextModel | undefined;
   /** Builds the sources for a monitor. Defaults to {@link buildLeadSources}. */
   readonly sources?: ((monitor: LeadMonitor) => readonly FeedSource[]) | undefined;
+  /** Google search for the default `web` source. */
+  readonly searcher?: WebSearcher | undefined;
   readonly now?: Date | undefined;
 }
 
@@ -666,7 +685,14 @@ export async function scanLeadMonitor(
       : earliest,
   );
 
-  const sources = (deps.sources ?? ((m) => buildLeadSources(m)))(monitor);
+  // The web search is paid per query, so it runs once a day however often the
+  // monitor scans; the free sources run every time.
+  const lastWeb = monitor.lastResult?.webAt ? Date.parse(monitor.lastResult.webAt) : 0;
+  const webDue = at.getTime() - lastWeb >= WEB_EVERY_MS;
+  const sources = (
+    deps.sources ?? ((m) => buildLeadSources(m, deps.searcher ? { searcher: deps.searcher } : {}))
+  )(monitor).filter((source) => webDue || source.slug !== 'web');
+  const webRan = sources.some((source) => source.slug === 'web');
   const bySource: Record<string, number> = {};
   const failures: { source: string; reason: string }[] = [];
   const fresh: { post: FeedPost; term: string | undefined }[] = [];
@@ -812,6 +838,11 @@ export async function scanLeadMonitor(
     bySource,
     failures,
     at: createdAt,
+    ...(webRan && !failures.some((f) => f.source === 'web')
+      ? { webAt: createdAt }
+      : monitor.lastResult?.webAt
+        ? { webAt: monitor.lastResult.webAt }
+        : {}),
   };
   const allFailed = sources.length > 0 && failures.length >= sources.length;
   await db.execute({

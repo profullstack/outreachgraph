@@ -35,6 +35,7 @@ const SOURCE_NAMES: Record<string, string> = {
   reddit: 'Reddit',
   hackernews: 'Hacker News',
   bluesky: 'Bluesky',
+  website: 'Web',
 };
 
 export function intentLabel(intent: number): string {

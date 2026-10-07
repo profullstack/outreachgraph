@@ -235,6 +235,8 @@ export {
   FeedRateLimitError,
   HackerNewsSource,
   NostrSource,
+  WebDiscussionSource,
+  DEFAULT_DISCUSSION_SITES,
   RedditSource,
   RssSource,
   suggestSubreddits,

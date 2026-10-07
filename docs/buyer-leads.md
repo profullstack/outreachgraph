@@ -12,7 +12,7 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
 ## How it works
 
 1. **Monitor.** One per brand or product: keywords, subreddits, sources
-   (`reddit`, `hackernews`, `bluesky`), an intent floor (default 60) and a
+   (`reddit`, `hackernews`, `bluesky`, `web`), an intent floor (default 60) and a
    schedule (default every 6 hours, never more often than hourly). A name, a
    URL or a product id is enough: the model suggests keywords (category,
    problems, competitors) and subreddits.
@@ -26,6 +26,14 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
      keyword, 1 s apart.
    - Bluesky through `api.bsky.app` (`public.api.bsky.app` answers
      `searchPosts` with 403 to anonymous callers).
+   - The web (`web`): Google through ValueSERP, once a day per monitor (it is
+     paid per query), past day or past week. One query per site, because
+     ValueSERP ignores `site:a OR site:b`: reddit.com (all of it, not only the
+     listed subreddits), stackexchange.com, serverfault.com, quora.com and
+     indiehackers.com, keywords OR-ed five to a query, so a dozen keywords is
+     about fifteen searches a day. Reddit hits are filled in from Arctic Shift
+     by post id; forum hits keep Google's title and snippet. Off without
+     `VALUESERP_API_KEY`.
    - A post must contain a keyword as whole words; `exclude` words drop it.
 3. **Score.** The model classifies each post rather than picking a number
    (asked for a number, it anchored on the floor):

@@ -1215,7 +1215,7 @@ async function tick(): Promise<void> {
         for (const { workspaceId, monitorId } of due) {
           try {
             const r = await scanLeadMonitor(
-              { db, ...(model ? { model } : {}) },
+              { db, ...(model ? { model } : {}), ...(valueSerp ? { searcher: valueSerp } : {}) },
               workspaceId,
               monitorId,
             );

@@ -10,6 +10,8 @@ const SOURCE_NAMES: Record<string, string> = {
   reddit: 'Reddit',
   hackernews: 'Hacker News',
   bluesky: 'Bluesky',
+  web: 'Web (Google)',
+  website: 'Web',
 };
 
 const list = (value: string) =>
@@ -131,7 +133,9 @@ export function BuyerLeadsBoard({
   async function saveMonitor(form: HTMLFormElement, monitor?: LeadMonitorView) {
     const data = new FormData(form);
     const get = (k: string) => String(data.get(k) ?? '').trim();
-    const sources = ['reddit', 'hackernews', 'bluesky'].filter((s) => data.get(`source-${s}`));
+    const sources = ['reddit', 'hackernews', 'bluesky', 'web'].filter((s) =>
+      data.get(`source-${s}`),
+    );
     const body: Record<string, unknown> = {
       ...(get('name') ? { name: get('name') } : {}),
       ...(get('url') ? { url: get('url') } : monitor ? { url: null } : {}),
@@ -233,7 +237,7 @@ export function BuyerLeadsBoard({
         />
       </label>
       <div className="flex flex-wrap gap-4">
-        {['reddit', 'hackernews', 'bluesky'].map((s) => (
+        {['reddit', 'hackernews', 'bluesky', 'web'].map((s) => (
           <label key={s} className="flex items-center gap-2">
             <input
               type="checkbox"
