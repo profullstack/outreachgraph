@@ -17,7 +17,7 @@
 
 import type { Message } from './mailer';
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -34,7 +34,7 @@ function markUrl(link: string): string | undefined {
   }
 }
 
-function markHtml(appUrl: string): string {
+export function markHtml(appUrl: string): string {
   const mark = markUrl(appUrl);
   return mark
     ? `<p><img src="${escapeHtml(mark)}" alt="OutreachGraph" width="48" height="48" ` +
@@ -43,7 +43,7 @@ function markHtml(appUrl: string): string {
 }
 
 /** The one-line "why you got this and how to stop" footer both mails carry. */
-function footer(appUrl: string): { text: string; html: string } {
+export function footer(appUrl: string): { text: string; html: string } {
   const settings = `${appUrl.replace(/\/$/, '')}/settings`;
   return {
     text: `\n\n—\nYou are getting this because notifications are on for your workspace.\nChange or switch them off: ${settings}`,

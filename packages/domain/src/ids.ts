@@ -104,6 +104,9 @@ export const ID_PREFIXES = {
   // The Idea Generator: a product people keep asking for, and one post that asked.
   idea: 'ida',
   ideaAsk: 'iak',
+  // Buyer leads: a brand's community monitor, and one post it matched.
+  leadMonitor: 'lmn',
+  communityLead: 'cld',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

@@ -544,6 +544,129 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'list_buyer_leads',
+    title: 'List buyer leads found in public communities',
+    description:
+      'Posts on Reddit, Hacker News and Bluesky from people who look ready to buy what a monitored brand ' +
+      'sells, newest first: source, community, a quoted excerpt, the link, an intent score (0-100) with ' +
+      'the reason, and any drafted reply. Also returns the monitors. Replies are never posted for you.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['new', 'replied', 'dismissed'] },
+        monitorId: { type: 'string' },
+        minIntent: { type: 'number', minimum: 0, maximum: 100 },
+      },
+    },
+    run: (client, args) => {
+      const params = new URLSearchParams();
+      if (str(args, 'status')) params.set('status', str(args, 'status') as string);
+      if (str(args, 'monitorId')) params.set('monitor', str(args, 'monitorId') as string);
+      if (typeof args.minIntent === 'number') params.set('minIntent', String(args.minIntent));
+      return client.get(`/buyer-leads${params.size ? `?${params}` : ''}`);
+    },
+  },
+  {
+    name: 'create_buyer_lead_monitor',
+    title: 'Watch public communities for buyers of a brand',
+    description:
+      'Creates a monitor that searches Reddit (named subreddits), Hacker News and Bluesky for a brand on a ' +
+      'schedule (default every 6 hours, never more than hourly) and scores each post for buyer intent. A ' +
+      'name or a product id is enough: keywords and subreddits are suggested when left out. New leads over ' +
+      'minIntent go into a daily digest email.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        url: { type: 'string' },
+        description: { type: 'string' },
+        offeringId: { type: 'string', description: 'A product id from the workspace' },
+        keywords: { type: 'array', items: { type: 'string' } },
+        subreddits: { type: 'array', items: { type: 'string' } },
+        exclude: { type: 'array', items: { type: 'string' } },
+        sources: {
+          type: 'array',
+          items: { type: 'string', enum: ['reddit', 'hackernews', 'bluesky'] },
+        },
+        minIntent: { type: 'number', minimum: 0, maximum: 100 },
+        everyMinutes: { type: 'number', minimum: 60 },
+      },
+    },
+    run: (client, args) => client.post('/buyer-leads/monitors', args),
+  },
+  {
+    name: 'update_buyer_lead_monitor',
+    title: 'Change a buyer-lead monitor',
+    description:
+      'Changes keywords, subreddits, sources, the intent floor, the schedule, or pauses a monitor (enabled: false).',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        keywords: { type: 'array', items: { type: 'string' } },
+        subreddits: { type: 'array', items: { type: 'string' } },
+        exclude: { type: 'array', items: { type: 'string' } },
+        sources: { type: 'array', items: { type: 'string' } },
+        minIntent: { type: 'number' },
+        everyMinutes: { type: 'number' },
+        enabled: { type: 'boolean' },
+        digest: { type: 'boolean' },
+      },
+      required: ['id'],
+    },
+    run: (client, args) => {
+      const { id, ...rest } = args;
+      return client.patch!(`/buyer-leads/monitors/${encodeURIComponent(String(id))}`, rest);
+    },
+  },
+  {
+    name: 'scan_buyer_lead_monitor',
+    title: 'Scan a buyer-lead monitor now',
+    description:
+      'Runs a monitor immediately instead of waiting for its schedule. Takes up to a minute or two: the ' +
+      'Reddit archive is read politely, a few seconds per request.',
+    readOnly: false,
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    run: (client, args) =>
+      client.post(`/buyer-leads/monitors/${encodeURIComponent(require(args, 'id'))}/scan`, {}),
+  },
+  {
+    name: 'draft_buyer_lead_reply',
+    title: 'Draft a reply to a buyer lead',
+    description:
+      'Writes a helpful, disclosed reply to one lead and stores it on the lead. It is NOT posted: give it ' +
+      'to the human, who posts it in the community under their own name, then mark the lead replied.',
+    readOnly: false,
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    run: (client, args) =>
+      client.post(`/buyer-leads/${encodeURIComponent(require(args, 'id'))}/draft`, {}),
+  },
+  {
+    name: 'update_buyer_lead',
+    title: 'Mark a buyer lead replied or dismissed',
+    description:
+      'Sets a lead to replied, dismissed or back to new, or saves an edited reply draft.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        status: { type: 'string', enum: ['new', 'replied', 'dismissed'] },
+        replyDraft: { type: 'string' },
+      },
+      required: ['id'],
+    },
+    run: (client, args) =>
+      client.patch!(`/buyer-leads/${encodeURIComponent(require(args, 'id'))}`, {
+        ...(str(args, 'status') ? { status: str(args, 'status') } : {}),
+        ...(typeof args.replyDraft === 'string' ? { replyDraft: args.replyDraft } : {}),
+      }),
+  },
+  {
     name: 'list_ideas',
     title: 'List product ideas people keep asking for',
     description:

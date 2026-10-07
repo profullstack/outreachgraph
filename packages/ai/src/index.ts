@@ -98,3 +98,15 @@ export { expandTerm, mergeTerms, MAX_EXPANSIONS_PER_TERM, type ExpansionResult }
 
 export { judgeAsks, parseJudgements, type AskJudgeInput, type AskJudgement } from './judge-asks';
 export { judgeSignals, parseSignalJudgements, type SignalJudgement } from './judge-signals';
+export {
+  draftLeadReply,
+  judgeLeads,
+  parseLeadJudgements,
+  parseMonitorSuggestion,
+  suggestMonitor,
+  type LeadBrand,
+  type LeadJudgeInput,
+  type LeadJudgement,
+  type LeadReplyInput,
+  type MonitorSuggestion,
+} from './community-leads';

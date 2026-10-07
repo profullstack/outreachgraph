@@ -14,6 +14,7 @@ export const NETWORKS = [
   'bluesky',
   'mastodon',
   'reddit',
+  'hackernews',
   'nostr',
   'youtube',
   'instagram',
@@ -140,6 +141,7 @@ export function channelForNetwork(network: Network): Channel {
     case 'bluesky':
     case 'mastodon':
     case 'reddit':
+    case 'hackernews':
     case 'nostr':
     case 'youtube':
     case 'instagram':

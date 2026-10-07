@@ -361,6 +361,61 @@ export async function fetchIdeas(): Promise<IdeasView> {
   return request<IdeasView>('/ideas');
 }
 
+export interface LeadMonitorView {
+  readonly id: string;
+  readonly offeringId?: string;
+  readonly name: string;
+  readonly url?: string;
+  readonly description?: string;
+  readonly keywords: string[];
+  readonly subreddits: string[];
+  readonly exclude: string[];
+  readonly sources: string[];
+  readonly enabled: boolean;
+  readonly everyMinutes: number;
+  readonly minIntent: number;
+  readonly digest: boolean;
+  readonly lastScannedAt?: string;
+  readonly lastError?: string;
+  readonly lastResult?: {
+    read: number;
+    stored: number;
+    judged: number;
+    leads: number;
+    failures: Array<{ source: string; reason: string }>;
+  };
+}
+
+export interface BuyerLeadView {
+  readonly id: string;
+  readonly monitorId: string;
+  readonly monitorName: string;
+  readonly source: string;
+  readonly url: string;
+  readonly title?: string;
+  readonly excerpt: string;
+  readonly author: string;
+  readonly authorUrl?: string;
+  readonly container?: string;
+  readonly postedAt: string;
+  readonly matchedTerm?: string;
+  readonly intent: number;
+  readonly reason?: string;
+  readonly judged: boolean;
+  readonly status: 'new' | 'replied' | 'dismissed';
+  readonly replyDraft?: string;
+}
+
+export interface BuyerLeadsView {
+  readonly leads: BuyerLeadView[];
+  readonly monitors: LeadMonitorView[];
+  readonly judgeEnabled: boolean;
+}
+
+export async function fetchBuyerLeads(query = ''): Promise<BuyerLeadsView> {
+  return request<BuyerLeadsView>(`/buyer-leads${query}`);
+}
+
 export async function fetchCampaigns(): Promise<CampaignRow[]> {
   const body = await request<{ campaigns: CampaignRow[] }>('/campaigns');
   return body.campaigns;

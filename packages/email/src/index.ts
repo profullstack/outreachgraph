@@ -49,6 +49,12 @@ export {
 export { failedRecipientFromSource, plainTextFromSource } from './mime';
 export { invitationEmail, passwordResetEmail, verificationEmail } from './templates';
 export {
+  communityLeadDigestEmail,
+  intentLabel,
+  type CommunityLeadDigest,
+  type CommunityLeadDigestItem,
+} from './lead-digest';
+export {
   dailyDigestEmail,
   leadAlertEmail,
   type DailyDigest,

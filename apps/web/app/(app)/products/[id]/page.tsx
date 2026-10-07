@@ -80,6 +80,12 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
             <p className="text-ink-muted text-sm">No campaign yet.</p>
           )}
         </div>
+        <p className="text-ink-muted mt-2 text-sm">
+          <Link href="/buyer-leads" className="underline">
+            Buyer leads
+          </Link>{' '}
+          watches Reddit, Hacker News and Bluesky for people looking for {product.name}.
+        </p>
       </header>
 
       {campaign ? (

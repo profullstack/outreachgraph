@@ -50,6 +50,11 @@ const TOOLS = [
   { href: '/prospects', label: 'All people', hint: 'Everyone found, across every product' },
   { href: '/signals', label: 'Signals', hint: 'The public activity behind each match' },
   {
+    href: '/buyer-leads',
+    label: 'Buyer leads',
+    hint: 'People in public communities looking for what you sell',
+  },
+  {
     href: '/outreach',
     label: 'Start a one-off campaign',
     hint: 'From a market or a list of companies',

@@ -264,6 +264,9 @@ import { crmRoutes, webhookRoutes } from './webhooks';
 import { audienceRoutes } from './audience';
 import { jobPostRoutes } from './job-posts';
 import { ideaRoutes } from './ideas';
+import { leadRoutes } from './buyer-leads';
+import type { LeadMonitor } from '@outreachgraph/pipeline';
+import type { FeedSource } from '@outreachgraph/providers';
 import type { ChovyConfig, Fetcher as RedditFetcher } from '@outreachgraph/ideas';
 import { clientIp, createThrottles, isQuotedUserAgent, type ThrottleConfig } from './throttle';
 import { llmsText, openApiDocument } from './autogtm-docs';
@@ -362,6 +365,8 @@ export interface AppOptions {
   readonly chovyFetch?: typeof fetch | undefined;
   readonly redditFetch?: RedditFetcher | undefined;
   readonly ideaArchiveGapMs?: number | undefined;
+  /** Test seam for buyer-lead monitors: the sources a monitor reads. */
+  readonly leadSources?: ((monitor: LeadMonitor) => readonly FeedSource[]) | undefined;
   /** Overrides for the abuse throttles (`./throttle`); tests shrink them. */
   readonly throttles?: ThrottleConfig | undefined;
   /**
@@ -1467,6 +1472,12 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       archiveGapMs: options.ideaArchiveGapMs,
     }),
   );
+
+  // ----------------------------------------------------------------- leads
+  //
+  // Buyer leads from public communities: monitors, intent-scored posts, reply
+  // drafts. Drafts only; nothing here posts to a community.
+  api.route('/buyer-leads', leadRoutes({ model: options.model, leadSources: options.leadSources }));
 
   // ----------------------------------------------------------------- team
   //

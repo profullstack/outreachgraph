@@ -72,7 +72,11 @@ export default async function ProductsPage() {
           <a href="/ideas" className="underline">
             Ideas
           </a>{' '}
-          finds products people keep asking for, and builds one with chovy.com.
+          finds products people keep asking for, and builds one with chovy.com.{' '}
+          <a href="/buyer-leads" className="underline">
+            Buyer leads
+          </a>{' '}
+          finds people on Reddit, Hacker News and Bluesky looking for what you sell.
         </p>
       </header>
 

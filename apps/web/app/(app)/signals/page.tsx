@@ -26,7 +26,12 @@ export default async function SignalsPage() {
       <header className="mb-4">
         <h1 className="text-xl font-semibold">Signals</h1>
         <p className="text-ink-muted text-sm">
-          Recent public activity: refine by relevance, tone and network, then export
+          Recent public activity: refine by relevance, tone and network, then export. For people
+          asking for what you sell right now, see{' '}
+          <a href="/buyer-leads" className="underline">
+            Buyer leads
+          </a>
+          .
         </p>
       </header>
 
