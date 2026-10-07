@@ -16,7 +16,11 @@ import { applyMapping, parseCsv, type MappedRow } from '../lib/csv';
  * named as such rather than quietly sent to or quietly dropped.
  */
 
-const MAX_ROWS = 5_000;
+/** The most one file may hold. Sent in chunks, so this is not a request size. */
+const MAX_ROWS = 100_000;
+
+/** Rows per request: the API takes at most 5,000 leads per call. */
+const CHUNK_ROWS = 5_000;
 
 interface ReportRow {
   readonly row: number | null;
@@ -39,7 +43,44 @@ interface AppendResult {
   readonly flagged_held: number;
   readonly report: readonly ReportRow[];
   readonly report_truncated: boolean;
-  readonly report_url: string;
+  /** Absent when the file went up in several chunks; the report is built here instead. */
+  readonly report_url?: string;
+}
+
+/** Adds one chunk's result to the running total, row numbers shifted to the file's. */
+function mergeResults(total: AppendResult | undefined, next: AppendResult, offset: number) {
+  const shifted = next.report.map((row) => ({
+    ...row,
+    row: row.row === null ? null : row.row + offset,
+  }));
+  if (!total) return { ...next, report: shifted };
+  return {
+    received: total.received + next.received,
+    added: total.added + next.added,
+    imported: total.imported + next.imported,
+    merged: total.merged + next.merged,
+    updated: total.updated + next.updated,
+    rejected: total.rejected + next.rejected,
+    skipped: total.skipped + next.skipped,
+    flagged: total.flagged + next.flagged,
+    flagged_held: total.flagged_held + next.flagged_held,
+    report: [...total.report, ...shifted],
+    report_truncated: total.report_truncated || next.report_truncated,
+  } satisfies AppendResult;
+}
+
+/** The combined report as a CSV, for a file sent in several chunks. */
+function reportCsv(report: readonly ReportRow[]): string {
+  const cell = (value: string | number | null) => {
+    const text = value === null ? '' : String(value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  return [
+    'row,email,outcome,reason,why,detail',
+    ...report.map((r) =>
+      [r.row, r.email, r.outcome, r.reason, r.why, r.detail].map(cell).join(','),
+    ),
+  ].join('\n');
 }
 
 const OUTCOME_LABEL: Readonly<Record<ReportRow['outcome'], string>> = {
@@ -60,6 +101,7 @@ export function AddLeads({ campaignId }: { campaignId: string }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AppendResult | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const [progress, setProgress] = useState<string | undefined>();
 
   function onFile(event: ChangeEvent<HTMLInputElement>): void {
     const file = event.target.files?.[0];
@@ -84,7 +126,9 @@ export function AddLeads({ campaignId }: { campaignId: string }) {
       }
       if (body.length > MAX_ROWS) {
         setRows([]);
-        setError(`${body.length.toLocaleString()} rows: split the file into ${MAX_ROWS} or fewer.`);
+        setError(
+          `${body.length.toLocaleString()} rows: the most one file can hold is ${MAX_ROWS.toLocaleString()}.`,
+        );
         return;
       }
       setMapping(found);
@@ -96,45 +140,71 @@ export function AddLeads({ campaignId }: { campaignId: string }) {
   async function run(): Promise<void> {
     setBusy(true);
     setError(undefined);
+    setResult(undefined);
+    let total: AppendResult | undefined;
+    const chunks = Math.ceil(rows.length / CHUNK_ROWS);
     try {
-      const response = await fetch(
-        `/api/v1/autogtm/campaigns/${encodeURIComponent(campaignId)}/leads`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({
-            filename,
-            consent_source: consentSource,
-            allow_flagged: allowFlagged,
-            leads: rows.map((row) => ({
-              email: row.email,
-              name: row.name,
-              first_name: row.firstName,
-              last_name: row.lastName,
-              company: row.company,
-              company_domain: row.companyDomain,
-              job_title: row.title,
-              location: row.location,
-              linkedin_url: row.linkedinUrl,
-              updated_at: row.updatedAt,
-            })),
-          }),
-        },
-      );
-      const payload = (await response.json().catch(() => ({}))) as AppendResult & {
-        error?: { message?: string };
-      };
-      if (!response.ok) {
-        setError(payload.error?.message ?? `That failed (${response.status}).`);
-        return;
+      // One request per 5,000 rows, in order. Re-running after a failure is
+      // safe: leads already added are skipped.
+      for (let i = 0; i < chunks; i += 1) {
+        const offset = i * CHUNK_ROWS;
+        const chunk = rows.slice(offset, offset + CHUNK_ROWS);
+        if (chunks > 1) {
+          setProgress(
+            `Sending rows ${(offset + 1).toLocaleString()}-${(offset + chunk.length).toLocaleString()} of ${rows.length.toLocaleString()}…`,
+          );
+        }
+        const response = await fetch(
+          `/api/v1/autogtm/campaigns/${encodeURIComponent(campaignId)}/leads`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              filename,
+              consent_source: consentSource,
+              allow_flagged: allowFlagged,
+              leads: chunk.map((row) => ({
+                email: row.email,
+                name: row.name,
+                first_name: row.firstName,
+                last_name: row.lastName,
+                company: row.company,
+                company_domain: row.companyDomain,
+                job_title: row.title,
+                location: row.location,
+                linkedin_url: row.linkedinUrl,
+                updated_at: row.updatedAt,
+              })),
+            }),
+          },
+        );
+        const payload = (await response.json().catch(() => ({}))) as AppendResult & {
+          error?: { message?: string };
+        };
+        if (!response.ok) {
+          if (total) setResult(total);
+          setError(
+            `${payload.error?.message ?? `That failed (${response.status}).`}` +
+              (i > 0 ? ` Stopped at row ${(offset + 1).toLocaleString()}; re-run to finish.` : ''),
+          );
+          return;
+        }
+        total = mergeResults(total, payload, offset);
       }
-      setResult(payload);
+      if (total && chunks > 1) {
+        const { report_url: _single, ...combined } = total;
+        void _single;
+        total = combined;
+      }
+      setResult(total);
       setRows([]);
       router.refresh();
     } catch {
+      if (total) setResult(total);
       setError('Lost the connection. Re-running is safe: leads already added are skipped.');
     } finally {
+      setProgress(undefined);
       setBusy(false);
     }
   }
@@ -205,6 +275,8 @@ export function AddLeads({ campaignId }: { campaignId: string }) {
         </>
       ) : null}
 
+      {progress ? <p className="text-ink-muted mt-2 text-xs">{progress}</p> : null}
+
       {result ? <ImportReportView result={result} /> : null}
 
       {error ? (
@@ -262,7 +334,14 @@ function ImportReportView({ result }: { result: AppendResult }) {
           </ul>
         </details>
       ) : null}
-      <a href={result.report_url} className="text-accent mt-2 inline-block text-xs font-medium">
+      <a
+        href={
+          result.report_url ??
+          `data:text/csv;charset=utf-8,${encodeURIComponent(reportCsv(result.report))}`
+        }
+        download={result.report_url ? undefined : 'import-report.csv'}
+        className="text-accent mt-2 inline-block text-xs font-medium"
+      >
         Download the full report (CSV)
       </a>
     </div>
