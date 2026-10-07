@@ -72,6 +72,7 @@ import {
   promoteAbWinners,
   sweepBlacklists,
   runPlanner,
+  scanListSources,
   bumpQuietThreads,
   runCrawlJob,
   runDiscoveryJob,
@@ -129,6 +130,7 @@ const AB_SWEEP_MS = 3_600_000;
 const lastAbSweepAt = new Map<string, number>();
 const lastBumpSweepAt = new Map<string, number>();
 const lastPlannerSweepAt = new Map<string, number>();
+const lastListSourceSweepAt = new Map<string, number>();
 const lastBlacklistSweepAt = new Map<string, number>();
 
 /** Last successful poll per workspace, so the slower clock survives a tick. */
@@ -1406,6 +1408,25 @@ async function tick(): Promise<void> {
         }
       } catch (error) {
         console.error(`blocklist sweep failed for ${workspace.id}`, error);
+      }
+    }
+
+    // Signal lists from the news: newly funded companies, new leaders and
+    // conference speaker/sponsor pages in each product's market, weekly per
+    // product, inside a daily search cap. Needs ValueSERP.
+    if (valueSerp && Date.now() - (lastListSourceSweepAt.get(workspace.id) ?? 0) >= AB_SWEEP_MS) {
+      lastListSourceSweepAt.set(workspace.id, Date.now());
+      try {
+        for (const scan of await scanListSources({ db, searcher: valueSerp }, workspace.id)) {
+          if (scan.items > 0 || scan.error) {
+            console.log(
+              `lists ${workspace.id}: ${scan.kind} for ${scan.offeringId}: ${scan.items} new` +
+                (scan.error ? ` (${scan.error})` : ''),
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`list sources failed for ${workspace.id}`, error);
       }
     }
 

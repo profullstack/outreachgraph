@@ -205,6 +205,7 @@ import {
   NICHEDB_DEFAULT_EVERY_MS,
   plannerOverview,
   plannerYear,
+  recentListSourceItems,
   runPipeline,
   runPlanner,
   setPlannerEnabled,
@@ -4533,6 +4534,21 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     if (!canApprove(actor)) throw ApiError.forbidden('running the planner');
     const launched = await runPlanner({ db }, actor.workspaceId);
     return c.json({ launched });
+  });
+
+  /**
+   * What the news list sources found: newly funded companies, new leaders
+   * and conference pages, each with the campaign it was crawled into.
+   */
+  api.get('/list-sources', async (c) => {
+    const actor = c.get('actor');
+    const kind = c.req.query('kind');
+    return c.json({
+      items: await recentListSourceItems(c.get('db'), actor.workspaceId, {
+        ...(kind ? { kind } : {}),
+        limit: Math.min(Number(c.req.query('limit') ?? 100) || 100, 500),
+      }),
+    });
   });
 
   /** Every decided A/B test in the workspace, newest first. */

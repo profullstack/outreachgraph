@@ -211,6 +211,29 @@ export const TOOLS: readonly ToolDefinition[] = [
       client.get(`/cadences/${encodeURIComponent(require(args, 'cadenceId'))}`),
   },
   {
+    name: 'get_list_sources',
+    title: 'Funding, new leaders and events from the news',
+    description:
+      'Companies the worker found in the news for your products: newly funded (Series A etc.), ' +
+      'newly appointed decision-makers, and conference speaker/sponsor pages. Each was crawled ' +
+      'into the product\u2019s signals campaign and its news stored as evidence a draft may use.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['funding', 'leadership', 'event'] },
+        limit: { type: 'number' },
+      },
+    },
+    run: (client, args) => {
+      const query = new URLSearchParams({
+        ...(typeof args.kind === 'string' ? { kind: args.kind } : {}),
+        ...(typeof args.limit === 'number' ? { limit: String(args.limit) } : {}),
+      }).toString();
+      return client.get(`/list-sources${query ? `?${query}` : ''}`);
+    },
+  },
+  {
     name: 'get_planner',
     title: 'The outreach planner this month',
     description:

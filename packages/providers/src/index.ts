@@ -41,6 +41,8 @@ export {
   type ProfilePhotoFinder,
   type ProfilePhotoQuery,
   type ValueSerpOptions,
+  type NewsResult,
+  type NewsSearcher,
   type WebResult,
   type WebSearcher,
 } from './valueserp';

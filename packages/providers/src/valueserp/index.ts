@@ -57,6 +57,23 @@ export interface WebSearcher {
   search(query: string, options?: { num?: number }): Promise<readonly WebResult[]>;
 }
 
+/** One Google News result. */
+export interface NewsResult {
+  readonly title: string;
+  readonly link: string;
+  readonly snippet?: string;
+  readonly source?: string;
+  readonly date?: string;
+}
+
+export interface NewsSearcher {
+  /** Google News for `query`, limited to the last week or month. */
+  searchNews(
+    query: string,
+    options?: { num?: number; period?: 'last_week' | 'last_month' },
+  ): Promise<readonly NewsResult[]>;
+}
+
 export interface ValueSerpOptions {
   readonly apiKey: string;
   readonly baseUrl?: string;
@@ -88,7 +105,7 @@ interface ImageResult {
   readonly source?: string;
 }
 
-export class ValueSerpClient implements ProfilePhotoFinder, WebSearcher {
+export class ValueSerpClient implements ProfilePhotoFinder, WebSearcher, NewsSearcher {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -137,6 +154,66 @@ export class ValueSerpClient implements ProfilePhotoFinder, WebSearcher {
         ...(typeof result.link === 'string' ? { link: result.link } : {}),
         ...(typeof result.snippet === 'string' ? { snippet: result.snippet } : {}),
       }));
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(`ValueSERP did not answer within ${this.searchTimeoutMs / 1000} s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async searchNews(
+    query: string,
+    options: { num?: number; period?: 'last_week' | 'last_month' } = {},
+  ): Promise<readonly NewsResult[]> {
+    const url = new URL('/search', this.baseUrl);
+    url.searchParams.set('api_key', this.apiKey);
+    url.searchParams.set('q', query);
+    url.searchParams.set('search_type', 'news');
+    url.searchParams.set('time_period', options.period ?? 'last_week');
+    url.searchParams.set('num', String(Math.min(Math.max(options.num ?? 20, 1), 100)));
+    url.searchParams.set('gl', 'us');
+    url.searchParams.set('hl', 'en');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.searchTimeoutMs);
+    try {
+      const response = await this.fetchImpl(url, {
+        signal: controller.signal,
+        headers: { accept: 'application/json' },
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        news_results?: {
+          title?: unknown;
+          link?: unknown;
+          snippet?: unknown;
+          source?: unknown;
+          date?: unknown;
+        }[];
+        request_info?: { success?: boolean; message?: string };
+      };
+      if (response.status === 402) throw new SearchOutOfCredits('ValueSERP');
+      if (!response.ok || body.request_info?.success === false) {
+        throw new Error(
+          `ValueSERP refused the news search (${response.status}): ${body.request_info?.message ?? 'no reason given'}`,
+        );
+      }
+      const results = Array.isArray(body.news_results) ? body.news_results : [];
+      return results.flatMap((result) =>
+        typeof result.title === 'string' && typeof result.link === 'string'
+          ? [
+              {
+                title: result.title,
+                link: result.link,
+                ...(typeof result.snippet === 'string' ? { snippet: result.snippet } : {}),
+                ...(typeof result.source === 'string' ? { source: result.source } : {}),
+                ...(typeof result.date === 'string' ? { date: result.date } : {}),
+              },
+            ]
+          : [],
+      );
     } catch (error) {
       if (controller.signal.aborted) {
         throw new Error(`ValueSERP did not answer within ${this.searchTimeoutMs / 1000} s`);

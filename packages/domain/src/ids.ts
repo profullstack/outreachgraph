@@ -57,6 +57,8 @@ export const ID_PREFIXES = {
   abResult: 'abr',
   // One play the Outreach Planner launched for one product in one month.
   plannerRun: 'plr',
+  // One headline or event page a list source took.
+  listSourceItem: 'lsi',
   notification: 'ntf',
   socialPost: 'spo',
   workflowEvent: 'wfe',
