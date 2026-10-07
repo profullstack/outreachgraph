@@ -70,6 +70,7 @@ import {
   workspacesAwaitingPhotos,
   runCadences,
   promoteAbWinners,
+  sweepBlacklists,
   runPlanner,
   bumpQuietThreads,
   runCrawlJob,
@@ -128,6 +129,7 @@ const AB_SWEEP_MS = 3_600_000;
 const lastAbSweepAt = new Map<string, number>();
 const lastBumpSweepAt = new Map<string, number>();
 const lastPlannerSweepAt = new Map<string, number>();
+const lastBlacklistSweepAt = new Map<string, number>();
 
 /** Last successful poll per workspace, so the slower clock survives a tick. */
 const lastPolledAt = new Map<string, number>();
@@ -1387,6 +1389,23 @@ async function tick(): Promise<void> {
         }
       } catch (error) {
         console.error(`quiet-thread bumps failed for ${workspace.id}`, error);
+      }
+    }
+
+    // Deliverability: each active mailbox's domain (and self-hosted server)
+    // against the public blocklists, once a day, a few per run. A new
+    // listing is an error in the live feed and drops the mailbox's health.
+    if (Date.now() - (lastBlacklistSweepAt.get(workspace.id) ?? 0) >= AB_SWEEP_MS) {
+      lastBlacklistSweepAt.set(workspace.id, Date.now());
+      try {
+        const swept = await sweepBlacklists(db, workspace.id);
+        if (swept.listed > 0) {
+          console.warn(
+            `blocklists ${workspace.id}: ${swept.listed} of ${swept.checked} mailbox(es) listed`,
+          );
+        }
+      } catch (error) {
+        console.error(`blocklist sweep failed for ${workspace.id}`, error);
       }
     }
 

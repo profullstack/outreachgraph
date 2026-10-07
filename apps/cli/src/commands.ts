@@ -1729,10 +1729,13 @@ export const COMMANDS: readonly Command[] = [
         };
         return [
           `${text(dns, 'domain')}: ${text(dns, 'status')}`,
-          ...['spf', 'dkim', 'dmarc', 'mx'].map((key) => {
-            const check = (dns[key] ?? {}) as Record<string, unknown>;
-            return `  ${pad(key.toUpperCase(), 6)} ${pad(text(check, 'status'), 5)} ${text(check, 'detail')}`;
-          }),
+          ...['spf', 'dkim', 'dmarc', 'mx', 'blacklist']
+            .filter((key) => dns[key] !== undefined)
+            .map((key) => {
+              const check = (dns[key] ?? {}) as Record<string, unknown>;
+              const label = key === 'blacklist' ? 'BL' : key.toUpperCase();
+              return `  ${pad(label, 6)} ${pad(text(check, 'status'), 5)} ${text(check, 'detail')}`;
+            }),
         ].join('\n');
       }
 

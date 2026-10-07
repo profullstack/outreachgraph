@@ -347,3 +347,11 @@ export {
   type LinkedInProfile,
   type LinkedInSessionOptions,
 } from './linkedin/session';
+export {
+  checkBlacklists,
+  reverseIp,
+  type BlacklistDeps,
+  type BlacklistReport,
+  type BlacklistResult,
+  type BlacklistVerdict,
+} from './email/blacklists';
