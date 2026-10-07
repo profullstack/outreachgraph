@@ -227,6 +227,9 @@ const DEFAULT_VERIFICATIONS_PER_RUN = 25;
 export class HoldLedger {
   private readonly held = new Map<string, Map<string, HoldEntry>>();
 
+  /** Workspaces whose stored holds have been read into memory by this process. */
+  private readonly loaded = new Set<string>();
+
   /** Records a hold. True when it is worth writing down — new, or changed. */
   observe(workspaceId: string, recommendationId: string, reason: string): boolean {
     const key = holdKey(reason);
@@ -236,22 +239,51 @@ export class HoldLedger {
     return previous?.key !== key;
   }
 
-  /** Forgets a card that was sent, or otherwise stopped being held. */
-  release(workspaceId: string, recommendationId: string): void {
-    this.held.get(workspaceId)?.delete(recommendationId);
+  /** Forgets a card that was sent, or otherwise stopped being held. True if it was held. */
+  release(workspaceId: string, recommendationId: string): boolean {
+    return this.held.get(workspaceId)?.delete(recommendationId) ?? false;
   }
 
   /**
    * Drops cards a completed run did not see — sent by hand, superseded,
    * expired. Only called after a full pass, so a run that stopped at the cap
-   * does not forget the cards it never reached.
+   * does not forget the cards it never reached. Returns the ids it dropped.
    */
-  retain(workspaceId: string, seen: ReadonlySet<string>): void {
+  retain(workspaceId: string, seen: ReadonlySet<string>): string[] {
     const entries = this.held.get(workspaceId);
-    if (!entries) return;
+    if (!entries) return [];
+    const dropped: string[] = [];
     for (const id of [...entries.keys()]) {
-      if (!seen.has(id)) entries.delete(id);
+      if (!seen.has(id)) {
+        entries.delete(id);
+        dropped.push(id);
+      }
     }
+    return dropped;
+  }
+
+  /**
+   * Reads the stored holds for a workspace, once per process.
+   *
+   * The ledger used to live in memory alone, so every deploy forgot it and the
+   * first tick after one wrote every held card again — 35,847 "Held back" rows
+   * in two weeks, in bursts that matched the deploys to the minute. Stored
+   * holds are loaded before the first run, and anything already in memory wins.
+   */
+  async load(db: Client, workspaceId: string): Promise<void> {
+    if (this.loaded.has(workspaceId)) return;
+    const rows = await queryAll<{ recommendation_id: string; reason: string; reason_key: string }>(
+      db,
+      'SELECT recommendation_id, reason, reason_key FROM autopilot_holds WHERE workspace_id = ?',
+      [workspaceId],
+    );
+    const entries = this.entriesFor(workspaceId);
+    for (const row of rows) {
+      if (!entries.has(row.recommendation_id)) {
+        entries.set(row.recommendation_id, { reason: row.reason, key: row.reason_key });
+      }
+    }
+    this.loaded.add(workspaceId);
   }
 
   /** The holds in force, grouped by reason, largest group first. */
@@ -304,6 +336,36 @@ export function heldSummary(
 
 function holdKey(reason: string): string {
   return reason.replace(/\d+(?:\.\d+)?/g, '#');
+}
+
+/** Stores a new or changed hold, so the next process does not write it again. */
+async function storeHold(
+  db: Client,
+  workspaceId: string,
+  recommendationId: string,
+  reason: string,
+): Promise<void> {
+  const stamp = now();
+  await db.execute({
+    sql: `INSERT INTO autopilot_holds
+            (recommendation_id, workspace_id, reason_key, reason, held_since, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT (recommendation_id) DO UPDATE
+            SET reason_key = excluded.reason_key, reason = excluded.reason,
+                updated_at = excluded.updated_at`,
+    args: [recommendationId, workspaceId, holdKey(reason), reason, stamp, stamp],
+  });
+}
+
+/** Forgets stored holds for cards that are no longer held. */
+async function forgetHolds(db: Client, recommendationIds: readonly string[]): Promise<void> {
+  for (let i = 0; i < recommendationIds.length; i += 200) {
+    const chunk = recommendationIds.slice(i, i + 200);
+    await db.execute({
+      sql: `DELETE FROM autopilot_holds WHERE recommendation_id IN (${chunk.map(() => '?').join(', ')})`,
+      args: chunk,
+    });
+  }
 }
 
 /**
@@ -401,6 +463,8 @@ export async function runAutopilot(
     }
     return transport;
   };
+
+  await ledger.load(db, workspaceId);
 
   let today = await countActionsToday(db, workspaceId, at);
   if (today >= cap) {
@@ -529,6 +593,7 @@ export async function runAutopilot(
       });
 
       if (!ledger.observe(workspaceId, row.recommendation_id, reason)) return;
+      await storeHold(db, workspaceId, row.recommendation_id, reason);
 
       await emitEvent(db, {
         workspaceId,
@@ -948,7 +1013,9 @@ export async function runAutopilot(
       });
 
       today += 1;
-      ledger.release(workspaceId, row.recommendation_id);
+      if (ledger.release(workspaceId, row.recommendation_id)) {
+        await forgetHolds(db, [row.recommendation_id]);
+      }
 
       // This person now holds their company for the rest of the run.
       if (row.company_id) {
@@ -1006,7 +1073,7 @@ export async function runAutopilot(
   }
 
   if (completed) {
-    ledger.retain(workspaceId, seen);
+    await forgetHolds(db, ledger.retain(workspaceId, seen));
 
     // A paused campaign whose whole queue was re-checked on a complete pass
     // starts again. An incomplete pass proves nothing about cards it never
