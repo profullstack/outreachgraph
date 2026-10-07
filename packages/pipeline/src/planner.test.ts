@@ -15,7 +15,10 @@ afterEach(() => {
 const FEBRUARY = new Date('2026-02-20T15:00:00Z');
 
 /** Jane was emailed in January by the product's campaign and opened it. */
-async function janeOpenedInJanuary(db: Client, options: { replied?: boolean } = {}): Promise<void> {
+async function janeOpenedInJanuary(
+  db: Client,
+  options: { replied?: boolean; tracking?: boolean } = {},
+): Promise<void> {
   const sentAt = '2026-01-15T15:00:00.000Z';
   const stamp = now();
   await db.batch([
@@ -47,6 +50,14 @@ async function janeOpenedInJanuary(db: Client, options: { replied?: boolean } = 
       args: [SEED.workspaceId, SEED.personId, '2026-01-15T16:00:00.000Z'],
     },
   ]);
+  if (options.tracking !== false) {
+    await db.execute({
+      sql: `INSERT INTO workspace_settings (workspace_id, track_opens, created_at, updated_at)
+            VALUES (?, 1, ?, ?)
+            ON CONFLICT (workspace_id) DO UPDATE SET track_opens = 1`,
+      args: [SEED.workspaceId, stamp, stamp],
+    });
+  }
   if (options.replied) {
     await db.execute({
       sql: `INSERT INTO interactions (id, workspace_id, person_id, campaign_id, network, direction,
@@ -98,6 +109,28 @@ describe('runPlanner', () => {
     );
     expect(card?.guidance).toContain('Value first');
     expect(card?.trigger_signal_id).toBe(SEED.signalId);
+  });
+
+  test('without open or link tracking, delivered and unanswered is the segment', async () => {
+    seeded = await seedDatabase('planner-blind');
+    const { db } = seeded;
+    await janeOpenedInJanuary(db, { tracking: false });
+    // The open on record is not evidence when nothing is tracked; the
+    // delivery and the silence are, and that is enough for the play.
+    await db.execute({ sql: `DELETE FROM email_opens`, args: [] });
+
+    const launched = await runPlanner({ db, now: FEBRUARY }, SEED.workspaceId);
+    expect(launched[0]).toMatchObject({ playKey: 'case_study_non_responders', people: 1 });
+    expect((await plannerOverview(db, SEED.workspaceId, FEBRUARY)).tracksEngagement).toBe(false);
+  });
+
+  test('with tracking on, someone who never opened is not "engaged"', async () => {
+    seeded = await seedDatabase('planner-tracked-unopened');
+    const { db } = seeded;
+    await janeOpenedInJanuary(db);
+    await db.execute({ sql: `DELETE FROM email_opens`, args: [] });
+
+    expect(await runPlanner({ db, now: FEBRUARY }, SEED.workspaceId)).toEqual([]);
   });
 
   test('someone who replied is not a non-responder', async () => {

@@ -352,3 +352,11 @@ export {
   detectTechnologies,
   type DetectedTechnology,
 } from './site/technologies';
+export {
+  checkBlacklists,
+  reverseIp,
+  type BlacklistDeps,
+  type BlacklistReport,
+  type BlacklistResult,
+  type BlacklistVerdict,
+} from './email/blacklists';

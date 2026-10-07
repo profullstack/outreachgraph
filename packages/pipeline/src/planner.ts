@@ -302,12 +302,26 @@ export async function segmentPeople(
   const monthStart = new Date(Date.UTC(year, at.getUTCMonth(), 1)).toISOString();
   const excluded = segment.excludePlays ?? [];
 
-  const engagementSql: Record<Segment['engagement'], string> = {
-    engaged_no_reply: '(opened = 1 OR clicked = 1) AND replied = 0',
-    no_reply: 'replied = 0',
-    unengaged: 'opened = 0 AND clicked = 0 AND replied = 0',
-    engaged: '(opened = 1 OR clicked = 1 OR positive = 1)',
-  };
+  // Opens and clicks are only evidence when the workspace tracks them, and
+  // both are off by default: the planner's own rule is a plain-text first
+  // email with no links or images. Without them "opened but never replied"
+  // is unknowable, so each segment falls back to what is known — written to,
+  // delivered, no reply — and the plays' exclusions keep one person out of
+  // two plays. Nobody who said no or asked to stop is ever in a segment.
+  const blind = !(await tracksEngagement(db, workspaceId));
+  const engagementSql: Record<Segment['engagement'], string> = blind
+    ? {
+        engaged_no_reply: 'replied = 0',
+        no_reply: 'replied = 0',
+        unengaged: 'replied = 0',
+        engaged: '(positive = 1 OR replied = 0)',
+      }
+    : {
+        engaged_no_reply: '(opened = 1 OR clicked = 1) AND replied = 0',
+        no_reply: 'replied = 0',
+        unengaged: 'opened = 0 AND clicked = 0 AND replied = 0',
+        engaged: '(opened = 1 OR clicked = 1 OR positive = 1)',
+      };
 
   const rows = await queryAll<{ person_id: string }>(
     db,
@@ -395,6 +409,16 @@ export async function segmentPeople(
   return rows.map((row) => row.person_id);
 }
 
+/** Whether opens or clicks are recorded at all, i.e. whether they can be read as engagement. */
+export async function tracksEngagement(db: Client, workspaceId: string): Promise<boolean> {
+  const row = await queryOne<{ track_opens: number | null; track_links: number | null }>(
+    db,
+    'SELECT track_opens, track_links FROM workspace_settings WHERE workspace_id = ?',
+    [workspaceId],
+  );
+  return Number(row?.track_opens ?? 0) === 1 || Number(row?.track_links ?? 0) === 1;
+}
+
 async function sourceCampaign(db: Client, offeringId: string): Promise<SourceCampaign | undefined> {
   // The product's busiest non-planner campaign sets the approval mode, voice
   // and limits: a product run on autopilot gets plays on autopilot, a product
@@ -475,6 +499,8 @@ export interface PlannerOverview {
     readonly sequence: string;
   }>;
   readonly next: { readonly period: string; readonly label: string };
+  /** False when neither opens nor clicks are tracked, so segments use delivery and replies. */
+  readonly tracksEngagement: boolean;
   readonly offerings: ReadonlyArray<{
     readonly offeringId: string;
     readonly name: string;
@@ -532,6 +558,7 @@ export async function plannerOverview(
       sequence: play.sequence,
     })),
     next: { period: plannerPeriod(nextAt), label: next.label },
+    tracksEngagement: await tracksEngagement(db, workspaceId),
     offerings: offerings.map((offering) => ({
       offeringId: offering.id,
       name: offering.name,

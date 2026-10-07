@@ -135,8 +135,11 @@ export {
 } from './warmup-network';
 export {
   detectMailbox,
+  blacklistCheck,
   listMailboxes,
   mailboxDns,
+  recordBlacklistCheck,
+  sweepBlacklists,
   recordReplyCheck,
   MailboxDetectError,
   type DetectedMailbox,
