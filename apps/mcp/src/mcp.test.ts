@@ -157,6 +157,7 @@ describe('tools', () => {
           campaignId: 'cmp_1',
           leads: [{ email: 'ada@acme.dev' }],
           offeringId: 'off_1',
+          outcome: 'done',
           enabled: true,
           id: 'lmn_1',
         })
@@ -375,5 +376,35 @@ describe('lead tools', () => {
       'GET https://api.test/api/v1/autogtm/campaigns/cmp_1/enrichment',
     ]);
     expect(calls[0]?.body).toEqual({ max_searches: 20 });
+  });
+});
+
+describe('posts from a link', () => {
+  test('draft_posts_from_link calls the API and nothing else', async () => {
+    const { fetchImpl, calls } = recorder(ok({ posts: [] }));
+    const client = createClient(CONFIG, fetchImpl);
+    await runTool(toolByName('draft_posts_from_link')!, client, {
+      url: 'https://blog.example.com/fast',
+      networks: ['linkedin', 'reddit'],
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe('https://api.test/api/v1/link-posts');
+    expect(calls[0]!.body).toEqual({
+      url: 'https://blog.example.com/fast',
+      networks: ['linkedin', 'reddit'],
+    });
+  });
+
+  test('mark_link_post routes skipped and done', async () => {
+    const { fetchImpl, calls } = recorder(ok({ post: {} }));
+    const client = createClient(CONFIG, fetchImpl);
+    const tool = toolByName('mark_link_post')!;
+    await runTool(tool, client, { id: 'lpo_1', outcome: 'skipped' });
+    await runTool(tool, client, { id: 'lpo_1', outcome: 'done', postedUrl: 'https://x.com/1' });
+    expect(calls.map((c) => c.url)).toEqual([
+      'https://api.test/api/v1/link-posts/lpo_1/skip',
+      'https://api.test/api/v1/link-posts/lpo_1/done',
+    ]);
+    expect(toolByName('list_link_posts')?.readOnly).toBe(true);
   });
 });

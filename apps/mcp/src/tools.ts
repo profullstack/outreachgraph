@@ -1409,6 +1409,110 @@ export const TOOLS: readonly ToolDefinition[] = [
         ...(str(args, 'description') ? { description: str(args, 'description') } : {}),
       }),
   },
+  {
+    name: 'draft_posts_from_link',
+    title: 'Draft social posts about a link',
+    description:
+      'Reads a web page and writes one post per network about it, in the workspace voice and sized to ' +
+      "each network's norms: LinkedIn (default), X, Reddit (title, subreddit, first comment), Hacker News " +
+      '(title, optional first comment), Facebook, Bluesky, Mastodon, Threads. Each comes back as a hand-off ' +
+      'card: the text to paste, a character count against the limit, a URL that opens the network composer ' +
+      'prefilled, and numbered steps. Nothing is posted: a person posts each one and marks it done. If the ' +
+      'page cannot be read, pass notes describing it.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'The page to post about' },
+        networks: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: [
+              'linkedin',
+              'x',
+              'reddit',
+              'hackernews',
+              'facebook',
+              'bluesky',
+              'mastodon',
+              'threads',
+            ],
+          },
+          description: 'Defaults to ["linkedin"]',
+        },
+        offeringId: {
+          type: 'string',
+          description: 'Whose voice to write in; defaults to the product whose site the link is on',
+        },
+        notes: { type: 'string', description: 'An angle, a call to action, what to leave out' },
+      },
+      required: ['url'],
+    },
+    run: (client, args) =>
+      client.post('/link-posts', {
+        url: require(args, 'url'),
+        ...(Array.isArray(args.networks) ? { networks: args.networks } : {}),
+        ...(str(args, 'offeringId') ? { offeringId: str(args, 'offeringId') } : {}),
+        ...(str(args, 'notes') ? { notes: str(args, 'notes') } : {}),
+      }),
+  },
+  {
+    name: 'list_link_posts',
+    title: 'List drafted posts about links',
+    description:
+      'The hand-off cards drafted from links, newest first: network, text, title, character count and ' +
+      'limit, the composer URL and the steps. status: open (default), done, skipped or all.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { status: { type: 'string', enum: ['open', 'done', 'skipped', 'all'] } },
+    },
+    run: (client, args) => client.get('/link-posts', { status: str(args, 'status') ?? 'open' }),
+  },
+  {
+    name: 'regenerate_link_post',
+    title: 'Rewrite one drafted post',
+    description:
+      'Writes one card again from the page it was drafted from, with a new angle; notes steer it.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' }, notes: { type: 'string' } },
+      required: ['id'],
+    },
+    run: (client, args) =>
+      client.post(
+        `/link-posts/${encodeURIComponent(require(args, 'id'))}/regenerate`,
+        str(args, 'notes') ? { notes: str(args, 'notes') } : {},
+      ),
+  },
+  {
+    name: 'mark_link_post',
+    title: 'Mark a drafted post done or skipped',
+    description:
+      'Records that a person posted the card (done, optionally with the URL of the live post) or decided ' +
+      'not to (skipped). Only call done after a human confirms they posted it.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        outcome: { type: 'string', enum: ['done', 'skipped'] },
+        postedUrl: { type: 'string' },
+      },
+      required: ['id', 'outcome'],
+    },
+    run: (client, args) => {
+      const id = encodeURIComponent(require(args, 'id'));
+      return require(args, 'outcome') === 'skipped'
+        ? client.post(`/link-posts/${id}/skip`, {})
+        : client.post(
+            `/link-posts/${id}/done`,
+            str(args, 'postedUrl') ? { postedUrl: str(args, 'postedUrl') } : {},
+          );
+    },
+  },
 ];
 
 export function toolByName(name: string): ToolDefinition | undefined {
