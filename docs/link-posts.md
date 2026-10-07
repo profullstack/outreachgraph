@@ -30,7 +30,7 @@ and nothing else. A person reads every card and presses Post themselves.
    The answer is cleaned: the URL is removed from the text (the card adds it
    where the network wants it), em and en dashes become commas, and a post over
    its limit is cut at a word boundary.
-4. **Cards.** Stored in `link_posts` (migration `0063`), page text included, so
+4. **Cards.** Stored in `link_posts` (migration `0064`), page text included, so
    **Regenerate** rewrites one card from the stored page with a new angle
    without fetching it again.
 

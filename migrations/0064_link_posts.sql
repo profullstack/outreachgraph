@@ -1,4 +1,4 @@
--- 0063_link_posts.sql: posts about a link, one per network, posted by a person.
+-- 0064_link_posts.sql: posts about a link, one per network, posted by a person.
 --
 -- "Draft a post from a link" on the Hand-offs tab: the API reads a page, the
 -- model writes a post for each network asked for, and each one becomes a

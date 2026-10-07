@@ -1,4 +1,4 @@
--- 0063_link_posts.sql (Postgres). See migrations/0063_link_posts.sql for the reasoning.
+-- 0064_link_posts.sql (Postgres). See migrations/0063_link_posts.sql for the reasoning.
 
 create table if not exists link_posts (
   id text PRIMARY KEY,
