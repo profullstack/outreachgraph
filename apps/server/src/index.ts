@@ -36,6 +36,7 @@ import { createApp } from '../../api/src/app';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import { runBootstrapProductJob } from '../../api/src/bulk-products';
+import { runCampaignSources } from '../../api/src/campaign-source';
 import { routesToApi } from './routing';
 import {
   drainQueue,
@@ -1082,6 +1083,24 @@ async function tick(): Promise<void> {
       }
     } catch (error) {
       console.error(`find_email sweep failed for ${workspaceId}`, error);
+    }
+  }
+
+  // Each campaign's source URL, read every few hours: new feed items or a
+  // changed page become drafted hand-off cards. A few campaigns per tick,
+  // capped per campaign and per workspace a day inside the function.
+  if (model) {
+    try {
+      for (const result of await runCampaignSources({ db, model })) {
+        if (result.drafted > 0 || result.error) {
+          console.log(
+            `campaign source ${result.campaignId}: ${result.mode}, ${result.newItems} new, ` +
+              `${result.drafted} drafted${result.error ? `, ${result.error}` : ''}`,
+          );
+        }
+      }
+    } catch (error) {
+      console.error('campaign sources failed', error);
     }
   }
 

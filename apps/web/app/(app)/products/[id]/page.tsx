@@ -3,6 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { Avatar } from '../../../../components/avatar';
 import { AddLeads } from '../../../../components/add-leads';
 import { CampaignControls } from '../../../../components/campaign-controls';
+import { CampaignSource } from '../../../../components/campaign-source';
 import { LeadEnrichment } from '../../../../components/lead-enrichment';
 import { ScreenedLeads } from '../../../../components/screened-leads';
 import {
@@ -80,6 +81,9 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
             <p className="text-ink-muted text-sm">No campaign yet.</p>
           )}
         </div>
+        {campaign && campaign.status !== 'archived' ? (
+          <CampaignSource campaignId={campaign.id} />
+        ) : null}
         <p className="text-ink-muted mt-2 text-sm">
           <Link href="/buyer-leads" className="underline">
             Buyer leads

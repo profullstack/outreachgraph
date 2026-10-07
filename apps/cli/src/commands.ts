@@ -815,7 +815,7 @@ async function runBuyers({ client, args, flags }: CommandContext): Promise<strin
 }
 
 const LINKPOST_USAGE =
-  'og linkpost <url> [--to linkedin,x,reddit,hackernews,facebook,bluesky,mastodon,threads] [--product <offeringId>] [--notes "angle"] | list [--status open|done|skipped|all] | show <id> | regen <id> [--notes "angle"] | done <id> [--url <posted-url>] | skip <id>';
+  'og linkpost <url> [--to linkedin,x,reddit,hackernews,facebook,bluesky,mastodon,threads] [--product <offeringId>] [--notes "angle"] | list [--status open|done|skipped|all] | show <id> | regen <id> [--notes "angle"] | done <id> [--url <posted-url>] | skip <id> | source <campaignId> [--url <feed-or-page>] [--to linkedin,x] [--check]';
 
 /**
  * `og linkpost` — draft posts about a link, one per network, for you to post.
@@ -849,6 +849,37 @@ async function runLinkPost({ client, args, flags }: CommandContext): Promise<str
     return posts.length
       ? many(posts)
       : 'No posts waiting. Draft some: og linkpost <url> --to linkedin,x';
+  }
+
+  // The campaign's own source: read every 6 hours, new items drafted automatically.
+  if (verb === 'source') {
+    if (!target)
+      throw new Error('og linkpost source <campaignId> [--url <u>] [--to a,b] [--check]');
+    const path = `/campaigns/${encodeURIComponent(target)}`;
+    const url = flagString(flags, 'url');
+    const to = flagString(flags, 'to');
+    if (url || to) {
+      if (!client.patch) throw new Error('this client cannot edit campaigns');
+      await client.patch(path, {
+        ...(url ? { sourceUrl: url } : {}),
+        ...(to ? { postNetworks: to.split(',').map((n) => n.trim()) } : {}),
+      });
+    }
+    if (flags.check) {
+      const { result } = (await client.post(`${path}/source/check`, {})) as {
+        result: Record<string, unknown>;
+      };
+      return result.error
+        ? `Could not read it: ${text(result, 'error')}`
+        : `Read the ${text(result, 'mode')}: ${text(result, 'newItems')} new, ${text(result, 'drafted')} drafted. See: og linkpost list`;
+    }
+    const { source } = (await client.get(path)) as { source: Record<string, unknown> };
+    const nets = Array.isArray(source.postNetworks) ? (source.postNetworks as string[]) : [];
+    return [
+      `source: ${text(source, 'url') || '(none)'}`,
+      `networks: ${nets.join(', ')}`,
+      `last read: ${text(source, 'checkedAt') || 'never'}${source.error ? ` (failed: ${text(source, 'error')})` : ''}`,
+    ].join('\n');
   }
 
   if (verb === 'show') {

@@ -50,6 +50,8 @@ export interface LinkPostRequest {
   readonly brand?: LinkPostBrand | undefined;
   /** What the poster wants said: an angle, a call to action, a correction. */
   readonly notes?: string | undefined;
+  /** Who the posts are for: the campaign's target customer, in words. */
+  readonly audience?: string | undefined;
 }
 
 export interface LinkPostDraft {
@@ -87,7 +89,7 @@ function host(url: string | undefined): string | undefined {
 
 /** The user prompt. Exported for tests: what the model is told is part of the contract. */
 export function linkPostPrompt(request: LinkPostRequest): string {
-  const { page, brand, voice, notes } = request;
+  const { page, brand, voice, notes, audience } = request;
   const own = brand?.url && host(brand.url) && host(brand.url) === host(page.url);
 
   const lines: string[] = [
@@ -116,6 +118,15 @@ export function linkPostPrompt(request: LinkPostRequest): string {
       'VOICE',
       `Style: ${voice.style}`,
       voice.instructions ? `Instructions: ${voice.instructions.slice(0, 1000)}` : '',
+      '',
+    );
+  }
+
+  if (audience?.trim()) {
+    lines.push(
+      'AUDIENCE',
+      `Written for: ${audience.trim().slice(0, 600)}`,
+      'Pick the angle this reader cares about; do not name them or the targeting.',
       '',
     );
   }

@@ -239,6 +239,8 @@ export {
   DEFAULT_DISCUSSION_SITES,
   RedditSource,
   RssSource,
+  looksLikeFeed,
+  parseFeedItems,
   suggestSubreddits,
   DEFAULT_NOSTR_RELAYS,
   REDDIT_API,

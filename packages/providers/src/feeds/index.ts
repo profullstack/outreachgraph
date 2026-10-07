@@ -36,7 +36,7 @@ export {
   redditPostId,
   type WebDiscussionSourceOptions,
 } from './web-discussions';
-export { RssSource, type RssSourceOptions } from './rss';
+export { looksLikeFeed, parseFeedItems, RssSource, type RssSourceOptions } from './rss';
 export { BlueskyFeedSource, type BlueskyFeedSourceOptions } from './bluesky';
 export {
   NostrSource,
