@@ -1040,7 +1040,36 @@ async function runCadences({ client, args, flags }: CommandContext): Promise<str
     return `Created ${text(result, 'cadenceId')}${flags.active === true ? ' (active)' : ' as a draft'}`;
   }
 
-  throw new Error('og cadences [list] | og cadences show <id> | og cadences create --name …');
+  if (verb === 'ab') {
+    if (!id) throw new Error('a cadence id is required: og cadences ab <id>');
+    const result = (await client.get(`/cadences/${encodeURIComponent(id)}/variants`)) as Record<
+      string,
+      unknown
+    >;
+    const lines: string[] = [];
+    for (const row of rows(result, 'variants')) {
+      const rate =
+        row.replyRate === null || row.replyRate === undefined
+          ? '-'
+          : `${(Number(row.replyRate) * 100).toFixed(1)}%`;
+      lines.push(
+        `step ${Number(text(row, 'step', '0')) + 1} ${text(row, 'variant')}: ` +
+          `${text(row, 'sent', '0')} sent, ${text(row, 'replied', '0')} replied (${rate})`,
+      );
+    }
+    for (const done of rows(result, 'decided')) {
+      lines.push(
+        `decided step ${Number(text(done, 'step', '0')) + 1}: ${text(done, 'winner')} won, ${text(done, 'reason')}`,
+      );
+    }
+    return lines.length > 0
+      ? lines.join('\n')
+      : 'No A/B test on this plan yet. Add variants to a step to start one; it decides itself at 50+ sends per arm.';
+  }
+
+  throw new Error(
+    'og cadences [list] | og cadences show <id> | og cadences ab <id> | og cadences create --name …',
+  );
 }
 
 export const COMMANDS: readonly Command[] = [
@@ -1307,7 +1336,7 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'cadences',
     usage:
-      'og cadences | og cadences show <id> | og cadences create --name <name> ' +
+      'og cadences | og cadences show <id> | og cadences ab <id> | og cadences create --name <name> ' +
       '--step network:action[:delayHours[:condition[:waitHours]]]... [--campaign <id>] [--active] [--file plan.json]',
     summary:
       'Plans of touches over time; a step may run only if connected, not connected, clicked, or not replied.',

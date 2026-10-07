@@ -194,6 +194,7 @@ import {
 } from '@outreachgraph/domain';
 import { draftForRecommendation, draftProfile, type TextModel } from '@outreachgraph/ai';
 import {
+  abResults,
   batchStatus,
   emitWebhookEvent,
   enqueue,
@@ -203,6 +204,7 @@ import {
   NICHEDB_DEFAULT_EVERY_MS,
   runPipeline,
   stopNichedbDiscovery,
+  variantStats,
 } from '@outreachgraph/pipeline';
 import {
   GitHubProvider,
@@ -4472,68 +4474,26 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     );
     if (!cadence) throw ApiError.notFound('cadence');
 
-    const rows = await queryAll<{
-      step_position: number;
-      variant: string;
-      assigned: number;
-      sent: number;
-      opened: number;
-      clicked: number;
-      replied: number;
-    }>(
-      db,
-      `WITH runs AS (
-         SELECT r.step_position, r.variant, e.person_id, r.recommendation_id
-           FROM cadence_step_runs r
-           JOIN cadence_enrollments e ON e.id = r.enrollment_id
-          WHERE e.cadence_id = ? AND r.workspace_id = ? AND r.variant IS NOT NULL
-       ),
-       sent AS (
-         SELECT runs.*, a.id AS action_id, COALESCE(a.executed_at, a.created_at) AS executed_at
-           FROM runs
-           JOIN actions a ON a.recommendation_id = runs.recommendation_id
-                         AND a.status = 'completed'
-       )
-       SELECT runs.step_position, runs.variant,
-              count(DISTINCT runs.person_id) AS assigned,
-              (SELECT count(DISTINCT s.person_id) FROM sent s
-                WHERE s.step_position = runs.step_position AND s.variant = runs.variant) AS sent,
-              (SELECT count(DISTINCT s.person_id) FROM sent s
-                 JOIN open_pixels op ON op.action_id = s.action_id
-                 JOIN email_opens eo ON eo.pixel_id = op.id AND eo.automated IS NULL
-                WHERE s.step_position = runs.step_position AND s.variant = runs.variant) AS opened,
-              (SELECT count(DISTINCT s.person_id) FROM sent s
-                 JOIN tracked_links tl ON tl.action_id = s.action_id
-                 JOIN link_clicks lc ON lc.tracked_link_id = tl.id AND lc.automated IS NULL
-                WHERE s.step_position = runs.step_position AND s.variant = runs.variant) AS clicked,
-              (SELECT count(DISTINCT s.person_id) FROM sent s
-                 JOIN interactions i ON i.person_id = s.person_id
-                                    AND i.workspace_id = ?
-                                    AND i.direction = 'inbound' AND i.state = 'replied'
-                                    AND i.occurred_at >= s.executed_at
-                WHERE s.step_position = runs.step_position AND s.variant = runs.variant) AS replied
-         FROM runs
-     GROUP BY runs.step_position, runs.variant
-     ORDER BY runs.step_position, runs.variant`,
-      [id, actor.workspaceId, actor.workspaceId],
-    );
+    const stats = await variantStats(db, actor.workspaceId, id);
+    const decided = await abResults(db, actor.workspaceId, { cadenceId: id });
 
     return c.json({
-      variants: rows.map((row) => {
-        const sent = Number(row.sent);
-        const replied = Number(row.replied);
-        return {
-          step: Number(row.step_position),
-          variant: row.variant,
-          assigned: Number(row.assigned),
-          sent,
-          opened: Number(row.opened),
-          clicked: Number(row.clicked),
-          replied,
-          replyRate: sent > 0 ? Math.round((replied / sent) * 1000) / 1000 : null,
-        };
-      }),
+      variants: stats.map((row) => ({
+        ...row,
+        replyRate: row.sent > 0 ? Math.round((row.replied / row.sent) * 1000) / 1000 : null,
+      })),
+      // Tests already decided: the winner became the step's intent. A step is
+      // decided once every arm has 50+ sends and the leader is ahead at 95%,
+      // or every arm has 200+ (then the best wins, a tie keeps A).
+      decided,
     });
+  });
+
+  /** Every decided A/B test in the workspace, newest first. */
+  api.get('/ab-results', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    return c.json({ results: await abResults(db, actor.workspaceId, { limit: 100 }) });
   });
 
   api.post('/cadences', async (c) => {
