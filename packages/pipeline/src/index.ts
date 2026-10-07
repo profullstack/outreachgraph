@@ -56,8 +56,12 @@ export {
 export { reseedIdleCampaigns, type ReseedResult } from './reseed';
 export {
   findEmail,
+  finderConfidence,
+  finderSpend,
+  resetFinderPauses,
   scoreCandidate,
   PROMOTE_THRESHOLD,
+  type FinderSlot,
   type FindEmailDeps,
   type FindEmailOutcome,
   type FindEmailResult,
@@ -635,3 +639,11 @@ export {
   type ListSourceItemView,
   type ListSourceScan,
 } from './list-sources';
+export {
+  blueskyAutopilotEnabled,
+  resetBlueskyAutopilotPauses,
+  runBlueskyAutopilot,
+  DAILY_CAPS as BLUESKY_AUTOPILOT_CAPS,
+  type BlueskyAutopilotDeps,
+  type BlueskyAutopilotResult,
+} from './bluesky-autopilot';

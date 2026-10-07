@@ -9,9 +9,21 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import { now, queryAll, type Client } from '@outreachgraph/db';
-import type { MxRecord, SmtpProber, SmtpProbeResult } from '@outreachgraph/providers';
+import {
+  SearchOutOfCredits,
+  type EmailFinder,
+  type MxRecord,
+  type SmtpProber,
+  type SmtpProbeResult,
+} from '@outreachgraph/providers';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
-import { findEmail, scoreCandidate, PROMOTE_THRESHOLD } from './find-email';
+import {
+  findEmail,
+  finderSpend,
+  resetFinderPauses,
+  scoreCandidate,
+  PROMOTE_THRESHOLD,
+} from './find-email';
 import {
   enqueueFindEmail,
   findEmailDedupeKey,
@@ -512,5 +524,162 @@ describe('queueing find_email', () => {
     const cards = await pendingCards(db, PERSON);
     expect(cards[0]?.policy_status).toBe('manual_only');
     expect(await jobs(db)).toEqual([{ dedupe_key: findEmailDedupeKey(PERSON), status: 'pending' }]);
+  });
+});
+
+describe('free-tier finders', () => {
+  afterEach(() => resetFinderPauses());
+
+  /** A finder that answers from a function and counts its calls. */
+  function finder(name: string, answer: EmailFinder['find']): EmailFinder & { calls: number } {
+    const out = {
+      name,
+      calls: 0,
+      async find(query: Parameters<EmailFinder['find']>[0]) {
+        out.calls += 1;
+        return answer(query);
+      },
+    };
+    return out;
+  }
+
+  test('an address a finder verified, in their name shape, is promoted', async () => {
+    const db = await setup('find-email-finder-hunter');
+    await linkedInOnly(db);
+    const hunter = finder('hunter', async () => ({
+      address: 'priya.raman@acme.com',
+      score: 0.92,
+      status: 'valid',
+    }));
+
+    const result = await findEmail(
+      {
+        db,
+        resolveMx: hasMx,
+        smtp: blocked,
+        finders: [{ finder: hunter, perDay: 5, perMonth: 50 }],
+      },
+      { workspaceId: SEED.workspaceId, personId: PERSON },
+    );
+
+    expect(result.outcome).toBe('promoted');
+    expect(result.via).toBe('hunter');
+    expect(result.address).toBe('priya.raman@acme.com');
+    expect((await personEmails(db, PERSON)).map((row) => row.address)).toEqual([
+      'priya.raman@acme.com',
+    ]);
+    expect((await finderSpend(db, 'hunter')).today).toBe(1);
+  });
+
+  test('an answer that is not their name is dropped, whoever supplied it', async () => {
+    const db = await setup('find-email-finder-stranger');
+    await linkedInOnly(db);
+    const stranger = finder('contactout', async () => ({
+      address: 'john.doe@acme.com',
+      score: 0.99,
+      status: 'valid',
+    }));
+
+    const result = await findEmail(
+      {
+        db,
+        resolveMx: hasMx,
+        smtp: blocked,
+        finders: [{ finder: stranger, perDay: 5, perMonth: 50 }],
+      },
+      { workspaceId: SEED.workspaceId, personId: PERSON },
+    );
+
+    expect(result.outcome).toBe('below_threshold');
+    expect(await personEmails(db, PERSON)).toEqual([]);
+  });
+
+  test('out of credits pauses that finder and the next one is asked', async () => {
+    const db = await setup('find-email-finder-spent');
+    await linkedInOnly(db);
+    const spent = finder('contactout', async () => {
+      throw new SearchOutOfCredits('ContactOut');
+    });
+    const search = finder('search', async () => ({ address: 'praman@acme.com', score: 0.8 }));
+    const deps = {
+      db,
+      resolveMx: hasMx,
+      smtp: blocked,
+      finders: [
+        { finder: spent, perDay: 5, perMonth: 50 },
+        { finder: search, perDay: 5, perMonth: 50 },
+      ],
+    };
+
+    const result = await findEmail(deps, { workspaceId: SEED.workspaceId, personId: PERSON });
+    expect(result.outcome).toBe('promoted');
+    expect(result.via).toBe('search');
+
+    // Paused: a second search does not ask the spent finder again.
+    await linkedInOnly(db, { id: 'per_other', name: 'Omar Haddad' });
+    await findEmail(deps, { workspaceId: SEED.workspaceId, personId: 'per_other' });
+    expect(spent.calls).toBe(1);
+  });
+
+  test('a finder past its monthly quota is not asked', async () => {
+    const db = await setup('find-email-finder-quota');
+    await linkedInOnly(db);
+    const hunter = finder('hunter', async () => ({
+      address: 'priya.raman@acme.com',
+      score: 0.9,
+      status: 'valid',
+    }));
+
+    const result = await findEmail(
+      {
+        db,
+        resolveMx: hasMx,
+        smtp: blocked,
+        finders: [{ finder: hunter, perDay: 5, perMonth: 0 }],
+      },
+      { workspaceId: SEED.workspaceId, personId: PERSON },
+    );
+
+    expect(result.outcome).toBe('below_threshold');
+    expect(hunter.calls).toBe(0);
+  });
+
+  test('a server refusal beats any finder', async () => {
+    const db = await setup('find-email-finder-refused');
+    await linkedInOnly(db);
+    const hunter = finder('hunter', async () => ({
+      address: 'priya.raman@acme.com',
+      score: 0.95,
+      status: 'valid',
+    }));
+
+    const result = await findEmail(
+      {
+        db,
+        resolveMx: hasMx,
+        // Strict domain: made-up recipients refused, and so is every guess.
+        smtp: prober(() => 550),
+        finders: [{ finder: hunter, perDay: 5, perMonth: 50 }],
+      },
+      { workspaceId: SEED.workspaceId, personId: PERSON },
+    );
+
+    expect(result.outcome).toBe('below_threshold');
+    expect(await personEmails(db, PERSON)).toEqual([]);
+  });
+
+  test('the sweep reaches someone whose only email card goes to a company desk', async () => {
+    const db = await setup('find-email-sweep-desk');
+    await linkedInOnly(db, { card: false });
+    await db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action,
+            network, priority, reason, policy_status, policy_version, expected_goal,
+            status, created_at)
+            VALUES ('rec_desk', ?, ?, ?, 'send_email', 'email', 60, 'x', 'allow',
+            '2026-08-11', 'start_conversation', 'pending', ?)`,
+      args: [SEED.workspaceId, SEED.campaignId, PERSON, now()],
+    });
+
+    expect((await sweepFindEmail(db, { workspaceId: SEED.workspaceId })).queued).toBe(1);
   });
 });

@@ -481,7 +481,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.json({
       service: 'api',
       name: 'outreachgraph',
-      version: options.version ?? '0.13.2',
+      version: options.version ?? '0.14.0',
       ...(options.commitHash ? { commitHash: options.commitHash } : {}),
       docs: 'https://github.com/profullstack/outreachgraph',
       endpoints: {
@@ -614,7 +614,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.json({
       status: 'ok' as const,
       service: 'api',
-      version: options.version ?? '0.13.2',
+      version: options.version ?? '0.14.0',
       ...(options.commitHash ? { commitHash: options.commitHash } : {}),
       uptimeSeconds: Math.round((Date.now() - STARTED_AT) / 1000),
     }),
@@ -4783,10 +4783,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       tracking_origin: string | null;
       track_opens: number | null;
       booking_url: string | null;
+      bluesky_autopilot: number | null;
     }>(
       db,
       `SELECT autopilot_daily_cap, reply_to_email, track_links, tracking_origin, track_opens,
-              booking_url
+              booking_url, bluesky_autopilot
          FROM workspace_settings WHERE workspace_id = ?`,
       [actor.workspaceId],
     );
@@ -4808,6 +4809,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       trackOpens: (cap?.track_opens ?? 0) === 1,
       // Sent with every answer to an interested reply.
       bookingUrl: cap?.booking_url ?? null,
+      // Autopilot follows and replies on Bluesky, under its own caps.
+      blueskyAutopilot: (cap?.bluesky_autopilot ?? 0) === 1,
       // Where tracked links would actually point if switched on. The setting
       // alone is not enough to tell a user whether tracking will work, since
       // an unset origin falls back to the service's own APP_URL.
@@ -4835,6 +4838,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     await saveWorkspaceSettings(db, actor.workspaceId, {
       ...(bookingUrl === undefined ? {} : { bookingUrl }),
+      ...(typeof body.blueskyAutopilot === 'boolean'
+        ? { blueskyAutopilot: body.blueskyAutopilot }
+        : {}),
       ...(body.notifyEmail === undefined
         ? {}
         : { notifyEmail: body.notifyEmail === null ? null : String(body.notifyEmail) }),

@@ -44,6 +44,7 @@ interface ActionRow {
   readonly action_status: string;
   readonly action_body: string | null;
   readonly network: string;
+  readonly kind: string;
   readonly person_id: string;
   readonly recommendation_id: string;
   readonly campaign_id: string;
@@ -71,7 +72,7 @@ export async function deliverBlueskyAction(
   const row = await queryOne<ActionRow>(
     db,
     `SELECT a.id AS action_id, a.status AS action_status, a.body AS action_body,
-            a.network, a.person_id, a.recommendation_id,
+            a.network, a.kind, a.person_id, a.recommendation_id,
             r.campaign_id,
             p.display_name,
             d.body AS draft_body,
@@ -95,6 +96,10 @@ export async function deliverBlueskyAction(
   if (row.network !== 'bluesky')
     return { sent: false, reason: 'this action is not a Bluesky post' };
   if (row.action_status === 'completed') return { sent: false, reason: 'already sent' };
+
+  // A follow says nothing, so it needs no draft and no post to answer: only
+  // whose account it is.
+  if (row.kind === 'follow') return followOnBluesky(deps, input, row);
 
   const body = (row.action_body ?? row.draft_body ?? '').trim();
   if (!body) return { sent: false, reason: 'there is no message to send' };
@@ -143,6 +148,51 @@ export async function deliverBlueskyAction(
       detail: { network: 'bluesky', error: message.slice(0, 500) },
     });
 
+    return { sent: false, reason: message.slice(0, 500) };
+  }
+}
+
+async function followOnBluesky(
+  deps: DeliverBlueskyDeps,
+  input: DeliverBlueskyInput,
+  row: ActionRow,
+): Promise<DeliverBlueskyResult> {
+  const { db } = deps;
+  try {
+    const did = row.platform_user_id ?? (await deps.agent.resolveHandle(row.handle ?? ''));
+    if (!did) return { sent: false, reason: 'their Bluesky identity could not be resolved' };
+
+    const followed = await deps.agent.follow(did);
+    const url = `https://bsky.app/profile/${row.handle ?? did}`;
+    await recordBlueskySent(db, {
+      workspaceId: input.workspaceId,
+      campaignId: row.campaign_id,
+      personId: row.person_id,
+      actionId: row.action_id,
+      recommendationId: row.recommendation_id,
+      body: '',
+      uri: followed.uri,
+      url,
+      actor: input.actor,
+      countsAsContact: false,
+      ...(input.policyVersion ? { policyVersion: input.policyVersion } : {}),
+    });
+    return { sent: true, url, uri: followed.uri };
+  } catch (error) {
+    const message =
+      error instanceof BlueskyAuthError
+        ? 'the connected Bluesky account is no longer authorised'
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    await db.execute({
+      sql: `UPDATE actions SET status = 'failed', error = ? WHERE id = ?`,
+      args: [message.slice(0, 500), row.action_id],
+    });
+    await auditAction(db, input.workspaceId, row.action_id, input.actor, {
+      eventType: 'action.send_failed',
+      detail: { network: 'bluesky', action: 'follow', error: message.slice(0, 500) },
+    });
     return { sent: false, reason: message.slice(0, 500) };
   }
 }

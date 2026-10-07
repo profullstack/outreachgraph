@@ -682,6 +682,34 @@ describe('a queue held at the top', () => {
     ]);
   });
 
+  test('a restart remembers the holds it already wrote down', async () => {
+    seeded = await seedDatabase('autopilot-hold-restart');
+    const { db } = seeded;
+
+    await makeSendable(db, { companyEmail: 'hello@acme.com' });
+    await inboxAlreadyWrittenTo(db, 'hello@acme.com');
+    const { mailer } = recordingMailer();
+
+    await runAutopilot({ db, mailer, holdLedger: new HoldLedger() }, SEED.workspaceId);
+    // A deploy: a fresh process, an empty ledger.
+    const fresh = new HoldLedger();
+    const after = await runAutopilot({ db, mailer, holdLedger: fresh }, SEED.workspaceId);
+
+    expect(after.skipped).toHaveLength(1);
+    const events = await queryAll<{ message: string }>(
+      db,
+      `SELECT message FROM workflow_events WHERE phase = 'send' AND level = 'warn'`,
+    );
+    expect(events).toHaveLength(1);
+    expect(fresh.summary(SEED.workspaceId)).toHaveLength(1);
+
+    const stored = await queryAll<{ recommendation_id: string }>(
+      db,
+      'SELECT recommendation_id FROM autopilot_holds',
+    );
+    expect(stored).toHaveLength(1);
+  });
+
   test('an address they gave us in an import is their own, not a shared one', async () => {
     seeded = await seedDatabase('autopilot-imported-address');
     const { db } = seeded;

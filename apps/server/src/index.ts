@@ -101,14 +101,20 @@ import {
   workspacesWithLinkedInSession,
   enrichLeads,
   workspacesAwaitingLeadEnrichment,
+  type FinderSlot,
   type LeadEnrichDeps,
+  runBlueskyAutopilot,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
   BlueskyProvider,
   createSmtpProber,
   NostrSource,
+  ContactOutEmailFinder,
+  HunterEmailFinder,
   PeopleDataLabsClient,
+  PublishedEmailFinder,
+  SerperClient,
   RedditSource,
   RssSource,
   SiteProvider,
@@ -384,6 +390,53 @@ const smtpProber =
       });
 
 /**
+ * Free-tier email finders for `find_email`, in the order they are asked.
+ *
+ * Only reached when the domain's own pattern and mail servers could not
+ * settle an address, and only on keys that cost nothing: Serper's 2,500 free
+ * searches for an address a page printed next to the name (ValueSERP stands in,
+ * on a small daily cap, when there is no Serper key), Hunter's 50 free finds a
+ * month, ContactOut's 30 once. Quotas are counted across every workspace,
+ * because the free allowance is the account's, and kept under the real
+ * limits. Every answer is checked against the person's name and the domain's
+ * mail servers before the sender may use it.
+ */
+const emailFinders: FinderSlot[] = [];
+if (process.env.SERPER_API_KEY) {
+  emailFinders.push({
+    finder: new PublishedEmailFinder(new SerperClient({ apiKey: process.env.SERPER_API_KEY })),
+    perDay: Number(process.env.FINDER_SEARCHES_PER_DAY ?? 80),
+    perMonth: Number(process.env.FINDER_SEARCHES_PER_MONTH ?? 2_000),
+  });
+} else if (process.env.VALUESERP_API_KEY) {
+  emailFinders.push({
+    finder: new PublishedEmailFinder(
+      new ValueSerpClient({ apiKey: process.env.VALUESERP_API_KEY, searchTimeoutMs: 45_000 }),
+      'valueserp',
+    ),
+    perDay: Number(process.env.FINDER_VALUESERP_PER_DAY ?? 25),
+    perMonth: Number(process.env.FINDER_VALUESERP_PER_MONTH ?? 600),
+  });
+}
+if (process.env.HUNTER_API_KEY) {
+  emailFinders.push({
+    finder: new HunterEmailFinder({ apiKey: process.env.HUNTER_API_KEY }),
+    perDay: Number(process.env.FINDER_HUNTER_PER_DAY ?? 3),
+    perMonth: Number(process.env.FINDER_HUNTER_PER_MONTH ?? 45),
+  });
+}
+if (process.env.CONTACTOUT_API_KEY) {
+  emailFinders.push({
+    finder: new ContactOutEmailFinder({ apiKey: process.env.CONTACTOUT_API_KEY }),
+    perDay: Number(process.env.FINDER_CONTACTOUT_PER_DAY ?? 2),
+    perMonth: Number(process.env.FINDER_CONTACTOUT_PER_MONTH ?? 25),
+  });
+}
+console.log(
+  `find_email finders: ${emailFinders.map((slot) => slot.finder.name).join(', ') || 'none'}`,
+);
+
+/**
  * The feed clients for one campaign's own targets.
  *
  * The split here is deliberate, and it is the whole point of this function.
@@ -540,7 +593,7 @@ const api = createApp({
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
-  version: process.env.APP_VERSION ?? '0.13.2',
+  version: process.env.APP_VERSION ?? '0.14.0',
   ...(commitHash ? { commitHash } : {}),
 });
 
@@ -873,6 +926,7 @@ async function runJob(job: QueuedJob): Promise<void> {
           db,
           ...(smtpProber && !smtpProber.blocked() ? { smtp: smtpProber } : {}),
           emailSendingEnabled: mailer !== undefined,
+          finders: emailFinders,
         },
         { workspaceId: job.workspaceId, personId },
       );
@@ -884,6 +938,7 @@ async function runJob(job: QueuedJob): Promise<void> {
           (result.domain ? ` at ${result.domain}` : '') +
           (result.address ? `, ${result.address} (${result.confidence})` : '') +
           (result.smtp ? `, smtp ${result.smtp}` : '') +
+          (result.via ? ` via ${result.via}` : '') +
           (result.recommendationIds.length > 0
             ? `, re-decided into ${result.recommendationIds.join(', ')}`
             : ''),
@@ -1583,6 +1638,20 @@ async function tick(): Promise<void> {
       }
     } catch (error) {
       console.error(`autopilot failed for ${workspace.id}`, error);
+    }
+
+    try {
+      // Bluesky follows and replies, for workspaces that opted in: one at most
+      // per tick, spaced and capped per day inside the function.
+      const bluesky = await runBlueskyAutopilot(
+        { db, ...(encryptionKey ? { encryptionKey } : {}) },
+        workspace.id,
+      );
+      if (bluesky.acted) {
+        console.log(`bluesky autopilot ${workspace.id}: ${bluesky.kind} ${bluesky.url}`);
+      }
+    } catch (error) {
+      console.error(`bluesky autopilot failed for ${workspace.id}`, error);
     }
 
     if (!appUrl) continue;
