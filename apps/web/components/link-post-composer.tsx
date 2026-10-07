@@ -9,7 +9,7 @@ import {
   linkPostCard,
   type LinkPostNetwork,
 } from '@outreachgraph/domain';
-import type { LinkPostView } from '../lib/api';
+import type { LinkPostView, SavedLinkView } from '../lib/api';
 import type { ProductSummaryView } from '../lib/types';
 
 /**
@@ -23,16 +23,19 @@ import type { ProductSummaryView } from '../lib/types';
  */
 export function LinkPostComposer({
   initialPosts,
+  initialLinks,
   products,
   draftingEnabled,
 }: {
   initialPosts: LinkPostView[];
+  initialLinks: SavedLinkView[];
   products: ProductSummaryView[];
   draftingEnabled: boolean;
 }) {
   const router = useRouter();
   const [posts, setPosts] = useState<LinkPostView[]>(initialPosts);
   const [url, setUrl] = useState('');
+  const [links, setLinks] = useState<SavedLinkView[]>(initialLinks);
   const [networks, setNetworks] = useState<LinkPostNetwork[]>(['linkedin']);
   const [offeringId, setOfferingId] = useState('');
   const [notes, setNotes] = useState('');
@@ -48,6 +51,14 @@ export function LinkPostComposer({
         ? current.filter((n) => n !== network)
         : LINK_POST_NETWORKS.filter((n) => n === network || current.includes(n)),
     );
+  }
+
+  async function forget(link: string): Promise<void> {
+    setLinks((current) => current.filter((item) => item.url !== link));
+    await fetch(`/api/v1/link-posts/links?url=${encodeURIComponent(link)}`, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    }).catch(() => undefined);
   }
 
   async function draft(event: React.FormEvent): Promise<void> {
@@ -71,7 +82,7 @@ export function LinkPostComposer({
       const payload = (await response.json().catch(() => ({}))) as {
         posts?: LinkPostView[];
         missing?: string[];
-        page?: { read: boolean; title?: string };
+        page?: { read: boolean; url?: string; title?: string };
         error?: { message?: string };
       };
       if (!response.ok || !payload.posts) {
@@ -79,6 +90,16 @@ export function LinkPostComposer({
         return;
       }
       setPosts((current) => [...payload.posts!, ...current]);
+      // Every link drafted from is kept; put it at the top of the picker.
+      const used = payload.page?.url ?? url.trim();
+      setLinks((current) => [
+        {
+          url: used,
+          ...(payload.page?.title ? { title: payload.page.title } : {}),
+          lastUsedAt: new Date().toISOString(),
+        },
+        ...current.filter((link) => link.url !== used),
+      ]);
       setUrl('');
       const parts: string[] = [];
       if (payload.page && !payload.page.read) {
@@ -121,6 +142,40 @@ export function LinkPostComposer({
           aria-label="Link to post about"
           className="border-border bg-surface mt-3 w-full rounded-xl border px-3 py-2 text-sm"
         />
+
+        {links.length > 0 ? (
+          <ul
+            aria-label="Links you have posted about"
+            className="border-border mt-2 max-h-48 overflow-y-auto rounded-xl border text-sm"
+          >
+            {links.map((link) => (
+              <li
+                key={link.url}
+                className={`border-border flex items-center gap-2 border-b px-3 py-1.5 last:border-b-0 ${
+                  link.url === url ? 'bg-surface' : ''
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setUrl(link.url)}
+                  title={link.url}
+                  className="min-w-0 flex-1 truncate text-left"
+                >
+                  {link.title ? `${link.title} · ` : ''}
+                  <span className="text-ink-muted">{link.url}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void forget(link.url)}
+                  aria-label={`Remove ${link.url}`}
+                  className="text-ink-muted hover:text-hot px-1"
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
 
         <fieldset className="mt-3">
           <legend className="text-ink-muted mb-1 text-xs">Networks</legend>

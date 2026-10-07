@@ -105,6 +105,7 @@ export default async function ApprovalsPage({
         </header>
         <LinkPostComposer
           initialPosts={linkPosts.posts}
+          initialLinks={linkPosts.links ?? []}
           products={products}
           draftingEnabled={linkPosts.draftingEnabled}
         />
