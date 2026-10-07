@@ -12,7 +12,7 @@
     },
     "apps/api": {
       "name": "@outreachgraph/api",
-      "version": "0.15.0",
+      "version": "0.15.1",
       "dependencies": {
         "@logicsrc/openaccess": "^0.3.0",
         "@outreachgraph/ai": "workspace:*",
@@ -36,7 +36,7 @@
     },
     "apps/cli": {
       "name": "@outreachgraph/cli",
-      "version": "0.15.0",
+      "version": "0.15.1",
       "bin": {
         "og": "./src/index.ts",
       },
@@ -46,7 +46,7 @@
     },
     "apps/mcp": {
       "name": "@outreachgraph/mcp",
-      "version": "0.15.0",
+      "version": "0.15.1",
       "bin": {
         "outreachgraph-mcp": "./src/index.ts",
       },
@@ -57,7 +57,7 @@
     },
     "apps/server": {
       "name": "@outreachgraph/server",
-      "version": "0.15.0",
+      "version": "0.15.1",
       "dependencies": {
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/contracts": "workspace:*",
@@ -79,7 +79,7 @@
     },
     "apps/web": {
       "name": "@outreachgraph/web",
-      "version": "0.15.0",
+      "version": "0.15.1",
       "dependencies": {
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
@@ -120,7 +120,7 @@
       "name": "@outreachgraph/db",
       "version": "0.4.0",
       "dependencies": {
-        "@libsql/client": "^0.15.0",
+        "@libsql/client": "^0.15.1",
         "@profullstack/libsql-pg": "^0.1.2",
       },
       "devDependencies": {
@@ -408,7 +408,7 @@
 
     "@profullstack/keys": ["@profullstack/keys@0.1.0", "", {}, "sha512-Vys47LvS5ivhdZu4SYOxh9Le3DEmWhjP0+CtrU45RhXAbY0ZFG/2Dk9V1bIIUGDp8UWMJqctvUD21JrNjfh04w=="],
 
-    "@profullstack/libsql-pg": ["@profullstack/libsql-pg@0.1.2", "", { "dependencies": { "@profullstack/libsql-pg": "^0.1.1", "pg": "^8.13.0" }, "optionalDependencies": { "@libsql/client": "^0.15.0" }, "bin": { "libsql-pg": "bin/libsql-pg.js" } }, "sha512-6YrQujssWhkyWInB0G4CWOhH6Pj6kydeK4RKrXOosxQ12flpO4VjUEGTabtSh9zZ7FzCRch0hwFNKApJl/7b4w=="],
+    "@profullstack/libsql-pg": ["@profullstack/libsql-pg@0.1.2", "", { "dependencies": { "@profullstack/libsql-pg": "^0.1.1", "pg": "^8.13.0" }, "optionalDependencies": { "@libsql/client": "^0.15.1" }, "bin": { "libsql-pg": "bin/libsql-pg.js" } }, "sha512-6YrQujssWhkyWInB0G4CWOhH6Pj6kydeK4RKrXOosxQ12flpO4VjUEGTabtSh9zZ7FzCRch0hwFNKApJl/7b4w=="],
 
     "@profullstack/openprofile": ["@profullstack/openprofile@0.2.0", "", {}, "sha512-cdFsBbfRXurvy5KqHDNcKXxurK2s/YlfVgnILFRpVl2hq3860rExqDee8IfsFGxw5cPdqGv2fxUxtek1Xy2U5Q=="],
 
