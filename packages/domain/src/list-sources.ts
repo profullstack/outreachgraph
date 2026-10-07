@@ -186,8 +186,12 @@ const FUNDING_VERB =
 const ROUND = /(pre-seed|seed|series\s+[a-h]\b|growth round|funding|round|\$|€|£)/i;
 
 export function parseFundingHeadline(title: string): FundingHeadline | undefined {
-  // "Exclusive: Split Pay raises..." / "Startup wrap — ..." prefixes go.
-  const text = title.trim().replace(/^[\w\s]{1,20}:\s+/, '');
+  // "Exclusive: Split Pay raises..." prefixes go, and so does a quoted
+  // tagline ("'Frontier Audio AI Company' Modulate Announces $25M Raise").
+  const text = title
+    .trim()
+    .replace(/^[\w\s]{1,20}:\s+/, '')
+    .replace(/^['‘“"][^'’”"]{1,80}['’”"]\s+/, '');
   const verb = FUNDING_VERB.exec(text);
   if (!verb || verb.index === undefined) return undefined;
   const after = text.slice(verb.index + verb[0].length);
@@ -206,7 +210,8 @@ export function parseFundingHeadline(title: string): FundingHeadline | undefined
   }
   const name: string[] = [];
   for (let i = words.length - 1; i >= 0 && name.length < 4; i -= 1) {
-    const word = words[i]!.replace(/[’']s$/i, '');
+    const word = words[i]!.replace(/[’']s$/i, '').replace(/^['‘“"]+|['’”"]+$/g, '');
+    if (!word) break;
     if (DESCRIPTORS.has(word.toLowerCase())) break;
     name.unshift(word);
   }

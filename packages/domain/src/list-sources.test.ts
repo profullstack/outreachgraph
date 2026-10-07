@@ -39,6 +39,8 @@ describe('parseFundingHeadline', () => {
       'dtcpay',
     ],
     ['Payment startup Infini raises $6M seed round', 'Infini'],
+    ["'Frontier Audio AI Company' Modulate Announces $25M Raise", 'Modulate'],
+    ['Dealership Software Maker Flai Raises $27 Million as Booked Appointments Reach 5', 'Flai'],
   ])('real headline: %s', (headline, company) => {
     expect(parseFundingHeadline(headline)?.company).toBe(company);
   });
