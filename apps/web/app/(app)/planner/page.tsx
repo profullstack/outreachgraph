@@ -87,6 +87,12 @@ export default async function PlannerPage() {
             This month builds fresh lists: every product’s seeds are re-read.
           </p>
         )}
+        {!view.tracksEngagement ? (
+          <p className="text-ink-muted pt-1 text-xs">
+            Opens and clicks are not tracked (plain-text email, as the planner recommends), so plays
+            pick people by delivery and replies: written to, delivered, no answer.
+          </p>
+        ) : null}
         <p className="text-ink-muted pt-1 text-xs">Next month: {view.next.label}</p>
       </section>
 
