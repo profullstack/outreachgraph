@@ -259,6 +259,45 @@ export async function listLinkPosts(
     .map(toLinkPostView);
 }
 
+/* ----------------------------------------------------------- saved links */
+
+export interface SavedLinkView {
+  readonly url: string;
+  readonly title?: string;
+  readonly lastUsedAt: string;
+}
+
+/** Kept on every draft, so a link used once is one click away next time. */
+async function saveLink(
+  db: Client,
+  workspaceId: string,
+  url: string,
+  title: string | undefined,
+  at: string,
+): Promise<void> {
+  await db.execute({
+    sql: `INSERT INTO saved_links (workspace_id, url, title, last_used_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT (workspace_id, url) DO UPDATE
+            SET title = COALESCE(excluded.title, saved_links.title),
+                last_used_at = excluded.last_used_at`,
+    args: [workspaceId, url, title ?? null, at],
+  });
+}
+
+export async function listSavedLinks(db: Client, workspaceId: string): Promise<SavedLinkView[]> {
+  const rows = await queryAll<{ url: string; title: string | null; last_used_at: string }>(
+    db,
+    `SELECT url, title, last_used_at FROM saved_links WHERE workspace_id = ?
+      ORDER BY last_used_at DESC LIMIT 200`,
+    [workspaceId],
+  );
+  return rows.map((row) => ({
+    url: row.url,
+    ...(row.title ? { title: row.title } : {}),
+    lastUsedAt: row.last_used_at,
+  }));
+}
+
 /* ---------------------------------------------------------------- routes */
 
 const networkEnum = z.enum(LINK_POST_NETWORKS);
@@ -407,6 +446,8 @@ export function linkPostRoutes(deps: LinkPostRouteDeps): Hono<AppEnv> {
         };
       }),
       defaultNetworks: ['linkedin'],
+      // Every link drafted from, newest first, for the picker under the URL box.
+      links: await listSavedLinks(c.get('db'), actor.workspaceId),
       draftingEnabled: Boolean(deps.model),
       // Stated so every client can say it: a person posts, the product never does.
       posting: 'manual',
@@ -516,6 +557,8 @@ export function linkPostRoutes(deps: LinkPostRouteDeps): Hono<AppEnv> {
       })),
     );
 
+    await saveLink(db, actor.workspaceId, url, page.title, at);
+
     await repo.audit(db, {
       workspaceId: actor.workspaceId,
       actorKind: 'user',
@@ -541,6 +584,24 @@ export function linkPostRoutes(deps: LinkPostRouteDeps): Hono<AppEnv> {
       },
       201,
     );
+  });
+
+  /** The saved links, newest first. */
+  router.get('/links', async (c) => {
+    return c.json({ links: await listSavedLinks(c.get('db'), c.get('actor').workspaceId) });
+  });
+
+  /** Drops one link from the picker (`?url=`). Its cards are untouched. */
+  router.delete('/links', async (c) => {
+    const actor = c.get('actor');
+    requireApprover(actor, 'removing a saved link');
+    const url = c.req.query('url');
+    if (!url) throw ApiError.badRequest('url is required');
+    await c.get('db').execute({
+      sql: 'DELETE FROM saved_links WHERE workspace_id = ? AND url = ?',
+      args: [actor.workspaceId, url],
+    });
+    return c.json({ deleted: true, links: await listSavedLinks(c.get('db'), actor.workspaceId) });
   });
 
   router.get('/:id', async (c) => {

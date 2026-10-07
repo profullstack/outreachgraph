@@ -251,8 +251,16 @@ export interface LinkPostView {
   readonly createdAt: string;
 }
 
+export interface SavedLinkView {
+  readonly url: string;
+  readonly title?: string;
+  readonly lastUsedAt: string;
+}
+
 export interface LinkPostsView {
   readonly posts: LinkPostView[];
+  /** Every link drafted from, newest first. */
+  readonly links?: SavedLinkView[];
   readonly draftingEnabled: boolean;
 }
 

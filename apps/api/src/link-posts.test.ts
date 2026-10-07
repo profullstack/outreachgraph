@@ -148,6 +148,32 @@ describe('link posts API', () => {
     expect((await call('GET', '?status=all')).body.posts).toHaveLength(2);
   });
 
+  test('every link drafted from is kept for the picker, and an x removes it', async () => {
+    const { call } = await harness('link-posts-saved');
+
+    expect((await call('GET', '')).body.links).toEqual([]);
+    await call('POST', '', { url: ARTICLE });
+
+    const listed = await call('GET', '');
+    expect(listed.body.links).toHaveLength(1);
+    expect(listed.body.links[0]).toMatchObject({
+      url: ARTICLE,
+      title: 'How we cut build times in half',
+    });
+    expect((await call('GET', '/links')).body.links).toHaveLength(1);
+
+    const removed = await call('DELETE', `/links?url=${encodeURIComponent(ARTICLE)}`);
+    expect(removed.status).toBe(200);
+    expect(removed.body.links).toEqual([]);
+    // The cards drafted from it stay.
+    expect((await call('GET', '')).body.posts).toHaveLength(1);
+  });
+
+  test('a viewer cannot remove a saved link', async () => {
+    const { call } = await harness('link-posts-saved-viewer', { actor: VIEWER });
+    expect((await call('DELETE', `/links?url=${encodeURIComponent(ARTICLE)}`)).status).toBe(403);
+  });
+
   test('LinkedIn is the default network', async () => {
     const { call, model } = await harness('link-posts-default');
     const created = await call('POST', '', { url: 'blog.example.com/fast-builds' });
