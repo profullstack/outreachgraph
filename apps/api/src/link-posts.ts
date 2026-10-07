@@ -298,6 +298,121 @@ export async function listSavedLinks(db: Client, workspaceId: string): Promise<S
   }));
 }
 
+export interface DraftBatchInput {
+  readonly workspaceId: string;
+  readonly url: string;
+  readonly page: ReadPage;
+  readonly networks: readonly LinkPostNetwork[];
+  readonly offeringId?: string | undefined;
+  /** A campaign's own voice profile, ahead of the product's. */
+  readonly voiceProfileId?: string | undefined;
+  /** Who the posts are for: a campaign's target customer profile, in words. */
+  readonly audience?: string | undefined;
+  readonly campaignId?: string | undefined;
+  readonly notes?: string | undefined;
+  readonly mastodonInstance?: string | undefined;
+  /** A user id, or `campaign_source` for the scheduled fetch. */
+  readonly createdBy: string;
+}
+
+/**
+ * Writes one post per network for a page and stores them as open cards.
+ *
+ * Shared by the Draft button and the campaign source fetch, so a card looks
+ * the same whichever wrote it. Throws 502 when the model returns nothing.
+ */
+export async function storeDraftedBatch(
+  db: Client,
+  model: TextModel,
+  input: DraftBatchInput,
+): Promise<{ batchId: string; rows: LinkPostRow[]; at: string }> {
+  const base = await voiceFor(db, input.workspaceId, input.offeringId);
+  const campaignVoice = input.voiceProfileId
+    ? await queryOne<{ style: string; instructions: string | null }>(
+        db,
+        'SELECT style, instructions FROM voice_profiles WHERE id = ? AND workspace_id = ?',
+        [input.voiceProfileId, input.workspaceId],
+      )
+    : undefined;
+  const voice = campaignVoice
+    ? {
+        style: campaignVoice.style,
+        ...(campaignVoice.instructions ? { instructions: campaignVoice.instructions } : {}),
+      }
+    : base.voice;
+
+  const result = await draftLinkPosts(model, {
+    page: input.page,
+    networks: input.networks,
+    voice,
+    brand: base.brand,
+    audience: input.audience,
+    notes: input.notes,
+  });
+  if (result.posts.length === 0) {
+    throw new ApiError(502, 'draft_failed', 'the model did not return any posts; try again');
+  }
+
+  const batchId = newId('linkPost');
+  const at = now();
+  const rows: LinkPostRow[] = result.posts.map((post) => ({
+    id: newId('linkPost'),
+    workspace_id: input.workspaceId,
+    batch_id: batchId,
+    offering_id: base.offeringId ?? null,
+    url: input.url,
+    page_title: input.page.title ?? null,
+    page_description: input.page.description ?? null,
+    page_text: input.page.text ?? null,
+    notes: input.notes?.trim() || null,
+    network: post.network,
+    title: post.title ?? null,
+    body: post.text,
+    subreddit: post.subreddit ?? null,
+    mastodon_instance: input.mastodonInstance?.trim() || null,
+    status: 'open',
+    posted_url: null,
+    model: result.model ?? null,
+    regenerations: 0,
+    created_at: at,
+    updated_at: at,
+    done_at: null,
+  }));
+
+  await db.batch(
+    rows.map((row) => ({
+      sql: `INSERT INTO link_posts (id, workspace_id, batch_id, offering_id, url, page_title,
+              page_description, page_text, notes, network, title, body, subreddit,
+              mastodon_instance, status, model, regenerations, created_by, created_at, updated_at,
+              campaign_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?, ?, ?)`,
+      args: [
+        row.id,
+        row.workspace_id,
+        row.batch_id,
+        row.offering_id,
+        row.url,
+        row.page_title,
+        row.page_description,
+        row.page_text,
+        row.notes,
+        row.network,
+        row.title,
+        row.body,
+        row.subreddit,
+        row.mastodon_instance,
+        row.model,
+        input.createdBy,
+        row.created_at,
+        row.updated_at,
+        input.campaignId ?? null,
+      ],
+    })),
+  );
+
+  return { batchId, rows, at };
+}
+
 /* ---------------------------------------------------------------- routes */
 
 const networkEnum = z.enum(LINK_POST_NETWORKS);
@@ -486,76 +601,16 @@ export function linkPostRoutes(deps: LinkPostRouteDeps): Hono<AppEnv> {
       );
     }
 
-    const { offeringId, voice, brand } = await voiceFor(
-      db,
-      actor.workspaceId,
-      input.offeringId ?? (await productForLink(db, actor.workspaceId, url)),
-    );
-    const result = await draftLinkPosts(deps.model, {
+    const { batchId, rows, at } = await storeDraftedBatch(db, deps.model, {
+      workspaceId: actor.workspaceId,
+      url,
       page,
       networks,
-      voice,
-      brand,
+      offeringId: input.offeringId ?? (await productForLink(db, actor.workspaceId, url)),
       notes: input.notes,
+      mastodonInstance: input.mastodonInstance,
+      createdBy: actor.userId,
     });
-    if (result.posts.length === 0) {
-      throw new ApiError(502, 'draft_failed', 'the model did not return any posts; try again');
-    }
-
-    const batchId = newId('linkPost');
-    const at = now();
-    const rows: LinkPostRow[] = result.posts.map((post) => ({
-      id: newId('linkPost'),
-      workspace_id: actor.workspaceId,
-      batch_id: batchId,
-      offering_id: offeringId ?? null,
-      url,
-      page_title: page.title ?? null,
-      page_description: page.description ?? null,
-      page_text: page.text ?? null,
-      notes: input.notes?.trim() || null,
-      network: post.network,
-      title: post.title ?? null,
-      body: post.text,
-      subreddit: post.subreddit ?? null,
-      mastodon_instance: input.mastodonInstance?.trim() || null,
-      status: 'open',
-      posted_url: null,
-      model: result.model ?? null,
-      regenerations: 0,
-      created_at: at,
-      updated_at: at,
-      done_at: null,
-    }));
-
-    await db.batch(
-      rows.map((row) => ({
-        sql: `INSERT INTO link_posts (id, workspace_id, batch_id, offering_id, url, page_title,
-                page_description, page_text, notes, network, title, body, subreddit,
-                mastodon_instance, status, model, regenerations, created_by, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?, ?)`,
-        args: [
-          row.id,
-          row.workspace_id,
-          row.batch_id,
-          row.offering_id,
-          row.url,
-          row.page_title,
-          row.page_description,
-          row.page_text,
-          row.notes,
-          row.network,
-          row.title,
-          row.body,
-          row.subreddit,
-          row.mastodon_instance,
-          row.model,
-          actor.userId,
-          row.created_at,
-          row.updated_at,
-        ],
-      })),
-    );
 
     await saveLink(db, actor.workspaceId, url, page.title, at);
 

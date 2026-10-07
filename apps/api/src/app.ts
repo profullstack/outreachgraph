@@ -266,6 +266,12 @@ import { jobPostRoutes } from './job-posts';
 import { ideaRoutes } from './ideas';
 import { leadRoutes } from './buyer-leads';
 import { linkPostRoutes } from './link-posts';
+import {
+  campaignSourceStatus,
+  checkCampaignSource,
+  normaliseSourceUrl,
+  parsePostNetworks,
+} from './campaign-source';
 import type { LeadMonitor } from '@outreachgraph/pipeline';
 import type { FeedSource } from '@outreachgraph/providers';
 import type { ChovyConfig, Fetcher as RedditFetcher } from '@outreachgraph/ideas';
@@ -1787,7 +1793,57 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const actor = c.get('actor');
     const campaign = await repo.getCampaign(c.get('db'), actor.workspaceId, c.req.param('id'));
     if (!campaign) throw ApiError.notFound('campaign');
-    return c.json({ campaign });
+    const source = await campaignSourceStatus(c.get('db'), campaign.id);
+    return c.json({
+      campaign,
+      // The URL the campaign reads on a schedule, and the networks it drafts for.
+      source: {
+        url: source?.source_url ?? null,
+        postNetworks: parsePostNetworks(source?.post_networks ?? '[]'),
+        checkedAt: source?.source_checked_at ?? null,
+        error: source?.source_error ?? null,
+      },
+    });
+  });
+
+  /** Reads the campaign's source now instead of waiting for the schedule. */
+  api.post('/campaigns/:id/source/check', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('reading a campaign source');
+    if (!options.model) {
+      throw new ApiError(
+        503,
+        'no_model',
+        'no language model is configured, so posts cannot be drafted',
+      );
+    }
+    const row = await queryOne<{
+      id: string;
+      workspace_id: string;
+      offering_id: string;
+      voice_profile_id: string | null;
+      brief: string | null;
+      source: string | null;
+      post_networks: string;
+      source_fingerprint: string | null;
+    }>(
+      db,
+      `SELECT c.id, c.workspace_id, c.offering_id, c.voice_profile_id, c.brief,
+              COALESCE(c.source_url, o.url) AS source, c.post_networks, c.source_fingerprint
+         FROM campaigns c JOIN offerings o ON o.id = c.offering_id
+        WHERE c.id = ? AND c.workspace_id = ?`,
+      [c.req.param('id'), actor.workspaceId],
+    );
+    if (!row) throw ApiError.notFound('campaign');
+    if (!row.source)
+      throw ApiError.badRequest('this campaign has no source URL; set sourceUrl first');
+    const result = await checkCampaignSource(
+      { db, model: options.model, fetchImpl: options.linkFetch, lookup: options.linkLookup },
+      { ...row, source: row.source },
+      new Date(),
+    );
+    return c.json({ result });
   });
 
   /**
@@ -1891,6 +1947,31 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const body = safeJson(await c.req.raw.text());
     const input = typeof body.input === 'string' ? body.input : '';
 
+    // Every campaign reads a URL of its own on a schedule: the one given, else
+    // the product's site. A campaign with neither has nothing to post about.
+    const givenSource =
+      body.sourceUrl === undefined ? undefined : normaliseSourceUrl(body.sourceUrl);
+    if (body.sourceUrl !== undefined && !givenSource) {
+      throw ApiError.badRequest('sourceUrl must be a web address, like https://example.com/blog');
+    }
+    if (!givenSource) {
+      const product = await queryOne<{ url: string | null }>(
+        db,
+        typeof body.offeringId === 'string' && body.offeringId
+          ? 'SELECT url FROM offerings WHERE id = ? AND workspace_id = ?'
+          : 'SELECT url FROM offerings WHERE workspace_id = ? ORDER BY created_at LIMIT 1',
+        typeof body.offeringId === 'string' && body.offeringId
+          ? [body.offeringId, actor.workspaceId]
+          : [actor.workspaceId],
+      );
+      if (product && !product.url) {
+        throw ApiError.badRequest(
+          'a campaign needs a URL to read: pass sourceUrl, or give the product a website',
+          { sourceUrl: ['required'] },
+        );
+      }
+    }
+
     let result;
     try {
       result = await createCampaignFromIntake(db, actor, input, {
@@ -1909,6 +1990,21 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       }
       if (error instanceof UnknownProductError) throw ApiError.notFound('product');
       throw error;
+    }
+
+    if (givenSource || body.postNetworks !== undefined) {
+      const networks = parsePostNetworks(JSON.stringify(body.postNetworks ?? ['linkedin']));
+      await db.execute({
+        sql: `UPDATE campaigns SET source_url = COALESCE(?, source_url), post_networks = ?
+               WHERE id = ? AND workspace_id = ?`,
+        args: [givenSource ?? null, JSON.stringify(networks), result.campaignId, actor.workspaceId],
+      });
+    } else {
+      await db.execute({
+        sql: `UPDATE campaigns SET source_url = (SELECT url FROM offerings WHERE id = campaigns.offering_id)
+               WHERE id = ? AND source_url IS NULL`,
+        args: [result.campaignId],
+      });
     }
 
     await repo.audit(db, {
@@ -2024,6 +2120,36 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       });
 
       changed.autopilot = body.autopilot;
+      touched = true;
+    }
+
+    if (body.sourceUrl !== undefined || body.postNetworks !== undefined) {
+      const sets: string[] = [];
+      const args: (string | null)[] = [];
+      if (body.sourceUrl !== undefined) {
+        const url = normaliseSourceUrl(body.sourceUrl);
+        if (!url)
+          throw ApiError.badRequest(
+            'sourceUrl must be a web address, like https://example.com/blog',
+          );
+        // A new URL is a new source: forget what the old one looked like.
+        sets.push('source_url = ?', 'source_fingerprint = NULL', 'source_checked_at = NULL');
+        args.push(url);
+        changed.sourceUrl = url;
+      }
+      if (body.postNetworks !== undefined) {
+        const networks = parsePostNetworks(JSON.stringify(body.postNetworks), false);
+        if (networks.length === 0)
+          throw ApiError.badRequest('postNetworks needs at least one network');
+        sets.push('post_networks = ?');
+        args.push(JSON.stringify(networks));
+        changed.postNetworks = networks;
+      }
+      const updated = await db.execute({
+        sql: `UPDATE campaigns SET ${sets.join(', ')} WHERE id = ? AND workspace_id = ?`,
+        args: [...args, campaignId, actor.workspaceId],
+      });
+      if (Number(updated.rowsAffected ?? 0) === 0) throw ApiError.notFound('campaign');
       touched = true;
     }
 

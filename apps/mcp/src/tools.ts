@@ -1458,6 +1458,53 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'set_campaign_source',
+    title: 'Set the URL a campaign posts from',
+    description:
+      "Every campaign reads a source URL every 6 hours (its product's site unless set): new items in its " +
+      'feed (or the feed the page links to), or a change to a plain page, are drafted into hand-off posts ' +
+      "in the campaign's voice for its target customer. Set the URL and the networks to draft for; " +
+      'check: true reads it now. Nothing is posted: a person posts each card.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaignId: { type: 'string' },
+        sourceUrl: { type: 'string', description: 'A blog, feed or page URL' },
+        postNetworks: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: [
+              'linkedin',
+              'x',
+              'reddit',
+              'hackernews',
+              'facebook',
+              'bluesky',
+              'mastodon',
+              'threads',
+            ],
+          },
+        },
+        check: { type: 'boolean', description: 'Read the source now' },
+      },
+      required: ['campaignId'],
+    },
+    run: async (client, args) => {
+      const path = `/campaigns/${encodeURIComponent(require(args, 'campaignId'))}`;
+      if (str(args, 'sourceUrl') || Array.isArray(args.postNetworks)) {
+        if (!client.patch) throw new Error('this client cannot edit campaigns');
+        await client.patch(path, {
+          ...(str(args, 'sourceUrl') ? { sourceUrl: str(args, 'sourceUrl') } : {}),
+          ...(Array.isArray(args.postNetworks) ? { postNetworks: args.postNetworks } : {}),
+        });
+      }
+      if (args.check === true) return client.post(`${path}/source/check`, {});
+      return client.get(path);
+    },
+  },
+  {
     name: 'list_link_posts',
     title: 'List drafted posts about links',
     description:

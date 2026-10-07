@@ -189,3 +189,28 @@ function parseDate(raw: string | undefined): string {
   const parsed = Date.parse(textOf(raw));
   return Number.isNaN(parsed) ? new Date().toISOString() : new Date(parsed).toISOString();
 }
+
+/** A feed document's items, newest first as the feed lists them. */
+export function parseFeedItems(
+  xml: string,
+): Array<{ url: string; title?: string; publishedAt: string }> {
+  const out: Array<{ url: string; title?: string; publishedAt: string }> = [];
+  for (const item of splitItems(xml)) {
+    const url = itemLink(item)?.trim();
+    if (!url || !/^https?:\/\//i.test(url)) continue;
+    const title = textOf(firstTag(item, 'title') ?? '');
+    out.push({
+      url,
+      ...(title ? { title } : {}),
+      publishedAt: parseDate(
+        firstTag(item, 'pubDate') ?? firstTag(item, 'published') ?? firstTag(item, 'updated'),
+      ),
+    });
+  }
+  return out;
+}
+
+/** True when a body is an RSS or Atom document rather than a web page. */
+export function looksLikeFeed(body: string): boolean {
+  return /^\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<(rss|feed|rdf:RDF)[\s>]/i.test(body);
+}
