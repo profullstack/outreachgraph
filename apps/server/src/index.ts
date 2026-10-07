@@ -54,6 +54,10 @@ import {
   workspacesWithAudienceWatches,
   scanIdeas,
   workspacesDueForIdeaScan,
+  monitorsDueForScan,
+  scanLeadMonitor,
+  sendCommunityLeadDigest,
+  workspacesWithLeadDigests,
   processDeletion,
   resolveJobPost,
   workspacesWithInternalBacklog,
@@ -312,6 +316,8 @@ if (!jobSearcher)
  * cannot be handed off.
  */
 let ideaScanRunning = false;
+/** Buyer-lead monitors scan beside the tick, one at a time, like idea scans. */
+let leadScanRunning = false;
 const chovy = chovyConfig();
 if (!chovy) console.log('no CHOVY_CAMPAIGN_SECRET: ideas are found and ranked, Build it is off');
 
@@ -1191,6 +1197,49 @@ async function tick(): Promise<void> {
         }
       })().finally(() => {
         ideaScanRunning = false;
+      });
+    }
+  }
+
+  // Buyer leads: each due monitor searches Reddit (archive), Hacker News and
+  // Bluesky for its brand's keywords and scores what it finds. Sources are
+  // paced inside each adapter and monitors run one after another, so a dozen
+  // monitors are a trickle rather than a burst. The digest goes out after the
+  // scans, once a day, only when there are new leads.
+  if (!leadScanRunning) {
+    const due = await monitorsDueForScan(db);
+    const digests = appUrl ? await workspacesWithLeadDigests(db) : [];
+    if (due.length || digests.length) {
+      leadScanRunning = true;
+      void (async () => {
+        for (const { workspaceId, monitorId } of due) {
+          try {
+            const r = await scanLeadMonitor(
+              { db, ...(model ? { model } : {}) },
+              workspaceId,
+              monitorId,
+            );
+            console.log(
+              `leads: ${monitorId} read ${r.read}, stored ${r.stored}, judged ${r.judged}, leads ${r.leads}` +
+                `${r.failures.length ? `; failed: ${r.failures.map((f) => `${f.source} (${f.reason})`).join(', ')}` : ''}`,
+            );
+          } catch (error) {
+            console.error(`lead scan failed for ${monitorId}`, error);
+          }
+        }
+        for (const workspaceId of digests) {
+          try {
+            const sent = await sendCommunityLeadDigest(
+              { db, ...(mailer ? { mailer } : {}), appUrl: appUrl! },
+              workspaceId,
+            );
+            if (sent > 0) console.log(`leads: digest of ${sent} lead(s) sent for ${workspaceId}`);
+          } catch (error) {
+            console.error(`lead digest failed for ${workspaceId}`, error);
+          }
+        }
+      })().finally(() => {
+        leadScanRunning = false;
       });
     }
   }

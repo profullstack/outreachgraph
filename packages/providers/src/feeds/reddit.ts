@@ -78,6 +78,14 @@ export interface RedditSourceOptions {
   readonly archiveUrl?: string | null;
   /** Least time between two archive requests; it answers 422 to anything faster. */
   readonly archiveGapMs?: number;
+  /**
+   * Read the archive before the mirror. The mirror keeps ~300 characters of a
+   * post and has crawled few subreddits; the archive has the full text of the
+   * newest hundred, which is what scoring a post for buyer intent needs.
+   */
+  readonly archiveFirst?: boolean;
+  /** Pages of a hundred to read back through the archive per subreddit. Defaults to one. */
+  readonly archivePages?: number;
 }
 
 interface MirrorFeed {
@@ -142,12 +150,16 @@ export class RedditSource implements FeedSource {
   readonly #mirrorUrl: string | null;
   readonly #archiveUrl: string | null;
   readonly #archiveGapMs: number;
+  readonly #archiveFirst: boolean;
+  readonly #archivePages: number;
   #archiveLast = 0;
 
   constructor(options: RedditSourceOptions = {}) {
     this.#mirrorUrl = options.mirrorUrl === undefined ? REDDIT_MIRROR : options.mirrorUrl;
     this.#archiveUrl = options.archiveUrl === undefined ? REDDIT_ARCHIVE : options.archiveUrl;
     this.#archiveGapMs = options.archiveGapMs ?? 2_000;
+    this.#archiveFirst = options.archiveFirst === true && this.#archiveUrl !== null;
+    this.#archivePages = Math.max(1, Math.min(options.archivePages ?? 1, 10));
     this.#baseUrl = options.baseUrl ?? REDDIT_API;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? 10_000;
@@ -162,7 +174,11 @@ export class RedditSource implements FeedSource {
 
     const limit = Math.min(input.limit ?? 25, 100);
 
-    if (this.#subreddits.length > 0 && !this.#accessToken && this.#mirrorUrl) {
+    if (
+      this.#subreddits.length > 0 &&
+      !this.#accessToken &&
+      (this.#mirrorUrl || this.#archiveFirst)
+    ) {
       return this.#searchMirrored(terms, limit, input.since);
     }
 
@@ -233,9 +249,14 @@ export class RedditSource implements FeedSource {
     for (const subreddit of this.#subreddits) {
       let found: FeedPost[] = [];
       try {
-        found = await this.#fromMirror(subreddit);
-        if (found.length === 0 && this.#archiveUrl)
+        if (this.#archiveFirst) {
           found = await this.#fromArchive(subreddit, since);
+          if (found.length === 0 && this.#mirrorUrl) found = await this.#fromMirror(subreddit);
+        } else {
+          found = await this.#fromMirror(subreddit);
+          if (found.length === 0 && this.#archiveUrl)
+            found = await this.#fromArchive(subreddit, since);
+        }
       } catch {
         continue;
       }
@@ -308,20 +329,33 @@ export class RedditSource implements FeedSource {
   }
 
   async #fromArchive(subreddit: string, since: Date | undefined): Promise<FeedPost[]> {
-    const wait = this.#archiveLast + this.#archiveGapMs - Date.now();
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    this.#archiveLast = Date.now();
+    // Newest first, a hundred at a time, back to `since` or the page cap. The
+    // archive's full-text search would be the obvious tool, but it times out
+    // on any busy subreddit; paging the newest posts does not.
+    const all: ArchivePost[] = [];
+    let before: number | undefined;
+    for (let page = 0; page < this.#archivePages; page += 1) {
+      const wait = this.#archiveLast + this.#archiveGapMs - Date.now();
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.#archiveLast = Date.now();
 
-    const params = new URLSearchParams({ subreddit, limit: '100', sort: 'desc' });
-    if (since) params.set('after', String(Math.floor(since.getTime() / 1000)));
-    const { status, body } = await this.#getJson<{ data?: ArchivePost[] }>(
-      `${this.#archiveUrl}/api/posts/search?${params.toString()}`,
-      // A hundred full posts is a third of a megabyte from a free service.
-      Math.max(this.#timeoutMs, 30_000),
-    );
-    if (status === 429) throw new FeedRateLimitError('reddit');
+      const params = new URLSearchParams({ subreddit, limit: '100', sort: 'desc' });
+      if (since) params.set('after', String(Math.floor(since.getTime() / 1000)));
+      if (before !== undefined) params.set('before', String(before));
+      const { status, body } = await this.#getJson<{ data?: ArchivePost[] }>(
+        `${this.#archiveUrl}/api/posts/search?${params.toString()}`,
+        // A hundred full posts is a third of a megabyte from a free service.
+        Math.max(this.#timeoutMs, 30_000),
+      );
+      if (status === 429) throw new FeedRateLimitError('reddit');
+      const data = body?.data ?? [];
+      all.push(...data);
+      const oldest = data.at(-1)?.created_utc;
+      if (data.length < 100 || oldest === undefined || oldest === before) break;
+      before = oldest;
+    }
 
-    return (body?.data ?? []).flatMap((post) => {
+    return all.flatMap((post) => {
       if (!post.id || !post.author || post.over_18 || post.stickied) return [];
       const selftext =
         post.selftext === '[removed]' || post.selftext === '[deleted]' ? '' : post.selftext;

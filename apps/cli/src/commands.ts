@@ -635,6 +635,188 @@ async function runIdeas({ client, args, flags }: CommandContext): Promise<string
   );
 }
 
+/**
+ * `og buyers` — buyer leads from public communities.
+ *
+ * A monitor watches Reddit, Hacker News and Bluesky for one brand; `list`
+ * shows the posts scored over its floor, `draft` writes a reply for you to
+ * post yourself. Nothing here posts to a community.
+ */
+async function runBuyers({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', target, ...rest] = args;
+  const csv = (key: string) =>
+    flagString(flags, key)
+      ?.split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  const monitorBody = () => {
+    const minIntent = flagString(flags, 'min-intent');
+    const every = flagString(flags, 'every');
+    return {
+      ...(flagString(flags, 'name') ? { name: flagString(flags, 'name') } : {}),
+      ...(flagString(flags, 'url') ? { url: flagString(flags, 'url') } : {}),
+      ...(flagString(flags, 'description')
+        ? { description: flagString(flags, 'description') }
+        : {}),
+      ...(csv('keywords') ? { keywords: csv('keywords') } : {}),
+      ...(csv('subreddits') ? { subreddits: csv('subreddits') } : {}),
+      ...(csv('exclude') ? { exclude: csv('exclude') } : {}),
+      ...(csv('sources') ? { sources: csv('sources') } : {}),
+      ...(minIntent ? { minIntent: Number(minIntent) } : {}),
+      ...(every ? { everyMinutes: Number(every) } : {}),
+    };
+  };
+  const showMonitor = (m: Record<string, unknown>) => {
+    const list = (key: string) => (Array.isArray(m[key]) ? (m[key] as string[]) : []);
+    const last = (m.lastResult ?? {}) as Record<string, unknown>;
+    return [
+      `${text(m, 'id')}  ${text(m, 'name')}${text(m, 'url') ? `  ${text(m, 'url')}` : ''}${m.enabled === false ? '  (paused)' : ''}`,
+      `  keywords: ${list('keywords').join(', ')}`,
+      `  subreddits: ${
+        list('subreddits')
+          .map((s) => `r/${s}`)
+          .join(', ') || '-'
+      }`,
+      `  sources: ${list('sources').join(', ')}  every ${text(m, 'everyMinutes')} min  floor ${text(m, 'minIntent')}`,
+      text(m, 'lastScannedAt')
+        ? `  last scan ${text(m, 'lastScannedAt')}: read ${text(last, 'read')}, new ${text(last, 'stored')}, leads ${text(last, 'leads')}`
+        : '  not scanned yet',
+      text(m, 'lastError') ? `  error: ${text(m, 'lastError')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  };
+
+  if (verb === 'list' || verb === 'ls') {
+    const params = new URLSearchParams();
+    const status = flagString(flags, 'status');
+    const monitor = flagString(flags, 'monitor');
+    const minIntent = flagString(flags, 'min-intent');
+    if (status) params.set('status', status);
+    if (monitor) params.set('monitor', monitor);
+    if (minIntent) params.set('minIntent', minIntent);
+    const result = (await client.get(`/buyer-leads${params.size ? `?${params}` : ''}`)) as Record<
+      string,
+      unknown
+    >;
+    const leads = rows(result, 'leads');
+    if (leads.length === 0) {
+      return rows(result, 'monitors').length === 0
+        ? 'No monitors yet. Add one: og buyers add --name "Acme" --url https://acme.com'
+        : 'No leads over the floor yet. Scan now: og buyers scan <monitorId>';
+    }
+    return leads
+      .map((l) =>
+        [
+          `${pad(text(l, 'id'), 30)} ${pad(String(text(l, 'intent')), 3)} ${pad(text(l, 'source'), 10)} ${pad(text(l, 'container'), 18)} ${text(l, 'status')}${text(l, 'replyDraft') ? ' (drafted)' : ''}`,
+          `  ${(text(l, 'title') || text(l, 'excerpt')).slice(0, 110)}`,
+          text(l, 'reason') ? `  why: ${text(l, 'reason')}` : '',
+          `  ${text(l, 'url')}`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      )
+      .join('\n\n');
+  }
+
+  if (verb === 'show') {
+    if (!target) throw new Error('og buyers show <leadId>');
+    const { lead } = (await client.get(`/buyer-leads/${encodeURIComponent(target)}`)) as {
+      lead: Record<string, unknown>;
+    };
+    return [
+      `${text(lead, 'monitorName')} · ${text(lead, 'source')} ${text(lead, 'container')} · intent ${text(lead, 'intent')}${lead.judged ? '' : ' (wording only)'} · ${text(lead, 'status')}`,
+      text(lead, 'title'),
+      `“${text(lead, 'excerpt')}”`,
+      text(lead, 'reason') ? `why: ${text(lead, 'reason')}` : '',
+      `by ${text(lead, 'author')} at ${text(lead, 'postedAt')}`,
+      text(lead, 'url'),
+      text(lead, 'replyDraft')
+        ? `\ndraft reply (post it yourself):\n${text(lead, 'replyDraft')}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  if (verb === 'monitors') {
+    const { monitors } = (await client.get('/buyer-leads/monitors')) as {
+      monitors: Record<string, unknown>[];
+    };
+    return monitors.length ? monitors.map(showMonitor).join('\n\n') : 'No monitors yet.';
+  }
+
+  if (verb === 'add') {
+    const product = flagString(flags, 'product');
+    const { monitor } = (await client.post('/buyer-leads/monitors', {
+      ...monitorBody(),
+      ...(target && !flagString(flags, 'name') ? { name: [target, ...rest].join(' ') } : {}),
+      ...(product ? { offeringId: product } : {}),
+    })) as { monitor: Record<string, unknown> };
+    return showMonitor(monitor);
+  }
+
+  if (verb === 'set') {
+    if (!target)
+      throw new Error('og buyers set <monitorId> [--keywords a,b] [--subreddits x,y] ...');
+    const body: Record<string, unknown> = monitorBody();
+    if (flags.pause === true) body.enabled = false;
+    if (flags.resume === true) body.enabled = true;
+    const { monitor } = (await client.patch!(
+      `/buyer-leads/monitors/${encodeURIComponent(target)}`,
+      body,
+    )) as { monitor: Record<string, unknown> };
+    return showMonitor(monitor);
+  }
+
+  if (verb === 'rm' || verb === 'remove' || verb === 'delete') {
+    if (!target) throw new Error('og buyers rm <monitorId>');
+    if (!client.delete) throw new Error('this client cannot delete');
+    await client.delete(`/buyer-leads/monitors/${encodeURIComponent(target)}`);
+    return `${target} removed, with its leads`;
+  }
+
+  if (verb === 'scan') {
+    if (!target) throw new Error('og buyers scan <monitorId>');
+    const { result } = (await client.post(
+      `/buyer-leads/monitors/${encodeURIComponent(target)}/scan`,
+      {},
+    )) as { result: Record<string, unknown> };
+    const failures = Array.isArray(result.failures)
+      ? (result.failures as Record<string, unknown>[])
+      : [];
+    return (
+      `read ${text(result, 'read')} posts, ${text(result, 'stored')} new, ${text(result, 'judged')} scored by the model, ${text(result, 'leads')} lead(s)` +
+      (failures.length
+        ? `\nfailed: ${failures.map((f) => `${text(f, 'source')} (${text(f, 'reason')})`).join(', ')}`
+        : '')
+    );
+  }
+
+  if (verb === 'draft') {
+    if (!target) throw new Error('og buyers draft <leadId>');
+    const { lead } = (await client.post(
+      `/buyer-leads/${encodeURIComponent(target)}/draft`,
+      {},
+    )) as {
+      lead: Record<string, unknown>;
+    };
+    return `${text(lead, 'replyDraft')}\n\nPost it yourself: ${text(lead, 'url')}\nThen: og buyers replied ${target}`;
+  }
+
+  if (verb === 'replied' || verb === 'dismiss' || verb === 'reopen') {
+    if (!target) throw new Error(`og buyers ${verb} <leadId>`);
+    const status = verb === 'replied' ? 'replied' : verb === 'dismiss' ? 'dismissed' : 'new';
+    await client.patch!(`/buyer-leads/${encodeURIComponent(target)}`, { status });
+    return `${target} ${status}`;
+  }
+
+  throw new Error(BUYERS_USAGE);
+}
+
+const BUYERS_USAGE =
+  'og buyers list [--status new|replied|dismissed] [--monitor <id>] [--min-intent 60] | show <leadId> | draft <leadId> | replied|dismiss|reopen <leadId> | monitors | add <name> [--url u] [--product <offeringId>] [--keywords a,b] [--subreddits x,y] [--sources reddit,hackernews,bluesky] [--min-intent 60] [--every 360] | set <monitorId> [same flags] [--pause|--resume] | scan <monitorId> | rm <monitorId>';
+
 async function runAudience({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target] = args;
 
@@ -1852,6 +2034,13 @@ export const COMMANDS: readonly Command[] = [
       'og ideas list [--status build] | show <id> | scan [--subs a,b] | build <id> | dismiss <id> | subs [a b c]',
     summary: 'What people keep asking for on Reddit, ranked; build one with chovy.com.',
     run: runIdeas,
+  },
+  {
+    name: 'buyers',
+    usage: BUYERS_USAGE,
+    summary:
+      'Buyer leads: Reddit, Hacker News and Bluesky posts scored for intent; draft replies you post yourself.',
+    run: runBuyers,
   },
   {
     name: 'audience',

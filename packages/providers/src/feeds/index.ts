@@ -23,6 +23,12 @@ export {
   type SubredditSuggestion,
   type SuggestSubredditsOptions,
 } from './subreddit-search';
+export {
+  HackerNewsSource,
+  HN_SEARCH_API,
+  stripHtml,
+  type HackerNewsSourceOptions,
+} from './hackernews';
 export { RssSource, type RssSourceOptions } from './rss';
 export { BlueskyFeedSource, type BlueskyFeedSourceOptions } from './bluesky';
 export {
