@@ -1477,7 +1477,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   //
   // Buyer leads from public communities: monitors, intent-scored posts, reply
   // drafts. Drafts only; nothing here posts to a community.
-  api.route('/buyer-leads', leadRoutes({ model: options.model, leadSources: options.leadSources }));
+  api.route(
+    '/buyer-leads',
+    leadRoutes({
+      model: options.model,
+      leadSources: options.leadSources,
+      searcher: options.jobSearcher,
+    }),
+  );
 
   // ----------------------------------------------------------------- team
   //

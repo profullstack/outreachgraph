@@ -571,7 +571,8 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: 'create_buyer_lead_monitor',
     title: 'Watch public communities for buyers of a brand',
     description:
-      'Creates a monitor that searches Reddit (named subreddits), Hacker News and Bluesky for a brand on a ' +
+      'Creates a monitor that searches Reddit (named subreddits), Hacker News, Bluesky and the web (Google: all of ' +
+      'Reddit and the forums, once a day) for a brand on a ' +
       'schedule (default every 6 hours, never more than hourly) and scores each post for buyer intent. A ' +
       'name or a product id is enough: keywords and subreddits are suggested when left out. New leads over ' +
       'minIntent go into a daily digest email.',
@@ -588,7 +589,7 @@ export const TOOLS: readonly ToolDefinition[] = [
         exclude: { type: 'array', items: { type: 'string' } },
         sources: {
           type: 'array',
-          items: { type: 'string', enum: ['reddit', 'hackernews', 'bluesky'] },
+          items: { type: 'string', enum: ['reddit', 'hackernews', 'bluesky', 'web'] },
         },
         minIntent: { type: 'number', minimum: 0, maximum: 100 },
         everyMinutes: { type: 'number', minimum: 60 },

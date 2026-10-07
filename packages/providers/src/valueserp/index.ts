@@ -54,7 +54,10 @@ export interface WebSearcher {
    * search the operator is waiting on must say "out of credits" rather than
    * "found nothing".
    */
-  search(query: string, options?: { num?: number }): Promise<readonly WebResult[]>;
+  search(
+    query: string,
+    options?: { num?: number; period?: 'last_day' | 'last_week' | 'last_month' },
+  ): Promise<readonly WebResult[]>;
 }
 
 /** One Google News result. */
@@ -121,10 +124,14 @@ export class ValueSerpClient implements ProfilePhotoFinder, WebSearcher, NewsSea
     this.searchTimeoutMs = options.searchTimeoutMs ?? 60_000;
   }
 
-  async search(query: string, options: { num?: number } = {}): Promise<readonly WebResult[]> {
+  async search(
+    query: string,
+    options: { num?: number; period?: 'last_day' | 'last_week' | 'last_month' } = {},
+  ): Promise<readonly WebResult[]> {
     const url = new URL('/search', this.baseUrl);
     url.searchParams.set('api_key', this.apiKey);
     url.searchParams.set('q', query);
+    if (options.period) url.searchParams.set('time_period', options.period);
     url.searchParams.set('num', String(Math.min(Math.max(options.num ?? 20, 1), 100)));
     url.searchParams.set('gl', 'us');
     url.searchParams.set('hl', 'en');

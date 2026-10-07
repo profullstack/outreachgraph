@@ -80,13 +80,19 @@ const HN: FeedPost[] = [
   },
 ];
 
-function fake(slug: string, posts: FeedPost[], calls: string[][] = []): FeedSource {
+function fake(
+  slug: string,
+  posts: FeedPost[],
+  calls: string[][] = [],
+  slugs: string[] = [],
+): FeedSource {
   return {
     network: posts[0]?.network ?? 'reddit',
     slug,
     displayName: slug,
     async search(input) {
       calls.push([...input.terms]);
+      slugs.push(slug);
       return posts;
     },
   };
@@ -124,7 +130,7 @@ describe('lead monitors', () => {
     expect(monitor.name.length).toBeGreaterThan(0);
     expect(monitor.keywords).toEqual(['siem', 'intrusion detection', 'splunk alternative']);
     expect(monitor.subreddits).toEqual(['devsecops', 'sysadmin']);
-    expect(monitor.sources).toEqual(['reddit', 'hackernews', 'bluesky']);
+    expect(monitor.sources).toEqual(['reddit', 'hackernews', 'bluesky', 'web']);
     expect(monitor.everyMinutes).toBe(360);
   });
 
@@ -164,6 +170,32 @@ describe('lead monitors', () => {
         subreddits: ['sysadmin'],
       }).map((s) => s.slug),
     ).toEqual(['reddit', 'hackernews', 'bluesky']);
+    // The web source needs a searcher (ValueSERP); without one it reads nothing.
+    const searcher = { search: async () => [] };
+    expect(
+      buildLeadSources({ sources: ['web'], subreddits: [] }, { searcher }).map((s) => s.slug),
+    ).toEqual(['web']);
+  });
+
+  test('the web search runs at most once a day, however often the monitor scans', async () => {
+    const client = await db('leads-web-daily');
+    const monitor = await createLeadMonitor({ db: client }, SEED.workspaceId, {
+      name: 'ThreatCrush',
+      keywords: ['siem'],
+      sources: ['hackernews', 'web'],
+    });
+    const calls: string[] = [];
+    const sources = () => [fake('hackernews', HN, [], calls), fake('web', [], [], calls)];
+    const scan = (hours: number) =>
+      scanLeadMonitor(
+        { db: client, sources, now: new Date(NOW.getTime() + hours * 3_600_000) },
+        SEED.workspaceId,
+        monitor.id,
+      );
+    await scan(0);
+    await scan(6);
+    await scan(21);
+    expect(calls).toEqual(['hackernews', 'web', 'hackernews', 'hackernews', 'web']);
   });
 });
 

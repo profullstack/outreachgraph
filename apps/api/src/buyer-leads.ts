@@ -32,7 +32,7 @@ import {
   type LeadMonitor,
   type LeadStatus,
 } from '@outreachgraph/pipeline';
-import type { FeedSource } from '@outreachgraph/providers';
+import type { FeedSource, WebSearcher } from '@outreachgraph/providers';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
 
@@ -41,6 +41,8 @@ export interface LeadRouteDeps {
   readonly model?: TextModel | undefined;
   /** Test seam: the sources a monitor reads. */
   readonly leadSources?: ((monitor: LeadMonitor) => readonly FeedSource[]) | undefined;
+  /** Google search (ValueSERP) for the `web` source. */
+  readonly searcher?: WebSearcher | undefined;
 }
 
 const monitorFields = {
@@ -186,7 +188,12 @@ export function leadRoutes(deps: LeadRouteDeps): Hono<AppEnv> {
     if (!(await getLeadMonitor(db, actor.workspaceId, c.req.param('id'))))
       throw ApiError.notFound('lead monitor');
     const result = await scanLeadMonitor(
-      { db, model: deps.model, ...(deps.leadSources ? { sources: deps.leadSources } : {}) },
+      {
+        db,
+        model: deps.model,
+        ...(deps.leadSources ? { sources: deps.leadSources } : {}),
+        ...(deps.searcher ? { searcher: deps.searcher } : {}),
+      },
       actor.workspaceId,
       c.req.param('id'),
     );

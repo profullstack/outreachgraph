@@ -29,6 +29,13 @@ export {
   stripHtml,
   type HackerNewsSourceOptions,
 } from './hackernews';
+export {
+  DEFAULT_DISCUSSION_SITES,
+  WebDiscussionSource,
+  quoteGroups,
+  redditPostId,
+  type WebDiscussionSourceOptions,
+} from './web-discussions';
 export { RssSource, type RssSourceOptions } from './rss';
 export { BlueskyFeedSource, type BlueskyFeedSourceOptions } from './bluesky';
 export {
