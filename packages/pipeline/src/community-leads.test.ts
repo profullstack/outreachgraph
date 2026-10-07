@@ -185,7 +185,18 @@ describe('lead monitors', () => {
       sources: ['hackernews', 'web'],
     });
     const calls: string[] = [];
-    const sources = () => [fake('hackernews', HN, [], calls), fake('web', [], [], calls)];
+    const windows: Date[] = [];
+    const web: FeedSource = {
+      network: 'website',
+      slug: 'web',
+      displayName: 'web',
+      async search(input) {
+        calls.push('web');
+        if (input.since) windows.push(input.since);
+        return [];
+      },
+    };
+    const sources = () => [fake('hackernews', HN, [], calls), web];
     const scan = (hours: number) =>
       scanLeadMonitor(
         { db: client, sources, now: new Date(NOW.getTime() + hours * 3_600_000) },
@@ -196,6 +207,12 @@ describe('lead monitors', () => {
     await scan(6);
     await scan(21);
     expect(calls).toEqual(['hackernews', 'web', 'hackernews', 'hackernews', 'web']);
+    // The second web run looks back to its own last run (minus overlap), not
+    // to the scan of the free sources at hour 6.
+    expect(windows.map((w) => w.toISOString())).toEqual([
+      new Date(NOW.getTime() - 7 * 86_400_000).toISOString(),
+      new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
+    ]);
   });
 });
 
