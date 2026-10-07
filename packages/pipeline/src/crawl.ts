@@ -9,11 +9,13 @@
 
 import { newId } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
-import type {
-  CandidateIdentity,
-  PersonCandidate,
-  PersonEnrichmentProvider,
-  SiteProvider,
+import {
+  competitorMatches,
+  type CandidateIdentity,
+  type DetectedTechnology,
+  type PersonCandidate,
+  type PersonEnrichmentProvider,
+  type SiteProvider,
 } from '@outreachgraph/providers';
 import type { TextModel } from '@outreachgraph/ai';
 import { emitEvent } from './events';
@@ -153,23 +155,34 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
 
     let companyId: string;
 
+    // What the site runs, merged with what earlier crawls found, so a deeper
+    // page never erases the homepage's chat widget.
+    const detected = (result.technologies ?? []).map((tech) => tech.name);
+
     if (existing) {
       companyId = existing.id;
+      const prior = await queryOne<{ technologies: string | null }>(
+        deps.db,
+        'SELECT technologies FROM companies WHERE id = ?',
+        [existing.id],
+      );
+      const merged = [...new Set([...parseNames(prior?.technologies), ...detected])];
       await deps.db.execute({
-        sql: `UPDATE companies SET contact_email = COALESCE(contact_email, ?), updated_at = ?
-               WHERE id = ?`,
-        args: [result.contactEmail ?? null, stamp, existing.id],
+        sql: `UPDATE companies SET contact_email = COALESCE(contact_email, ?), technologies = ?,
+              updated_at = ? WHERE id = ?`,
+        args: [result.contactEmail ?? null, JSON.stringify(merged), stamp, existing.id],
       });
     } else {
       companyId = newId('company');
       await deps.db.execute({
         sql: `INSERT INTO companies (id, name, domain, technologies, contact_email,
               created_at, updated_at)
-              VALUES (?, ?, ?, '[]', ?, ?, ?)`,
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
         args: [
           companyId,
           result.company.name ?? domain,
           domain,
+          JSON.stringify(detected),
           result.contactEmail ?? null,
           stamp,
           stamp,
@@ -178,6 +191,15 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
     }
 
     await recordCompanyIdentities(deps.db, companyId, result, stamp);
+    await recordCompetitorSignals(deps.db, {
+      workspaceId: job.workspaceId,
+      campaignId: campaign.id,
+      companyId,
+      companyName: result.company.name ?? domain,
+      url: result.finalUrl,
+      technologies: result.technologies ?? [],
+      at: stamp,
+    });
   }
 
   // A page that names nobody but publishes an inbox is still a way in.
@@ -380,4 +402,72 @@ function hostOf(url: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function parseNames(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A company whose site runs a competitor the product names is a switcher
+ * prospect (Hunter's Technology filter). Recorded as a company-level
+ * `technology_adoption` signal whose evidence is the marker on the page, so
+ * the composer may say "your site runs X" and nothing it cannot back.
+ * One signal per company and competitor.
+ */
+export async function recordCompetitorSignals(
+  db: Client,
+  input: {
+    readonly workspaceId: string;
+    readonly campaignId: string;
+    readonly companyId: string;
+    readonly companyName: string;
+    readonly url: string;
+    readonly technologies: readonly DetectedTechnology[];
+    readonly at: string;
+  },
+): Promise<number> {
+  if (input.technologies.length === 0) return 0;
+  const offering = await queryOne<{ competitors: string | null }>(
+    db,
+    `SELECT o.competitors FROM campaigns c JOIN offerings o ON o.id = c.offering_id WHERE c.id = ?`,
+    [input.campaignId],
+  );
+  const matches = competitorMatches(input.technologies, parseNames(offering?.competitors));
+  let written = 0;
+  for (const tech of matches) {
+    const summary = `${input.companyName}'s site runs ${tech.name}`;
+    const exists = await queryOne<{ id: string }>(
+      db,
+      `SELECT id FROM signals WHERE workspace_id = ? AND company_id = ?
+        AND signal_type = 'technology_adoption' AND summary = ?`,
+      [input.workspaceId, input.companyId, summary],
+    );
+    if (exists) continue;
+    await db.execute({
+      sql: `INSERT INTO signals (id, workspace_id, person_id, company_id, network, signal_type,
+            subtype, summary, evidence, source_url, source_timestamp, observed_at, confidence,
+            relevance, sentiment)
+            VALUES (?, ?, NULL, ?, 'website', 'technology_adoption', 'competitor', ?, ?, ?, ?, ?,
+                    0.9, 0.8, 'neutral')`,
+      args: [
+        newId('signal'),
+        input.workspaceId,
+        input.companyId,
+        summary,
+        `The page at ${input.url} loads ${tech.evidence}`,
+        input.url,
+        input.at,
+        input.at,
+      ],
+    });
+    written += 1;
+  }
+  return written;
 }
