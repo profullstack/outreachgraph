@@ -395,6 +395,7 @@ function SiteFooter() {
           <a
             href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2Foutreachgraph.com%2F"
             rel="prev"
+            title="Previous site"
           >
             {'<<'}
           </a>
@@ -402,8 +403,16 @@ function SiteFooter() {
           <a
             href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2Foutreachgraph.com%2F"
             rel="next"
+            title="Next site"
           >
             {'>>'}
+          </a>
+          <a
+            href="https://rssamplifier.com/ring/profullstack/random?from=https%3A%2F%2Foutreachgraph.com%2F"
+            title="Random site"
+            aria-label="Random site"
+          >
+            {'⚄'}
           </a>
         </nav>
       </div>
