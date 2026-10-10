@@ -83,6 +83,7 @@
       "dependencies": {
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
+        "@profullstack/footer": "latest",
         "@profullstack/x402-gateway": "^0.7.0",
         "next": "16.3.6",
         "react": "19.2.8",
@@ -403,6 +404,8 @@
     "@outreachgraph/web": ["@outreachgraph/web@workspace:apps/web"],
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
+
+    "@profullstack/footer": ["@profullstack/footer@0.2.0", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"], "bin": { "profullstack-footer": "bin/profullstack-footer.js" } }, "sha512-0bpxw5OEsvIdiU8tV5R3zmeAZ8X1rjnZj0vl/mrto+oxN8D6tLjImr5/Ki1ynAUXVRqpz+ejbVlXhORzzLBDkQ=="],
 
     "@profullstack/form-guard": ["@profullstack/form-guard@0.1.1", "", {}, "sha512-RGLGfQhjq40f+JqEhSmsJnS0I5sFWjYdrYx4VYtkUqz8xvioN2yyR+6uFK0mnDAStKrYytlngg3meUsrChm/OQ=="],
 
