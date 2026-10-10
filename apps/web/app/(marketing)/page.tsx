@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
+import { Footer } from '@profullstack/footer/react';
 import { BrandLockup, BrandWordmark } from '../../components/brand';
 
 export const dynamic = 'force-dynamic';
@@ -376,46 +377,23 @@ function ClosingCta() {
 
 function SiteFooter() {
   return (
-    <Band className="border-border border-t py-10">
-      {/*
-       * The lockup, not the bare mark. At 20px inside a muted grey row the
-       * mark's thin cyan strokes had nothing to hold contrast against and read
-       * as a faded smudge; at 32px beside full-strength text it does not.
-       */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <BrandLockup size="sm" />
-        <span className="text-ink-muted text-[13px]">
-          LinkedIn only through your own session, opt-in. Suppression survives deletion.
-        </span>
+    <>
+      <Band className="border-border border-t pt-10 pb-2">
+        {/*
+         * The lockup, not the bare mark. At 20px inside a muted grey row the
+         * mark's thin cyan strokes had nothing to hold contrast against and read
+         * as a faded smudge; at 32px beside full-strength text it does not.
+         */}
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <BrandLockup size="sm" />
+          <span className="text-ink-muted text-[13px]">
+            LinkedIn only through your own session, opt-in. Suppression survives deletion.
+          </span>
+        </div>
+      </Band>
+      <div className="text-ink">
+        <Footer site="https://outreachgraph.com/" />
       </div>
-
-      <div className="text-ink-muted mt-5 flex flex-wrap items-center justify-between gap-4 text-[13px]">
-        <p>© {new Date().getFullYear()} OutreachGraph</p>
-        <nav className="webring flex gap-3" aria-label="Profullstack webring">
-          <a
-            href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2Foutreachgraph.com%2F"
-            rel="prev"
-            title="Previous site"
-          >
-            {'<<'}
-          </a>
-          <a href="https://rssamplifier.com/ring/profullstack">Profullstack</a>
-          <a
-            href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2Foutreachgraph.com%2F"
-            rel="next"
-            title="Next site"
-          >
-            {'>>'}
-          </a>
-          <a
-            href="https://rssamplifier.com/ring/profullstack/random?from=https%3A%2F%2Foutreachgraph.com%2F"
-            title="Random site"
-            aria-label="Random site"
-          >
-            {'⚄'}
-          </a>
-        </nav>
-      </div>
-    </Band>
+    </>
   );
 }
