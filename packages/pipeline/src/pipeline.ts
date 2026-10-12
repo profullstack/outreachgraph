@@ -39,6 +39,7 @@ import { recordDiscovered, recordStatus } from './stages';
 import { storeDiscoveredPhoto } from './photos';
 import { enqueueFindEmail } from './find-email-queue';
 import { screenHold } from './lead-screen';
+import { ownDomains, personOnOwnDomain } from './recipient-guard';
 
 export interface PipelineOptions {
   readonly db: Client;
@@ -879,6 +880,13 @@ async function createRecommendation(
     believed_minor: number;
   }>(db, 'SELECT identity_confidence, status, believed_minor FROM people WHERE id = ?', [personId]);
   if (!person) return undefined;
+
+  // Our own products are found by discovery like anyone else in the market,
+  // and they are not prospects. Refused here, before any card, so every
+  // intake path is covered and nothing waits in the queue to be dismissed.
+  if (await personOnOwnDomain(db, workspaceId, personId, await ownDomains(db, workspaceId))) {
+    return undefined;
+  }
 
   const campaign = await queryOne<{ approval_mode: string; budget_json: string }>(
     db,

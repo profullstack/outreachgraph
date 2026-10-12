@@ -20,6 +20,7 @@
  */
 
 import { queryAll, type Client } from '@outreachgraph/db';
+import { isConsumerMailDomain } from '@outreachgraph/domain';
 
 const NON_BUYER_DESKS = new Set([
   'support',
@@ -80,14 +81,126 @@ export function isNonBuyerDesk(address: string): boolean {
   );
 }
 
-/** Every domain this workspace sells from, lower-cased, without `www.`. */
+/**
+ * Hosts that many unrelated people publish under. An offering whose URL is a
+ * GitHub repo or a bare `vercel.app` names a place, not a company, and taking
+ * the host as "ours" would refuse every developer on GitHub. A subdomain of
+ * one (`acme.vercel.app`) is specific and stays.
+ */
+const SHARED_HOSTS = new Set([
+  'github.com',
+  'gitlab.com',
+  'bitbucket.org',
+  'vercel.app',
+  'netlify.app',
+  'pages.dev',
+  'workers.dev',
+  'herokuapp.com',
+  'railway.app',
+  'fly.dev',
+  'onrender.com',
+  'github.io',
+  'substack.com',
+  'medium.com',
+  'notion.site',
+  'linkedin.com',
+  'x.com',
+  'twitter.com',
+]);
+
+/** RFC 2606 names, which belong to nobody — fixtures and demo accounts use them. */
+const RESERVED = /(^|\.)example\.(com|net|org)$|\.(test|example|invalid|localhost)$/;
+
+function isOwnable(host: string): boolean {
+  return (
+    host.includes('.') &&
+    !SHARED_HOSTS.has(host) &&
+    !RESERVED.test(host) &&
+    !isConsumerMailDomain(host)
+  );
+}
+
+/**
+ * Every domain this workspace's organization sells or sends from, lower-cased,
+ * without `www.`.
+ *
+ * The organization, not the workspace: a teammate's workspace that sells one
+ * product is still part of a company that owns fifty, and in production
+ * (2026-10-12) it knew only its own one. Beyond the offerings, the domains the
+ * organization's people and mailboxes use are ours too — `profullstack.com`
+ * is not an offering anywhere, and is where every message is sent from.
+ */
 export async function ownDomains(db: Client, workspaceId: string): Promise<Set<string>> {
-  const rows = await queryAll<{ url: string }>(
+  const offerings = await queryAll<{ url: string }>(
     db,
-    'SELECT url FROM offerings WHERE workspace_id = ? AND url IS NOT NULL',
+    `SELECT o.url FROM offerings o
+      WHERE o.url IS NOT NULL
+        AND o.workspace_id IN (
+          SELECT w.id FROM workspaces w
+           WHERE w.organization_id = (SELECT organization_id FROM workspaces WHERE id = ?))`,
     [workspaceId],
   );
-  return new Set(rows.map((row) => hostOf(row.url)).filter((host) => host.includes('.')));
+
+  const addresses = await queryAll<{ address: string | null }>(
+    db,
+    `SELECT u.email AS address FROM users u
+       JOIN organization_members m ON m.user_id = u.id
+      WHERE m.organization_id = (SELECT organization_id FROM workspaces WHERE id = ?)
+     UNION ALL
+     SELECT handle AS address FROM integration_accounts
+      WHERE workspace_id = ? AND network = 'email'`,
+    [workspaceId, workspaceId],
+  );
+
+  const hosts = [
+    ...offerings.map((row) => hostOf(row.url)),
+    ...addresses.filter((row) => row.address?.includes('@')).map((row) => domainOf(row.address!)),
+  ];
+  return new Set(hosts.filter(isOwnable));
+}
+
+/**
+ * Whether a person belongs to one of these domains: their company's domain or
+ * published inbox, or any address we hold for them.
+ *
+ * Asked before a card is made, so our own products never reach the approval
+ * queue on any network — the send-time check only ever covered email, and a
+ * card nobody may approve is clutter a reviewer has to dismiss by hand.
+ */
+export async function personOnOwnDomain(
+  db: Client,
+  workspaceId: string,
+  personId: string,
+  own: ReadonlySet<string>,
+): Promise<boolean> {
+  if (own.size === 0) return false;
+
+  const rows = await queryAll<{ value: string | null }>(
+    db,
+    `SELECT co.domain AS value FROM people p JOIN companies co ON co.id = p.current_company_id
+      WHERE p.id = ?
+     UNION ALL
+     SELECT co.contact_email FROM people p JOIN companies co ON co.id = p.current_company_id
+      WHERE p.id = ?
+     UNION ALL
+     SELECT handle FROM social_identities WHERE person_id = ? AND network = 'email'
+     UNION ALL
+     SELECT address FROM person_emails WHERE person_id = ? AND workspace_id = ?`,
+    [personId, personId, personId, personId, workspaceId],
+  );
+
+  return rows.some((row) => {
+    if (!row.value) return false;
+    const domain = row.value.includes('@') ? domainOf(row.value) : hostOf(row.value);
+    return onDomain(domain, own);
+  });
+}
+
+function onDomain(domain: string, own: ReadonlySet<string>): boolean {
+  for (const host of own) {
+    if (domain === host || domain.endsWith(`.${host}`)) return true;
+  }
+  return false;
 }
 
 /**
@@ -97,11 +210,8 @@ export async function ownDomains(db: Client, workspaceId: string): Promise<Set<s
  * offerings are read once per tick rather than once per card.
  */
 export function refuseRecipient(address: string, own: ReadonlySet<string>): string | undefined {
-  const domain = domainOf(address);
-  for (const host of own) {
-    if (domain === host || domain.endsWith(`.${host}`)) {
-      return `${address} belongs to one of this workspace's own products`;
-    }
+  if (onDomain(domainOf(address), own)) {
+    return `${address} belongs to one of this workspace's own products`;
   }
   if (isNonBuyerDesk(address)) {
     return `${address} is a ${localPart(address)} desk, not a buyer`;

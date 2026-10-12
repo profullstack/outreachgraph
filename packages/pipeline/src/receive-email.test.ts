@@ -15,7 +15,7 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { IncomingMessage, MailReader } from '@outreachgraph/email';
 import { newId } from '@outreachgraph/domain';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
-import { receiveReplies } from './receive-email';
+import { isReplySubject, receiveReplies, threadIds } from './receive-email';
 
 let seeded: SeededDatabase | undefined;
 
@@ -375,5 +375,119 @@ describe('a human reply', () => {
       `SELECT reply_label, reply_label_source FROM interactions WHERE direction = 'inbound'`,
     );
     expect(row).toEqual({ reply_label: 'unsubscribe_request', reply_label_source: 'rule' });
+  });
+});
+
+/** Records a send the way `recordEmailSent` does: an action with our Message-ID, and its interaction. */
+async function sentWithId(db: Client, address: string, messageId: string): Promise<void> {
+  const actionId = newId('action');
+  await db.execute({
+    sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network, mode,
+          status, external_id, created_at, executed_at)
+          VALUES (?, ?, ?, ?, 'send_email', 'email', 'customer_managed', 'completed', ?, ?, ?)`,
+    args: [
+      actionId,
+      SEED.workspaceId,
+      SEED.recommendationId,
+      SEED.personId,
+      messageId,
+      now(),
+      now(),
+    ],
+  });
+  await db.execute({
+    sql: `INSERT INTO interactions (id, workspace_id, person_id, action_id, network, direction,
+          state, contact_address, shared_inbox, occurred_at, recorded_at)
+          VALUES (?, ?, ?, ?, 'email', 'outbound', 'contacted', ?, 1, ?, ?)`,
+    args: [newId('interaction'), SEED.workspaceId, SEED.personId, actionId, address, now(), now()],
+  });
+}
+
+describe('a reply answers something we sent', () => {
+  test('mail from a prospect that is not a reply is not one (a vendor receipt)', async () => {
+    seeded = await seedDatabase('receive-not-a-reply');
+    await sentTo(seeded.db, 'support@porkbun.com');
+
+    const result = await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([
+        message({
+          fromAddress: 'support@porkbun.com',
+          subject: 'porkbun.com | Order - Thank You - 12002499',
+          messageId: '<receipt-1@porkbun.com>',
+        }),
+      ]),
+    });
+
+    expect(result.recorded).toBe(0);
+    expect(result.unmatched).toBe(1);
+    expect(await inboundCount(seeded.db)).toBe(0);
+  });
+
+  test('a threaded answer counts whatever its subject, against the thread’s person', async () => {
+    seeded = await seedDatabase('receive-threaded');
+    await sentWithId(seeded.db, 'info@acme.com', '<abc-123@profullstack.com>');
+
+    const result = await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([
+        message({
+          // A colleague, answering the shared inbox's thread from their own address.
+          fromAddress: 'bob@acme.com',
+          subject: 'your note about settlement',
+          inReplyTo: '<abc-123@profullstack.com>',
+        }),
+      ]),
+    });
+
+    expect(result.recorded).toBe(1);
+    const row = await queryOne<{
+      person_id: string;
+      contact_address: string;
+      shared_inbox: number;
+    }>(
+      seeded.db,
+      `SELECT person_id, contact_address, shared_inbox FROM interactions
+        WHERE workspace_id = ? AND direction = 'inbound'`,
+      [SEED.workspaceId],
+    );
+    expect(row?.person_id).toBe(SEED.personId);
+    expect(row?.contact_address).toBe('bob@acme.com');
+    expect(Number(row?.shared_inbox)).toBe(0);
+  });
+
+  test('References pointing at a message we never sent do not count', async () => {
+    seeded = await seedDatabase('receive-foreign-thread');
+    await sentTo(seeded.db, 'jane@acme.com');
+
+    const result = await receiveReplies({
+      db: seeded.db,
+      workspaceId: SEED.workspaceId,
+      reader: reader([
+        message({ subject: 'Your invoice', references: '<someone-else@vendor.com>' }),
+      ]),
+    });
+
+    expect(result.recorded).toBe(0);
+  });
+});
+
+describe('threadIds and isReplySubject', () => {
+  test('reads every id from In-Reply-To and References, bracketed and bare', () => {
+    const ids = threadIds({ inReplyTo: '<a@x.com>', references: '<b@x.com> <a@x.com>' });
+    expect(ids).toContain('<a@x.com>');
+    expect(ids).toContain('a@x.com');
+    expect(ids).toContain('<b@x.com>');
+  });
+
+  test('knows a reply subject in the usual languages, and a receipt is not one', () => {
+    for (const subject of ['Re: hi', 'RE: hi', 'Aw: hallo', 'SV: hej', 'Re[2]: hi', '回复：你好']) {
+      expect(isReplySubject(subject)).toBe(true);
+    }
+    for (const subject of ['Order - Thank You', 'Regarding your order', undefined]) {
+      expect(isReplySubject(subject)).toBe(false);
+    }
   });
 });

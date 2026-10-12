@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { composeDraft, type ComposeInput } from './composer';
+import { composeDraft, splitSubject, subjectProblem, type ComposeInput } from './composer';
 import { StubModel, type GenerateInput, type GenerateResult, type TextModel } from './model';
 
 function input(overrides: Partial<ComposeInput> = {}): ComposeInput {
@@ -375,5 +375,68 @@ describe('cadence guidance', () => {
     await composeDraft(model, input());
 
     expect(model.calls[0]!.user).not.toContain('The purpose of this particular message');
+  });
+});
+
+describe('email subject lines', () => {
+  const email = (text: string) =>
+    composeDraft(new StubModel(text), input({ action: 'send_email', network: 'email' }));
+
+  test('an email asks for a subject; other channels do not', async () => {
+    const model = new StubModel(GOOD_DRAFT);
+    await composeDraft(model, input({ action: 'send_email', network: 'email' }));
+    expect(model.calls[0]!.system).toContain('Subject:');
+
+    const x = new StubModel(GOOD_DRAFT);
+    await composeDraft(x, input());
+    expect(x.calls[0]!.system).not.toContain('Subject:');
+  });
+
+  test('the subject is split off and the body is checked without it', async () => {
+    const result = await email(`Subject: cross-border payouts\n\n${GOOD_DRAFT}`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.subject).toBe('cross-border payouts');
+    expect(result.body).toBe(GOOD_DRAFT);
+  });
+
+  test('a subject that breaks the rules is dropped, and the draft still stands', async () => {
+    const result = await email(`Subject: Quick question about Acme!\n\n${GOOD_DRAFT}`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.subject).toBeUndefined();
+    expect(result.body).toBe(GOOD_DRAFT);
+  });
+
+  test('no subject line at all leaves the body whole', async () => {
+    const result = await email(GOOD_DRAFT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.subject).toBeUndefined();
+    expect(result.body).toBe(GOOD_DRAFT);
+  });
+
+  test('splitSubject tolerates the ways models write it', () => {
+    expect(splitSubject('subject: "fees on payouts"\nbody')).toEqual({
+      subject: 'fees on payouts',
+      body: 'body',
+    });
+    expect(splitSubject('**Subject:** settlement days\n\nbody').body).toBe('body');
+  });
+
+  test('subjectProblem refuses template, pitch, fake threads and invented specifics', () => {
+    const grounding = {
+      evidence: ['settlement takes days on cross-border payouts'],
+      facts: ['Jane', 'Acme'],
+      offering: ['ExamplePay'],
+    };
+    expect(subjectProblem('settlement taking days', grounding, 'ExamplePay')).toBeUndefined();
+    expect(subjectProblem('Acme payouts', grounding, 'ExamplePay')).toBeUndefined();
+    expect(subjectProblem('quick question', grounding, 'ExamplePay')).toBe('template phrase');
+    expect(subjectProblem('Re: payouts at Acme', grounding, 'ExamplePay')).toBe('fake thread');
+    expect(subjectProblem('ExamplePay for payouts', grounding, 'ExamplePay')).toBe('pitch');
+    expect(subjectProblem('payouts', grounding, 'ExamplePay')).toBe('length');
+    expect(subjectProblem('payouts at Globex', grounding, 'ExamplePay')).toBe('unsupported');
+    expect(subjectProblem('PAYOUTS AT ACME', grounding, 'ExamplePay')).toBe('all caps');
   });
 });

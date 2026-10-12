@@ -223,13 +223,15 @@ export async function draftForRecommendation(
 
   await db.batch([
     {
-      sql: `INSERT INTO drafts (id, workspace_id, recommendation_id, body, grounded_signal_ids,
-            checks_json, similarity_hash, model, edited_by_user, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      sql: `INSERT INTO drafts (id, workspace_id, recommendation_id, subject, body,
+            grounded_signal_ids, checks_json, similarity_hash, model, edited_by_user, created_at,
+            updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       args: [
         draftId,
         recommendation.workspace_id,
         recommendation.id,
+        result.subject ?? null,
         result.body,
         JSON.stringify(result.groundedSignalIds),
         JSON.stringify(result.report.results),
