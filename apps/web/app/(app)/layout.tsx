@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { BottomNav } from '../../components/bottom-nav';
 import { BrandLockup } from '../../components/brand';
+import { PendingInvitations } from '../../components/pending-invitations';
 
 /**
  * The signed-in app shell: a narrow reading column and the bottom nav.
@@ -24,7 +25,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* pb-28 reserves room for the fixed bottom nav plus the home indicator. */}
-      <main className="mx-auto w-full max-w-2xl px-4 pb-28">{children}</main>
+      <main className="mx-auto w-full max-w-2xl px-4 pb-28">
+        <PendingInvitations />
+        {children}
+      </main>
       <BottomNav />
     </>
   );

@@ -118,14 +118,24 @@ export function passwordResetEmail(to: string, link: string): Message {
 export function invitationEmail(
   to: string,
   link: string,
-  context: { organization: string; invitedBy: string },
+  context: { organization: string; invitedBy: string; replyTo?: string },
 ): Message {
-  const from = `${context.invitedBy} invited you to join ${context.organization} on OutreachGraph.`;
+  // Registration names an organization "<email> workspace", and a sentence
+  // that repeats an address twice — "a@x.com invited you to join a@x.com
+  // workspace" — reads like phishing to people and filters alike. An
+  // organization nobody has named yet is just "their team".
+  const organization = context.organization.includes('@') ? 'their team' : context.organization;
+  const from = `${context.invitedBy} invited you to join ${organization} on OutreachGraph.`;
+  const existing =
+    'Already have an OutreachGraph account with this address? Sign in and the ' +
+    'invitation is waiting at the top of your inbox.';
 
   const text = [
     from,
     '',
     link,
+    '',
+    existing,
     '',
     'The link expires in 14 days. If you were not expecting this you can ignore',
     'the message — nothing is shared with you until you open it, and nothing is',
@@ -141,7 +151,9 @@ export function invitationEmail(
         'style="width:48px;height:48px;border:0" /></p>'
       : '',
     `<p>${escapeHtml(from)}</p>`,
-    `<p><a href="${safe}">${safe}</a></p>`,
+    `<p><a href="${safe}"><strong>Accept the invitation</strong></a></p>`,
+    `<p>Or paste this link into your browser:<br />${safe}</p>`,
+    `<p>${escapeHtml(existing)}</p>`,
     '<p>The link expires in 14 days. If you were not expecting this you can ignore ',
     'the message — nothing is shared with you until you open it, and nothing is ',
     'sent on your behalf.</p>',
@@ -149,8 +161,11 @@ export function invitationEmail(
 
   return {
     to,
-    subject: `Join ${context.organization} on OutreachGraph`,
+    subject: `${context.invitedBy} invited you to OutreachGraph`,
     text,
     html,
+    // A reply goes to the person who asked, not to noreply@ — the first thing
+    // an unsure recipient does is ask "is this really you?".
+    ...(context.replyTo ? { replyTo: context.replyTo } : {}),
   };
 }
