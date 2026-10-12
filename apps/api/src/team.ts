@@ -297,23 +297,119 @@ export async function acceptInvitation(
   token: string,
   userId: string,
 ): Promise<AcceptedInvitation> {
-  const hash = await hashToken(token);
-
-  const row = await queryOne<{
-    id: string;
-    organization_id: string;
-    role: string;
-    expires_at: string;
-    accepted_at: string | null;
-    revoked_at: string | null;
-  }>(
+  const row = await queryOne<PendingRow>(
     db,
     `SELECT id, organization_id, role, expires_at, accepted_at, revoked_at
        FROM invitations WHERE token_hash = ?`,
-    [hash],
+    [await hashToken(token)],
   );
 
   if (!row) throw new TeamError('that invitation link is not valid');
+  return consumeInvitation(db, row, userId);
+}
+
+export interface InvitationForMe {
+  readonly id: string;
+  readonly organizationId: string;
+  readonly organizationName: string;
+  readonly role: string;
+  readonly invitedBy: string | null;
+  readonly expiresAt: string;
+}
+
+/**
+ * Invitations waiting for the signed-in user, matched on their address.
+ *
+ * The email was the only way an invitation reached anybody, and one that lands
+ * in spam — or in a forwarding alias nobody reads — left an invitee who already
+ * has an account with no way to know they were asked. Showing it in the app
+ * closes that gap without involving the link at all.
+ *
+ * Only a **verified** address counts. Without that, registering someone else's
+ * address would be enough to walk into the team they were invited to.
+ * Organizations the user already belongs to are left out: accepting would be a
+ * no-op that looks like a bug.
+ */
+export async function listInvitationsForUser(
+  db: Client,
+  userId: string,
+): Promise<InvitationForMe[]> {
+  const rows = await queryAll<{
+    id: string;
+    organization_id: string;
+    organization_name: string;
+    role: string;
+    invited_by_name: string | null;
+    invited_by_email: string | null;
+    expires_at: string;
+  }>(
+    db,
+    `SELECT i.id, i.organization_id, o.name AS organization_name, i.role,
+            inviter.name AS invited_by_name, inviter.email AS invited_by_email, i.expires_at
+       FROM users me
+       JOIN invitations i ON lower(i.email) = lower(me.email)
+       JOIN organizations o ON o.id = i.organization_id
+       LEFT JOIN users inviter ON inviter.id = i.invited_by
+      WHERE me.id = ? AND me.email_verified_at IS NOT NULL
+        AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?
+        AND NOT EXISTS (
+          SELECT 1 FROM organization_members m
+           WHERE m.organization_id = i.organization_id AND m.user_id = me.id
+        )
+      ORDER BY i.created_at DESC`,
+    [userId, now()],
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    organizationName: row.organization_name,
+    role: row.role,
+    invitedBy: row.invited_by_name?.trim() || row.invited_by_email,
+    expiresAt: row.expires_at,
+  }));
+}
+
+/**
+ * Accepts an invitation by id, for the user it was addressed to.
+ *
+ * The in-app counterpart of {@link acceptInvitation}. There is no token, so the
+ * verified address is what authorizes it — the opposite trade from the link,
+ * which deliberately does not check it. An invitation that is not yours reads
+ * as not valid rather than forbidden, so ids cannot be probed.
+ */
+export async function acceptInvitationForUser(
+  db: Client,
+  invitationId: string,
+  userId: string,
+): Promise<AcceptedInvitation> {
+  const row = await queryOne<PendingRow>(
+    db,
+    `SELECT i.id, i.organization_id, i.role, i.expires_at, i.accepted_at, i.revoked_at
+       FROM invitations i
+       JOIN users me ON lower(me.email) = lower(i.email)
+      WHERE i.id = ? AND me.id = ? AND me.email_verified_at IS NOT NULL`,
+    [invitationId, userId],
+  );
+
+  if (!row) throw new TeamError('that invitation is not valid');
+  return consumeInvitation(db, row, userId);
+}
+
+interface PendingRow {
+  id: string;
+  organization_id: string;
+  role: string;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+}
+
+async function consumeInvitation(
+  db: Client,
+  row: PendingRow,
+  userId: string,
+): Promise<AcceptedInvitation> {
   if (row.revoked_at) throw new TeamError('that invitation was withdrawn');
   if (row.expires_at <= now()) throw new TeamError('that invitation has expired');
 

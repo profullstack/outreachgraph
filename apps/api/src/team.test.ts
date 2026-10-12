@@ -3,8 +3,10 @@ import { now, queryAll, queryOne } from '@outreachgraph/db';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
 import {
   acceptInvitation,
+  acceptInvitationForUser,
   inviteMember,
   listInvitations,
+  listInvitationsForUser,
   listMembers,
   previewInvitation,
   removeMember,
@@ -166,6 +168,79 @@ describe('acceptInvitation', () => {
     await expect(acceptInvitation(db, 'not-a-token', SEED.userId)).rejects.toBeInstanceOf(
       TeamError,
     );
+  });
+});
+
+describe('invitations for the signed-in user', () => {
+  test('an existing account sees and accepts its invitation without the link', async () => {
+    seeded = await seedDatabase('team-mine');
+    const { db } = seeded;
+    await addUser(db, 'usr_sam', 'sam@example.com');
+
+    const minted = await inviteMember(db, { ...INVITER, email: 'Sam@Example.com', role: 'admin' });
+
+    const mine = await listInvitationsForUser(db, 'usr_sam');
+    expect(mine.map((i) => i.id)).toEqual([minted.id]);
+    expect(mine[0]?.role).toBe('admin');
+
+    const accepted = await acceptInvitationForUser(db, minted.id, 'usr_sam');
+    expect(accepted.workspaceId).toBe(SEED.workspaceId);
+    expect(await listMembers(db, SEED.organizationId)).toHaveLength(2);
+
+    // Answered, and already a member: nothing left to offer.
+    expect(await listInvitationsForUser(db, 'usr_sam')).toHaveLength(0);
+  });
+
+  test('an unverified address neither sees nor accepts it', async () => {
+    seeded = await seedDatabase('team-mine-unverified');
+    const { db } = seeded;
+    await addUser(db, 'usr_sam', 'sam@example.com');
+    await db.execute({
+      sql: 'UPDATE users SET email_verified_at = NULL WHERE id = ?',
+      args: ['usr_sam'],
+    });
+
+    const minted = await inviteMember(db, { ...INVITER, email: 'sam@example.com', role: 'member' });
+
+    expect(await listInvitationsForUser(db, 'usr_sam')).toHaveLength(0);
+    await expect(acceptInvitationForUser(db, minted.id, 'usr_sam')).rejects.toBeInstanceOf(
+      TeamError,
+    );
+    expect(await listMembers(db, SEED.organizationId)).toHaveLength(1);
+  });
+
+  test("someone else's invitation is refused", async () => {
+    seeded = await seedDatabase('team-mine-other');
+    const { db } = seeded;
+    await addUser(db, 'usr_sam', 'sam@example.com');
+    await addUser(db, 'usr_eve', 'eve@example.com');
+
+    const minted = await inviteMember(db, { ...INVITER, email: 'sam@example.com', role: 'member' });
+
+    expect(await listInvitationsForUser(db, 'usr_eve')).toHaveLength(0);
+    await expect(acceptInvitationForUser(db, minted.id, 'usr_eve')).rejects.toBeInstanceOf(
+      TeamError,
+    );
+  });
+
+  test('withdrawn and expired invitations are not offered', async () => {
+    seeded = await seedDatabase('team-mine-stale');
+    const { db } = seeded;
+    await addUser(db, 'usr_sam', 'sam@example.com');
+
+    const minted = await inviteMember(db, { ...INVITER, email: 'sam@example.com', role: 'member' });
+    await db.execute({
+      sql: 'UPDATE invitations SET expires_at = ? WHERE id = ?',
+      args: ['2020-01-01T00:00:00.000Z', minted.id],
+    });
+    expect(await listInvitationsForUser(db, 'usr_sam')).toHaveLength(0);
+    await expect(acceptInvitationForUser(db, minted.id, 'usr_sam')).rejects.toBeInstanceOf(
+      TeamError,
+    );
+
+    const again = await inviteMember(db, { ...INVITER, email: 'sam@example.com', role: 'member' });
+    await revokeInvitation(db, SEED.organizationId, again.id);
+    expect(await listInvitationsForUser(db, 'usr_sam')).toHaveLength(0);
   });
 });
 

@@ -61,9 +61,11 @@ import {
 } from './auth';
 import {
   acceptInvitation,
+  acceptInvitationForUser,
   inviteMember,
   isInvitableRole,
   listInvitations,
+  listInvitationsForUser,
   listMembers,
   previewInvitation,
   removeMember,
@@ -1604,6 +1606,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         invitationEmail(minted.email, link, {
           organization: organization?.name ?? 'their team',
           invitedBy: inviter?.name?.trim() || inviter?.email || 'A teammate',
+          ...(inviter?.email ? { replyTo: inviter.email } : {}),
         }),
       );
     } catch (error) {
@@ -1724,6 +1727,53 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       entityKind: 'user',
       entityId: actor.userId,
       detail: { organizationId: accepted.organizationId, role: accepted.role },
+    });
+
+    return c.json({
+      joined: true,
+      organizationId: accepted.organizationId,
+      workspaceId: accepted.workspaceId,
+      role: accepted.role,
+    });
+  });
+
+  /**
+   * Invitations addressed to the signed-in user, so joining does not depend on
+   * the email arriving. Matched on the account's verified address.
+   */
+  api.get('/me/invitations', async (c) => {
+    const actor = c.get('actor');
+    return c.json({ invitations: await listInvitationsForUser(c.get('db'), actor.userId) });
+  });
+
+  api.post('/me/invitations/:id/accept', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    let accepted;
+    try {
+      accepted = await acceptInvitationForUser(db, c.req.param('id'), actor.userId);
+    } catch (error) {
+      if (error instanceof TeamError) throw ApiError.badRequest(error.message);
+      throw error;
+    }
+
+    const cookie = readCookie(c.req.header('cookie') ?? null, SESSION_COOKIE);
+    if (cookie && accepted.workspaceId) {
+      await switchSessionWorkspace(db, cookie, actor.userId, accepted.workspaceId);
+    }
+
+    await repo.audit(db, {
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'team.invitation_accepted',
+      entityKind: 'user',
+      entityId: actor.userId,
+      detail: {
+        organizationId: accepted.organizationId,
+        role: accepted.role,
+        via: 'in_app',
+      },
     });
 
     return c.json({
