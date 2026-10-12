@@ -24,7 +24,12 @@ import {
   type PersonKind,
   type ReplyLabel,
 } from '@outreachgraph/domain';
-import { runChecks, type CheckReport, type GroundingContext } from './checks';
+import {
+  findUnsupportedClaims,
+  runChecks,
+  type CheckReport,
+  type GroundingContext,
+} from './checks';
 import type { TextModel } from './model';
 
 export interface OfferingContext {
@@ -88,6 +93,8 @@ export type ComposeResult =
   | {
       readonly ok: true;
       readonly body: string;
+      /** Email only, and only when it passed `subjectProblem`. */
+      readonly subject?: string;
       readonly report: CheckReport;
       readonly groundedSignalIds: readonly string[];
       readonly model: string;
@@ -142,7 +149,13 @@ export async function composeDraft(model: TextModel, input: ComposeInput): Promi
 
     if (generated.refused) return { ok: false, reason: 'model_refused', attempts: attempt };
 
-    const body = stripWrapper(generated.text);
+    // An email's first line is its subject; it is checked on its own below,
+    // and the body's gates (length, similarity) see only the body.
+    const split =
+      input.network === 'email'
+        ? splitSubject(stripWrapper(generated.text))
+        : { body: stripWrapper(generated.text) };
+    const body = stripWrapper(split.body);
     if (!body) return { ok: false, reason: 'empty', attempts: attempt };
 
     lastBody = body;
@@ -162,9 +175,16 @@ export async function composeDraft(model: TextModel, input: ComposeInput): Promi
     lastReport = report;
 
     if (report.passed) {
+      // A subject that fails its own rules is dropped, not retried: the body
+      // passed, and the sender's fallback subject is a safe floor.
+      const subject =
+        split.subject && !subjectProblem(split.subject, grounding, input.offering.name)
+          ? split.subject
+          : undefined;
       return {
         ok: true,
         body,
+        ...(subject ? { subject } : {}),
         report,
         groundedSignalIds: [input.trigger.id],
         model: generated.model,
@@ -227,7 +247,7 @@ function buildCachedPrefix(input: ComposeInput): string {
     '- No flattery. Do not open by praising them or their work.',
     '- No urgency, no scarcity, no manufactured enthusiasm.',
     '- Write as one person to another. Not marketing copy.',
-    '- Output only the message. No subject line, no signature, no preamble, no quotation marks.',
+    '- Output only the message. No signature, no preamble, no quotation marks, and no subject line unless the instructions below ask for one.',
     '',
     `About the business: ${input.offering.name}, ${input.offering.category}.`,
     input.offering.valuePropositions.length > 0
@@ -260,9 +280,66 @@ function buildSystem(input: ComposeInput): string {
     input.action === 'reply' || input.action === 'comment'
       ? 'This is a public reply in an existing thread. Other people will read it. Be useful to them too.'
       : '',
+    input.network === 'email' ? SUBJECT_INSTRUCTIONS : '',
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * Subject lines, which decide whether the rest is read at all.
+ *
+ * Every cold email in production (1,310 to 2026-10-12) went out as "Quick
+ * question about {Company}", because the composer was told never to write a
+ * subject and the sender filled the gap with one template. One subject
+ * across a thousand messages reads as a campaign to a filter and to a person.
+ * What gets opened is short, lower-key, and plainly about the recipient — the
+ * way a colleague titles an email, not the way a marketer does.
+ */
+const SUBJECT_INSTRUCTIONS = [
+  'This is an email. Start with one line "Subject: ..." then a blank line, then the message.',
+  'The subject: two to six words, lowercase except names, about their specific thing from the CONTEXT — what a colleague would type, not a headline.',
+  'Never in the subject: "quick question", "Re:" or "Fwd:", exclamation marks, all caps, emoji, our product name, or anything the CONTEXT does not support.',
+].join('\n');
+
+const SUBJECT_BANNED =
+  /\b(quick question|following up|touching base|checking in|free|guarantee|urgent|act now|limited time|opportunity|partnership)\b/i;
+
+/**
+ * Splits the "Subject:" line off a generated email.
+ *
+ * A model that forgot the line yields the whole text as the body and no
+ * subject, which is what every email had before — never a lost message.
+ */
+export function splitSubject(text: string): { subject?: string; body: string } {
+  const match = /^\s*\**\s*subject\s*:\s*\**\s*(.+?)\s*(?:\r?\n|$)/i.exec(text);
+  if (!match) return { body: text };
+  const subject = match[1]!.replace(/^["'*]+|["'*]+$/g, '').trim();
+  const body = text.slice(match[0].length).trim();
+  return subject ? { subject, body } : { body };
+}
+
+/**
+ * Why a generated subject must not be sent, or undefined when it may.
+ *
+ * Held to the same grounding rule as the body — a subject is the first claim
+ * the reader sees — plus the shape that gets mail opened rather than filtered.
+ */
+export function subjectProblem(
+  subject: string,
+  grounding: GroundingContext,
+  offeringName: string,
+): string | undefined {
+  const words = subject.split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > 8 || subject.length > 70) return 'length';
+  if (/^(re|fwd?)\s*:/i.test(subject)) return 'fake thread';
+  if (/[!?]{2,}|!/.test(subject)) return 'exclamation';
+  if (/\p{Extended_Pictographic}/u.test(subject)) return 'emoji';
+  if (subject === subject.toUpperCase() && /[A-Z]/.test(subject)) return 'all caps';
+  if (SUBJECT_BANNED.test(subject)) return 'template phrase';
+  if (offeringName && subject.toLowerCase().includes(offeringName.toLowerCase())) return 'pitch';
+  if (findUnsupportedClaims(subject, grounding).unsupported.length > 0) return 'unsupported';
+  return undefined;
 }
 
 function buildUser(input: ComposeInput, failed?: CheckReport): string {

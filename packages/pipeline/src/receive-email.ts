@@ -194,7 +194,7 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
       continue;
     }
 
-    const person = await matchSender(input.db, input.workspaceId, message.fromAddress);
+    const person = await matchReply(input.db, input.workspaceId, message);
     if (!person) {
       unmatched += 1;
       continue;
@@ -256,9 +256,9 @@ function bounceId(message: IncomingMessage): string {
 /**
  * Which prospect a reply belongs to.
  *
- * Matched on the address we delivered to, which is the only link we actually
- * have — we did not send a per-recipient token, and threading headers are
- * rewritten often enough by mailing software to be a weak second.
+ * Matched on the address we delivered to. Bounces and absence notices are
+ * filed this way, since they rarely thread; a human reply reaches it only
+ * through `matchReply`, which asks for the thread or a reply subject first.
  *
  * A shared company inbox matches several people at once, and rather than
  * guess which colleague typed the reply this picks the one most recently
@@ -293,6 +293,91 @@ async function matchSender(
     address: row.contact_address,
     shared: row.shared_inbox === 1,
   };
+}
+
+/**
+ * Which prospect a human message is a reply from, if it is a reply at all.
+ *
+ * The address alone is not enough. The mailbox we read is a real person's
+ * inbox, and a prospect who is also a vendor writes to it all the time: in
+ * production (2026-10-12) the only "reply" in 1,247 sends was twenty Porkbun
+ * receipts and renewal notices, each of which moved Porkbun to Responded.
+ *
+ * So a reply is a message that answers one of ours: its In-Reply-To or
+ * References names a Message-ID we sent. That also attributes it correctly
+ * when a colleague answers from their own address. For clients that drop the
+ * threading headers, a message from an address we wrote to still counts when
+ * its subject says it is a reply — receipts, alerts and newsletters never do.
+ */
+async function matchReply(
+  db: Client,
+  workspaceId: string,
+  message: IncomingMessage,
+): Promise<MatchedSender | undefined> {
+  const threaded = await matchThread(db, workspaceId, message);
+  if (threaded) return threaded;
+  if (!isReplySubject(message.subject)) return undefined;
+  return matchSender(db, workspaceId, message.fromAddress);
+}
+
+/** The prospect whose thread this message's threading headers point into. */
+async function matchThread(
+  db: Client,
+  workspaceId: string,
+  message: IncomingMessage,
+): Promise<MatchedSender | undefined> {
+  const ids = threadIds(message);
+  if (ids.length === 0) return undefined;
+
+  const row = await queryOne<{
+    person_id: string;
+    campaign_id: string | null;
+    contact_address: string;
+    shared_inbox: number;
+  }>(
+    db,
+    `SELECT i.person_id, i.campaign_id, i.contact_address, i.shared_inbox
+       FROM actions a JOIN interactions i ON i.action_id = a.id AND i.direction = 'outbound'
+      WHERE a.workspace_id = ? AND a.network = 'email'
+        AND a.external_id IN (${ids.map(() => '?').join(', ')})
+   ORDER BY i.occurred_at DESC LIMIT 1`,
+    [workspaceId, ...ids],
+  );
+  if (!row) return undefined;
+
+  // Whoever answered is who the conversation is with now, which may not be
+  // the shared inbox we wrote to.
+  const from = message.fromAddress.trim().toLowerCase();
+  const sameMailbox = from === row.contact_address;
+  return {
+    personId: row.person_id,
+    campaignId: row.campaign_id,
+    address: from || row.contact_address,
+    shared: sameMailbox && row.shared_inbox === 1,
+  };
+}
+
+/**
+ * Every Message-ID the message says it answers, in both the bracketed form
+ * the headers use and the bare form some mailers return as a send id.
+ */
+export function threadIds(message: Pick<IncomingMessage, 'inReplyTo' | 'references'>): string[] {
+  const raw = `${message.inReplyTo ?? ''} ${message.references ?? ''}`;
+  const ids = new Set<string>();
+  for (const match of raw.matchAll(/<([^<>\s]+)>|([^<>\s]+@[^<>\s]+)/g)) {
+    const bare = match[1] ?? match[2];
+    if (!bare) continue;
+    ids.add(`<${bare}>`);
+    ids.add(bare);
+  }
+  return [...ids];
+}
+
+/** "Re:" as mail clients write it in the languages our prospects answer in. */
+const REPLY_PREFIX = /^\s*(re|aw|sv|antw|odp|ynt|vs|rif|r|res|ref|回复|答复)\s*(\[\d+\])?\s*[:：]/i;
+
+export function isReplySubject(subject: string | undefined): boolean {
+  return Boolean(subject && REPLY_PREFIX.test(subject));
 }
 
 interface MatchedSender {
