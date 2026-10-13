@@ -17,6 +17,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 say "Installing og (OutreachGraph CLI)..."
 
 if have bun; then
+  # bun add -g writes into the nearest package.json above its global dir, so
+  # give that dir its own before installing.
+  BUN_GLOBAL="${BUN_INSTALL:-$HOME/.bun}/install/global"
+  mkdir -p "$BUN_GLOBAL"
+  [ -f "$BUN_GLOBAL/package.json" ] || printf '{}\n' > "$BUN_GLOBAL/package.json"
   bun add -g "$PKG@latest"
   BIN_DIR="${BUN_INSTALL:-$HOME/.bun}/bin"
 elif have npm && have node; then
