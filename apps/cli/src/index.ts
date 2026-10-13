@@ -13,6 +13,7 @@
 
 import { ApiError, configFromEnv, createClient } from '@outreachgraph/mcp/src/client';
 import { commandByName, usage } from './commands';
+import pkg from '../package.json' with { type: 'json' };
 
 export interface ParsedArgv {
   readonly command: string | undefined;
@@ -58,6 +59,10 @@ export function parseArgv(argv: readonly string[]): ParsedArgv {
 
 export async function run(argv: readonly string[]): Promise<{ output: string; code: number }> {
   const { command, args, flags } = parseArgv(argv);
+
+  if (flags.version === true || command === 'version' || (command === '-v' && args.length === 0)) {
+    return { output: `og ${pkg.version}`, code: 0 };
+  }
 
   if (!command || command === 'help' || flags.help === true) {
     return { output: usage(), code: 0 };

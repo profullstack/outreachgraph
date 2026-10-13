@@ -15,8 +15,9 @@
 export interface ApiConfig {
   readonly baseUrl: string;
   readonly token: string;
-  readonly workspaceId: string;
-  readonly organizationId: string;
+  /** Optional with a workspace key (`og_live_…`), which names its own workspace. */
+  readonly workspaceId?: string | undefined;
+  readonly organizationId?: string | undefined;
   readonly userId?: string | undefined;
 }
 
@@ -63,8 +64,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ApiConfig {
 
   if (!baseUrl) missing.push('OUTREACHGRAPH_API_URL');
   if (!token) missing.push('OUTREACHGRAPH_API_TOKEN');
-  if (!workspaceId) missing.push('OUTREACHGRAPH_WORKSPACE_ID');
-  if (!organizationId) missing.push('OUTREACHGRAPH_ORGANIZATION_ID');
+  // A workspace key from Settings is scoped by the row it hashes to, so it needs
+  // no headers naming a workspace. Only the service token does.
+  const workspaceKey = token?.startsWith('og_live_') ?? false;
+  if (!workspaceId && !workspaceKey) missing.push('OUTREACHGRAPH_WORKSPACE_ID');
+  if (!organizationId && !workspaceKey) missing.push('OUTREACHGRAPH_ORGANIZATION_ID');
 
   if (missing.length > 0) {
     throw new Error(`Missing configuration: ${missing.join(', ')}`);
@@ -73,8 +77,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return {
     baseUrl: baseUrl!.replace(/\/+$/, ''),
     token: token!,
-    workspaceId: workspaceId!,
-    organizationId: organizationId!,
+    ...(workspaceId ? { workspaceId } : {}),
+    ...(organizationId ? { organizationId } : {}),
     ...(env.OUTREACHGRAPH_USER_ID ? { userId: env.OUTREACHGRAPH_USER_ID } : {}),
   };
 }
@@ -82,8 +86,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ApiConfig {
 export function createClient(config: ApiConfig, fetchImpl: FetchLike = fetch): ApiClient {
   const headers = {
     authorization: `Bearer ${config.token}`,
-    'x-workspace-id': config.workspaceId,
-    'x-organization-id': config.organizationId,
+    ...(config.workspaceId ? { 'x-workspace-id': config.workspaceId } : {}),
+    ...(config.organizationId ? { 'x-organization-id': config.organizationId } : {}),
     ...(config.userId ? { 'x-user-id': config.userId } : {}),
   };
 

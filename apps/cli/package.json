@@ -1,18 +1,46 @@
 {
-  "name": "@outreachgraph/cli",
+  "name": "@profullstack/outreachgraph",
   "version": "0.16.2",
-  "private": true,
+  "description": "og: OutreachGraph from a terminal. Approval queue, prospects, campaigns and imports over the /api/v1 API.",
   "type": "module",
+  "license": "UNLICENSED",
+  "homepage": "https://outreachgraph.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/profullstack/outreachgraph.git",
+    "directory": "apps/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/profullstack/outreachgraph/issues"
+  },
+  "keywords": [
+    "outreachgraph",
+    "outreach",
+    "cli",
+    "gtm"
+  ],
   "bin": {
-    "og": "./src/index.ts"
+    "og": "./dist/og.js"
+  },
+  "files": [
+    "dist/og.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "start": "bun src/index.ts",
-    "build": "bun build src/index.ts --target=bun --outdir=dist --compile",
+    "build": "bun build bin/og.ts --target=node --format=esm --outfile=dist/og.js --banner='#!/usr/bin/env node'",
+    "build:binary": "bun build src/index.ts --target=bun --outdir=dist --compile",
+    "prepublishOnly": "bun run build",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
-  "dependencies": {
+  "devDependencies": {
     "@outreachgraph/mcp": "workspace:*"
   }
 }

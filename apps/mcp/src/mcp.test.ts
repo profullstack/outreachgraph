@@ -76,6 +76,15 @@ describe('configFromEnv', () => {
     expect(message).toContain('OUTREACHGRAPH_ORGANIZATION_ID');
   });
 
+  test('a workspace key needs no workspace or organization id', () => {
+    const config = configFromEnv({
+      OUTREACHGRAPH_API_URL: 'https://outreachgraph.com',
+      OUTREACHGRAPH_API_TOKEN: 'og_live_abcdefghijklmnop',
+    } as NodeJS.ProcessEnv);
+    expect(config.workspaceId).toBeUndefined();
+    expect(config.organizationId).toBeUndefined();
+  });
+
   test('trims a trailing slash off the base url', () => {
     const config = configFromEnv({
       OUTREACHGRAPH_API_URL: 'https://api.test/',

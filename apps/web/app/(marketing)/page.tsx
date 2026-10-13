@@ -38,6 +38,7 @@ export default async function LandingPage() {
       <CapabilitiesSection />
       <IdeasSection />
       <RefusalSection />
+      <TerminalSection />
       <ClosingCta />
       <SiteFooter />
     </div>
@@ -349,6 +350,34 @@ function RefusalSection() {
           <div className="text-ink-muted">“this person asked not to be contacted on 4 Aug”</div>
         </div>
       </div>
+    </Band>
+  );
+}
+
+function TerminalSection() {
+  return (
+    <Band className="border-border border-t py-16 sm:py-20" id="cli">
+      <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-balance sm:text-[34px]">
+        Or run it from a terminal.
+      </h2>
+      <p className="text-ink-muted mt-4 max-w-[38em] text-[17px] leading-relaxed">
+        <code>og</code> is the same approval queue, prospects and campaigns from the command line,
+        through the same policy engine. Install it, then set an API key from Settings.
+      </p>
+      <pre className="border-border bg-surface-raised mt-6 overflow-x-auto rounded-2xl border p-5 font-mono text-[12.5px] leading-loose">
+        <code>{`curl -fsSL https://outreachgraph.com/install.sh | sh
+
+export OUTREACHGRAPH_API_URL=https://outreachgraph.com
+export OUTREACHGRAPH_API_TOKEN=og_live_...
+og today`}</code>
+      </pre>
+      <p className="text-ink-muted mt-3 text-[13px]">
+        Or <code>npm install -g @profullstack/outreachgraph</code>. Agents can read{' '}
+        <a href="/api/v1/public/llms.txt" className="underline">
+          llms.txt
+        </a>
+        .
+      </p>
     </Band>
   );
 }

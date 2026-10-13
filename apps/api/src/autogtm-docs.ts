@@ -1083,6 +1083,9 @@ export function llmsText(baseUrl: string): string {
   );
   lines.push(`- Full schema: \`${api}/public/openapi.json\``);
   lines.push(
+    `- Command line: \`curl -fsSL ${baseUrl}/install.sh | sh\` installs \`og\` (npm \`@profullstack/outreachgraph\`); it reads \`OUTREACHGRAPH_API_URL\` and \`OUTREACHGRAPH_API_TOKEN\`.`,
+  );
+  lines.push(
     '- Keys are minted at `/settings` in the app, or `POST /api-keys` with a signed-in session.',
   );
   lines.push(
