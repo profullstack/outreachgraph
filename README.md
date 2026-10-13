@@ -19,6 +19,18 @@ The rest of the §20 agent suite is not built. See
 [`docs/prd-implementation-map.md`](docs/prd-implementation-map.md) for exactly
 what exists.
 
+## Install the CLI
+
+```bash
+curl -fsSL https://outreachgraph.com/install.sh | sh
+```
+
+That installs `og` ([`@profullstack/outreachgraph`](https://www.npmjs.com/package/@profullstack/outreachgraph)
+on npm) with bun if you have it, otherwise npm (Node >= 20), into `~/.local` when
+the global prefix is not writable. `npm install -g @profullstack/outreachgraph`
+works too. Then set `OUTREACHGRAPH_API_URL=https://outreachgraph.com` and
+`OUTREACHGRAPH_API_TOKEN` to a key from Settings, and run `og today`.
+
 ## Quick start
 
 ```bash
@@ -44,7 +56,7 @@ reach past it would be a surface where the gates are optional.
 ```bash
 export OUTREACHGRAPH_API_URL=http://localhost:8080
 export OUTREACHGRAPH_API_TOKEN=$API_TOKEN
-export OUTREACHGRAPH_WORKSPACE_ID=wsp_...
+export OUTREACHGRAPH_WORKSPACE_ID=wsp_...       # only with the service token; an og_live_ key needs neither
 export OUTREACHGRAPH_ORGANIZATION_ID=org_...
 
 bun apps/cli/src/index.ts today          # the approval queue

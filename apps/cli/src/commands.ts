@@ -11,6 +11,8 @@
  * changes with terminal width.
  */
 
+import { spawn, spawnSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import type { ApiClient } from '@outreachgraph/mcp/src/client';
 
 export interface CommandContext {
@@ -80,7 +82,9 @@ function openInBrowser(url: string): void {
   const opener =
     process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
   try {
-    Bun.spawn([opener, url], { stdio: ['ignore', 'ignore', 'ignore'] });
+    const child = spawn(opener, [url], { stdio: 'ignore', detached: true });
+    child.on('error', () => {});
+    child.unref();
   } catch {
     // Headless box: the printed URL is the fallback.
   }
@@ -1145,11 +1149,9 @@ async function editInEditor(markdown: string): Promise<string> {
   writeFileSync(path, markdown);
   try {
     const editor = process.env.VISUAL ?? process.env.EDITOR ?? 'vi';
-    const child = Bun.spawnSync([...editor.split(/\s+/), path], {
-      stdio: ['inherit', 'inherit', 'inherit'],
-    });
-    if (child.exitCode !== 0)
-      throw new Error(`${editor} exited with ${child.exitCode}; nothing saved`);
+    const [cmd, ...cmdArgs] = editor.split(/\s+/);
+    const child = spawnSync(cmd ?? 'vi', [...cmdArgs, path], { stdio: 'inherit' });
+    if (child.status !== 0) throw new Error(`${editor} exited with ${child.status}; nothing saved`);
     return readFileSync(path, 'utf8');
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1192,7 +1194,7 @@ async function runProfile({ client, args, flags }: CommandContext): Promise<stri
 
   const file = flagString(flags, 'file');
   const edited = file
-    ? await Bun.file(file).text()
+    ? await readFile(file, 'utf8')
     : await ((flags as { edit?: (markdown: string) => Promise<string> }).edit ?? editInEditor)(
         `${markdown}\n`,
       );
@@ -1399,7 +1401,7 @@ async function runCadences({ client, args, flags }: CommandContext): Promise<str
 
     const file = flagString(flags, 'file');
     // A file holds either the steps array or a whole `{ steps }` body.
-    const fromFile: unknown = file ? JSON.parse(await Bun.file(file).text()) : undefined;
+    const fromFile: unknown = file ? JSON.parse(await readFile(file, 'utf8')) : undefined;
     const steps =
       fromFile === undefined
         ? asList(flags.step).map((spec, index) => parseStepSpec(spec, index))

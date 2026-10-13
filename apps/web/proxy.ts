@@ -14,7 +14,8 @@ export async function proxy(request: NextRequest) {
 export const config = {
   // Everything but Next's own assets and static files. API routes stay
   // covered on purpose: a training crawler hitting the API gets 402 too.
+  // /install.sh is the CLI's curl installer and must reach anyone, so it is out.
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|woff|woff2|ttf|otf|mp3|mp4|webmanifest)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|install\\.sh$|.*\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|map|woff|woff2|ttf|otf|mp3|mp4|webmanifest)$).*)',
   ],
 };
