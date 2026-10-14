@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { worthScore, rivalsFor, specificLabel } from './demand';
-import { classifySignal, cleanFeeds, feedPostId, readFeed, DEFAULT_FEEDS, PAYS } from './feeds';
+import { classifySignal, cleanFeeds, feedPostId, postUrl, readFeed, DEFAULT_FEEDS, PAYS } from './feeds';
 
 describe('classifySignal', () => {
   test('a case study with revenue is a paid signal naming the product', () => {
@@ -156,5 +156,30 @@ describe('specificLabel', () => {
       'transcription for existing audio files',
     ])
       expect(specificLabel(label)).toBe(true);
+  });
+
+  test('a podcast episode with no link opens in the directory reader, not on our origin', async () => {
+    const got = await readFeed(
+      { slug: 'starter-story-2', role: 'signals', name: 'Starter Story' },
+      async () => ({
+        items: [
+          {
+            guid: '3e12d0da-b5a2-11f0-98c9-e7999e01f92c',
+            url: null,
+            title: 'Bro simply rebuilt Skype and now makes $14,000 per month',
+          },
+        ],
+      }),
+      'https://rssamplifier.com',
+    );
+    expect(got.posts[0]?.url).toBe(
+      'https://rssamplifier.com/starter-story-2/read?p=3e12d0da-b5a2-11f0-98c9-e7999e01f92c',
+    );
+  });
+
+  test('postUrl keeps a real link and falls back to an http guid', () => {
+    expect(postUrl('https://b.dev/1', 'g1', 'b', 'https://x.com')).toBe('https://b.dev/1');
+    expect(postUrl(null, 'https://b.dev/2', 'b', 'https://x.com')).toBe('https://b.dev/2');
+    expect(postUrl('', 'g 1', 'b', 'https://x.com')).toBe('https://x.com/b/read?p=g%201');
   });
 });
