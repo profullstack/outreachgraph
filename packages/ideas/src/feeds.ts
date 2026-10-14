@@ -98,6 +98,18 @@ export function feedPostId(slug: string, guid: string): string {
   return `feed:${slug}:${guid}`.slice(0, 400);
 }
 
+/**
+ * Where a post can be opened. Podcast feeds (Starter Story) often carry no link,
+ * only a guid like a bare UUID, which an href resolves against our own origin
+ * and 404s. Those go to the directory's reader page, which plays the episode.
+ */
+export function postUrl(url: unknown, guid: string, slug: string, base = FEED_BASE): string {
+  for (const candidate of [url, guid]) {
+    if (typeof candidate === 'string' && /^https?:\/\//i.test(candidate)) return candidate;
+  }
+  return `${base}/${encodeURIComponent(slug)}/read?p=${encodeURIComponent(guid)}`;
+}
+
 /** One feed's recent posts from the RSS Amplifier directory. */
 export async function readFeed(
   feed: IdeaFeed,
@@ -109,7 +121,7 @@ export async function readFeed(
     freshness?: string;
     items?: Array<{
       guid?: string;
-      url?: string;
+      url?: string | null;
       title?: string;
       summary?: string;
       author?: string;
@@ -125,7 +137,7 @@ export async function readFeed(
         sub: feed.slug,
         title: decode(String(item.title ?? '')),
         text: decode(String(item.summary ?? '')),
-        url: String(item.url ?? guid),
+        url: postUrl(item.url, guid, feed.slug, base),
         // A blog's posts are one voice: the feed, not a crowd, so it counts once.
         author: String(item.author ?? '').trim() || `feed:${feed.slug}`,
         postedAt: item.publishedAt ?? new Date(0).toISOString(),
