@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { worthScore, rivalsFor, specificLabel } from './demand';
-import { classifySignal, cleanFeeds, feedPostId, postUrl, readFeed, DEFAULT_FEEDS, PAYS } from './feeds';
+import {
+  classifySignal,
+  cleanFeeds,
+  feedPostId,
+  postUrl,
+  readFeed,
+  DEFAULT_FEEDS,
+  PAYS,
+} from './feeds';
 
 describe('classifySignal', () => {
   test('a case study with revenue is a paid signal naming the product', () => {
