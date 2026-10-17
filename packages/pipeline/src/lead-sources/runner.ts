@@ -19,7 +19,13 @@
 
 import { newId } from '@outreachgraph/domain';
 import { queryAll, queryOne, type Client, type InValue } from '@outreachgraph/db';
-import { defaultLeadSources, type LeadCandidate, type LeadSourceDefinition } from './sources';
+import {
+  defaultLeadSources,
+  MAJESTIC_SKIP_TOP,
+  type LeadCandidate,
+  type LeadSourceDefinition,
+} from './sources';
+import { leadDomain } from './domains';
 
 /** Companies all sources together may add in one UTC day. */
 export const DEFAULT_DAILY_TOTAL = 15_000;
@@ -337,11 +343,14 @@ export async function leadBaseStatus(
       await queryAll<{ lead_source: string; n: number }>(
         db,
         `SELECT lead_source, COUNT(*) AS n FROM companies
-          WHERE lead_source IS NOT NULL GROUP BY lead_source`,
+          WHERE lead_source IS NOT NULL AND excluded_at IS NULL GROUP BY lead_source`,
       )
     ).map((r) => [r.lead_source, Number(r.n)]),
   );
-  const companies = await queryOne<{ n: number }>(db, `SELECT COUNT(*) AS n FROM companies`);
+  const companies = await queryOne<{ n: number }>(
+    db,
+    `SELECT COUNT(*) AS n FROM companies WHERE excluded_at IS NULL`,
+  );
   const people = await queryOne<{ n: number }>(
     db,
     `SELECT COUNT(*) AS n FROM people WHERE status = 'active'`,
@@ -474,6 +483,7 @@ export async function pickImportedLeads(
   const where: string[] = [
     'co.lead_source IS NOT NULL',
     'co.domain IS NOT NULL',
+    'co.excluded_at IS NULL',
     // Reachable sites only: a homepage seo.rank could not read is not worth a crawl.
     "(sa.status IS NULL OR sa.status IN ('ok', 'error'))",
   ];
@@ -536,4 +546,87 @@ export async function pickImportedLeads(
     grade: r.grade ?? null,
     issues: r.issues == null ? null : Number(r.issues),
   }));
+}
+
+export interface RetireResult {
+  readonly checked: number;
+  readonly retired: number;
+  readonly byReason: Readonly<Record<string, number>>;
+  /** Would have been retired but somebody has worked with them. */
+  readonly kept: number;
+}
+
+/**
+ * Why an imported company is not a lead under today's rules, or null:
+ * `platform` when the importer's filter now drops its domain (megacorps,
+ * platforms, infrastructure), `majestic_top_rank` for a Majestic row ranked
+ * in the skipped top.
+ */
+export function exclusionReason(row: {
+  domain: string;
+  lead_source: string | null;
+  lead_rank: number | null;
+}): string | null {
+  // nichedb sources drop hosted-platform roots too (see nichedbSource).
+  const dropPlatformRoots = row.lead_source?.startsWith('nichedb-') ?? false;
+  if (!leadDomain(row.domain, { dropPlatformRoots })) return 'platform';
+  if (
+    row.lead_source === 'majestic-million' &&
+    row.lead_rank != null &&
+    Number(row.lead_rank) <= MAJESTIC_SKIP_TOP
+  )
+    return 'majestic_top_rank';
+  return null;
+}
+
+/**
+ * Retires imported companies today's rules would not import: marks them
+ * `excluded_at`/`excluded_reason` rather than deleting, so the domain stays
+ * taken and a re-import cannot bring them back. Never touches a company
+ * anyone has worked with: people at it, a signal about it, or a crawl of it.
+ * Idempotent and cheap (one read of the imported rows); the server runs it
+ * once per boot before the first import sweep.
+ */
+export async function retireExcludedImports(
+  db: Client,
+  at: Date = new Date(),
+): Promise<RetireResult> {
+  const rows = await queryAll<{
+    id: string;
+    domain: string;
+    lead_source: string | null;
+    lead_rank: number | null;
+  }>(
+    db,
+    `SELECT id, domain, lead_source, lead_rank FROM companies
+      WHERE lead_source IS NOT NULL AND excluded_at IS NULL AND domain IS NOT NULL`,
+  );
+  const byReason: Record<string, number> = {};
+  let retired = 0;
+  let kept = 0;
+  const stamp = at.toISOString();
+  for (const row of rows) {
+    const reason = exclusionReason(row);
+    if (!reason) continue;
+    const used = await queryOne<{ n: number }>(
+      db,
+      `SELECT
+          (SELECT COUNT(*) FROM people WHERE current_company_id = ?)
+        + (SELECT COUNT(*) FROM signals WHERE company_id = ?)
+        + (SELECT COUNT(*) FROM jobs WHERE kind = 'crawl_site'
+              AND (dedupe_key = ? OR dedupe_key LIKE ?)) AS n`,
+      [row.id, row.id, `crawl:${row.domain}`, `crawl:%:${row.domain}`],
+    );
+    if (Number(used?.n ?? 0) > 0) {
+      kept += 1;
+      continue;
+    }
+    await db.execute({
+      sql: `UPDATE companies SET excluded_at = ?, excluded_reason = ? WHERE id = ? AND excluded_at IS NULL`,
+      args: [stamp, reason, row.id],
+    });
+    retired += 1;
+    byReason[reason] = (byReason[reason] ?? 0) + 1;
+  }
+  return { checked: rows.length, retired, byReason, kept };
 }

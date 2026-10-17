@@ -126,7 +126,7 @@ const DIRECTORY_SQL = `
            NULL AS title, NULL AS company_name, NULL AS markdown, NULL AS published_url,
            NULL AS overrides_json, NULL AS home_url, NULL AS profile_url, c.updated_at
       FROM companies c
-     WHERE c.domain IS NOT NULL AND c.domain <> ''
+     WHERE c.domain IS NOT NULL AND c.domain <> '' AND c.excluded_at IS NULL
     UNION ALL
     SELECT 'person' AS kind, p.id, p.display_name AS name, NULL AS domain, NULL AS industry,
            NULL AS technologies, p.current_title AS title, co.name AS company_name,

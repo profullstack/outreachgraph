@@ -13,6 +13,7 @@ import { countryFromDomain, leadDomain, registrableDomain } from './domains';
 import {
   leadBaseStatus,
   pickImportedLeads,
+  retireExcludedImports,
   storeLeadCandidates,
   sweepLeadSources,
   updateLeadSource,
@@ -61,15 +62,37 @@ describe('leadDomain', () => {
     expect(leadDomain('')).toBeNull();
   });
 
-  test('a page on a platform is not the platform, but the platform root is a company', () => {
+  test('a page on a platform is not the platform; a small platform root is a company', () => {
     expect(leadDomain('https://friendsoflulu.wordpress.com/')).toBeNull();
     expect(leadDomain('https://someone.github.io')).toBeNull();
-    expect(leadDomain('https://github.com/acme/tool')).toBe('github.com');
-    expect(leadDomain('https://wordpress.com')).toBe('wordpress.com');
+    expect(leadDomain('https://transistor.fm')).toBe('transistor.fm');
+    expect(leadDomain('https://buzzsprout.com/')).toBe('buzzsprout.com');
     expect(leadDomain('https://anchor.fm/show', { dropPlatformRoots: true })).toBeNull();
     expect(
       leadDomain('https://dts.podtrac.com/redirect.mp3/x', { dropPlatformRoots: true }),
     ).toBeNull();
+  });
+
+  test('megacorps and big platforms are never leads, root or not', () => {
+    for (const d of [
+      'google.com',
+      'instagram.com',
+      'twitter.com',
+      'x.com',
+      'linkedin.com',
+      'apple.com',
+      'facebook.com',
+      'youtube.com',
+      'amazon.com',
+      'microsoft.com',
+      'wikipedia.org',
+      'github.com',
+      'cloudflare.com',
+      'wordpress.com',
+      'gmail.com',
+      'https://www.amazon.co.uk/dp/1',
+    ])
+      expect(leadDomain(d)).toBeNull();
   });
 
   test('country comes from a real ccTLD only', () => {
@@ -156,13 +179,15 @@ describe('wikidata source', () => {
 const MAJESTIC =
   [
     'GlobalRank,TldRank,Domain,TLD,RefSubNets,RefIPs,IDN_Domain,IDN_TLD,PrevGlobalRank,PrevTldRank,PrevRefSubNets,PrevRefIPs',
-    '1,1,google.com,com,1,1,google.com,com,1,1,1,1',
-    '2,2,googletagmanager.com,com,1,1,googletagmanager.com,com,2,2,1,1',
-    '3,3,acme.de,de,1,1,acme.de,de,3,3,1,1',
-    '4,4,sites.google.com,com,1,1,sites.google.com,com,4,4,1,1',
-    '5,5,widgets.io,io,1,1,widgets.io,io,5,5,1,1',
-    '6,6,shop.example.co.uk,uk,1,1,x,uk,6,6,1,1',
-    '7,7,zeta.com,com,1,1,zeta.com,com,7,7,1,1',
+    // Rank 1 is skipped as the top of the list; apple.com further down by name.
+    '1,1,widgets-top.com,com,1,1,widgets-top.com,com,1,1,1,1',
+    '1002,2,googletagmanager.com,com,1,1,googletagmanager.com,com,2,2,1,1',
+    '1003,3,acme.de,de,1,1,acme.de,de,3,3,1,1',
+    '1004,4,sites.google.com,com,1,1,sites.google.com,com,4,4,1,1',
+    '1005,5,widgets.io,io,1,1,widgets.io,io,5,5,1,1',
+    '1006,6,shop.example.co.uk,uk,1,1,x,uk,6,6,1,1',
+    '1007,7,apple.com,com,1,1,apple.com,com,7,7,1,1',
+    '1008,8,zeta.com,com,1,1,zeta.com,com,8,8,1,1',
   ].join('\n') + '\n';
 
 function rangedFetch(text: string, chunk = 17): typeof fetch {
@@ -189,13 +214,13 @@ describe('majestic source', () => {
     const source = majesticSource('https://majestic.test/m.csv');
     const doFetch = rangedFetch(MAJESTIC);
     const first = await source.read({ cursor: null, max: 2, fetch: doFetch });
-    expect(first.candidates.map((c) => c.domain)).toEqual(['google.com', 'acme.de']);
-    expect(first.candidates[1]).toMatchObject({ country: 'DE', rank: 3, ref: '3' });
+    expect(first.candidates.map((c) => c.domain)).toEqual(['acme.de', 'widgets.io']);
+    expect(first.candidates[0]).toMatchObject({ country: 'DE', rank: 1003, ref: '1003' });
     expect(first.done).toBe(false);
 
     const second = await source.read({ cursor: first.cursor, max: 10, fetch: doFetch });
-    // sites.google.com is a page on Google; shop.example.co.uk is not a registered domain.
-    expect(second.candidates.map((c) => c.domain)).toEqual(['widgets.io', 'zeta.com']);
+    // apple.com is a megacorp; shop.example.co.uk is not a registered domain.
+    expect(second.candidates.map((c) => c.domain)).toEqual(['zeta.com']);
     expect(second.done).toBe(true);
     expect(second.cursor).toBeNull();
   });
@@ -565,5 +590,66 @@ describe('pickImportedLeads', () => {
       'weak-many.com',
       'unaudited.com',
     ]);
+  });
+});
+
+describe('retireExcludedImports', () => {
+  test('retires platform and top-rank imports with a reason, never one anybody worked with', async () => {
+    seeded = await seedDatabase('lead-retire');
+    const db = seeded.db;
+    const stamp = '2026-10-17T12:00:00.000Z';
+    const add = (id: string, domain: string, source: string, rank: number | null) =>
+      db.execute({
+        sql: `INSERT INTO companies (id, name, domain, lead_source, lead_rank, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [id, domain, domain, source, rank, stamp, stamp],
+      });
+    await add('co_g', 'google.com', 'majestic-million', 1);
+    await add('co_top', 'nytimes-ish.com', 'majestic-million', 40);
+    await add('co_ok', 'acme-widgets.com', 'majestic-million', 2500);
+    await add('co_wiki', 'apple.com', 'wikidata', null);
+    await add('co_used', 'instagram.com', 'majestic-million', 2);
+    await add('co_crawled', 'linkedin.com', 'majestic-million', 4);
+    await add('co_pod', 'anchor.fm', 'nichedb-podcasts', null);
+    // Somebody works at instagram.com; linkedin.com was crawled for a campaign.
+    await db.execute({
+      sql: `INSERT INTO people (id, display_name, current_company_id, identity_confidence, status,
+              outreach_eligible, believed_minor, created_at, updated_at)
+            VALUES ('per_ig', 'Ig', 'co_used', 0.9, 'active', 1, 0, ?, ?)`,
+      args: [stamp, stamp],
+    });
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'crawl_site',
+      payload: { url: 'https://linkedin.com' },
+      dedupeKey: `crawl:${SEED.campaignId}:linkedin.com`,
+    });
+
+    const result = await retireExcludedImports(db, new Date(stamp));
+    expect(result).toMatchObject({
+      checked: 7,
+      retired: 4,
+      kept: 2,
+      byReason: { platform: 3, majestic_top_rank: 1 },
+    });
+    const rows = await queryAll<{ id: string; excluded_reason: string | null }>(
+      db,
+      `SELECT id, excluded_reason FROM companies WHERE lead_source IS NOT NULL ORDER BY id`,
+    );
+    expect(Object.fromEntries(rows.map((r) => [r.id, r.excluded_reason]))).toEqual({
+      co_crawled: null,
+      co_g: 'platform',
+      co_ok: null,
+      co_pod: 'platform',
+      co_top: 'majestic_top_rank',
+      co_used: null,
+      co_wiki: 'platform',
+    });
+    // Idempotent, and excluded rows leave the lead base.
+    expect((await retireExcludedImports(db)).retired).toBe(0);
+    const picked = await pickImportedLeads(db, SEED.workspaceId, undefined, { limit: 10 });
+    expect(picked.map((l) => l.domain)).toEqual(['linkedin.com', 'acme-widgets.com']);
+    const status = await leadBaseStatus(db);
+    expect(status.totals.imported).toBe(3);
   });
 });

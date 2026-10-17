@@ -30,6 +30,7 @@ import {
 } from '@outreachgraph/providers';
 import { now, queryAll, queryOne, type Client, type InValue } from '@outreachgraph/db';
 import { newId } from '@outreachgraph/domain';
+import { MEGA_PLATFORMS } from './lead-sources/domains';
 import {
   claimNext,
   completeJob,
@@ -52,37 +53,6 @@ const ERROR_BACKOFF_MS = 3_600_000;
 /** A hooked job skips a company audited this recently, unless forced. */
 const FRESH_MS = 6 * 3_600_000;
 
-/**
- * Domains that are someone else's platform, not the lead's own site. Auditing
- * gmail.com's homepage says nothing about the person behind a gmail address.
- */
-const PLATFORM_DOMAINS = new Set([
-  'gmail.com',
-  'googlemail.com',
-  'yahoo.com',
-  'hotmail.com',
-  'outlook.com',
-  'live.com',
-  'icloud.com',
-  'me.com',
-  'aol.com',
-  'proton.me',
-  'protonmail.com',
-  'substack.com',
-  'medium.com',
-  'github.com',
-  'gitlab.com',
-  'linkedin.com',
-  'x.com',
-  'twitter.com',
-  'facebook.com',
-  'instagram.com',
-  'youtube.com',
-  'notion.site',
-  'wordpress.com',
-  'blogspot.com',
-]);
-
 /** The host an audit is keyed on: lower case, no `www.`, no port, or undefined when it is not a site. */
 export function auditDomain(raw: string | null | undefined): string | undefined {
   if (!raw) return undefined;
@@ -94,7 +64,7 @@ export function auditDomain(raw: string | null | undefined): string | undefined 
     return undefined;
   }
   host = host.replace(/^www\./, '').replace(/\.$/, '');
-  if (!host.includes('.') || PLATFORM_DOMAINS.has(host)) return undefined;
+  if (!host.includes('.') || MEGA_PLATFORMS.has(host)) return undefined;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return undefined;
   return host;
 }
@@ -491,7 +461,7 @@ export async function staleSiteAuditTargets(
       `SELECT c.id, c.domain
          FROM companies c
          LEFT JOIN site_audits a ON a.company_id = c.id
-        WHERE c.domain IS NOT NULL AND c.domain <> ''
+        WHERE c.domain IS NOT NULL AND c.domain <> '' AND c.excluded_at IS NULL
           AND ${tier.where}
           AND ${notQueued}
         ORDER BY ${tier.order}
@@ -640,7 +610,8 @@ export async function siteAuditStats(db: Client, at: Date = new Date()): Promise
   const row = await queryOne<Record<string, number | null>>(
     db,
     `SELECT
-        (SELECT COUNT(*) FROM companies c WHERE c.domain IS NOT NULL AND c.domain <> '') AS companies,
+        (SELECT COUNT(*) FROM companies c WHERE c.domain IS NOT NULL AND c.domain <> ''
+            AND c.excluded_at IS NULL) AS companies,
         (SELECT COUNT(*) FROM companies c WHERE c.domain IS NOT NULL AND c.domain <> ''
             AND EXISTS (SELECT 1 FROM people p WHERE p.current_company_id = c.id)) AS lead_companies,
         (SELECT COUNT(*) FROM site_audits a WHERE a.status IN ('ok', 'failed')
