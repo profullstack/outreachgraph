@@ -1,4 +1,4 @@
--- 0069_offering_demo_url.sql: a short demo video per product.
+-- 0072_offering_demo_url.sql: a short demo video per product.
 --
 -- A cold email that describes an automation in prose gets the 1-2% reply rate
 -- everyone gets. One that says "here is two minutes of it running" lets the
