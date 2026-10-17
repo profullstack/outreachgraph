@@ -317,3 +317,46 @@ describe('DELETE /products/:id', () => {
     expect(response.status).toBe(404);
   });
 });
+
+describe('PUT /products/:id/demo', () => {
+  async function put(app: Hono<AppEnv>, id: string, demoUrl: unknown): Promise<Response> {
+    return app.request(`/api/v1/products/${id}/demo`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ demoUrl }),
+    });
+  }
+
+  async function demoOf(app: Hono<AppEnv>): Promise<string | null | undefined> {
+    const list = (await (await app.request('/api/v1/products')).json()) as {
+      products: { offeringId: string; demoUrl: string | null }[];
+    };
+    return list.products.find((p) => p.offeringId === SEED.offeringId)?.demoUrl;
+  }
+
+  test('sets the link, lists it, survives a profile save, and clears', async () => {
+    const { app } = await harness('products-demo');
+
+    const set = await put(app, SEED.offeringId, 'https://www.loom.com/share/abc');
+    expect(set.status).toBe(200);
+    expect(await demoOf(app)).toBe('https://www.loom.com/share/abc');
+
+    // The profile save rewrites every column it is given; the demo is not one.
+    await save(app, { ...profile('ExamplePay'), offeringId: SEED.offeringId });
+    expect(await demoOf(app)).toBe('https://www.loom.com/share/abc');
+
+    expect((await put(app, SEED.offeringId, null)).status).toBe(200);
+    expect(await demoOf(app)).toBeNull();
+  });
+
+  test('refuses anything but an https link', async () => {
+    const { app } = await harness('products-demo-http');
+    expect((await put(app, SEED.offeringId, 'http://example.com/v')).status).toBe(400);
+    expect((await put(app, SEED.offeringId, 'not a url')).status).toBe(400);
+  });
+
+  test('404s for a product this workspace does not own', async () => {
+    const { app } = await harness('products-demo-unknown');
+    expect((await put(app, 'off_nope', 'https://www.loom.com/share/abc')).status).toBe(404);
+  });
+});

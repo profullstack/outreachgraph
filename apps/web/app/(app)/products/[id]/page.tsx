@@ -5,6 +5,7 @@ import { AddLeads } from '../../../../components/add-leads';
 import { CampaignControls } from '../../../../components/campaign-controls';
 import { CampaignSource } from '../../../../components/campaign-source';
 import { LeadEnrichment } from '../../../../components/lead-enrichment';
+import { ProductDemo } from '../../../../components/product-demo';
 import { ScreenedLeads } from '../../../../components/screened-leads';
 import {
   ApiUnavailableError,
@@ -81,6 +82,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
             <p className="text-ink-muted text-sm">No campaign yet.</p>
           )}
         </div>
+        <ProductDemo offeringId={product.offeringId} demoUrl={product.demoUrl} />
         {campaign && campaign.status !== 'archived' ? (
           <CampaignSource campaignId={campaign.id} />
         ) : null}

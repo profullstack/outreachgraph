@@ -182,3 +182,85 @@ describe('cross-prospect duplicate suppression (PRD §18)', () => {
     expect(second.reason).toBe('failed_checks');
   });
 });
+
+describe('the product demo video', () => {
+  const DEMO = 'https://www.loom.com/share/examplepay-demo';
+
+  async function emailFixture(label: string): Promise<SeededDatabase> {
+    const seeded = await fixture(label);
+    await seeded.db.batch([
+      { sql: 'UPDATE offerings SET demo_url = ? WHERE id = ?', args: [DEMO, SEED.offeringId] },
+      {
+        sql: `UPDATE recommendations SET network = 'email', action = 'send_email' WHERE id = ?`,
+        args: [SEED.recommendationId],
+      },
+    ]);
+    return seeded;
+  }
+
+  async function bodyOf(db: SeededDatabase['db'], draftId: string): Promise<string> {
+    const row = await db.execute({ sql: 'SELECT body FROM drafts WHERE id = ?', args: [draftId] });
+    return String(row.rows[0]?.body);
+  }
+
+  test('a first-touch email carries the link verbatim under the body', async () => {
+    const { db } = await emailFixture('demo-first');
+    const result = await draftForRecommendation(db, new StubModel(GOOD), SEED.recommendationId);
+
+    expect(result.ok).toBe(true);
+    expect(await bodyOf(db, result.draftId!)).toBe(`${GOOD}\n\nShort demo: ${DEMO}`);
+  });
+
+  test('the same person never gets the link twice', async () => {
+    const { db } = await emailFixture('demo-once');
+    await draftForRecommendation(db, new StubModel(GOOD), SEED.recommendationId);
+
+    await db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action,
+            network, priority, reason, trigger_signal_id, policy_status, policy_version,
+            expected_goal, status, created_at)
+            SELECT 'rec_followup', workspace_id, campaign_id, person_id, 'send_email', 'email', 50,
+                   'follow-up', trigger_signal_id, policy_status, policy_version, expected_goal,
+                   'pending', created_at
+              FROM recommendations WHERE id = ?`,
+      args: [SEED.recommendationId],
+    });
+    const followUp = await draftForRecommendation(
+      db,
+      new StubModel('Settlement delays on cross-border payouts are still worth a look.'),
+      'rec_followup',
+    );
+
+    expect(followUp.ok).toBe(true);
+    expect(await bodyOf(db, followUp.draftId!)).not.toContain(DEMO);
+  });
+
+  test('a public reply never carries it', async () => {
+    const { db } = await fixture('demo-public');
+    await db.execute({
+      sql: 'UPDATE offerings SET demo_url = ? WHERE id = ?',
+      args: [DEMO, SEED.offeringId],
+    });
+    const result = await draftForRecommendation(db, new StubModel(GOOD), SEED.recommendationId);
+
+    expect(await bodyOf(db, result.draftId!)).toBe(GOOD);
+  });
+
+  test('a no-pitch voice never carries it', async () => {
+    const { db } = await emailFixture('demo-nopitch');
+    await db.batch([
+      {
+        sql: `INSERT INTO voice_profiles (id, workspace_id, name, style, created_at, updated_at)
+              VALUES ('voc_quiet', ?, 'quiet', 'helpful_no_pitch', '2026-01-01', '2026-01-01')`,
+        args: [SEED.workspaceId],
+      },
+      {
+        sql: `UPDATE campaigns SET voice_profile_id = 'voc_quiet' WHERE id = ?`,
+        args: [SEED.campaignId],
+      },
+    ]);
+    const result = await draftForRecommendation(db, new StubModel(GOOD), SEED.recommendationId);
+
+    expect(await bodyOf(db, result.draftId!)).toBe(GOOD);
+  });
+});

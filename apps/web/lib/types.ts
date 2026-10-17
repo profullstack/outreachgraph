@@ -92,6 +92,8 @@ export interface ProductSummaryView {
   name: string;
   category: string;
   url: string | null;
+  /** A short demo video that first-touch emails link instead of describing. */
+  demoUrl: string | null;
   campaignId: string | null;
   campaignStatus: string | null;
   autopilot: boolean;

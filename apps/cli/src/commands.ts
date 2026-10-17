@@ -1674,6 +1674,30 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
+    name: 'demo',
+    usage: 'og demo <productId> [<https url> | --clear]',
+    summary: 'Show a product instead of describing it: a demo video linked under first emails.',
+    async run({ client, args, flags }) {
+      const [id, url] = args;
+      if (!id) throw new Error('a product id is required: og demo <productId> <url>');
+
+      if (!url && flags.clear !== true) {
+        const product = rows(await client.get('/products'), 'products').find(
+          (p) => text(p, 'offeringId') === id,
+        );
+        if (!product) throw new Error(`no product ${id}`);
+        return product.demoUrl ? text(product, 'demoUrl') : 'No demo video set.';
+      }
+
+      const result = (await client.put(`/products/${encodeURIComponent(id)}/demo`, {
+        demoUrl: flags.clear === true ? null : url,
+      })) as Record<string, unknown>;
+      return result.demoUrl
+        ? `First emails for ${id} now link ${text(result, 'demoUrl')}`
+        : `Demo video removed from ${id}.`;
+    },
+  },
+  {
     name: 'batch',
     usage: 'og batch <batchId>',
     summary: 'Progress of a bulk submission, one line per item.',

@@ -647,6 +647,27 @@ export const TOOLS: readonly ToolDefinition[] = [
       client.post(`/buyer-leads/${encodeURIComponent(require(args, 'id'))}/draft`, {}),
   },
   {
+    name: 'set_product_demo',
+    title: 'Set a product demo video',
+    description:
+      'Sets (or clears, with demoUrl null) the https link to a short demo video for one product. ' +
+      'First-touch emails carry it verbatim under the body, once per person, and buyer-lead replies ' +
+      'may cite it — showing the product beats describing it in a cold message.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        offeringId: { type: 'string', description: 'The product id from GET /products.' },
+        demoUrl: { type: ['string', 'null'] },
+      },
+      required: ['offeringId', 'demoUrl'],
+    },
+    run: (client, args) =>
+      client.put(`/products/${encodeURIComponent(require(args, 'offeringId'))}/demo`, {
+        demoUrl: args.demoUrl ?? null,
+      }),
+  },
+  {
     name: 'update_buyer_lead',
     title: 'Mark a buyer lead replied or dismissed',
     description:

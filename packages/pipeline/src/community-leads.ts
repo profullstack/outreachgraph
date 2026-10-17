@@ -976,7 +976,15 @@ export async function draftCommunityLeadReply(
   if (!lead) return undefined;
   const monitor = await getLeadMonitor(deps.db, workspaceId, lead.monitorId);
   if (!monitor) return undefined;
-  const draft = await draftLeadReply(deps.model, brandOf(monitor), {
+  const demo = monitor.offeringId
+    ? await queryOne<{ demo_url: string | null }>(
+        deps.db,
+        'SELECT demo_url FROM offerings WHERE id = ? AND workspace_id = ?',
+        [monitor.offeringId, workspaceId],
+      )
+    : undefined;
+  const brand = { ...brandOf(monitor), demoUrl: demo?.demo_url?.trim() || undefined };
+  const draft = await draftLeadReply(deps.model, brand, {
     source: lead.source,
     container: lead.container,
     title: lead.title,

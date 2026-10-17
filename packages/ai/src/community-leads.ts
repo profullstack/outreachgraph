@@ -22,6 +22,8 @@ export interface LeadBrand {
   readonly name: string;
   readonly url?: string | undefined;
   readonly description?: string | undefined;
+  /** A short demo video, the one link a reply may carry besides the URL. */
+  readonly demoUrl?: string | undefined;
 }
 
 export interface LeadJudgeInput {
@@ -43,6 +45,7 @@ function brandBlock(brand: LeadBrand): string {
     `Brand: ${brand.name}`,
     brand.url ? `URL: ${brand.url}` : '',
     brand.description ? `What it does: ${brand.description.slice(0, 800)}` : '',
+    brand.demoUrl ? `Demo video: ${brand.demoUrl}` : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -141,7 +144,7 @@ Rules:
 - Answer the person's actual question or problem first, with something genuinely useful even if they never use the product.
 - Mention the product at most once, only where it fits, and disclose the affiliation plainly ("I work on X" / "I built X").
 - Match the community's tone: plain, short, no marketing language, no emojis, no hashtags, no exclamation marks.
-- 40-120 words. No greeting line, no sign-off, no links other than the product URL (at most once).
+- 40-120 words. No greeting line, no sign-off, and at most one link: the demo video when there is one (showing beats describing), otherwise the product URL.
 - Never claim features you were not told about. Never invent numbers or customers.
 Return only the reply text.`;
 
