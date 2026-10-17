@@ -206,10 +206,13 @@ if (process.env.RUN_MIGRATIONS !== 'false') {
  * built at all — the cheap chain stays cheap rather than quietly falling
  * through to an expensive one.
  *
- * Unset preserves the original order, so nothing changes for a deployment that
- * has not thought about it.
+ * Unset, Gemini (Flash-Lite) leads (2026-10-17): the cheapest capable model in
+ * the chain and the only key with money behind it that day (OpenAI at zero
+ * credits, Anthropic out of balance), so every crawl, research read and draft
+ * was paying a failed round trip to OpenAI first. OpenAI and Anthropic stay as
+ * fallbacks. `GEMINI_MODEL` picks the Gemini model (default Flash-Lite, below).
  */
-const DEFAULT_CHAIN_ORDER = ['anthropic', 'openai', 'gemini'] as const;
+const DEFAULT_CHAIN_ORDER = ['gemini', 'openai', 'anthropic'] as const;
 
 const builders: Record<string, () => FallbackEntry | undefined> = {
   anthropic: () =>
@@ -234,9 +237,11 @@ const builders: Record<string, () => FallbackEntry | undefined> = {
     process.env.GEMINI_API_KEY
       ? {
           name: 'gemini',
-          model: new GeminiModel({
-            ...(process.env.GEMINI_MODEL ? { model: process.env.GEMINI_MODEL } : {}),
-          }),
+          // Flash-Lite unless GEMINI_MODEL says otherwise. Measured in prod
+          // 2026-10-17 on five real team pages: the same people extracted as
+          // Flash, but ~66 output tokens a call against Flash's ~1,700 (Flash
+          // thinks by default, billed as output) and ~0.7 s against ~12 s.
+          model: new GeminiModel({ model: process.env.GEMINI_MODEL ?? 'gemini-flash-lite-latest' }),
         }
       : undefined,
 };
@@ -384,9 +389,12 @@ let leadEnrichmentRunning = false;
  * bridge gateway with `Host: seo.rank` (SEORANK_URL + SEORANK_HOST), since
  * seo.rank is a Moshpit name dev2 cannot resolve.
  *
- * SEO_AUDITS_PER_ROUND every SEO_AUDIT_ROUND_MS (default 10 a minute, about
- * 14,400 a day) stays far inside the key's 50,000/day; the concurrency stays
- * under seo.rank's keyed gate of 4 so a hooked job never waits on the sweep.
+ * SEO_AUDITS_PER_ROUND every SEO_AUDIT_ROUND_MS (default 30 a minute, at most
+ * 43,200 a day) audits every company, imports included (~14k a day), inside
+ * the key's 50,000/day. Measured 2026-10-17: seo.rank does ~75-100 keyed
+ * audits a minute at concurrency 4 (p50 ~2 s, p90 ~8 s, ~20 ms CPU and a
+ * ~290 KB page each), so 30/min is about a third of its ceiling. Concurrency
+ * 4 stays under seo.rank's keyed gate (6).
  */
 const seoAuditor = process.env.SEORANK_API_KEY
   ? new SeoRankClient({
@@ -395,9 +403,9 @@ const seoAuditor = process.env.SEORANK_API_KEY
       ...(process.env.SEORANK_HOST ? { host: process.env.SEORANK_HOST } : {}),
     })
   : undefined;
-const SEO_AUDITS_PER_ROUND = Number(process.env.SEO_AUDITS_PER_ROUND ?? 10);
+const SEO_AUDITS_PER_ROUND = Number(process.env.SEO_AUDITS_PER_ROUND ?? 30);
 const SEO_AUDIT_ROUND_MS = Number(process.env.SEO_AUDIT_ROUND_MS ?? 60_000);
-const SEO_AUDIT_CONCURRENCY = Number(process.env.SEO_AUDIT_CONCURRENCY ?? 3);
+const SEO_AUDIT_CONCURRENCY = Number(process.env.SEO_AUDIT_CONCURRENCY ?? 4);
 if (!seoAuditor) console.log('no SEORANK_API_KEY: site audits are queued but not run');
 
 /**
@@ -1825,6 +1833,7 @@ let seoInFlight: Promise<void> = Promise.resolve();
 async function seoLoop(): Promise<void> {
   if (!seoAuditor) return;
   while (running) {
+    const startedAt = Date.now();
     seoInFlight = runSiteAuditRound(db, seoAuditor, {
       budget: SEO_AUDITS_PER_ROUND,
       concurrency: SEO_AUDIT_CONCURRENCY,
@@ -1841,7 +1850,9 @@ async function seoLoop(): Promise<void> {
       .catch((error: unknown) => console.error('site audit round failed', error));
     await seoInFlight;
     if (!running) break;
-    await Bun.sleep(SEO_AUDIT_ROUND_MS);
+    // Paced by the start of each round, so a slow round does not lower the
+    // rate below SEO_AUDITS_PER_ROUND a round.
+    await Bun.sleep(Math.max(1_000, SEO_AUDIT_ROUND_MS - (Date.now() - startedAt)));
   }
 }
 void seoLoop();

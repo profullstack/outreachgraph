@@ -1,11 +1,11 @@
 # Site audits
 
-Every lead's company homepage is audited by [seo.rank](https://github.com/moshcoder/seo.rank) (score 0-100, grade, the fixes that matter most) and the latest result is kept per company in `site_audits`.
+Every company's homepage, bulk imports included, is audited by [seo.rank](https://github.com/moshcoder/seo.rank) (score 0-100, grade, the fixes that matter most) and the latest result is kept per company in `site_audits`.
 
 ## When an audit runs
 
 - **On intake.** Every path that records a new company queues an `seo_audit` job (dedupe key `seo_audit:<host>`): crawls, the URL/keyword pipeline, contact imports (one batch per chunk), job posts and list sources. Platform domains (gmail.com, substack.com, github.com, ...) are skipped.
-- **The sweep.** Each round spends what the jobs left of its budget on the stalest companies: never audited first (newest company first, so a path that forgot to hook is still covered at once), then the oldest audit that is due.
+- **The sweep.** Each round spends what the jobs left of its budget in three tiers: lead companies (someone works there; never audited newest first, then the oldest due audit), then every other company never audited (the bulk imports, ~14k a day, newest first), then their due re-audits. Imports get no job row; the sweep reaches them within a round or two.
 - **Re-audit.** A good audit is due again after 30 days; a site that refused (unreachable, not HTML, private address) after 7 days.
 - **By hand.** `POST /api/v1/people/:id/site-audit`, `og site-audit refresh <personId>`, MCP `get_site_audit` with `refresh`, or "audit again" on the prospect page.
 
@@ -40,6 +40,14 @@ A transient error keeps the last good result on screen.
 | `SEO_AUDITS_PER_ROUND`  | 10                                 | audits per round                                                                          |
 | `SEO_AUDIT_ROUND_MS`    | 60000                              | so about 14,400 a day, inside the key's 50,000/day                                        |
 | `SEO_AUDIT_CONCURRENCY` | 3                                  | under seo.rank's keyed gate of 4                                                          |
+
+## Rate
+
+Measured on dev2 2026-10-17: seo.rank serves ~75-100 keyed audits a minute at concurrency 4 (p50 ~2 s, p90 ~8 s), ~20 ms of CPU and a ~290 KB page per audit (so ~12-20 GB a day inbound at full rate). 30 a minute is about a third of that ceiling, keeps up with ~14k imports a day and drains a backlog at ~29k a day on top. At 1M companies the 30-day re-audit alone would need ~33k a day: revisit then.
+
+## Using the score: picking imported companies
+
+`pickImportedLeads` (`POST /campaigns/:id/discover/leads`, `og sources pick`, MCP `pick_imported_leads`) chooses which imported companies get the paid people-finding crawl. Default `sort=weak_seo`: reachable homepages scoring under 70 first, most issues (warnings plus failures, `site_audits.issues`) then lowest score first; then companies not audited yet; then the rest by importer rank. `sort=rank` keeps the importer's order. `maxScore=N` keeps only audited sites at or under N. A site seo.rank could not read (`failed`/`dead`) is never picked. Preview without queuing: `GET /api/v1/lead-sources/candidates`, `og sources candidates`, MCP `preview_imported_leads`, and the "Next picks" table on `/sources`.
 
 ## Company refresh
 

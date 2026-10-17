@@ -28,7 +28,7 @@ import {
   type SeoRankAuditor,
   type SeoRankFix,
 } from '@outreachgraph/providers';
-import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { now, queryAll, queryOne, type Client, type InValue } from '@outreachgraph/db';
 import { newId } from '@outreachgraph/domain';
 import {
   claimNext,
@@ -272,8 +272,8 @@ async function upsert(
   await db.execute({
     sql: `INSERT INTO site_audits (company_id, url, final_url, status, score, grade, http_status,
             summary_json, fixes_json, error, attempts, checked_at, attempted_at, next_audit_at,
-            created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at, issues)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (company_id) DO UPDATE SET
             url = excluded.url, status = excluded.status, error = excluded.error,
             attempts = excluded.attempts, attempted_at = excluded.attempted_at,
@@ -283,7 +283,8 @@ async function upsert(
                 ? ''
                 : `, final_url = excluded.final_url, score = excluded.score, grade = excluded.grade,
                    http_status = excluded.http_status, summary_json = excluded.summary_json,
-                   fixes_json = excluded.fixes_json, checked_at = excluded.checked_at`
+                   fixes_json = excluded.fixes_json, checked_at = excluded.checked_at,
+                   issues = excluded.issues`
             }`,
     args: [
       companyId,
@@ -302,8 +303,16 @@ async function upsert(
       fields.nextAuditAt,
       stamp,
       stamp,
+      issueCount(fields.summary),
     ],
   });
+}
+
+/** Warnings plus failures: how much there is to fix, for ordering picks. */
+function issueCount(summary: unknown): number | null {
+  if (!summary || typeof summary !== 'object') return null;
+  const s = summary as { warn?: unknown; fail?: unknown };
+  return Number(s.warn ?? 0) + Number(s.fail ?? 0);
 }
 
 export type AuditOutcome = 'ok' | 'failed' | 'skipped';
@@ -425,11 +434,19 @@ export async function runSiteAuditJob(
 // -------------------------------------------------------------------- sweep
 
 /**
- * The companies most in need of an audit, best first: never audited (newest
- * company first), then the oldest audit that is due. Only lead companies, the
- * ones somebody works at: bulk-imported directory rows (lead_source, up to
- * 15,000 a day) are not leads until a crawl finds people there, and are then
- * picked up here. Platform domains and companies with an audit job already
+ * The companies most in need of an audit, best first, in three tiers:
+ *
+ *   1. Lead companies (somebody works there): never audited (newest first),
+ *      then the oldest audit that is due.
+ *   2. Every other company never audited, newest first: the bulk-imported
+ *      directory (`lead_source`, ~14k a day). Audits are free and the score
+ *      decides which imported companies a campaign pays to crawl
+ *      (`pickImportedLeads`), so the whole table is audited.
+ *   3. Those companies' due re-audits, oldest first.
+ *
+ * Imports get no job row (14k a day of them would only duplicate this
+ * ordering); the sweep reaches them within a round or two at the default
+ * rate. Platform domains and companies with an audit job already
  * outstanding are left out.
  */
 export async function staleSiteAuditTargets(
@@ -438,32 +455,56 @@ export async function staleSiteAuditTargets(
   at: Date = new Date(),
 ): Promise<SiteAuditTarget[]> {
   if (limit <= 0) return [];
-  // Over-fetch a little: platform domains are filtered here, not in SQL.
-  const rows = await queryAll<{ id: string; domain: string }>(
-    db,
-    `SELECT c.id, c.domain
-       FROM companies c
-       LEFT JOIN site_audits a ON a.company_id = c.id
-      WHERE c.domain IS NOT NULL AND c.domain <> ''
-        AND EXISTS (SELECT 1 FROM people p WHERE p.current_company_id = c.id)
-        AND (a.company_id IS NULL OR a.next_audit_at <= ?)
-        AND NOT EXISTS (
+  const stamp = at.toISOString();
+  const notQueued = `NOT EXISTS (
               SELECT 1 FROM jobs j
                WHERE j.kind = 'seo_audit' AND j.status IN ('pending', 'running')
-                 AND j.dedupe_key = 'seo_audit:' || lower(c.domain))
-      ORDER BY CASE WHEN a.company_id IS NULL THEN 0 ELSE 1 END,
-               COALESCE(a.checked_at, ''), c.created_at DESC
-      LIMIT ?`,
-    [at.toISOString(), limit + 20],
-  );
+                 AND j.dedupe_key = 'seo_audit:' || lower(c.domain))`;
+  const hasPeople = `EXISTS (SELECT 1 FROM people p WHERE p.current_company_id = c.id)`;
+  const tiers: { where: string; order: string; args: InValue[] }[] = [
+    {
+      where: `${hasPeople} AND (a.company_id IS NULL OR a.next_audit_at <= ?)`,
+      order: `CASE WHEN a.company_id IS NULL THEN 0 ELSE 1 END, COALESCE(a.checked_at, ''),
+               c.created_at DESC`,
+      args: [stamp],
+    },
+    {
+      where: `a.company_id IS NULL AND NOT ${hasPeople}`,
+      order: 'c.created_at DESC',
+      args: [],
+    },
+    {
+      where: `a.next_audit_at <= ? AND NOT ${hasPeople}`,
+      order: `COALESCE(a.checked_at, ''), a.next_audit_at`,
+      args: [stamp],
+    },
+  ];
+
   const out: SiteAuditTarget[] = [];
   const seen = new Set<string>();
-  for (const row of rows) {
-    const domain = auditDomain(row.domain);
-    if (!domain || seen.has(domain)) continue;
-    seen.add(domain);
-    out.push({ companyId: String(row.id), domain });
-    if (out.length >= limit) break;
+  for (const tier of tiers) {
+    const want = limit - out.length;
+    if (want <= 0) break;
+    // Over-fetch a little: platform domains are filtered here, not in SQL.
+    const rows = await queryAll<{ id: string; domain: string }>(
+      db,
+      `SELECT c.id, c.domain
+         FROM companies c
+         LEFT JOIN site_audits a ON a.company_id = c.id
+        WHERE c.domain IS NOT NULL AND c.domain <> ''
+          AND ${tier.where}
+          AND ${notQueued}
+        ORDER BY ${tier.order}
+        LIMIT ?`,
+      [...tier.args, want + 20],
+    );
+    for (const row of rows) {
+      const domain = auditDomain(row.domain);
+      if (!domain || seen.has(domain)) continue;
+      seen.add(domain);
+      out.push({ companyId: String(row.id), domain });
+      if (out.length >= limit) break;
+    }
   }
   return out;
 }
@@ -576,8 +617,14 @@ export async function runSiteAuditRound(
 // -------------------------------------------------------------------- stats
 
 export interface SiteAuditStats {
-  /** Lead companies: a domain and at least one person. */
+  /** Every company with a domain, imported ones included. */
   readonly companies: number;
+  /** Of those, lead companies: at least one person works there. */
+  readonly leadCompanies: number;
+  /** Audited lead companies. */
+  readonly leadAudited: number;
+  /** Reachable and scoring under 70: the first picks for a paid crawl. */
+  readonly weak: number;
   readonly audited: number;
   readonly failed: number;
   readonly erroring: number;
@@ -593,8 +640,12 @@ export async function siteAuditStats(db: Client, at: Date = new Date()): Promise
   const row = await queryOne<Record<string, number | null>>(
     db,
     `SELECT
+        (SELECT COUNT(*) FROM companies c WHERE c.domain IS NOT NULL AND c.domain <> '') AS companies,
         (SELECT COUNT(*) FROM companies c WHERE c.domain IS NOT NULL AND c.domain <> ''
-            AND EXISTS (SELECT 1 FROM people p WHERE p.current_company_id = c.id)) AS companies,
+            AND EXISTS (SELECT 1 FROM people p WHERE p.current_company_id = c.id)) AS lead_companies,
+        (SELECT COUNT(*) FROM site_audits a WHERE a.status IN ('ok', 'failed')
+            AND EXISTS (SELECT 1 FROM people p WHERE p.current_company_id = a.company_id)) AS lead_audited,
+        (SELECT COUNT(*) FROM site_audits WHERE status = 'ok' AND score < 70) AS weak,
         (SELECT COUNT(*) FROM site_audits WHERE status = 'ok') AS audited,
         (SELECT COUNT(*) FROM site_audits WHERE status = 'failed') AS failed,
         (SELECT COUNT(*) FROM site_audits WHERE status = 'error') AS erroring,
@@ -608,6 +659,9 @@ export async function siteAuditStats(db: Client, at: Date = new Date()): Promise
   const total = n('audited') + n('failed') + n('erroring') + n('dead');
   return {
     companies: n('companies'),
+    leadCompanies: n('lead_companies'),
+    leadAudited: n('lead_audited'),
+    weak: n('weak'),
     audited: n('audited'),
     failed: n('failed'),
     erroring: n('erroring'),

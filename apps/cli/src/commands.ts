@@ -545,11 +545,35 @@ async function runSources({ client, args, flags }: CommandContext): Promise<stri
     return [head, ...lines].join('\n');
   }
 
+  // Weakest SEO first by default: `--sort rank` for the importer's rank,
+  // `--max-score 60` for audited sites at or under a score.
+  const seo = {
+    ...(flagString(flags, 'max-score') ? { maxScore: Number(flagString(flags, 'max-score')) } : {}),
+    ...(flagString(flags, 'sort') ? { sort: flagString(flags, 'sort') } : {}),
+  };
+  const leadLine = (l: Record<string, unknown>) =>
+    `  ${pad(text(l, 'domain'), 32)} ${pad(l.score == null ? 'not audited' : `${text(l, 'score')} ${text(l, 'grade')} ${text(l, 'issues')} issues`, 20)} ${pad(text(l, 'source'), 18)} ${text(l, 'name')}`;
+
+  if (verb === 'candidates' || verb === 'preview') {
+    const source = flagString(flags, 'source');
+    const query: Record<string, string> = {
+      limit: flagString(flags, 'limit') ?? '25',
+      ...(source ? { sources: source } : {}),
+      ...(flagString(flags, 'industry') ? { industry: flagString(flags, 'industry')! } : {}),
+      ...(flagString(flags, 'country') ? { country: flagString(flags, 'country')! } : {}),
+      ...(seo.maxScore !== undefined ? { maxScore: String(seo.maxScore) } : {}),
+      ...(seo.sort ? { sort: seo.sort } : {}),
+    };
+    const result = await client.get('/lead-sources/candidates', query);
+    const leads = rows(result, 'leads');
+    return leads.length ? leads.map(leadLine).join('\n') : 'No imported companies match.';
+  }
+
   if (verb === 'pick') {
     const campaign = target ?? flagString(flags, 'campaign');
     if (!campaign)
       throw new Error(
-        'og sources pick <campaignId> [--source wikidata] [--industry software] [--country DE] [--limit 25]',
+        'og sources pick <campaignId> [--source wikidata] [--industry software] [--country DE] [--max-score 70] [--sort weak_seo|rank] [--limit 25]',
       );
     const source = flagString(flags, 'source');
     const industry = flagString(flags, 'industry');
@@ -559,14 +583,13 @@ async function runSources({ client, args, flags }: CommandContext): Promise<stri
       ...(source ? { sources: source.split(',') } : {}),
       ...(industry ? { industry } : {}),
       ...(country ? { country } : {}),
+      ...seo,
       limit,
     })) as Record<string, unknown>;
     const leads = rows(result, 'leads');
     return [
       `Queued ${text(result, 'queued')} of ${text(result, 'picked')} imported companies to read.`,
-      ...leads.map(
-        (l) => `  ${pad(text(l, 'domain'), 32)} ${pad(text(l, 'source'), 18)} ${text(l, 'name')}`,
-      ),
+      ...leads.map(leadLine),
     ].join('\n');
   }
 
@@ -593,7 +616,7 @@ async function runSources({ client, args, flags }: CommandContext): Promise<stri
 }
 
 const SOURCES_USAGE =
-  'og sources [list] | pick <campaignId> [--source a,b] [--industry x] [--country DE] [--limit n] | pause|resume|run <sourceId> | cap <sourceId> <perDay>';
+  'og sources [list] | candidates|pick <campaignId> [--source a,b] [--industry x] [--country DE] [--max-score n] [--sort weak_seo|rank] [--limit n] | pause|resume|run <sourceId> | cap <sourceId> <perDay>';
 
 async function runIdeas({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target, ...rest] = args;

@@ -215,6 +215,7 @@ import {
   variantStats,
   leadBaseStatus,
   pickImportedLeads,
+  WEAK_SEO_SCORE,
   updateLeadSource,
   LEAD_IMPORT_DAILY_TOTAL,
 } from '@outreachgraph/pipeline';
@@ -1996,6 +1997,33 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
    * may change a source, because a cap is a cost decision for the whole
    * deployment, not for one customer.
    */
+  /**
+   * A preview of what a pick would choose, without queuing anything or
+   * naming a campaign: imported companies with no people yet, weakest SEO
+   * first by default (`sort=rank` for the importer's rank), `maxScore` to
+   * keep only audited sites at or under a score.
+   */
+  api.get('/lead-sources/candidates', async (c) => {
+    const q = c.req.query();
+    const sources = q.sources ?? q.source;
+    const limitIn = Number(q.limit);
+    const leads = await pickImportedLeads(c.get('db'), c.get('actor').workspaceId, undefined, {
+      ...(sources
+        ? {
+            sources: sources
+              .split(',')
+              .map((x) => x.trim())
+              .filter(Boolean),
+          }
+        : {}),
+      ...(q.industry ? { industry: q.industry } : {}),
+      ...(q.country ? { country: q.country } : {}),
+      ...pickSeoOptions({ maxScore: q.maxScore, sort: q.sort }),
+      limit: Number.isFinite(limitIn) && limitIn > 0 ? Math.min(200, Math.round(limitIn)) : 25,
+    });
+    return c.json({ leads, weakScore: WEAK_SEO_SCORE });
+  });
+
   api.get('/lead-sources', async (c) => {
     const status = await leadBaseStatus(c.get('db'), {
       dailyTotal: Number(process.env.LEAD_IMPORT_DAILY_TOTAL ?? LEAD_IMPORT_DAILY_TOTAL),
@@ -2042,6 +2070,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       ...(sources?.length ? { sources } : {}),
       ...(typeof raw.industry === 'string' ? { industry: raw.industry } : {}),
       ...(typeof raw.country === 'string' ? { country: raw.country } : {}),
+      ...pickSeoOptions(raw),
       limit,
     });
     let queued = 0;
@@ -2060,7 +2089,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         campaignId: campaign.id,
         picked: picked.length,
         queued,
-        leads: picked.map((l) => ({ domain: l.domain, name: l.name, source: l.source })),
+        leads: picked.map((l) => ({
+          domain: l.domain,
+          name: l.name,
+          source: l.source,
+          score: l.score,
+          grade: l.grade,
+          issues: l.issues,
+        })),
       },
       202,
     );
@@ -6867,3 +6903,19 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 export { POLICY_VERSION };
+
+/** `maxScore` and `sort` for an imported-lead pick, from a body or a query string. */
+function pickSeoOptions(raw: Record<string, unknown>): {
+  maxScore?: number;
+  sort?: 'weak_seo' | 'rank';
+} {
+  const maxScore =
+    raw.maxScore === undefined || raw.maxScore === '' ? Number.NaN : Number(raw.maxScore);
+  if (raw.sort !== undefined && raw.sort !== 'weak_seo' && raw.sort !== 'rank') {
+    throw ApiError.badRequest('sort must be weak_seo or rank');
+  }
+  return {
+    ...(Number.isFinite(maxScore) ? { maxScore: Math.max(0, Math.min(100, maxScore)) } : {}),
+    ...(raw.sort ? { sort: raw.sort as 'weak_seo' | 'rank' } : {}),
+  };
+}
