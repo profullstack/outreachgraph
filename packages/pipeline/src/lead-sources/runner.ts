@@ -518,26 +518,37 @@ export async function pickImportedLeads(
                     WHEN sa.status IS NULL THEN 1 ELSE 2 END,
                COALESCE(sa.issues, -1) DESC, COALESCE(sa.score, 101), ${rankOrder}`;
   const limit = Math.max(1, Math.min(500, Math.floor(filter.limit)));
+  // Over-fetch: rows today's rules would not import are dropped below. Most
+  // are retired (`excluded_at`), but one a campaign already crawled keeps its
+  // row untouched, and must still not be picked to be paid for again.
+  const fetchLimit = Math.min(1000, limit * 2 + 20);
   const rows = await queryAll<{
     id: string;
     domain: string;
     name: string;
     lead_source: string;
+    lead_rank: number | null;
     score: number | null;
     grade: string | null;
     issues: number | null;
   }>(
     db,
-    `SELECT co.id, co.domain, co.name, co.lead_source, sa.score, sa.grade, sa.issues
+    `SELECT co.id, co.domain, co.name, co.lead_source, co.lead_rank, sa.score, sa.grade, sa.issues
        FROM companies co
        LEFT JOIN site_audits sa ON sa.company_id = co.id
       WHERE ${where.join(' AND ')}
         AND NOT EXISTS (SELECT 1 FROM people p WHERE p.current_company_id = co.id)
       ORDER BY ${order}
-      LIMIT ${limit}`,
+      LIMIT ${fetchLimit}`,
     args,
   );
-  return rows.map((r) => ({
+  const keep = rows
+    .filter(
+      (r) =>
+        !exclusionReason({ domain: r.domain, lead_source: r.lead_source, lead_rank: r.lead_rank }),
+    )
+    .slice(0, limit);
+  return keep.map((r) => ({
     id: r.id,
     domain: r.domain,
     name: r.name,

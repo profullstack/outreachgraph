@@ -485,8 +485,8 @@ describe('pickImportedLeads', () => {
       db,
       'majestic-million',
       [
-        { domain: 'rank9.com', name: 'rank9.com', rank: 9, country: null },
-        { domain: 'rank2.de', name: 'rank2.de', rank: 2, country: 'DE' },
+        { domain: 'rank9.com', name: 'rank9.com', rank: 1009, country: null },
+        { domain: 'rank2.de', name: 'rank2.de', rank: 1002, country: 'DE' },
       ],
       stamp,
     );
@@ -535,11 +535,11 @@ describe('pickImportedLeads', () => {
       db,
       'majestic-million',
       [
-        { domain: 'strong.com', name: 'strong.com', rank: 1, country: null },
-        { domain: 'weak-few.com', name: 'weak-few.com', rank: 2, country: null },
-        { domain: 'weak-many.com', name: 'weak-many.com', rank: 3, country: null },
-        { domain: 'unaudited.com', name: 'unaudited.com', rank: 4, country: null },
-        { domain: 'down.com', name: 'down.com', rank: 5, country: null },
+        { domain: 'strong.com', name: 'strong.com', rank: 1001, country: null },
+        { domain: 'weak-few.com', name: 'weak-few.com', rank: 1002, country: null },
+        { domain: 'weak-many.com', name: 'weak-many.com', rank: 1003, country: null },
+        { domain: 'unaudited.com', name: 'unaudited.com', rank: 1004, country: null },
+        { domain: 'down.com', name: 'down.com', rank: 1005, country: null },
       ],
       stamp,
     );
@@ -647,8 +647,9 @@ describe('retireExcludedImports', () => {
     });
     // Idempotent, and excluded rows leave the lead base.
     expect((await retireExcludedImports(db)).retired).toBe(0);
+    // linkedin.com keeps its row (a campaign crawled it) but is never picked again.
     const picked = await pickImportedLeads(db, SEED.workspaceId, undefined, { limit: 10 });
-    expect(picked.map((l) => l.domain)).toEqual(['linkedin.com', 'acme-widgets.com']);
+    expect(picked.map((l) => l.domain)).toEqual(['acme-widgets.com']);
     const status = await leadBaseStatus(db);
     expect(status.totals.imported).toBe(3);
   });
