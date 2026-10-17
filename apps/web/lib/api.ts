@@ -348,6 +348,44 @@ export async function fetchJobPosts(): Promise<JobPostsView> {
   return request<JobPostsView>('/job-posts');
 }
 
+// ---------------------------------------------------------- lead sources
+
+export interface LeadSourceView {
+  readonly id: string;
+  readonly label: string;
+  readonly homepage: string;
+  readonly license: string;
+  readonly enabled: boolean;
+  readonly dailyCap: number;
+  readonly addedToday: number;
+  readonly companies: number;
+  readonly addedTotal: number;
+  readonly seenTotal: number;
+  readonly runs: number;
+  readonly lastRunAt: string | null;
+  readonly lastAdded: number | null;
+  readonly lastError: string | null;
+  readonly nextRunAt: string | null;
+  readonly exhaustedAt: string | null;
+  readonly everyMinutes: number;
+}
+
+export interface LeadBaseView {
+  readonly totals: {
+    readonly companies: number;
+    readonly imported: number;
+    readonly people: number;
+    readonly peopleWithEmail: number;
+    readonly addedToday: number;
+    readonly dailyTotal: number;
+  };
+  readonly sources: readonly LeadSourceView[];
+}
+
+export async function fetchLeadSources(): Promise<LeadBaseView> {
+  return request<LeadBaseView>('/lead-sources');
+}
+
 // ----------------------------------------------------------------- ideas
 
 export interface IdeaView {

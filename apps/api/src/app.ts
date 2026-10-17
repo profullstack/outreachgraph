@@ -213,6 +213,10 @@ import {
   setPlannerEnabled,
   stopNichedbDiscovery,
   variantStats,
+  leadBaseStatus,
+  pickImportedLeads,
+  updateLeadSource,
+  LEAD_IMPORT_DAILY_TOTAL,
 } from '@outreachgraph/pipeline';
 import {
   GitHubProvider,
@@ -1977,6 +1981,84 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     if (!campaign) throw ApiError.notFound('campaign');
     const removed = await stopNichedbDiscovery(db, actor.workspaceId, campaign.id);
     return c.json({ ok: true, campaignId: campaign.id, removed });
+  });
+
+  /**
+   * The lead base: companies imported from open lists (Wikidata, the Majestic
+   * Million, nichedb.dev collections), per source with today's count against
+   * its cap and the last and next run. The table is shared by every
+   * workspace, so any signed-in member may read it; only the service token
+   * may change a source, because a cap is a cost decision for the whole
+   * deployment, not for one customer.
+   */
+  api.get('/lead-sources', async (c) => {
+    const status = await leadBaseStatus(c.get('db'), {
+      dailyTotal: Number(process.env.LEAD_IMPORT_DAILY_TOTAL ?? LEAD_IMPORT_DAILY_TOTAL),
+    });
+    return c.json(status);
+  });
+
+  api.patch('/lead-sources/:id', async (c) => {
+    const actor = c.get('actor');
+    if (actor.userId !== 'usr_service') throw ApiError.forbidden('changing a lead source');
+    const raw = safeJson(await c.req.raw.text());
+    const dailyCap = Number(raw.dailyCap);
+    const ok = await updateLeadSource(c.get('db'), c.req.param('id'), {
+      ...(typeof raw.enabled === 'boolean' ? { enabled: raw.enabled } : {}),
+      ...(raw.dailyCap !== undefined && Number.isFinite(dailyCap) ? { dailyCap } : {}),
+      ...(raw.runNow === true ? { runNow: true } : {}),
+    });
+    if (!ok) throw ApiError.notFound('lead source');
+    const status = await leadBaseStatus(c.get('db'));
+    return c.json({ ok: true, source: status.sources.find((s) => s.id === c.req.param('id')) });
+  });
+
+  /**
+   * Enrich selectively: queue a crawl for imported companies this campaign
+   * has not read yet, filtered by source, industry and country, best-ranked
+   * first. Importing costs nothing; each crawl here is one site read (and at
+   * most one model call), so the caller picks how many.
+   */
+  api.post('/campaigns/:id/discover/leads', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    if (!canApprove(actor)) throw ApiError.forbidden('queuing imported leads');
+    const campaign = await repo.getCampaign(db, actor.workspaceId, c.req.param('id'));
+    if (!campaign) throw ApiError.notFound('campaign');
+    const raw = safeJson(await c.req.raw.text());
+    const sources = Array.isArray(raw.sources)
+      ? raw.sources.map((x: unknown) => String(x).trim()).filter(Boolean)
+      : typeof raw.source === 'string' && raw.source.trim()
+        ? [raw.source.trim()]
+        : undefined;
+    const limitIn = Number(raw.limit);
+    const limit = Number.isFinite(limitIn) && limitIn > 0 ? Math.min(200, Math.round(limitIn)) : 25;
+    const picked = await pickImportedLeads(db, actor.workspaceId, campaign.id, {
+      ...(sources?.length ? { sources } : {}),
+      ...(typeof raw.industry === 'string' ? { industry: raw.industry } : {}),
+      ...(typeof raw.country === 'string' ? { country: raw.country } : {}),
+      limit,
+    });
+    let queued = 0;
+    for (const lead of picked) {
+      const result = await enqueue(db, {
+        workspaceId: actor.workspaceId,
+        kind: 'crawl_site',
+        payload: { url: `https://${lead.domain}`, campaignId: campaign.id },
+        dedupeKey: `crawl:${campaign.id}:${lead.domain}`,
+      });
+      if (result.queued) queued += 1;
+    }
+    return c.json(
+      {
+        ok: true,
+        campaignId: campaign.id,
+        picked: picked.length,
+        queued,
+        leads: picked.map((l) => ({ domain: l.domain, name: l.name, source: l.source })),
+      },
+      202,
+    );
   });
 
   /**

@@ -516,6 +516,85 @@ async function runJobs({ client, args, flags }: CommandContext): Promise<string>
  * setting one up is whether it works, and waiting half an hour for the
  * interval to come round is not an answer.
  */
+/**
+ * `og sources` — the lead base: companies imported from open lists, per
+ * source. `pick` is the selective half: queue crawls in a campaign for
+ * imported companies it has not read, so only those cost a site read.
+ */
+async function runSources({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb = 'list', target] = args;
+
+  if (verb === 'list' || verb === 'ls' || verb === 'status') {
+    const result = (await client.get('/lead-sources')) as {
+      totals: Record<string, unknown>;
+      sources: Array<Record<string, unknown>>;
+    };
+    const t = result.totals;
+    const head = `${text(t, 'companies')} companies (${text(t, 'imported')} imported), ${text(t, 'people')} people, ${text(t, 'peopleWithEmail')} with an email; ${text(t, 'addedToday')}/${text(t, 'dailyTotal')} imported today`;
+    const lines = result.sources.map((s) =>
+      [
+        pad(text(s, 'id'), 20),
+        pad(s.enabled ? 'on' : 'off', 4),
+        pad(`${text(s, 'companies')} rows`, 13),
+        pad(`${text(s, 'addedToday')}/${text(s, 'dailyCap')} today`, 16),
+        pad(`last ${text(s, 'lastRunAt', '-').slice(0, 16)}`, 22),
+        pad(`next ${text(s, 'nextRunAt', '-').slice(0, 16)}`, 22),
+        s.lastError ? `error: ${text(s, 'lastError')}` : '',
+      ].join(' '),
+    );
+    return [head, ...lines].join('\n');
+  }
+
+  if (verb === 'pick') {
+    const campaign = target ?? flagString(flags, 'campaign');
+    if (!campaign)
+      throw new Error(
+        'og sources pick <campaignId> [--source wikidata] [--industry software] [--country DE] [--limit 25]',
+      );
+    const source = flagString(flags, 'source');
+    const industry = flagString(flags, 'industry');
+    const country = flagString(flags, 'country');
+    const limit = Number(flagString(flags, 'limit') ?? 25);
+    const result = (await client.post(`/campaigns/${encodeURIComponent(campaign)}/discover/leads`, {
+      ...(source ? { sources: source.split(',') } : {}),
+      ...(industry ? { industry } : {}),
+      ...(country ? { country } : {}),
+      limit,
+    })) as Record<string, unknown>;
+    const leads = rows(result, 'leads');
+    return [
+      `Queued ${text(result, 'queued')} of ${text(result, 'picked')} imported companies to read.`,
+      ...leads.map(
+        (l) => `  ${pad(text(l, 'domain'), 32)} ${pad(text(l, 'source'), 18)} ${text(l, 'name')}`,
+      ),
+    ].join('\n');
+  }
+
+  if (verb === 'pause' || verb === 'resume' || verb === 'run' || verb === 'cap') {
+    if (!target)
+      throw new Error(`og sources ${verb} <sourceId>${verb === 'cap' ? ' <perDay>' : ''}`);
+    if (!client.patch) throw new Error('this client cannot edit');
+    const body =
+      verb === 'pause'
+        ? { enabled: false }
+        : verb === 'resume'
+          ? { enabled: true }
+          : verb === 'run'
+            ? { runNow: true }
+            : { dailyCap: Number(args[2]) };
+    const result = (await client.patch(`/lead-sources/${encodeURIComponent(target)}`, body)) as {
+      source?: Record<string, unknown>;
+    };
+    const s = result.source ?? {};
+    return `${text(s, 'id')}: ${s.enabled ? 'on' : 'off'}, ${text(s, 'dailyCap')}/day, next run ${text(s, 'nextRunAt', 'on the next tick')}`;
+  }
+
+  throw new Error(SOURCES_USAGE);
+}
+
+const SOURCES_USAGE =
+  'og sources [list] | pick <campaignId> [--source a,b] [--industry x] [--country DE] [--limit n] | pause|resume|run <sourceId> | cap <sourceId> <perDay>';
+
 async function runIdeas({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target, ...rest] = args;
 
@@ -2162,6 +2241,13 @@ export const COMMANDS: readonly Command[] = [
         })
         .join('\n');
     },
+  },
+  {
+    name: 'sources',
+    usage: SOURCES_USAGE,
+    summary:
+      'The lead base: companies imported from open lists (Wikidata, Majestic, nichedb), per source; pick some into a campaign.',
+    run: runSources,
   },
   {
     name: 'ideas',
