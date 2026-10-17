@@ -20,7 +20,12 @@ import {
   type OutreachStyle,
 } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
-import { composeDraft, type ComposeResult, type TextModel } from '@outreachgraph/ai';
+import {
+  composeDraft,
+  type ComposeResult,
+  type SiteAuditContext,
+  type TextModel,
+} from '@outreachgraph/ai';
 import { draftReplyForRecommendation } from './draft-reply';
 
 export interface DraftResult {
@@ -126,6 +131,26 @@ export async function draftForRecommendation(
       ])
     : undefined;
 
+  // Their homepage's latest seo.rank audit, offered as an optional angle: a
+  // good audit from the last 60 days with at least one fix. Read inline
+  // rather than through the pipeline package, which depends on this one.
+  const audit = person.current_company_id
+    ? await queryOne<{
+        url: string;
+        final_url: string | null;
+        score: number | null;
+        grade: string | null;
+        fixes_json: string;
+        checked_at: string | null;
+      }>(
+        db,
+        `SELECT url, final_url, score, grade, fixes_json, checked_at FROM site_audits
+          WHERE company_id = ? AND status = 'ok'`,
+        [person.current_company_id],
+      )
+    : undefined;
+  const siteAudit = siteAuditContext(audit);
+
   const offering = await queryOne<{
     name: string;
     category: string;
@@ -208,6 +233,7 @@ export async function draftForRecommendation(
     minIdentityConfidence: workspace?.min_outreach_confidence ?? 0.85,
     priorDraftHashes: priorHashes.map((r) => r.similarity_hash),
     ...(guidance ? { guidance } : {}),
+    ...(siteAudit ? { siteAudit } : {}),
   });
 
   if (!result.ok) {
@@ -248,6 +274,41 @@ export async function draftForRecommendation(
   ]);
 
   return { ok: true, draftId };
+}
+
+function siteAuditContext(
+  row:
+    | {
+        url: string;
+        final_url: string | null;
+        score: number | null;
+        grade: string | null;
+        fixes_json: string;
+        checked_at: string | null;
+      }
+    | undefined,
+): SiteAuditContext | undefined {
+  if (!row || row.score == null || !row.checked_at) return undefined;
+  if (Date.now() - Date.parse(row.checked_at) > 60 * 86_400_000) return undefined;
+  let fixes: { fix?: unknown; label?: unknown }[] = [];
+  try {
+    const parsed: unknown = JSON.parse(row.fixes_json);
+    if (Array.isArray(parsed)) fixes = parsed as typeof fixes;
+  } catch {
+    return undefined;
+  }
+  const topIssues = fixes
+    .slice(0, 3)
+    .map((f) => String(f.fix || f.label || '').trim())
+    .filter(Boolean);
+  if (!topIssues.length) return undefined;
+  return {
+    url: row.final_url ?? row.url,
+    score: Number(row.score),
+    grade: row.grade ?? '',
+    ageDescription: describeAge(row.checked_at),
+    topIssues,
+  };
 }
 
 function describeAge(timestamp: string): string {

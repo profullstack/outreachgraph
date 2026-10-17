@@ -1598,6 +1598,38 @@ export const TOOLS: readonly ToolDefinition[] = [
           );
     },
   },
+  {
+    name: 'get_site_audit',
+    title: "Get a lead's homepage audit",
+    description:
+      "The latest seo.rank audit of a prospect's company homepage: score (0-100), grade, the " +
+      'top fixes in order of impact, and when it was checked. Stored evidence, so an issue on ' +
+      'their homepage may be cited as an outreach angle when it fits what you offer. Set ' +
+      'refresh to queue a fresh audit (it runs within a minute or so).',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        personId: { type: 'string' },
+        refresh: { type: 'boolean', description: 'Queue a fresh audit now.' },
+      },
+      required: ['personId'],
+    },
+    run: (client, args) => {
+      const path = `/people/${encodeURIComponent(require(args, 'personId'))}/site-audit`;
+      return args.refresh === true ? client.post(path, {}) : client.get(path);
+    },
+  },
+  {
+    name: 'site_audit_stats',
+    title: 'Site audit progress',
+    description:
+      'How far the seo.rank audit of every lead homepage has got: companies, audited, refused, ' +
+      'retrying, never audited, audited in the last 24 hours, queued, average score.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/site-audits/stats'),
+  },
 ];
 
 export function toolByName(name: string): ToolDefinition | undefined {

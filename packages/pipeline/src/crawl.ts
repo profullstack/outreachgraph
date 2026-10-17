@@ -20,6 +20,7 @@ import {
 import type { TextModel } from '@outreachgraph/ai';
 import { emitEvent } from './events';
 import { runPipelineForCandidate } from './pipeline';
+import { queueSiteAudit } from './site-audits';
 import type { QueuedJob } from './queue';
 
 export interface CrawlJobDeps {
@@ -169,15 +170,15 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
       const merged = [...new Set([...parseNames(prior?.technologies), ...detected])];
       await deps.db.execute({
         sql: `UPDATE companies SET contact_email = COALESCE(contact_email, ?), technologies = ?,
-              updated_at = ? WHERE id = ?`,
-        args: [result.contactEmail ?? null, JSON.stringify(merged), stamp, existing.id],
+              updated_at = ?, refreshed_at = ? WHERE id = ?`,
+        args: [result.contactEmail ?? null, JSON.stringify(merged), stamp, stamp, existing.id],
       });
     } else {
       companyId = newId('company');
       await deps.db.execute({
         sql: `INSERT INTO companies (id, name, domain, technologies, contact_email,
-              created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              created_at, updated_at, refreshed_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           companyId,
           result.company.name ?? domain,
@@ -186,8 +187,11 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
           result.contactEmail ?? null,
           stamp,
           stamp,
+          stamp,
         ],
       });
+      // A new lead's homepage is audited within a round or two.
+      await queueSiteAudit(deps.db, { workspaceId: job.workspaceId, companyId, domain });
     }
 
     await recordCompanyIdentities(deps.db, companyId, result, stamp);

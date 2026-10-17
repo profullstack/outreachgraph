@@ -40,6 +40,7 @@ import { storeDiscoveredPhoto } from './photos';
 import { enqueueFindEmail } from './find-email-queue';
 import { screenHold } from './lead-screen';
 import { ownDomains, personOnOwnDomain } from './recipient-guard';
+import { queueSiteAudit } from './site-audits';
 
 export interface PipelineOptions {
   readonly db: Client;
@@ -175,7 +176,7 @@ export async function runPipelineForCandidate(
     };
   }
 
-  const personId = await upsertPerson(db, candidate, origin, stamp);
+  const personId = await upsertPerson(db, candidate, origin, stamp, workspaceId);
 
   await recordProvenance(db, personId, candidate, origin, stamp);
   await ensureCampaignMembership(db, campaignId, personId, workspaceId, stamp);
@@ -558,6 +559,7 @@ async function upsertPerson(
   candidate: PersonCandidate,
   origin: CandidateOrigin,
   stamp: string,
+  workspaceId: string,
 ): Promise<string> {
   // Match on the stable platform id wherever the provider supplied one — it
   // survives a rename and is the strongest key available.
@@ -612,7 +614,9 @@ async function upsertPerson(
     if (bySite) return bySite.person_id;
   }
 
-  const companyId = candidate.companyName ? await upsertCompany(db, candidate, stamp) : undefined;
+  const companyId = candidate.companyName
+    ? await upsertCompany(db, candidate, stamp, workspaceId)
+    : undefined;
 
   const personId = newId('person');
   await db.execute({
@@ -642,6 +646,7 @@ async function upsertCompany(
   db: Client,
   candidate: PersonCandidate,
   stamp: string,
+  workspaceId: string,
 ): Promise<string> {
   if (candidate.companyDomain) {
     const existing = await queryOne<{ id: string }>(
@@ -666,6 +671,7 @@ async function upsertCompany(
       stamp,
     ],
   });
+  await queueSiteAudit(db, { workspaceId, companyId: id, domain: candidate.companyDomain });
   return id;
 }
 

@@ -249,6 +249,25 @@ export interface ProspectDetail {
   emailCandidates?: EmailCandidateRow[];
   /** The assembled OpenProfile.md, once the job has run for them. */
   openprofile?: ProspectOpenProfile | null;
+  /** Their company homepage's latest seo.rank audit; null without a company. */
+  siteAudit?: ProspectSiteAudit | null;
+}
+
+export interface ProspectSiteAudit {
+  company: { id: string; name: string; domain: string | null };
+  auditable: boolean;
+  audit: {
+    url: string;
+    finalUrl: string | null;
+    status: 'ok' | 'failed' | 'error' | 'dead';
+    score: number | null;
+    grade: string | null;
+    fixes: { id: string; label: string; priority: 'high' | 'medium' | 'low'; fix: string }[];
+    error: string | null;
+    checkedAt: string | null;
+    nextAuditAt: string;
+    reportUrl: string;
+  } | null;
 }
 
 /**

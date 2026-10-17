@@ -648,3 +648,26 @@ export {
   type BlueskyAutopilotResult,
 } from './bluesky-autopilot';
 export * from './lead-sources';
+
+export {
+  auditCompanySite,
+  auditDomain,
+  queueSiteAudit,
+  queueSiteAudits,
+  runSiteAuditJob,
+  runSiteAuditRound,
+  siteAuditFor,
+  siteAuditStats,
+  staleSiteAuditTargets,
+  MAX_ATTEMPTS as SITE_AUDIT_MAX_ATTEMPTS,
+  REAUDIT_AFTER_DAYS,
+  type SiteAuditRoundSummary,
+  type SiteAuditStats,
+  type SiteAuditTarget,
+  type StoredSiteAudit,
+} from './site-audits';
+export {
+  refreshStaleCompanies,
+  type CompanyRefreshOptions,
+  type CompanyRefreshResult,
+} from './company-refresh';

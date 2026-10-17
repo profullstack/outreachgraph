@@ -4,6 +4,7 @@ import { Avatar } from '../../../../components/avatar';
 import { EmailCandidates } from '../../../../components/email-candidates';
 import { EnrolButton } from '../../../../components/enrol-button';
 import { PageGuide } from '../../../../components/page-guide';
+import { SiteAudit } from '../../../../components/site-audit';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -123,6 +124,8 @@ export default async function ProspectPage({ params }: { params: Promise<{ id: s
           (identity) => identity.network === 'email' && Boolean(identity.handle),
         )}
       />
+
+      {detail.siteAudit ? <SiteAudit personId={person.id} data={detail.siteAudit} /> : null}
 
       <section className="mt-6">
         <h2 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">

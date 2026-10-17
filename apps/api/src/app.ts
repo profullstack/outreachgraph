@@ -269,6 +269,7 @@ import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
 import { audienceRoutes } from './audience';
 import { jobPostRoutes } from './job-posts';
+import { personSiteAuditRoutes, siteAuditForPerson, siteAuditRoutes } from './site-audits';
 import { ideaRoutes } from './ideas';
 import { leadRoutes } from './buyer-leads';
 import { linkPostRoutes } from './link-posts';
@@ -1471,6 +1472,10 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
   // ------------------------------------------------------------ job posts
   //
+  // seo.rank audits of each lead's company homepage.
+  api.route('/people', personSiteAuditRoutes());
+  api.route('/site-audits', siteAuditRoutes());
+
   // Postings by URL or by keyword, and the people behind each one.
   api.route(
     '/job-posts',
@@ -3085,6 +3090,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       membership,
       openprofile,
       profileSettings,
+      siteAudit,
     ] = await Promise.all([
       repo.listIdentities(db, personId),
       repo.listCompanyIdentities(db, personId),
@@ -3113,11 +3119,15 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         [personId],
       ),
       loadSettings(db, personId),
+      // The latest seo.rank audit of their company's homepage: an outreach
+      // angle on the page, and the same one the composer is offered.
+      siteAuditForPerson(db, personId),
     ]);
 
     return c.json({
       person,
       campaignId: membership?.campaign_id ?? null,
+      siteAudit,
       identities,
       companyIdentities,
       signals,

@@ -32,6 +32,7 @@ export {
   composeDraft,
   composeReply,
   type ComposeInput,
+  type SiteAuditContext,
   type ComposeResult,
   type OfferingContext,
   type ProspectContext,
