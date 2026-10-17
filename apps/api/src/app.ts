@@ -2740,6 +2740,45 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   /**
+   * Sets or clears a product's demo video.
+   *
+   * Its own route rather than a field on the profile save: that save rewrites
+   * every column it is given, so a client that predates the field would blank
+   * the link on every edit.
+   */
+  api.put('/products/:id/demo', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('changing a product');
+
+    const body = (await c.req.json().catch(() => ({}))) as { demoUrl?: unknown };
+    let demoUrl: string | null = null;
+    if (body.demoUrl !== null && body.demoUrl !== undefined && body.demoUrl !== '') {
+      demoUrl = normaliseBookingUrl(String(body.demoUrl)) ?? null;
+      if (!demoUrl) throw ApiError.badRequest('demoUrl must be an https link');
+    }
+
+    const result = await db.execute({
+      sql: 'UPDATE offerings SET demo_url = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
+      args: [demoUrl, now(), c.req.param('id'), actor.workspaceId],
+    });
+    if (Number(result.rowsAffected ?? 0) === 0) throw ApiError.notFound('product');
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'onboarding.demo_set',
+      entityKind: 'offering',
+      entityId: c.req.param('id'),
+      detail: { demoUrl },
+    });
+
+    return c.json({ offeringId: c.req.param('id'), demoUrl });
+  });
+
+  /**
    * Stops selling a product without deleting what it did.
    *
    * Archiving rather than deleting: an offering is referenced by campaigns,

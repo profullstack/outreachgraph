@@ -157,9 +157,10 @@ export async function draftForRecommendation(
     value_propositions: string;
     likely_pains: string;
     competitors: string;
+    demo_url: string | null;
   }>(
     db,
-    `SELECT o.name, o.category, o.value_propositions, o.likely_pains, o.competitors
+    `SELECT o.name, o.category, o.value_propositions, o.likely_pains, o.competitors, o.demo_url
        FROM offerings o JOIN campaigns c ON c.offering_id = o.id WHERE c.id = ?`,
     [recommendation.campaign_id],
   );
@@ -177,6 +178,18 @@ export async function draftForRecommendation(
        FROM voice_profiles v JOIN campaigns c ON c.voice_profile_id = v.id WHERE c.id = ?`,
     [recommendation.campaign_id],
   );
+
+  // The demo goes with the first email only. A cadence's later steps would
+  // otherwise repeat the same link under every follow-up.
+  const demoUrl = offering.demo_url?.trim() || undefined;
+  const demoAlreadySent = demoUrl
+    ? await queryOne<{ id: string }>(
+        db,
+        `SELECT d.id FROM drafts d JOIN recommendations r ON r.id = d.recommendation_id
+          WHERE r.workspace_id = ? AND r.person_id = ? AND d.body LIKE ? LIMIT 1`,
+        [recommendation.workspace_id, recommendation.person_id, `%${demoUrl}%`],
+      )
+    : undefined;
 
   const workspace = await queryOne<{ min_outreach_confidence: number }>(
     db,
@@ -234,6 +247,7 @@ export async function draftForRecommendation(
     priorDraftHashes: priorHashes.map((r) => r.similarity_hash),
     ...(guidance ? { guidance } : {}),
     ...(siteAudit ? { siteAudit } : {}),
+    ...(demoUrl && !demoAlreadySent ? { demoUrl } : {}),
   });
 
   if (!result.ok) {

@@ -102,6 +102,13 @@ export interface ComposeInput {
   readonly guidance?: string;
   /** Their homepage's audit, offered as an optional angle. */
   readonly siteAudit?: SiteAuditContext;
+  /**
+   * The product's demo video, for a first-touch email. Appended verbatim on a
+   * line of its own after the body passes its checks — the model is told it
+   * will be there but never writes it, so the link cannot be mangled or
+   * invented, and the grounding gates never mistake it for a claim.
+   */
+  readonly demoUrl?: string;
   /** Retries on a failed grounding check. Zero disables retrying. */
   readonly maxAttempts?: number;
 }
@@ -200,7 +207,7 @@ export async function composeDraft(model: TextModel, input: ComposeInput): Promi
           : undefined;
       return {
         ok: true,
-        body,
+        body: withDemo(body, input),
         ...(subject ? { subject } : {}),
         report,
         groundedSignalIds: [input.trigger.id],
@@ -301,9 +308,38 @@ function buildSystem(input: ComposeInput): string {
       ? 'This is a public reply in an existing thread. Other people will read it. Be useful to them too.'
       : '',
     input.network === 'email' ? SUBJECT_INSTRUCTIONS : '',
+    demoFor(input) ? DEMO_INSTRUCTIONS : '',
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * Show, don't describe. A cold email explaining what an automation does is
+ * the one a stranger skims and deletes; two minutes of it running lets them
+ * judge it without a call. The link itself is appended by `withDemo`.
+ */
+const DEMO_INSTRUCTIONS =
+  'A link to a short demo video is added on its own line after your message. Do not explain how the product works or list features — the video does that. Do not write a link and do not mention the video.';
+
+/** Styles that promise not to pitch never carry a demo link. */
+const NO_DEMO_STYLES: ReadonlySet<string> = new Set(['helpful_no_pitch', 'community_first']);
+
+/** The demo link this draft carries, or undefined when it carries none. */
+export function demoFor(
+  input: Pick<ComposeInput, 'network' | 'voice' | 'demoUrl'>,
+): string | undefined {
+  if (input.network !== 'email' || !input.demoUrl) return undefined;
+  if (input.voice && NO_DEMO_STYLES.has(input.voice.style)) return undefined;
+  return input.demoUrl;
+}
+
+export function withDemo(
+  body: string,
+  input: Pick<ComposeInput, 'network' | 'voice' | 'demoUrl'>,
+): string {
+  const demo = demoFor(input);
+  return demo ? `${body}\n\nShort demo: ${demo}` : body;
 }
 
 /**

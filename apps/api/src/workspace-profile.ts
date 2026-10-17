@@ -278,6 +278,8 @@ export interface ProductSummary {
   readonly name: string;
   readonly category: string;
   readonly url: string | null;
+  /** A short demo video that first-touch emails link instead of describing. */
+  readonly demoUrl: string | null;
   readonly campaignId: string | null;
   readonly campaignStatus: string | null;
   readonly autopilot: boolean;
@@ -294,7 +296,7 @@ export interface ProductSummary {
  */
 export async function listProducts(db: Client, workspaceId: string): Promise<ProductSummary[]> {
   const rows = await db.execute({
-    sql: `SELECT o.id, o.name, o.category, o.url,
+    sql: `SELECT o.id, o.name, o.category, o.url, o.demo_url,
                  c.id AS campaign_id, c.status AS campaign_status, c.approval_mode
             FROM offerings o
             LEFT JOIN campaigns c ON c.offering_id = o.id AND c.workspace_id = o.workspace_id
@@ -311,6 +313,7 @@ export async function listProducts(db: Client, workspaceId: string): Promise<Pro
     name: string;
     category: string;
     url: string | null;
+    demo_url: string | null;
     campaign_id: string | null;
     campaign_status: string | null;
     approval_mode: string | null;
@@ -325,6 +328,7 @@ export async function listProducts(db: Client, workspaceId: string): Promise<Pro
       name: row.name,
       category: row.category,
       url: row.url,
+      demoUrl: row.demo_url,
       campaignId: row.campaign_id,
       campaignStatus: row.campaign_status,
       autopilot: row.approval_mode === 'trusted_automation',
