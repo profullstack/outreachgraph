@@ -703,9 +703,11 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: 'pick_imported_leads',
     title: 'Queue imported companies into a campaign',
     description:
-      'Picks imported companies the campaign has not read yet, best-ranked first, filtered by source, ' +
-      'industry (substring) and ISO country, and queues a site crawl for each so the pipeline can find ' +
-      'the people. Each crawl is one site read, so keep limit modest (default 25, max 200).',
+      'Picks imported companies the campaign has not read yet, filtered by source, industry (substring), ' +
+      'ISO country and SEO score, and queues a site crawl for each so the pipeline can find the people. ' +
+      'Default order is weakest SEO first (reachable homepages scoring under 70, most issues first, then ' +
+      'not-yet-audited); sort "rank" uses the importer rank. Unreachable sites are never picked. Each ' +
+      'crawl is one site read, so keep limit modest (default 25, max 200).',
     readOnly: false,
     inputSchema: {
       type: 'object',
@@ -714,6 +716,8 @@ export const TOOLS: readonly ToolDefinition[] = [
         sources: { type: 'array', items: { type: 'string' } },
         industry: { type: 'string' },
         country: { type: 'string', description: 'ISO 3166 alpha-2, e.g. DE' },
+        maxScore: { type: 'number', description: 'Only audited homepages scoring at most this.' },
+        sort: { type: 'string', enum: ['weak_seo', 'rank'] },
         limit: { type: 'number' },
       },
       required: ['campaignId'],
@@ -723,7 +727,38 @@ export const TOOLS: readonly ToolDefinition[] = [
         ...(Array.isArray(args.sources) ? { sources: args.sources } : {}),
         ...(str(args, 'industry') ? { industry: str(args, 'industry') } : {}),
         ...(str(args, 'country') ? { country: str(args, 'country') } : {}),
+        ...(typeof args.maxScore === 'number' ? { maxScore: args.maxScore } : {}),
+        ...(str(args, 'sort') ? { sort: str(args, 'sort') } : {}),
         ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+      }),
+  },
+  {
+    name: 'preview_imported_leads',
+    title: 'Preview imported companies by SEO score',
+    description:
+      'What pick_imported_leads would choose, without queuing anything: imported companies with no ' +
+      'people yet, each with its homepage SEO score, grade and issue count. Weakest SEO first by ' +
+      'default; filter with maxScore, sources, industry, country.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sources: { type: 'array', items: { type: 'string' } },
+        industry: { type: 'string' },
+        country: { type: 'string' },
+        maxScore: { type: 'number' },
+        sort: { type: 'string', enum: ['weak_seo', 'rank'] },
+        limit: { type: 'number' },
+      },
+    },
+    run: (client, args) =>
+      client.get('/lead-sources/candidates', {
+        ...(Array.isArray(args.sources) ? { sources: args.sources.map(String).join(',') } : {}),
+        ...(str(args, 'industry') ? { industry: str(args, 'industry')! } : {}),
+        ...(str(args, 'country') ? { country: str(args, 'country')! } : {}),
+        ...(typeof args.maxScore === 'number' ? { maxScore: String(args.maxScore) } : {}),
+        ...(str(args, 'sort') ? { sort: str(args, 'sort')! } : {}),
+        limit: String(typeof args.limit === 'number' ? Math.min(args.limit, 200) : 25),
       }),
   },
   {

@@ -386,6 +386,43 @@ export async function fetchLeadSources(): Promise<LeadBaseView> {
   return request<LeadBaseView>('/lead-sources');
 }
 
+/** An imported company a pick would choose, with its homepage audit. */
+export interface LeadCandidateView {
+  readonly id: string;
+  readonly domain: string;
+  readonly name: string;
+  readonly source: string;
+  readonly score: number | null;
+  readonly grade: string | null;
+  readonly issues: number | null;
+}
+
+/** Weakest SEO first unless `sort` is `rank`; nothing is queued. */
+export async function fetchLeadCandidates(
+  options: { maxScore?: number; sort?: 'weak_seo' | 'rank'; limit?: number } = {},
+): Promise<{ leads: LeadCandidateView[]; weakScore: number }> {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 20) });
+  if (options.maxScore !== undefined) query.set('maxScore', String(options.maxScore));
+  if (options.sort) query.set('sort', options.sort);
+  return request(`/lead-sources/candidates?${query}`);
+}
+
+export interface SiteAuditStatsView {
+  readonly companies: number;
+  readonly leadCompanies: number;
+  readonly leadAudited: number;
+  readonly weak: number;
+  readonly audited: number;
+  readonly failed: number;
+  readonly neverAudited: number;
+  readonly auditedLast24h: number;
+  readonly averageScore: number | null;
+}
+
+export async function fetchSiteAuditStats(): Promise<SiteAuditStatsView> {
+  return request<SiteAuditStatsView>('/site-audits/stats');
+}
+
 // ----------------------------------------------------------------- ideas
 
 export interface IdeaView {

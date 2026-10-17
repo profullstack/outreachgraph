@@ -59,9 +59,10 @@ jobs:
           SEORANK_API_KEY: ${{ secrets.SEORANK_API_KEY }}
           SEORANK_URL: ${{ secrets.SEORANK_URL }}
           SEORANK_HOST: ${{ secrets.SEORANK_HOST }}
+          MODEL_CHAIN: ${{ secrets.MODEL_CHAIN }}
         run: |
           lines=""
-          for key in VALUESERP_API_KEY CHOVY_CAMPAIGN_SECRET PDL_API_KEY SERPER_API_KEY HUNTER_API_KEY CONTACTOUT_API_KEY SEORANK_API_KEY SEORANK_URL SEORANK_HOST; do
+          for key in VALUESERP_API_KEY CHOVY_CAMPAIGN_SECRET PDL_API_KEY SERPER_API_KEY HUNTER_API_KEY CONTACTOUT_API_KEY SEORANK_API_KEY SEORANK_URL SEORANK_HOST MODEL_CHAIN; do
             value=$(printenv "$key" || true)
             [ -n "$value" ] && lines="$lines$key=$value"$'\n'
           done

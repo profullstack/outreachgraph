@@ -11,3 +11,7 @@ local.db-*
 *.tsbuildinfo
 .DS_Store
 coverage/
+
+# Test databases written next to each package by createTestDatabase
+.test-*.db
+.test-*.db-*

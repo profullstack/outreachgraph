@@ -427,10 +427,22 @@ export async function updateLeadSource(
   return true;
 }
 
+/** Under this an audited, reachable homepage counts as weak SEO. */
+export const WEAK_SEO_SCORE = 70;
+
 export interface PickLeadsFilter {
   readonly sources?: readonly string[];
   readonly industry?: string;
   readonly country?: string;
+  /** Only companies whose audited homepage scored at most this. */
+  readonly maxScore?: number;
+  /**
+   * `weak_seo` (default): audited and reachable with a score under 70 first,
+   * most issues then lowest score first; then not yet audited; then the
+   * rest by rank. `rank`: the importer's rank only. Either way a company
+   * whose site could not be audited (unreachable, refused) is never picked.
+   */
+  readonly sort?: 'weak_seo' | 'rank';
   readonly limit: number;
 }
 
@@ -439,22 +451,32 @@ export interface PickedLead {
   readonly domain: string;
   readonly name: string;
   readonly source: string;
+  readonly score: number | null;
+  readonly grade: string | null;
+  /** Warnings plus failures in the audit. */
+  readonly issues: number | null;
 }
 
 /**
- * Imported companies a campaign has not crawled yet, best-known first
- * (ranked rows by rank, then the oldest imports), filtered by source,
- * industry (substring, case-insensitive) and country. This is the selective
- * half of "import cheaply, enrich selectively": the caller queues a crawl for
- * each, and only those cost a model call.
+ * Imported companies a campaign has not crawled yet, filtered by source,
+ * industry (substring, case-insensitive), country and SEO score, ordered by
+ * `sort`. This is the selective half of "import cheaply, enrich
+ * selectively": the caller queues a crawl for each, and only those cost a
+ * model call, so the default spends it on sites with the most to fix.
+ * Without a campaign it is a preview: nothing about jobs is checked.
  */
 export async function pickImportedLeads(
   db: Client,
   workspaceId: string,
-  campaignId: string,
+  campaignId: string | undefined,
   filter: PickLeadsFilter,
 ): Promise<PickedLead[]> {
-  const where: string[] = ['co.lead_source IS NOT NULL', 'co.domain IS NOT NULL'];
+  const where: string[] = [
+    'co.lead_source IS NOT NULL',
+    'co.domain IS NOT NULL',
+    // Reachable sites only: a homepage seo.rank could not read is not worth a crawl.
+    "(sa.status IS NULL OR sa.status IN ('ok', 'error'))",
+  ];
   const args: InValue[] = [];
   if (filter.sources?.length) {
     where.push(`co.lead_source IN (${filter.sources.map(() => '?').join(', ')})`);
@@ -468,17 +490,40 @@ export async function pickImportedLeads(
     where.push(`co.country = ?`);
     args.push(filter.country.trim().toUpperCase());
   }
-  args.push(workspaceId, `crawl:${campaignId}:`);
+  if (filter.maxScore !== undefined && Number.isFinite(filter.maxScore)) {
+    where.push(`sa.status = 'ok' AND sa.score <= ?`);
+    args.push(Math.floor(filter.maxScore));
+  }
+  if (campaignId) {
+    where.push(`NOT EXISTS (SELECT 1 FROM jobs j
+                         WHERE j.workspace_id = ? AND j.dedupe_key = CAST(? AS TEXT) || co.domain)`);
+    args.push(workspaceId, `crawl:${campaignId}:`);
+  }
+  const rankOrder = `CASE WHEN co.lead_rank IS NULL THEN 1 ELSE 0 END, co.lead_rank,
+               COALESCE(co.employee_count, 0) DESC, co.created_at, co.id`;
+  const order =
+    filter.sort === 'rank'
+      ? rankOrder
+      : `CASE WHEN sa.status = 'ok' AND sa.score < ${WEAK_SEO_SCORE} THEN 0
+                    WHEN sa.status IS NULL THEN 1 ELSE 2 END,
+               COALESCE(sa.issues, -1) DESC, COALESCE(sa.score, 101), ${rankOrder}`;
   const limit = Math.max(1, Math.min(500, Math.floor(filter.limit)));
-  const rows = await queryAll<{ id: string; domain: string; name: string; lead_source: string }>(
+  const rows = await queryAll<{
+    id: string;
+    domain: string;
+    name: string;
+    lead_source: string;
+    score: number | null;
+    grade: string | null;
+    issues: number | null;
+  }>(
     db,
-    `SELECT co.id, co.domain, co.name, co.lead_source FROM companies co
+    `SELECT co.id, co.domain, co.name, co.lead_source, sa.score, sa.grade, sa.issues
+       FROM companies co
+       LEFT JOIN site_audits sa ON sa.company_id = co.id
       WHERE ${where.join(' AND ')}
-        AND NOT EXISTS (SELECT 1 FROM jobs j
-                         WHERE j.workspace_id = ? AND j.dedupe_key = CAST(? AS TEXT) || co.domain)
         AND NOT EXISTS (SELECT 1 FROM people p WHERE p.current_company_id = co.id)
-      ORDER BY CASE WHEN co.lead_rank IS NULL THEN 1 ELSE 0 END, co.lead_rank,
-               COALESCE(co.employee_count, 0) DESC, co.created_at, co.id
+      ORDER BY ${order}
       LIMIT ${limit}`,
     args,
   );
@@ -487,5 +532,8 @@ export async function pickImportedLeads(
     domain: r.domain,
     name: r.name,
     source: r.lead_source,
+    score: r.score == null ? null : Number(r.score),
+    grade: r.grade ?? null,
+    issues: r.issues == null ? null : Number(r.issues),
   }));
 }

@@ -501,4 +501,69 @@ describe('pickImportedLeads', () => {
     );
     expect(Number(rows[0]?.n)).toBe(3);
   });
+
+  test('weakest reachable SEO first, unreachable never, maxScore and rank sort', async () => {
+    seeded = await seedDatabase('lead-pick-seo');
+    const db = seeded.db;
+    const stamp = '2026-10-17T12:00:00.000Z';
+    await storeLeadCandidates(
+      db,
+      'majestic-million',
+      [
+        { domain: 'strong.com', name: 'strong.com', rank: 1, country: null },
+        { domain: 'weak-few.com', name: 'weak-few.com', rank: 2, country: null },
+        { domain: 'weak-many.com', name: 'weak-many.com', rank: 3, country: null },
+        { domain: 'unaudited.com', name: 'unaudited.com', rank: 4, country: null },
+        { domain: 'down.com', name: 'down.com', rank: 5, country: null },
+      ],
+      stamp,
+    );
+    const audit = async (
+      domain: string,
+      status: string,
+      score: number | null,
+      issues: number | null,
+    ) => {
+      const row = await queryAll<{ id: string }>(db, 'SELECT id FROM companies WHERE domain = ?', [
+        domain,
+      ]);
+      await db.execute({
+        sql: `INSERT INTO site_audits (company_id, url, status, score, grade, fixes_json, issues,
+                attempts, checked_at, next_audit_at, created_at, updated_at)
+              VALUES (?, ?, ?, ?, 'X', '[]', ?, 0, ?, ?, ?, ?)`,
+        args: [row[0]!.id, `https://${domain}/`, status, score, issues, stamp, stamp, stamp, stamp],
+      });
+    };
+    await audit('strong.com', 'ok', 95, 1);
+    await audit('weak-few.com', 'ok', 55, 4);
+    await audit('weak-many.com', 'ok', 62, 9);
+    await audit('down.com', 'failed', null, null);
+
+    const picked = await pickImportedLeads(db, SEED.workspaceId, SEED.campaignId, { limit: 10 });
+    expect(picked.map((l) => l.domain)).toEqual([
+      'weak-many.com',
+      'weak-few.com',
+      'unaudited.com',
+      'strong.com',
+    ]);
+    expect(picked[0]).toMatchObject({ score: 62, issues: 9 });
+    expect(picked[2]).toMatchObject({ score: null, issues: null });
+
+    const capped = await pickImportedLeads(db, SEED.workspaceId, SEED.campaignId, {
+      maxScore: 60,
+      limit: 10,
+    });
+    expect(capped.map((l) => l.domain)).toEqual(['weak-few.com']);
+
+    const byRank = await pickImportedLeads(db, SEED.workspaceId, undefined, {
+      sort: 'rank',
+      limit: 10,
+    });
+    expect(byRank.map((l) => l.domain)).toEqual([
+      'strong.com',
+      'weak-few.com',
+      'weak-many.com',
+      'unaudited.com',
+    ]);
+  });
 });

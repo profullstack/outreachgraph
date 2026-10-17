@@ -98,7 +98,17 @@ describe('lead sources API', () => {
     });
     expect(first.status).toBe(202);
     expect(first.body).toMatchObject({ picked: 1, queued: 1 });
-    expect(first.body.leads).toEqual([{ domain: 'roxio.com', name: 'Roxio', source: 'wikidata' }]);
+    expect(first.body.leads).toEqual([
+      // Not audited yet, so no score: picked on rank among the unaudited.
+      {
+        domain: 'roxio.com',
+        name: 'Roxio',
+        source: 'wikidata',
+        score: null,
+        grade: null,
+        issues: null,
+      },
+    ]);
 
     const jobs = await queryAll<{ payload_json: string; dedupe_key: string }>(
       db,

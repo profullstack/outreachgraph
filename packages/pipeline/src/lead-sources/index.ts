@@ -22,6 +22,7 @@ export {
   ensureLeadSources,
   leadBaseStatus,
   pickImportedLeads,
+  WEAK_SEO_SCORE,
   storeLeadCandidates,
   sweepLeadSources,
   updateLeadSource,

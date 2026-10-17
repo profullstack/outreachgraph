@@ -42,6 +42,20 @@ export function isBudgetExhausted(error: unknown): boolean {
     return true;
   }
 
+  // A dead key is the same answer as an empty wallet: this provider cannot
+  // serve anyone until a human acts. Gemini reported a leaked key as a 403
+  // (2026-10-17), which used to stop the chain at the first link instead of
+  // trying the next one. Matched on the key wording, not on every 403, so a
+  // content refusal still is not reshopped.
+  if (
+    /API key (?:not valid|is invalid|expired|was reported as leaked|reported as leaked)|invalid[_ ]api[_ ]key|incorrect api key/i.test(
+      message,
+    ) ||
+    status === 401
+  ) {
+    return true;
+  }
+
   // A bare 429 is rate limiting rather than exhaustion, but from here the two
   // are indistinguishable and both mean "not this provider, not now".
   return status === 429;

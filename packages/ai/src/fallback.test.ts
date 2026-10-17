@@ -436,3 +436,17 @@ describe('GeminiModel', () => {
     expect(DEFAULT_GEMINI_MODEL).toContain('latest');
   });
 });
+
+describe('a dead key falls through like an empty wallet', () => {
+  test('Gemini leaked-key 403 and a 401 are exhausted; a plain 403 refusal is not', () => {
+    const leaked = Object.assign(
+      new Error('gemini 403: Your API key was reported as leaked. Please use another API key.'),
+      { status: 403 },
+    );
+    expect(isBudgetExhausted(leaked)).toBe(true);
+    expect(isBudgetExhausted(Object.assign(new Error('unauthorized'), { status: 401 }))).toBe(true);
+    expect(
+      isBudgetExhausted(Object.assign(new Error('content blocked by policy'), { status: 403 })),
+    ).toBe(false);
+  });
+});

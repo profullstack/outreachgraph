@@ -274,7 +274,7 @@ describe('storage', () => {
 });
 
 describe('the sweep', () => {
-  test('never audited first (newest first), then the oldest due audit; not-due, queued and platforms left out', async () => {
+  test('lead companies first (never audited, then oldest due), then imported ones; not-due, queued and platforms left out', async () => {
     const db = await setup('site-audit-order');
     // acme.com (seed) is never audited and oldest-created among the new.
     await db.execute({
@@ -287,7 +287,7 @@ describe('the sweep', () => {
     await addCompany(db, 'co_not_due', 'notdue.test');
     await addCompany(db, 'co_queued', 'queued.test', iso(-500));
     await addCompany(db, 'co_gmail', 'gmail.com', iso(-100));
-    // A bulk-imported directory row nobody works at is not a lead.
+    // A bulk-imported directory row nobody works at: audited too, after the leads.
     await addCompany(db, 'co_directory', 'directory.test', iso(-50), false);
     const auditor = fakeAuditor();
     await auditCompanySite(
@@ -317,7 +317,14 @@ describe('the sweep', () => {
     });
 
     const targets = await staleSiteAuditTargets(db, 10, AT);
-    expect(targets.map((t) => t.domain)).toEqual(['new.test', 'acme.com', 'old.test', 'mid.test']);
+    // Lead companies first, then the imported directory row nobody works at yet.
+    expect(targets.map((t) => t.domain)).toEqual([
+      'new.test',
+      'acme.com',
+      'old.test',
+      'mid.test',
+      'directory.test',
+    ]);
     expect((await staleSiteAuditTargets(db, 1, AT)).map((t) => t.domain)).toEqual(['new.test']);
   });
 
