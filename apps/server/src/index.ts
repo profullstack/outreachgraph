@@ -1334,28 +1334,6 @@ async function tick(): Promise<void> {
     }
   }
 
-  // Lead importers: no model and no paid API, one batch per due source. Beside
-  // the tick, because a Wikidata page takes seconds and the Majestic range
-  // read longer, and one at a time.
-  if (leadImportsOn && !leadImportRunning) {
-    leadImportRunning = true;
-    void sweepLeadSources({ db, dailyTotal: leadImportDailyTotal })
-      .then((results) => {
-        for (const r of results) {
-          if (r.skipped) continue;
-          if (r.error) console.error(`lead import ${r.source} failed: ${r.error}`);
-          else
-            console.log(
-              `lead import ${r.source}: read ${r.seen}, kept ${r.candidates}, added ${r.added}${r.done ? ' (end of list)' : ''}`,
-            );
-        }
-      })
-      .catch((error: unknown) => console.error('lead import sweep failed', error))
-      .finally(() => {
-        leadImportRunning = false;
-      });
-  }
-
   // The Idea Generator: what people keep asking for on Reddit. A scan paces the
   // public archive at ~2.5s a request, so it runs beside the tick rather than
   // inside it, one at a time.
@@ -1807,6 +1785,36 @@ async function loop(): Promise<void> {
 }
 
 void loop();
+
+// Lead importers on their own clock, not inside the tick: a tick can spend a
+// long time draining crawls (a model outage makes every one slow), and the
+// importers call no model and no paid API, so nothing about a busy queue
+// should hold them back. One sweep at a time; each due source reads a batch.
+async function leadImportLoop(): Promise<void> {
+  while (running) {
+    if (!leadImportRunning) {
+      leadImportRunning = true;
+      try {
+        const results = await sweepLeadSources({ db, dailyTotal: leadImportDailyTotal });
+        for (const r of results) {
+          if (r.skipped) continue;
+          if (r.error) console.error(`lead import ${r.source} failed: ${r.error}`);
+          else
+            console.log(
+              `lead import ${r.source}: read ${r.seen}, kept ${r.candidates}, added ${r.added}${r.done ? ' (end of list)' : ''}`,
+            );
+        }
+      } catch (error) {
+        console.error('lead import sweep failed', error);
+      } finally {
+        leadImportRunning = false;
+      }
+    }
+    await Bun.sleep(60_000);
+  }
+}
+
+if (leadImportsOn) void leadImportLoop();
 
 /**
  * The site-audit runner: hooked `seo_audit` jobs first, then the sweep of the
