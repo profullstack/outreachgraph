@@ -647,10 +647,19 @@ describe('retireExcludedImports', () => {
     });
     // Idempotent, and excluded rows leave the lead base.
     expect((await retireExcludedImports(db)).retired).toBe(0);
-    // linkedin.com keeps its row (a campaign crawled it) but is never picked again.
+    // linkedin.com keeps its row (a campaign crawled it) but is never picked again,
+    // even when such rows fill the top of the order.
     const picked = await pickImportedLeads(db, SEED.workspaceId, undefined, { limit: 10 });
     expect(picked.map((l) => l.domain)).toEqual(['acme-widgets.com']);
+    for (let i = 0; i < 30; i += 1)
+      await add(`co_kept${i}`, `top${i}.example-co.com`, 'majestic-million', 10 + i);
+    const one = await pickImportedLeads(db, SEED.workspaceId, undefined, {
+      sort: 'rank',
+      limit: 1,
+    });
+    expect(one.map((l) => l.domain)).toEqual(['acme-widgets.com']);
     const status = await leadBaseStatus(db);
-    expect(status.totals.imported).toBe(3);
+    // 3 kept from the first run plus the 30 crawled-looking rows added above.
+    expect(status.totals.imported).toBe(33);
   });
 });
