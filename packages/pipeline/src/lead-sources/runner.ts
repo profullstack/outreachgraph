@@ -25,7 +25,7 @@ import {
   type LeadCandidate,
   type LeadSourceDefinition,
 } from './sources';
-import { leadDomain } from './domains';
+import { leadDomain, MEGA_PLATFORMS } from './domains';
 
 /** Companies all sources together may add in one UTC day. */
 export const DEFAULT_DAILY_TOTAL = 15_000;
@@ -484,10 +484,15 @@ export async function pickImportedLeads(
     'co.lead_source IS NOT NULL',
     'co.domain IS NOT NULL',
     'co.excluded_at IS NULL',
+    // What today's import rules would drop, in SQL so a block of such rows at
+    // the top of the order cannot starve the pick (retirement leaves alone a
+    // company a campaign already crawled; it still must not be paid for again).
+    `NOT (co.lead_source = 'majestic-million' AND co.lead_rank <= ${MAJESTIC_SKIP_TOP})`,
+    `co.domain NOT IN (${[...MEGA_PLATFORMS].map(() => '?').join(', ')})`,
     // Reachable sites only: a homepage seo.rank could not read is not worth a crawl.
     "(sa.status IS NULL OR sa.status IN ('ok', 'error'))",
   ];
-  const args: InValue[] = [];
+  const args: InValue[] = [...MEGA_PLATFORMS];
   if (filter.sources?.length) {
     where.push(`co.lead_source IN (${filter.sources.map(() => '?').join(', ')})`);
     args.push(...filter.sources);
@@ -518,10 +523,8 @@ export async function pickImportedLeads(
                     WHEN sa.status IS NULL THEN 1 ELSE 2 END,
                COALESCE(sa.issues, -1) DESC, COALESCE(sa.score, 101), ${rankOrder}`;
   const limit = Math.max(1, Math.min(500, Math.floor(filter.limit)));
-  // Over-fetch: rows today's rules would not import are dropped below. Most
-  // are retired (`excluded_at`), but one a campaign already crawled keeps its
-  // row untouched, and must still not be picked to be paid for again.
-  const fetchLimit = Math.min(1000, limit * 2 + 20);
+  // A little slack for the rule-based check below (suffix matches, infrastructure).
+  const fetchLimit = Math.min(1000, limit + 20);
   const rows = await queryAll<{
     id: string;
     domain: string;
