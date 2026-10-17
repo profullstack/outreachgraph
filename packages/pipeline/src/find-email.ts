@@ -451,12 +451,15 @@ async function employerDomain(db: Client, person: PersonRow): Promise<string | u
     if (domain) return domain;
   }
 
+  // Only companies something read (`lead_source IS NULL`). A bulk-imported list
+  // holds every "Acme" on earth; matching a person's employer by name against
+  // it would guess a stranger's domain.
   const named = await queryAll<{ domain: string }>(
     db,
     `SELECT DISTINCT co.domain FROM field_provenance fp
        JOIN companies co ON lower(trim(co.name)) = lower(trim(fp.value))
       WHERE fp.entity_kind = 'person' AND fp.entity_id = ? AND fp.field = 'companyName'
-        AND co.domain IS NOT NULL AND trim(co.domain) <> ''`,
+        AND co.domain IS NOT NULL AND trim(co.domain) <> '' AND co.lead_source IS NULL`,
     [person.id],
   );
   if (named.length === 1) return companyDomain(named[0]?.domain);

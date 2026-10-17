@@ -668,6 +668,44 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'lead_sources_status',
+    title: 'See the lead base and its import sources',
+    description:
+      'How many companies, people and people with an email the deployment holds, and per import source ' +
+      '(Wikidata businesses, the Majestic Million, nichedb.dev SaaS/extensions/MCP/deal stores/podcasts): ' +
+      'rows stored, today against its daily cap, last and next run, last error.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/lead-sources'),
+  },
+  {
+    name: 'pick_imported_leads',
+    title: 'Queue imported companies into a campaign',
+    description:
+      'Picks imported companies the campaign has not read yet, best-ranked first, filtered by source, ' +
+      'industry (substring) and ISO country, and queues a site crawl for each so the pipeline can find ' +
+      'the people. Each crawl is one site read, so keep limit modest (default 25, max 200).',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaignId: { type: 'string' },
+        sources: { type: 'array', items: { type: 'string' } },
+        industry: { type: 'string' },
+        country: { type: 'string', description: 'ISO 3166 alpha-2, e.g. DE' },
+        limit: { type: 'number' },
+      },
+      required: ['campaignId'],
+    },
+    run: (client, args) =>
+      client.post(`/campaigns/${encodeURIComponent(require(args, 'campaignId'))}/discover/leads`, {
+        ...(Array.isArray(args.sources) ? { sources: args.sources } : {}),
+        ...(str(args, 'industry') ? { industry: str(args, 'industry') } : {}),
+        ...(str(args, 'country') ? { country: str(args, 'country') } : {}),
+        ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+      }),
+  },
+  {
     name: 'list_ideas',
     title: 'List product ideas people keep asking for',
     description:

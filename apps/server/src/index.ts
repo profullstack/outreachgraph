@@ -105,6 +105,8 @@ import {
   type FinderSlot,
   type LeadEnrichDeps,
   runBlueskyAutopilot,
+  sweepLeadSources,
+  LEAD_IMPORT_DAILY_TOTAL,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
@@ -331,6 +333,12 @@ if (!jobSearcher)
  * cannot be handed off.
  */
 let ideaScanRunning = false;
+// Lead importers (packages/pipeline/src/lead-sources): open lists into the
+// shared companies table, each source on its own cap. LEAD_IMPORTS=off stops
+// them; LEAD_IMPORT_DAILY_TOTAL caps all of them together per UTC day.
+const leadImportsOn = process.env.LEAD_IMPORTS !== 'off';
+const leadImportDailyTotal = Number(process.env.LEAD_IMPORT_DAILY_TOTAL ?? LEAD_IMPORT_DAILY_TOTAL);
+let leadImportRunning = false;
 /** Buyer-lead monitors scan beside the tick, one at a time, like idea scans. */
 let leadScanRunning = false;
 const chovy = chovyConfig();
@@ -1258,6 +1266,28 @@ async function tick(): Promise<void> {
         leadEnrichmentRunning = false;
       });
     }
+  }
+
+  // Lead importers: no model and no paid API, one batch per due source. Beside
+  // the tick, because a Wikidata page takes seconds and the Majestic range
+  // read longer, and one at a time.
+  if (leadImportsOn && !leadImportRunning) {
+    leadImportRunning = true;
+    void sweepLeadSources({ db, dailyTotal: leadImportDailyTotal })
+      .then((results) => {
+        for (const r of results) {
+          if (r.skipped) continue;
+          if (r.error) console.error(`lead import ${r.source} failed: ${r.error}`);
+          else
+            console.log(
+              `lead import ${r.source}: read ${r.seen}, kept ${r.candidates}, added ${r.added}${r.done ? ' (end of list)' : ''}`,
+            );
+        }
+      })
+      .catch((error: unknown) => console.error('lead import sweep failed', error))
+      .finally(() => {
+        leadImportRunning = false;
+      });
   }
 
   // The Idea Generator: what people keep asking for on Reddit. A scan paces the

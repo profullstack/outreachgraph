@@ -48,6 +48,11 @@ const TOOLS = [
   { href: '/rules', label: 'Rules', hint: 'When this happens, do that' },
   { href: '/research', label: 'Research tables', hint: 'Ask the same questions of a list' },
   { href: '/prospects', label: 'All people', hint: 'Everyone found, across every product' },
+  {
+    href: '/sources',
+    label: 'Lead sources',
+    hint: 'Companies imported from open lists, per source',
+  },
   { href: '/signals', label: 'Signals', hint: 'The public activity behind each match' },
   {
     href: '/buyer-leads',
