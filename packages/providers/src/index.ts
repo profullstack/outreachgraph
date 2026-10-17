@@ -380,3 +380,13 @@ export {
   type FinderQuery,
   type FinderAnswer,
 } from './email-finder';
+
+export {
+  SeoRankClient,
+  SeoRankRefused,
+  SeoRankUnavailable,
+  type SeoRankAudit,
+  type SeoRankAuditor,
+  type SeoRankFix,
+  type SeoRankOptions,
+} from './seorank';

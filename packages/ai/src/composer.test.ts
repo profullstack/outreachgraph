@@ -440,3 +440,40 @@ describe('email subject lines', () => {
     expect(subjectProblem('PAYOUTS AT ACME', grounding, 'ExamplePay')).toBe('all caps');
   });
 });
+
+describe('the homepage audit as an optional angle', () => {
+  const siteAudit = {
+    url: 'https://acme.com/',
+    score: 58,
+    grade: 'F',
+    ageDescription: '2 days ago',
+    topIssues: ['Add a meta description', 'Use exactly one H1'],
+  };
+
+  test('is offered in the CONTEXT, after the trigger, as optional', async () => {
+    const model = new StubModel(GOOD_DRAFT);
+    const result = await composeDraft(model, input({ siteAudit }));
+    expect(result.ok).toBe(true);
+    const user = model.calls[0]!.user;
+    expect(user).toContain(
+      'Their homepage (https://acme.com/), audited by seo.rank 2 days ago: 58/100, grade F. ' +
+        'Top issues: Add a meta description; Use exactly one H1',
+    );
+    expect(user.indexOf('Their exact words')).toBeLessThan(user.indexOf('Their homepage'));
+    expect(user.indexOf('Their homepage')).toBeLessThan(user.indexOf('Write a message'));
+    expect(user).toContain('otherwise leave the audit out entirely');
+  });
+
+  test('a draft citing it passes grounding', async () => {
+    const body =
+      'Settlement taking days was our breaking point too. Also noticed acme.com has no meta description.';
+    const result = await composeDraft(new StubModel(body), input({ siteAudit }));
+    expect(result.ok).toBe(true);
+  });
+
+  test('is absent when there is no audit', async () => {
+    const model = new StubModel(GOOD_DRAFT);
+    await composeDraft(model, input());
+    expect(model.calls[0]!.user).not.toContain('seo.rank');
+  });
+});

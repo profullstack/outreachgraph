@@ -121,6 +121,13 @@ export const JOB_KINDS = [
    * behind it (`resolveJobPost`). Queued when a posting is added.
    */
   'resolve_job_post',
+  /**
+   * Audit one company's homepage with seo.rank and store the latest result in
+   * `site_audits` (`runSiteAuditJob`). Queued when a company is first recorded.
+   * Drained by its own runner beside the tick, never by the main serial drain,
+   * so thousands of audits can never hold up a crawl or a send.
+   */
+  'seo_audit',
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];

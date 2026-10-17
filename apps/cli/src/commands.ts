@@ -907,6 +907,50 @@ const LINKPOST_USAGE =
  * to the network; each comes back as a card with the text, a link that opens
  * the network's composer, and the steps. Nothing is posted for you.
  */
+/** Renders a person's company homepage audit, or the overall progress with `stats`. */
+async function runSiteAudit({ client, args, flags }: CommandContext): Promise<string> {
+  const [first, second] = args;
+  if (!first || first === 'stats') {
+    const stats = (await client.get('/site-audits/stats')) as Record<string, unknown>;
+    if (flags.json === true) return JSON.stringify(stats, null, 2);
+    return [
+      `companies   ${text(stats, 'companies')}`,
+      `audited     ${text(stats, 'audited')}  (average score ${text(stats, 'averageScore', '-')})`,
+      `refused     ${text(stats, 'failed')}`,
+      `retrying    ${text(stats, 'erroring')}  dead ${text(stats, 'dead')}`,
+      `never       ${text(stats, 'neverAudited')}`,
+      `last 24h    ${text(stats, 'auditedLast24h')}  queued ${text(stats, 'pendingJobs')}`,
+    ].join('\n');
+  }
+  const refresh = first === 'refresh';
+  const personId = refresh ? second : first;
+  if (!personId)
+    throw new Error('usage: og site-audit <personId> [--json] | refresh <personId> | stats');
+  const path = `/people/${encodeURIComponent(personId)}/site-audit`;
+  const result = (await (refresh ? client.post(path, {}) : client.get(path))) as Record<
+    string,
+    unknown
+  >;
+  if (flags.json === true) return JSON.stringify(result, null, 2);
+  const company = (result.company ?? {}) as Record<string, unknown>;
+  const audit = result.audit as Record<string, unknown> | null;
+  const head = refresh
+    ? `${text(company, 'domain')}: ${result.queued ? 'fresh audit queued' : 'an audit is already queued'}`
+    : text(company, 'domain');
+  if (!audit) return `${head}\nnot audited yet`;
+  if (audit.status !== 'ok') {
+    return `${head}\n${text(audit, 'status')}: ${text(audit, 'error', 'no detail')}`;
+  }
+  const fixes = Array.isArray(audit.fixes) ? (audit.fixes as Record<string, unknown>[]) : [];
+  return [
+    `${head}  ${text(audit, 'score')}/100 ${text(audit, 'grade')}  checked ${text(audit, 'checkedAt')}`,
+    ...fixes
+      .slice(0, 5)
+      .map((f, i) => `  ${i + 1}. [${text(f, 'priority')}] ${text(f, 'label')}: ${text(f, 'fix')}`),
+    `report: ${text(audit, 'reportUrl')}`,
+  ].join('\n');
+}
+
 async function runLinkPost({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target] = args;
   const card = (p: Record<string, unknown>) => {
@@ -2262,6 +2306,12 @@ export const COMMANDS: readonly Command[] = [
     summary:
       'Buyer leads: Reddit, Hacker News and Bluesky posts scored for intent; draft replies you post yourself.',
     run: runBuyers,
+  },
+  {
+    name: 'site-audit',
+    usage: 'og site-audit <personId> [--json] | refresh <personId> | stats [--json]',
+    summary: "A lead's company homepage as seo.rank sees it: score, grade, top fixes.",
+    run: runSiteAudit,
   },
   {
     name: 'linkpost',

@@ -68,6 +68,21 @@ export interface VoiceContext {
   readonly prohibitedClaims?: readonly string[];
 }
 
+/**
+ * The latest seo.rank audit of the prospect's company homepage: stored
+ * evidence (we audited it, on this date), so it may be cited. An optional
+ * angle only: the composer is told to use it when it fits the offering and to
+ * ignore it otherwise, and it changes nothing about who is contacted or when.
+ */
+export interface SiteAuditContext {
+  readonly url: string;
+  readonly score: number;
+  readonly grade: string;
+  readonly ageDescription: string;
+  /** The highest-impact fixes, in order. */
+  readonly topIssues: readonly string[];
+}
+
 export interface ComposeInput {
   readonly action: ActionKind;
   readonly network: Network;
@@ -85,6 +100,8 @@ export interface ComposeInput {
    * that customer into the message.
    */
   readonly guidance?: string;
+  /** Their homepage's audit, offered as an optional angle. */
+  readonly siteAudit?: SiteAuditContext;
   /** Retries on a failed grounding check. Zero disables retrying. */
   readonly maxAttempts?: number;
 }
@@ -216,7 +233,10 @@ function buildGrounding(input: ComposeInput): GroundingContext {
   ].filter(Boolean);
 
   return {
-    evidence: input.trigger?.evidence ? [input.trigger.evidence, input.trigger.summary] : [],
+    evidence: [
+      ...(input.trigger?.evidence ? [input.trigger.evidence, input.trigger.summary] : []),
+      ...(input.siteAudit ? [siteAuditLine(input.siteAudit)] : []),
+    ],
     facts,
     offering: [
       input.offering.name,
@@ -376,6 +396,17 @@ function buildUser(input: ComposeInput, failed?: CheckReport): string {
         'Reference their words specifically enough that it could not have been sent to anyone else.',
       ];
 
+  if (input.siteAudit) {
+    // After the trigger, so the message still answers what they said; the
+    // audit is a second, optional fact, never the reason for writing.
+    sections.splice(
+      sections.indexOf(''),
+      0,
+      siteAuditLine(input.siteAudit),
+      'You may mention one of those homepage issues only if it plainly connects to what the business does; otherwise leave the audit out entirely.',
+    );
+  }
+
   const guidance = input.guidance?.trim();
   if (guidance) {
     sections.push(
@@ -405,6 +436,13 @@ function buildUser(input: ComposeInput, failed?: CheckReport): string {
   }
 
   return sections.filter(Boolean).join('\n');
+}
+
+function siteAuditLine(audit: SiteAuditContext): string {
+  return (
+    `Their homepage (${audit.url}), audited by seo.rank ${audit.ageDescription}: ` +
+    `${audit.score}/100, grade ${audit.grade}. Top issues: ${audit.topIssues.join('; ')}`
+  );
 }
 
 /** Models sometimes wrap output in quotes or a code fence despite instructions. */

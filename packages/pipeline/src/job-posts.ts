@@ -48,6 +48,7 @@ import {
 import { enqueue } from './queue';
 import { enqueueFindEmail } from './find-email-queue';
 import { intakeSocialPeople } from './social-intake';
+import { queueSiteAudit } from './site-audits';
 
 export interface JobPostContact {
   readonly id: string;
@@ -802,6 +803,7 @@ export async function promoteJobPostContact(
               VALUES (?, ?, ?, '[]', ?, ?)`,
         args: [company.id, contact.company ?? domain, domain, stamp, stamp],
       });
+      await queueSiteAudit(db, { workspaceId, companyId: company.id, domain });
     }
     await db.execute({
       sql: `UPDATE people SET current_company_id = COALESCE(current_company_id, ?), updated_at = ?

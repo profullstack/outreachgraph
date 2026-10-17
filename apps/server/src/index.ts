@@ -107,6 +107,9 @@ import {
   runBlueskyAutopilot,
   sweepLeadSources,
   LEAD_IMPORT_DAILY_TOTAL,
+  refreshStaleCompanies,
+  runSiteAuditJob,
+  runSiteAuditRound,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
@@ -121,6 +124,7 @@ import {
   RedditSource,
   RssSource,
   SiteProvider,
+  SeoRankClient,
   ValueSerpClient,
   type FeedSource,
 } from '@outreachgraph/providers';
@@ -373,6 +377,37 @@ const leadEnrichment: LeadEnrichDeps = {
 };
 if (!leadEnrichment.pdl) console.log('no PDL_API_KEY: lead enrichment uses addresses and search');
 let leadEnrichmentRunning = false;
+
+/**
+ * seo.rank audits of every lead's homepage. Our own service on this box,
+ * reached locally: from inside the container that is host nginx on the docker
+ * bridge gateway with `Host: seo.rank` (SEORANK_URL + SEORANK_HOST), since
+ * seo.rank is a Moshpit name dev2 cannot resolve.
+ *
+ * SEO_AUDITS_PER_ROUND every SEO_AUDIT_ROUND_MS (default 10 a minute, about
+ * 14,400 a day) stays far inside the key's 50,000/day; the concurrency stays
+ * under seo.rank's keyed gate of 4 so a hooked job never waits on the sweep.
+ */
+const seoAuditor = process.env.SEORANK_API_KEY
+  ? new SeoRankClient({
+      apiKey: process.env.SEORANK_API_KEY,
+      ...(process.env.SEORANK_URL ? { baseUrl: process.env.SEORANK_URL } : {}),
+      ...(process.env.SEORANK_HOST ? { host: process.env.SEORANK_HOST } : {}),
+    })
+  : undefined;
+const SEO_AUDITS_PER_ROUND = Number(process.env.SEO_AUDITS_PER_ROUND ?? 10);
+const SEO_AUDIT_ROUND_MS = Number(process.env.SEO_AUDIT_ROUND_MS ?? 60_000);
+const SEO_AUDIT_CONCURRENCY = Number(process.env.SEO_AUDIT_CONCURRENCY ?? 3);
+if (!seoAuditor) console.log('no SEORANK_API_KEY: site audits are queued but not run');
+
+/**
+ * Re-reading known companies, stalest first: COMPANY_REFRESH_PER_DAY spread
+ * over the hours (default 150 a day, so the ~2,200 companies with people in a
+ * campaign turn over in about a fortnight, then monthly).
+ */
+const COMPANY_REFRESH_PER_DAY = Number(process.env.COMPANY_REFRESH_PER_DAY ?? 150);
+const COMPANY_REFRESH_STALE_DAYS = Number(process.env.COMPANY_REFRESH_STALE_DAYS ?? 30);
+let lastCompanyRefreshAt = 0;
 
 if (!photoFinder)
   console.log('no VALUESERP_API_KEY: lead photos come from public profiles and crawls');
@@ -818,6 +853,13 @@ async function runJob(job: QueuedJob): Promise<void> {
     case 'bootstrap_product':
       await bootstrapProduct(job);
       return;
+    case 'seo_audit': {
+      // Normally drained by the site-audit runner, never here; kept so a job
+      // claimed by any path still does the right thing.
+      if (!seoAuditor) throw new Error('seo_audit needs SEORANK_API_KEY');
+      await runSiteAuditJob(db, seoAuditor, job);
+      return;
+    }
     case 'resolve_job_post': {
       const { jobPostId } = job.payload as { jobPostId?: string };
       if (!jobPostId) throw new Error('resolve_job_post needs jobPostId');
@@ -1134,6 +1176,25 @@ async function tick(): Promise<void> {
     }
   }
 
+  // Known companies re-read, stalest first, a few an hour.
+  if (Date.now() - lastCompanyRefreshAt >= 3_600_000) {
+    lastCompanyRefreshAt = Date.now();
+    try {
+      const refreshed = await refreshStaleCompanies(db, {
+        limit: Math.ceil(COMPANY_REFRESH_PER_DAY / 24),
+        staleDays: COMPANY_REFRESH_STALE_DAYS,
+      });
+      if (refreshed.queued > 0 || refreshed.busyWorkspaces > 0) {
+        console.log(
+          `company refresh: queued ${refreshed.queued} re-crawl(s) of ${refreshed.considered} stale` +
+            `${refreshed.busyWorkspaces ? `, ${refreshed.busyWorkspaces} busy workspace(s) skipped` : ''}`,
+        );
+      }
+    } catch (error) {
+      console.error('company refresh failed', error);
+    }
+  }
+
   // Campaigns whose seed has not been read in a week are asked again. This is
   // the only thing that puts work back into an idle queue: once the first crop
   // of research cards is cleared, nothing else ever asks the seed for more.
@@ -1150,7 +1211,12 @@ async function tick(): Promise<void> {
 
   // The queue drains before the send sweep, so anything discovered this tick
   // can go out on the same tick rather than waiting for the next one.
-  const drained = await drainQueue(db, runJob, { isOutage: isBudgetExhausted });
+  // Site audits have their own runner (below the loop), so thousands of them
+  // can never stand in front of a crawl or a send in this serial drain.
+  const drained = await drainQueue(db, runJob, {
+    isOutage: isBudgetExhausted,
+    excludeKinds: ['seo_audit'],
+  });
   if (drained.processed > 0 || drained.reclaimed > 0) {
     console.log(
       `jobs: ${drained.succeeded} done, ${drained.retried} retrying, ` +
@@ -1742,6 +1808,36 @@ async function loop(): Promise<void> {
 
 void loop();
 
+/**
+ * The site-audit runner: hooked `seo_audit` jobs first, then the sweep of the
+ * stalest companies, every SEO_AUDIT_ROUND_MS. Its own loop rather than part
+ * of the tick, so a long tick never starves it and it never lengthens a tick.
+ */
+let seoInFlight: Promise<void> = Promise.resolve();
+async function seoLoop(): Promise<void> {
+  if (!seoAuditor) return;
+  while (running) {
+    seoInFlight = runSiteAuditRound(db, seoAuditor, {
+      budget: SEO_AUDITS_PER_ROUND,
+      concurrency: SEO_AUDIT_CONCURRENCY,
+    })
+      .then((r) => {
+        if (r.jobs + r.swept > 0 || r.held) {
+          console.log(
+            `site audits: ${r.jobs} job(s), ${r.swept} swept; ${r.ok} ok, ${r.failed} refused, ` +
+              `${r.errors} error(s), ${r.skipped} fresh` +
+              `${r.held ? '; seo.rank said not now, holding' : ''}`,
+          );
+        }
+      })
+      .catch((error: unknown) => console.error('site audit round failed', error));
+    await seoInFlight;
+    if (!running) break;
+    await Bun.sleep(SEO_AUDIT_ROUND_MS);
+  }
+}
+void seoLoop();
+
 // ----------------------------------------------------------------- shutdown
 let shuttingDown = false;
 
@@ -1755,6 +1851,7 @@ async function shutdown(signal: string): Promise<void> {
   // Finish the current tick so a half-processed deletion is not left pending
   // with rows already removed.
   await inFlight;
+  await seoInFlight;
 
   await server.stop(false);
   web?.kill();

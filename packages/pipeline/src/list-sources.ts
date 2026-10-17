@@ -32,6 +32,7 @@ import { crawlDedupeKey } from './auto-approve';
 import { emitEvent } from './events';
 import { findCompanyDomain } from './job-posts';
 import { enqueue } from './queue';
+import { queueSiteAudit } from './site-audits';
 
 export interface ListSourceDeps {
   readonly db: Client;
@@ -254,7 +255,7 @@ async function scanOne(
     if (!campaignId) return taken;
 
     if (domain && item.summary) {
-      const companyId = await upsertCompany(db, item.company ?? domain, domain);
+      const companyId = await upsertCompany(db, workspaceId, item.company ?? domain, domain);
       await db.execute({
         sql: `INSERT INTO signals (id, workspace_id, person_id, company_id, network, signal_type,
               subtype, summary, evidence, source_url, source_timestamp, observed_at, confidence,
@@ -324,7 +325,12 @@ function kindLabel(kind: ListSourceKind): string {
   return 'Conference speakers and sponsors';
 }
 
-async function upsertCompany(db: Client, name: string, domain: string): Promise<string> {
+async function upsertCompany(
+  db: Client,
+  workspaceId: string,
+  name: string,
+  domain: string,
+): Promise<string> {
   const existing = await queryOne<{ id: string }>(db, 'SELECT id FROM companies WHERE domain = ?', [
     domain,
   ]);
@@ -336,6 +342,7 @@ async function upsertCompany(db: Client, name: string, domain: string): Promise<
           VALUES (?, ?, ?, '[]', ?, ?)`,
     args: [id, name, domain, stamp, stamp],
   });
+  await queueSiteAudit(db, { workspaceId, companyId: id, domain });
   return id;
 }
 

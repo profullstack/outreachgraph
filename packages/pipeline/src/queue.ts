@@ -11,7 +11,7 @@
  */
 
 import { newId } from '@outreachgraph/domain';
-import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import { now, queryAll, queryOne, type Client, type InValue } from '@outreachgraph/db';
 import { type JobKind } from './jobs';
 
 export const JOB_STATUSES = ['pending', 'running', 'done', 'failed'] as const;
@@ -130,10 +130,34 @@ function isUniqueViolation(error: unknown): boolean {
  * forever, and a queue that quietly double-runs jobs is a bad thing to discover
  * later.
  */
-export async function claimNext(db: Client, workspaceId?: string): Promise<QueuedJob | undefined> {
+export interface ClaimFilter {
+  /** Only these kinds. */
+  readonly kinds?: readonly JobKind[];
+  /** Never these kinds — how the main drain leaves work with its own runner alone. */
+  readonly excludeKinds?: readonly JobKind[];
+}
+
+export async function claimNext(
+  db: Client,
+  workspaceId?: string,
+  filter: ClaimFilter = {},
+): Promise<QueuedJob | undefined> {
   const stamp = now();
-  const scope = workspaceId ? 'AND workspace_id = ?' : '';
-  const args = workspaceId ? [stamp, stamp, stamp, workspaceId] : [stamp, stamp, stamp];
+  const clauses: string[] = [];
+  const args: InValue[] = [stamp, stamp, stamp];
+  if (workspaceId) {
+    clauses.push('AND workspace_id = ?');
+    args.push(workspaceId);
+  }
+  if (filter.kinds?.length) {
+    clauses.push(`AND kind IN (${filter.kinds.map(() => '?').join(', ')})`);
+    args.push(...filter.kinds);
+  }
+  if (filter.excludeKinds?.length) {
+    clauses.push(`AND kind NOT IN (${filter.excludeKinds.map(() => '?').join(', ')})`);
+    args.push(...filter.excludeKinds);
+  }
+  const scope = clauses.join(' ');
 
   const row = await queryOne<{
     id: string;
@@ -311,6 +335,8 @@ export interface DrainOptions {
   readonly limit?: number;
   /** Recognises a failure that means "not this job's fault". */
   readonly isOutage?: OutageCheck;
+  /** Kinds this drain never claims, because another runner owns them. */
+  readonly excludeKinds?: readonly JobKind[];
 }
 
 /**
@@ -327,7 +353,7 @@ export async function drainQueue(
   handler: JobHandler,
   options: DrainOptions = {},
 ): Promise<DrainSummary> {
-  const { limit = 25, isOutage } = options;
+  const { limit = 25, isOutage, excludeKinds } = options;
 
   const reclaimed = await reclaimStalled(db);
   let processed = 0;
@@ -337,7 +363,7 @@ export async function drainQueue(
   let deferred = 0;
 
   for (let i = 0; i < limit; i += 1) {
-    const job = await claimNext(db);
+    const job = await claimNext(db, undefined, excludeKinds ? { excludeKinds } : {});
     if (!job) break;
 
     processed += 1;

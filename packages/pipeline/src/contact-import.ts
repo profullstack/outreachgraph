@@ -26,6 +26,7 @@ import {
   type ScreenFinding,
 } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
+import { queueSiteAudits } from './site-audits';
 
 /**
  * How sure we are that this mailbox belongs to this person.
@@ -262,6 +263,7 @@ export async function importContactChunk(
   // handful of reads and one batch for the chunk, however many rows.
   const updated = await patchPeople(
     db,
+    batch.workspace_id,
     known.flatMap((entry) => {
       const personId = existing.get(entry.contact.dedupeKey);
       return personId ? [{ personId, contact: entry.contact }] : [];
@@ -269,6 +271,7 @@ export async function importContactChunk(
   );
   await patchPeople(
     db,
+    batch.workspace_id,
     fresh.flatMap((entry, index) => {
       const personId = freshIds[index];
       return personId && (entry.contact.companyDomain || entry.contact.linkedinUrl)
@@ -545,7 +548,7 @@ async function storeOneAtATime(
 
       if (outcome.created) imported += 1;
       else merged += 1;
-      const changed = await patchPeople(db, [
+      const changed = await patchPeople(db, batch.workspace_id, [
         { personId: outcome.personId, contact: entry.contact },
       ]);
       if (!outcome.created) updated += changed;
@@ -770,6 +773,7 @@ async function rowsIn<T>(
 async function companiesFor(
   db: Client,
   wanted: ReadonlyMap<string, string>,
+  workspaceId: string,
 ): Promise<Map<string, string>> {
   const domains = [...wanted.keys()];
   const found = new Map<string, string>();
@@ -797,6 +801,15 @@ async function companiesFor(
       })),
     );
     await read();
+    // New companies get their homepage audited; one batch for the chunk.
+    await queueSiteAudits(
+      db,
+      workspaceId,
+      missing.flatMap((domain) => {
+        const companyId = found.get(domain);
+        return companyId ? [{ companyId, domain }] : [];
+      }),
+    );
   }
   return found;
 }
@@ -807,6 +820,7 @@ async function companiesFor(
  */
 async function patchPeople(
   db: Client,
+  workspaceId: string,
   entries: ReadonlyArray<{ personId: string; contact: CleanContact }>,
 ): Promise<number> {
   if (!entries.length) return 0;
@@ -815,7 +829,7 @@ async function patchPeople(
   for (const { contact } of entries)
     if (contact.companyDomain && !wanted.has(contact.companyDomain))
       wanted.set(contact.companyDomain, contact.company ?? contact.companyDomain);
-  const companies = await companiesFor(db, wanted);
+  const companies = await companiesFor(db, wanted, workspaceId);
 
   const ids = [...new Set(entries.map((e) => e.personId))];
   const people = new Map(
