@@ -162,6 +162,15 @@ export const MAJESTIC_URL = 'https://downloads.majestic.com/majestic_million.csv
 /** Lines read per run at most, so one run never walks the whole file. */
 const MAJESTIC_MAX_LINES = 60_000;
 
+/**
+ * Majestic ranks at or above this are skipped. The top thousand is almost all
+ * megacorps, platforms, national media and universities (rank 1-120 was
+ * google, instagram, twitter, linkedin, apple, wikipedia, nytimes, oracle,
+ * cnn, mit.edu...), which no campaign can sell to; the explicit list in
+ * `MEGA_PLATFORMS` catches the famous ones further down.
+ */
+export const MAJESTIC_SKIP_TOP = 1000;
+
 interface MajesticCursor {
   /** Byte offset of the newline that ended the last line read. */
   readonly offset: number;
@@ -251,7 +260,7 @@ export function majesticSource(url = MAJESTIC_URL): LeadSourceDefinition {
           lines += 1;
           const fields = line.split(',');
           const rank = Number(fields[0]);
-          if (Number.isFinite(rank) && rank > 0 && fields[2]) {
+          if (Number.isFinite(rank) && rank > MAJESTIC_SKIP_TOP && fields[2]) {
             seen += 1;
             const domain = leadDomain(fields[2]);
             if (domain && domain === fields[2].toLowerCase().replace(/^www\./, '')) {

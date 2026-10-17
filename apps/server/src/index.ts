@@ -106,6 +106,7 @@ import {
   type LeadEnrichDeps,
   runBlueskyAutopilot,
   sweepLeadSources,
+  retireExcludedImports,
   LEAD_IMPORT_DAILY_TOTAL,
   refreshStaleCompanies,
   runSiteAuditJob,
@@ -1799,6 +1800,18 @@ void loop();
 // importers call no model and no paid API, so nothing about a busy queue
 // should hold them back. One sweep at a time; each due source reads a batch.
 async function leadImportLoop(): Promise<void> {
+  // Imported rows today's filters would not import (platforms, megacorps,
+  // Majestic's top ranks) are retired once per boot, before the first sweep.
+  try {
+    const r = await retireExcludedImports(db);
+    if (r.retired > 0 || r.kept > 0)
+      console.log(
+        `lead import: retired ${r.retired} of ${r.checked} imported companies ${JSON.stringify(r.byReason)}` +
+          `${r.kept ? `, kept ${r.kept} somebody has worked with` : ''}`,
+      );
+  } catch (error) {
+    console.error('lead import retire failed', error);
+  }
   while (running) {
     if (!leadImportRunning) {
       leadImportRunning = true;
