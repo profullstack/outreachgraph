@@ -26,7 +26,7 @@
  */
 
 import { identityValue, kindOf, parseOpenProfile, web } from '@profullstack/openprofile';
-import { countryFromDomain, leadDomain } from './domains';
+import { countryFromDomain, hostFrom, leadDomain } from './domains';
 
 /** One company a source found. */
 export interface LeadCandidate {
@@ -512,7 +512,19 @@ export function countryFromPlace(place: string | null | undefined): string | nul
   return COUNTRY_NAMES[last] ?? null;
 }
 
-/** One pit.world listing's OpenProfile.md as a candidate; null when it is not a business with a site. */
+/** `seo.rank.pit.world`: pit.world's relay host for a name that only opens on Moshpit DNS. */
+export function pitWorldRelayHost(value: string | null | undefined): string | null {
+  const host = hostFrom(value);
+  return host && host.endsWith('.pit.world') && host.slice(0, -'.pit.world'.length).includes('.')
+    ? host
+    : null;
+}
+
+/**
+ * One pit.world listing's OpenProfile.md as a candidate; null when it is not a business with a site.
+ * A Moshpit-only business is keyed by its relay host, `<name>.pit.world`, which any crawler can open;
+ * reduced to a registered domain it would collapse into pit.world itself.
+ */
 export function pitWorldCandidate(
   markdown: string,
   domain: string,
@@ -520,7 +532,7 @@ export function pitWorldCandidate(
 ): LeadCandidate | null {
   const doc = parseOpenProfile(markdown);
   if (kindOf(doc) !== 'organization') return null;
-  const key = leadDomain(domain) ?? leadDomain(web(doc));
+  const key = pitWorldRelayHost(web(doc)) ?? leadDomain(domain) ?? leadDomain(web(doc));
   if (!key) return null;
   const location = identityValue(doc, 'Location') ?? identityValue(doc, 'Area');
   return {
@@ -536,7 +548,7 @@ export function pitWorldCandidate(
 /**
  * The pit.world pro directory, small enough to read whole once a day: page
  * the directory for domains, then read each listing's OpenProfile.md. A name
- * that only opens on Moshpit DNS is skipped, since nothing here can crawl it.
+ * that only opens on Moshpit DNS comes in as its `<name>.pit.world` relay.
  */
 export function pitWorldSource(baseUrl = PIT_WORLD_URL): LeadSourceDefinition {
   return {
@@ -566,7 +578,7 @@ export function pitWorldSource(baseUrl = PIT_WORLD_URL): LeadSourceDefinition {
       const candidates: LeadCandidate[] = [];
       for (const pro of pros) {
         if (candidates.length >= max) break;
-        if (!pro.domain || pro.moshpitOnly) continue;
+        if (!pro.domain) continue;
         const url =
           pro.openprofile ?? `${baseUrl}/b/${encodeURIComponent(pro.domain)}/openprofile.md`;
         const response = await doFetch(url, {
