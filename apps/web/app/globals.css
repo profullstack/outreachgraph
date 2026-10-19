@@ -55,3 +55,29 @@
     overscroll-behavior-y: none;
   }
 }
+
+/* CrawlProof ad unit: collapsed until ad.js marks it data-cp-filled, so an
+   unsold or blocked slot leaves no hole. Heights = creative + ~16px caption. */
+.cp-ad {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 0;
+  overflow: hidden;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.cp-ad[data-cp-filled] {
+  height: auto;
+  margin: 32px auto;
+}
+.cp-ad[data-cp-filled][data-format='banner_728x90'] {
+  min-height: 106px;
+}
+.cp-ad[data-cp-filled][data-format='banner_300x250'] {
+  min-height: 266px;
+}
+.cp-ad[data-cp-filled][data-format='text_link'] {
+  min-height: 40px;
+  align-items: stretch;
+}
