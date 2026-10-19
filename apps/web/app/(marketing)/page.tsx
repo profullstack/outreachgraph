@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
+import { Footer } from '@profullstack/footer/react';
 import Script from 'next/script';
 import { AdUnit } from '../../components/ad-unit';
 import { BrandLockup, BrandWordmark } from '../../components/brand';
@@ -409,19 +410,23 @@ function ClosingCta() {
 
 function SiteFooter() {
   return (
-    <Band className="border-border border-t py-6">
-      <div className="text-ink-muted flex flex-wrap items-center justify-between gap-4 text-[13px]">
-        <BrandLockup size="sm" />
-        <span className="flex flex-wrap gap-x-4 gap-y-1">
-          <span>&copy; 2026 Profullstack, Inc.</span>
-          <a href="/api/v1/public/llms.txt" className="hover:text-ink">
-            API docs
-          </a>
-          <a href="https://github.com/profullstack/outreachgraph" className="hover:text-ink">
-            Code
-          </a>
-        </span>
+    <>
+      <Band className="border-border border-t pt-6 pb-2">
+        <div className="text-ink-muted flex flex-wrap items-center justify-between gap-4 text-[13px]">
+          <BrandLockup size="sm" />
+          <span className="flex flex-wrap gap-x-4 gap-y-1">
+            <a href="/api/v1/public/llms.txt" className="hover:text-ink">
+              API docs
+            </a>
+            <a href="https://github.com/profullstack/outreachgraph" className="hover:text-ink">
+              Code
+            </a>
+          </span>
+        </div>
+      </Band>
+      <div className="text-ink">
+        <Footer site="https://outreachgraph.com/" />
       </div>
-    </Band>
+    </>
   );
 }
