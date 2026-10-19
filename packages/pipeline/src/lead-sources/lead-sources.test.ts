@@ -334,6 +334,11 @@ function pitWorldFetch(): { fetch: typeof fetch; urls: string[] } {
       });
     }
     if (url.endsWith('/acme-builders.com/openprofile.md')) return new Response(ACME_PROFILE);
+    if (url.endsWith('/seo.rank/openprofile.md')) {
+      return new Response(
+        '# seo.rank\n\n- **Kind**: organization\n- **Web**: https://seo.rank.pit.world/\n- **Category**: Software & dev agencies\n- **Area**: Online, worldwide\n',
+      );
+    }
     if (url.endsWith('/acme.com/openprofile.md')) {
       return new Response(
         ACME_PROFILE.replace('# Acme Builders, Inc.', '# Acme').replace(
@@ -348,7 +353,7 @@ function pitWorldFetch(): { fetch: typeof fetch; urls: string[] } {
 }
 
 describe('pit.world source', () => {
-  test('reads the directory, then each listing as an OpenProfile, skipping Moshpit-only names', async () => {
+  test('reads the directory, then each listing as an OpenProfile; Moshpit-only names by relay host', async () => {
     const { fetch: doFetch, urls } = pitWorldFetch();
     const batch = await pitWorldSource('https://pit.test').read({
       cursor: null,
@@ -356,7 +361,6 @@ describe('pit.world source', () => {
       fetch: doFetch,
     });
     expect(urls[0]).toBe('https://pit.test/api/pros?n=100&page=1');
-    expect(urls.some((u) => u.includes('seo.rank'))).toBe(false);
     expect(batch).toMatchObject({ seen: 4, done: true, cursor: null });
     expect(batch.candidates[0]).toEqual({
       domain: 'acme-builders.com',
@@ -366,7 +370,16 @@ describe('pit.world source', () => {
       country: 'US',
       ref: 'https://pit.test/b/acme-builders.com/openprofile.md',
     });
-    expect(batch.candidates.map((c) => c.domain)).toEqual(['acme-builders.com', 'acme.com']);
+    expect(batch.candidates.map((c) => c.domain)).toEqual([
+      'acme-builders.com',
+      'acme.com',
+      'seo.rank.pit.world',
+    ]);
+    expect(batch.candidates[2]).toMatchObject({
+      name: 'seo.rank',
+      industry: 'Software & dev agencies',
+      location: 'Online, worldwide',
+    });
     expect(countryFromPlace('Austin, TX, United States')).toBe('US');
     expect(countryFromPlace('Los Gatos and the South Bay')).toBeNull();
   });
@@ -385,7 +398,7 @@ describe('pit.world source', () => {
       fetch: doFetch,
       now: () => at,
     });
-    expect(results[0]).toMatchObject({ source: 'pit-world', added: 1, done: true });
+    expect(results[0]).toMatchObject({ source: 'pit-world', added: 2, done: true });
     const rows = await queryAll<{
       domain: string;
       name: string;
