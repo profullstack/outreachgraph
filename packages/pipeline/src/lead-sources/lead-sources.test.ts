@@ -19,8 +19,10 @@ import {
   updateLeadSource,
 } from './runner';
 import {
+  countryFromPlace,
   majesticSource,
   nichedbSource,
+  pitWorldSource,
   wikidataQuery,
   wikidataSource,
   type LeadSourceDefinition,
@@ -296,6 +298,125 @@ describe('nichedb source', () => {
     ]);
     // Caught up: keeps the newest timestamp, and says so.
     expect(batch).toMatchObject({ cursor: '2026-10-03T00:00:00.000Z', done: true, seen: 2 });
+  });
+});
+
+const ACME_PROFILE = `# Acme Builders, Inc.
+
+- **Kind**: organization
+- **Web**: https://acme-builders.com/
+- **Category**: Construction & remodeling
+- **Location**: Los Gatos, CA, USA
+- **Area**: Los Gatos and the South Bay
+- **Listing**: https://pit.world/b/acme-builders.com
+- **Status**: listed by pit.world from public records, unclaimed
+
+Custom homes in Los Gatos.
+`;
+
+function pitWorldFetch(): { fetch: typeof fetch; urls: string[] } {
+  const urls: string[] = [];
+  const doFetch = (async (url: string) => {
+    urls.push(url);
+    if (url.includes('/api/pros')) {
+      return json({
+        total: 4,
+        page: 1,
+        results: [
+          {
+            domain: 'acme-builders.com',
+            openprofile: 'https://pit.test/b/acme-builders.com/openprofile.md',
+          },
+          { domain: 'acme.com', openprofile: 'https://pit.test/b/acme.com/openprofile.md' },
+          { domain: 'seo.rank', moshpitOnly: true },
+          { domain: 'gone.com', openprofile: 'https://pit.test/b/gone.com/openprofile.md' },
+        ],
+      });
+    }
+    if (url.endsWith('/acme-builders.com/openprofile.md')) return new Response(ACME_PROFILE);
+    if (url.endsWith('/acme.com/openprofile.md')) {
+      return new Response(
+        ACME_PROFILE.replace('# Acme Builders, Inc.', '# Acme').replace(
+          'https://acme-builders.com/',
+          'https://acme.com/',
+        ),
+      );
+    }
+    return new Response('not found', { status: 404 });
+  }) as typeof fetch;
+  return { fetch: doFetch, urls };
+}
+
+describe('pit.world source', () => {
+  test('reads the directory, then each listing as an OpenProfile, skipping Moshpit-only names', async () => {
+    const { fetch: doFetch, urls } = pitWorldFetch();
+    const batch = await pitWorldSource('https://pit.test').read({
+      cursor: null,
+      max: 100,
+      fetch: doFetch,
+    });
+    expect(urls[0]).toBe('https://pit.test/api/pros?n=100&page=1');
+    expect(urls.some((u) => u.includes('seo.rank'))).toBe(false);
+    expect(batch).toMatchObject({ seen: 4, done: true, cursor: null });
+    expect(batch.candidates[0]).toEqual({
+      domain: 'acme-builders.com',
+      name: 'Acme Builders, Inc.',
+      industry: 'Construction & remodeling',
+      location: 'Los Gatos, CA, USA',
+      country: 'US',
+      ref: 'https://pit.test/b/acme-builders.com/openprofile.md',
+    });
+    expect(batch.candidates.map((c) => c.domain)).toEqual(['acme-builders.com', 'acme.com']);
+    expect(countryFromPlace('Austin, TX, United States')).toBe('US');
+    expect(countryFromPlace('Los Gatos and the South Bay')).toBeNull();
+  });
+
+  test('adds new businesses and fills blanks on known ones without overwriting', async () => {
+    seeded = await seedDatabase('lead-sweep-pit-world');
+    const db = seeded.db;
+    await db.execute({
+      sql: `UPDATE companies SET industry = 'Software', location = NULL, country = NULL WHERE domain = 'acme.com'`,
+    });
+    const { fetch: doFetch } = pitWorldFetch();
+    const at = new Date('2026-10-19T12:00:00.000Z');
+    const results = await sweepLeadSources({
+      db,
+      sources: [pitWorldSource('https://pit.test')],
+      fetch: doFetch,
+      now: () => at,
+    });
+    expect(results[0]).toMatchObject({ source: 'pit-world', added: 1, done: true });
+    const rows = await queryAll<{
+      domain: string;
+      name: string;
+      industry: string | null;
+      location: string | null;
+      country: string | null;
+      lead_source: string | null;
+    }>(
+      db,
+      `SELECT domain, name, industry, location, country, lead_source FROM companies
+        WHERE domain IN ('acme.com', 'acme-builders.com') ORDER BY domain`,
+    );
+    expect(rows).toEqual([
+      {
+        domain: 'acme-builders.com',
+        name: 'Acme Builders, Inc.',
+        industry: 'Construction & remodeling',
+        location: 'Los Gatos, CA, USA',
+        country: 'US',
+        lead_source: 'pit-world',
+      },
+      // Known first: its name and industry stay, only the blanks are filled.
+      {
+        domain: 'acme.com',
+        name: 'Acme',
+        industry: 'Software',
+        location: 'Los Gatos, CA, USA',
+        country: 'US',
+        lead_source: null,
+      },
+    ]);
   });
 });
 

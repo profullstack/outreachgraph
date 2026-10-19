@@ -187,6 +187,7 @@
         "@outreachgraph/scoring": "workspace:*",
         "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
+        "@profullstack/openprofile": "^0.2.0",
       },
     },
     "packages/policy": {

@@ -20,8 +20,12 @@
  * - **nichedb.dev** (ours): collections whose items name a business's own
  *   site: SaaS listings, browser extensions, MCP servers, deal and coupon
  *   stores, self-hosted podcasts.
+ * - **pit.world** (ours): the /pros business directory, each listing read as
+ *   its OpenProfile.md (Kind organization), so a business carries its
+ *   category and place, not only a domain.
  */
 
+import { identityValue, kindOf, parseOpenProfile, web } from '@profullstack/openprofile';
 import { countryFromDomain, leadDomain } from './domains';
 
 /** One company a source found. */
@@ -29,6 +33,8 @@ export interface LeadCandidate {
   readonly domain: string;
   readonly name: string;
   readonly industry?: string | null;
+  /** Free-text place, "Los Gatos, CA, USA". */
+  readonly location?: string | null;
   readonly country?: string | null;
   readonly employees?: number | null;
   /** The source's own id for the row (a Wikidata Q-id, a nichedb item id, a rank). */
@@ -67,6 +73,12 @@ export interface LeadSourceDefinition {
   readonly everyMinutes: number;
   /** Days to wait after reaching the end before reading from the top again. */
   readonly restartAfterDays: number;
+  /**
+   * The source describes businesses it knows first-hand (their own directory
+   * listing), so a company already stored gets its blank industry, location
+   * and country filled from it. Never overwrites a value.
+   */
+  readonly fillBlanks?: boolean;
   read(context: LeadReadContext): Promise<LeadBatch>;
 }
 
@@ -470,7 +482,107 @@ export function nichedbSources(baseUrl = NICHEDB_ITEMS_URL): LeadSourceDefinitio
   ];
 }
 
+// ------------------------------------------------------------------ pit.world
+
+export const PIT_WORLD_URL = 'https://pit.world';
+
+interface PitWorldPro {
+  readonly domain?: string;
+  readonly moshpitOnly?: boolean;
+  readonly openprofile?: string;
+}
+
+const COUNTRY_NAMES: Record<string, string> = {
+  usa: 'US',
+  us: 'US',
+  'united states': 'US',
+  'united states of america': 'US',
+  uk: 'GB',
+  'united kingdom': 'GB',
+  canada: 'CA',
+  australia: 'AU',
+  germany: 'DE',
+  france: 'FR',
+};
+
+/** The country at the end of "Los Gatos, CA, USA", as ISO 3166 alpha-2 when it is one we know. */
+export function countryFromPlace(place: string | null | undefined): string | null {
+  const last = place?.split(',').pop()?.trim().toLowerCase();
+  if (!last) return null;
+  return COUNTRY_NAMES[last] ?? null;
+}
+
+/** One pit.world listing's OpenProfile.md as a candidate; null when it is not a business with a site. */
+export function pitWorldCandidate(
+  markdown: string,
+  domain: string,
+  ref: string,
+): LeadCandidate | null {
+  const doc = parseOpenProfile(markdown);
+  if (kindOf(doc) !== 'organization') return null;
+  const key = leadDomain(domain) ?? leadDomain(web(doc));
+  if (!key) return null;
+  const location = identityValue(doc, 'Location') ?? identityValue(doc, 'Area');
+  return {
+    domain: key,
+    name: (doc.name ?? key).slice(0, 200),
+    industry: identityValue(doc, 'Category'),
+    location,
+    country: countryFromPlace(identityValue(doc, 'Location')) ?? countryFromDomain(key),
+    ref: ref.slice(0, 120),
+  };
+}
+
+/**
+ * The pit.world pro directory, small enough to read whole once a day: page
+ * the directory for domains, then read each listing's OpenProfile.md. A name
+ * that only opens on Moshpit DNS is skipped, since nothing here can crawl it.
+ */
+export function pitWorldSource(baseUrl = PIT_WORLD_URL): LeadSourceDefinition {
+  return {
+    id: 'pit-world',
+    label: 'pit.world pro directory (OpenProfile)',
+    homepage: `${baseUrl}/pros`,
+    license: 'pit.world listings (ours)',
+    dailyCap: 2000,
+    batchSize: 2000,
+    everyMinutes: 60,
+    restartAfterDays: 1,
+    fillBlanks: true,
+    async read({ max, fetch: doFetch }) {
+      const headers = { 'user-agent': USER_AGENT };
+      const pros: PitWorldPro[] = [];
+      for (let page = 1; page <= 50; page += 1) {
+        const response = await doFetch(`${baseUrl}/api/pros?n=100&page=${page}`, {
+          headers: { ...headers, accept: 'application/json' },
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!response.ok) throw new Error(`pit.world answered ${response.status}`);
+        const body = (await response.json()) as { total?: number; results?: PitWorldPro[] };
+        const results = Array.isArray(body.results) ? body.results : [];
+        pros.push(...results);
+        if (results.length < 100 || pros.length >= Number(body.total ?? 0)) break;
+      }
+      const candidates: LeadCandidate[] = [];
+      for (const pro of pros) {
+        if (candidates.length >= max) break;
+        if (!pro.domain || pro.moshpitOnly) continue;
+        const url =
+          pro.openprofile ?? `${baseUrl}/b/${encodeURIComponent(pro.domain)}/openprofile.md`;
+        const response = await doFetch(url, {
+          headers: { ...headers, accept: 'text/markdown' },
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!response.ok) continue;
+        const candidate = pitWorldCandidate(await response.text(), pro.domain, url);
+        if (candidate) candidates.push(candidate);
+      }
+      return { candidates, cursor: null, seen: pros.length, done: true };
+    },
+  };
+}
+
 /** Every source, in the order they are run. Business-y first. */
 export function defaultLeadSources(): LeadSourceDefinition[] {
-  return [wikidataSource(), ...nichedbSources(), majesticSource()];
+  return [pitWorldSource(), wikidataSource(), ...nichedbSources(), majesticSource()];
 }
