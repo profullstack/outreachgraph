@@ -108,6 +108,7 @@ export async function storeLeadCandidates(
   sourceId: string,
   candidates: readonly LeadCandidate[],
   stamp: string,
+  options: { readonly fillBlanks?: boolean } = {},
 ): Promise<number> {
   const unique = new Map<string, LeadCandidate>();
   for (const c of candidates) if (!unique.has(c.domain)) unique.set(c.domain, c);
@@ -123,6 +124,7 @@ export async function storeLeadCandidates(
         c.domain,
         c.employees ?? null,
         c.industry?.slice(0, 120) ?? null,
+        c.location?.slice(0, 200) ?? null,
         c.country ?? null,
         sourceId,
         c.ref?.slice(0, 120) ?? null,
@@ -130,17 +132,43 @@ export async function storeLeadCandidates(
         stamp,
         stamp,
       );
-      return `(?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)`;
+      return `(?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)`;
     });
     // No conflict target: the domain index is partial, and a bare DO NOTHING
     // reads the same on SQLite and Postgres.
     const result = await db.execute({
-      sql: `INSERT INTO companies (id, name, domain, employee_count, industry, country,
+      sql: `INSERT INTO companies (id, name, domain, employee_count, industry, location, country,
               technologies, lead_source, lead_ref, lead_rank, created_at, updated_at)
             VALUES ${values.join(', ')} ON CONFLICT DO NOTHING`,
       args,
     });
     added += Number(result.rowsAffected ?? 0);
+  }
+  if (options.fillBlanks) {
+    // One statement per company, naming only the fields the source has, so no
+    // NULL is ever bound where Postgres would have to guess its type.
+    const statements = rows.flatMap((c) => {
+      const fields = (
+        [
+          ['industry', c.industry?.slice(0, 120)],
+          ['location', c.location?.slice(0, 200)],
+          ['country', c.country],
+        ] as const
+      ).filter((f): f is readonly ['industry' | 'location' | 'country', string] => Boolean(f[1]));
+      if (!fields.length) return [];
+      return [
+        {
+          sql: `UPDATE companies
+                   SET ${fields.map(([k]) => `${k} = COALESCE(NULLIF(${k}, ''), ?)`).join(', ')},
+                       updated_at = ?
+                 WHERE domain = ? AND (${fields.map(([k]) => `${k} IS NULL OR ${k} = ''`).join(' OR ')})`,
+          args: [...fields.map(([, v]) => v), stamp, c.domain] as InValue[],
+        },
+      ];
+    });
+    for (let i = 0; i < statements.length; i += INSERT_CHUNK) {
+      await db.batch(statements.slice(i, i + INSERT_CHUNK));
+    }
   }
   return added;
 }
@@ -223,7 +251,9 @@ export async function sweepLeadSources(deps: LeadSweepDeps): Promise<LeadRunResu
       });
       // Within the room only: a source may hand back more than it was asked.
       const kept = batch.candidates.slice(0, room);
-      const added = await storeLeadCandidates(db, source.id, kept, stamp);
+      const added = await storeLeadCandidates(db, source.id, kept, stamp, {
+        fillBlanks: source.fillBlanks,
+      });
       addedToday += added;
       const finished = clock();
       const capped = usedToday + added >= Number(row.daily_cap);

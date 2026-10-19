@@ -6,10 +6,13 @@ export {
   type LeadDomainOptions,
 } from './domains';
 export {
+  countryFromPlace,
   defaultLeadSources,
   majesticSource,
   nichedbSource,
   nichedbSources,
+  pitWorldCandidate,
+  pitWorldSource,
   wikidataQuery,
   wikidataSource,
   type LeadBatch,
