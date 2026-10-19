@@ -79,12 +79,12 @@
     },
     "apps/web": {
       "name": "@outreachgraph/web",
-      "version": "0.17.1",
+      "version": "0.17.2",
       "dependencies": {
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
         "@profullstack/footer": "latest",
-        "@profullstack/x402-gateway": "^0.7.0",
+        "@profullstack/x402-gateway": "^0.10.1",
         "next": "16.3.6",
         "react": "19.2.8",
         "react-dom": "19.2.8",
@@ -404,7 +404,7 @@
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
 
-    "@profullstack/footer": ["@profullstack/footer@0.2.4", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"], "bin": { "profullstack-footer": "bin/profullstack-footer.js" } }, "sha512-2ErIzHJCDA2baP8aK6f7rCHohW4EX+wnp7D1mrVMQTUxRcyZwKzmho96hhEFJndXRBGgxT3H/78BHOeBfLxTzg=="],
+    "@profullstack/footer": ["@profullstack/footer@0.2.5", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"], "bin": { "profullstack-footer": "bin/profullstack-footer.js" } }, "sha512-/CKwFP3m+qM0ZFTC9Rj11fgClutJzeYliX44Qp4qwrv2JgA/1k4tVOB3mhkPhaeckUhnfg5UyESDI1uoWr9c2w=="],
 
     "@profullstack/form-guard": ["@profullstack/form-guard@0.1.1", "", {}, "sha512-RGLGfQhjq40f+JqEhSmsJnS0I5sFWjYdrYx4VYtkUqz8xvioN2yyR+6uFK0mnDAStKrYytlngg3meUsrChm/OQ=="],
 
@@ -416,7 +416,7 @@
 
     "@profullstack/outreachgraph": ["@profullstack/outreachgraph@workspace:apps/cli"],
 
-    "@profullstack/x402-gateway": ["@profullstack/x402-gateway@0.7.0", "", { "dependencies": { "@profullstack/keys": "^0.1.0" } }, "sha512-xsZRWHdOD9Y9EuRS4PsRmykVS2geOu/luY0jBlliOF3SEgxiLhgmx7ks+2jOUtGlq+cIfSonnk5eEObRGCOJ9w=="],
+    "@profullstack/x402-gateway": ["@profullstack/x402-gateway@0.10.1", "", { "dependencies": { "@profullstack/keys": "^0.1.0" } }, "sha512-YF/P3GRbb/8dAHIhDT2R7yHSAK+olrT4/zAWLzf5aF9Na8o1/rJCdP+k6UnGepyQ9RQ2qL9p5diRVwb18Zt4VA=="],
 
     "@swc/helpers": ["@swc/helpers@0.5.23", "", { "dependencies": { "tslib": "^2.8.0" } }, "sha512-5lSsMOTXURePglDfvuAQUqkGek9Hg2kksOYay2m0+XR++b2NWYL/4sWyuvVBIs8oKnJaxkdi9whaL/sqN13afw=="],
 
