@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 
 /**
- * One CrawlProof ad unit, above the footer of the public landing page.
+ * One CrawlProof ad unit, under the hero of the public landing page.
  * Manage the slot at https://crawlproof.com/ads/slots
  */
 const AD_SLOT = '121bb0bc-5e2e-4056-beeb-3c5166283991';

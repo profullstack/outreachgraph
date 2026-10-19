@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
+import { PitFooter } from '../components/pit-footer';
 import { ServiceWorkerRegistrar } from '../components/service-worker-registrar';
 import './globals.css';
 import Script from 'next/script';
@@ -123,6 +124,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           src="https://crawlproof.com/stats.js"
           strategy="afterInteractive"
         />
+        <PitFooter />
       </body>
     </html>
   );
