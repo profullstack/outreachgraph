@@ -15,7 +15,9 @@ export async function PitFooter() {
       signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) return null;
-    const html = await res.text();
+    // One line: Next also copies this markup into its RSC payload script, and a
+    // single-line fragment keeps the page's own markup readable around it.
+    const html = (await res.text()).replace(/\s*\n\s*/g, '');
     if (!html.includes('data-pit-footer')) return null;
     return <div dangerouslySetInnerHTML={{ __html: html }} />;
   } catch {
