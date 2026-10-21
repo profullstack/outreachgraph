@@ -13,7 +13,6 @@ const AD_SLOT = '121bb0bc-5e2e-4056-beeb-3c5166283991';
 /** Account, auth and checkout pages carry no ad. */
 const EXCLUDED_PREFIXES = ['/login', '/join', '/verify', '/reset', '/forgot'];
 
-
 const SCAN_RETRY_MS = 200;
 const SCAN_MAX_TRIES = 25;
 
