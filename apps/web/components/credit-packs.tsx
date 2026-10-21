@@ -8,8 +8,8 @@ import type { BillingView, CreditPackView } from '../lib/api';
  *
  * The checkout itself is CoinPayPortal's hosted page, so this component's only
  * real job is to be honest before sending someone there: what a pack costs,
- * what it buys, and — the part a crypto checkout gets wrong most often — that
- * the price is quoted in dollars and the chain is only how it is paid.
+ * what it buys, and that the price is quoted in dollars. The coin (or PayPal)
+ * is chosen on CoinPay's hosted checkout page, not here.
  *
  * There is no "confirming payment" spinner here on purpose. A chain payment
  * settles when it settles, and a page that pretends to wait for it either lies
@@ -18,36 +18,7 @@ import type { BillingView, CreditPackView } from '../lib/api';
  * webhook lands, which is the truth and is also resumable.
  */
 
-/**
- * The chains on offer, as CoinPayPortal names them.
- *
- * Ticker codes rather than chain names because that is what the API matches
- * on — it upper-cases the value and looks it up, so "bitcoin" is refused after
- * the credentials have already been accepted, which reads as a broken account.
- *
- * Stablecoins first: this is a $15–$199 purchase, and quoting it in a currency
- * that does not move between the quote and the confirmation is the difference
- * between paying $59 and paying whatever BTC did in the next ten minutes.
- */
-const CHAINS = [
-  { id: 'USDC_SOL', label: 'USDC on Solana' },
-  { id: 'USDC_POL', label: 'USDC on Polygon' },
-  { id: 'USDC_ETH', label: 'USDC on Ethereum' },
-  { id: 'USDT_SOL', label: 'USDT on Solana' },
-  { id: 'USDT_POL', label: 'USDT on Polygon' },
-  { id: 'BTC', label: 'Bitcoin' },
-  { id: 'ETH', label: 'Ethereum' },
-  { id: 'SOL', label: 'Solana' },
-  { id: 'POL', label: 'Polygon' },
-  { id: 'BCH', label: 'Bitcoin Cash' },
-  { id: 'DOGE', label: 'Dogecoin' },
-  { id: 'XRP', label: 'XRP' },
-  { id: 'ADA', label: 'Cardano' },
-  { id: 'BNB', label: 'BNB' },
-] as const;
-
 export function CreditPacks({ initial }: { initial: BillingView }) {
-  const [chain, setChain] = useState<string>('USDC_SOL');
   const [busy, setBusy] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
@@ -64,7 +35,7 @@ export function CreditPacks({ initial }: { initial: BillingView }) {
       const response = await fetch('/api/v1/billing/checkout', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ packId: pack.id, blockchain: chain }),
+        body: JSON.stringify({ packId: pack.id }),
       });
 
       const body = (await response.json()) as {
@@ -128,26 +99,10 @@ export function CreditPacks({ initial }: { initial: BillingView }) {
         </p>
       ) : (
         <>
-          <div className="mt-4">
-            <label className="text-ink-muted text-xs" htmlFor="chain">
-              Pay with
-            </label>
-            <select
-              id="chain"
-              value={chain}
-              onChange={(event) => setChain(event.target.value)}
-              className="border-border bg-surface mt-1 w-full rounded-xl border p-2 text-sm"
-            >
-              {CHAINS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-ink-muted mt-1 text-xs">
-              Prices are in US dollars. The chain only decides how you pay.
-            </p>
-          </div>
+          <p className="text-ink-muted mt-4 text-xs">
+            Prices are in US dollars. Pay with any major coin or PayPal on the CoinPay checkout
+            page.
+          </p>
 
           <ul className="mt-4 flex flex-col gap-2">
             {initial.packs.map((pack) => (

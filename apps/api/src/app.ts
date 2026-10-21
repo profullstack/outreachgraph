@@ -6058,7 +6058,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       c.req.raw,
       z.object({
         packId: z.string().min(1),
-        blockchain: z.string().min(1),
+        // Older clients still send a chain; the buyer now picks on CoinPay's page.
+        blockchain: z.string().optional(),
       }),
     );
 
@@ -6068,7 +6069,6 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         workspaceId: actor.workspaceId,
         userId: actor.userId,
         packId: body.packId,
-        blockchain: body.blockchain,
         appUrl: options.appUrl ?? 'https://outreachgraph.com',
         ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
       });

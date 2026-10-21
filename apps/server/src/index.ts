@@ -585,21 +585,21 @@ const commitHash = process.env.COMMIT_HASH ?? process.env.RAILWAY_GIT_COMMIT_SHA
 /**
  * Selling credits, if this deployment has been given the means to.
  *
- * All three variables or none. A client holding two of them fails at the
- * moment a customer clicks Buy, which is the worst possible time to discover
+ * The business key and the webhook secret, or nothing (the business id is
+ * optional: hosted checkout sessions are named by the key). A client missing
+ * either fails at the moment a customer clicks Buy, which is the worst possible time to discover
  * a missing environment variable; refusing to construct it means `/billing`
  * reports honestly that it cannot take payments, and the checkout button is
  * never offered in the first place.
  */
 const coinpay =
-  process.env.COINPAY_API_KEY &&
-  process.env.COINPAY_BUSINESS_ID &&
-  process.env.COINPAY_WEBHOOK_SECRET
+  process.env.COINPAY_API_KEY && process.env.COINPAY_WEBHOOK_SECRET
     ? new CoinPayClient({
         apiKey: process.env.COINPAY_API_KEY,
-        businessId: process.env.COINPAY_BUSINESS_ID,
         webhookSecret: process.env.COINPAY_WEBHOOK_SECRET,
+        ...(process.env.COINPAY_BUSINESS_ID ? { businessId: process.env.COINPAY_BUSINESS_ID } : {}),
         ...(process.env.COINPAY_BASE_URL ? { baseUrl: process.env.COINPAY_BASE_URL } : {}),
+        ...(process.env.COINPAY_PROPERTY ? { property: process.env.COINPAY_PROPERTY } : {}),
       })
     : undefined;
 

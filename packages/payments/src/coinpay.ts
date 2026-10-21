@@ -113,9 +113,70 @@ export const BLOCKCHAIN_LABELS: Readonly<Record<Blockchain, string>> = {
 
 export interface CoinPayConfig {
   readonly apiKey: string;
-  readonly businessId: string;
+  /** Optional for hosted checkout: the business key already names the business. */
+  readonly businessId?: string;
   readonly webhookSecret: string;
   readonly baseUrl?: string;
+  /** Site hostname recorded on every checkout session (default outreachgraph.com). */
+  readonly property?: string;
+}
+
+/** A hosted checkout session: send the customer to `url`. */
+export interface CheckoutSession {
+  readonly sessionId: string;
+  readonly url: string;
+  readonly status: string;
+  readonly expiresAt?: string;
+}
+
+export interface CheckoutSessionInput {
+  readonly amountUsd: number;
+  readonly description: string;
+  /** Required by CoinPay: where the receipt goes. */
+  readonly customerEmail: string;
+  /** Required by CoinPay: our stable id for the buyer. */
+  readonly accountId: string;
+  readonly metadata?: Record<string, string>;
+  readonly successUrl?: string;
+  readonly cancelUrl?: string;
+  readonly expiresInMinutes?: number;
+}
+
+/**
+ * What a webhook says, read the way CoinPay sends it.
+ *
+ * The body is nested: `{ id: 'evt_…', type, data: { payment_id, status,
+ * checkout_session_id, customer_email, account_id, property, metadata } }`.
+ * The top-level `id` is the EVENT, never the payment, so `data` is read first
+ * and the older flat shape is only a fallback.
+ */
+export interface ReadWebhook {
+  readonly type: string;
+  readonly status: string;
+  /** Ids a purchase row may be keyed by: checkout session first, then payment. */
+  readonly refs: readonly string[];
+  readonly paid: boolean;
+  readonly metadata: Record<string, unknown>;
+}
+
+const PAID_STATUSES = new Set(['confirmed', 'forwarded']);
+const PAID_TYPES = new Set(['payment.confirmed', 'payment.forwarded']);
+
+export function readWebhookEvent(payload: unknown): ReadWebhook {
+  const event = (payload ?? {}) as Record<string, unknown>;
+  const data = ((event.data as Record<string, unknown> | undefined) ?? event) as Record<
+    string,
+    unknown
+  >;
+  const type = String(event.type ?? event.event ?? '');
+  const status = String(data.status ?? '').toLowerCase();
+  const refs = [data.checkout_session_id, data.payment_id]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .filter((value, index, all) => all.indexOf(value) === index);
+  const paid = status ? PAID_STATUSES.has(status) : PAID_TYPES.has(type);
+  const metadata = ((data.metadata ?? event.metadata ?? {}) as Record<string, unknown>) ?? {};
+
+  return { type, status, refs, paid, metadata };
 }
 
 export interface CreatedPayment {
@@ -168,12 +229,14 @@ export class CoinPayClient {
   private readonly apiKey: string;
   private readonly businessId: string;
   private readonly webhookSecret: string;
+  readonly property: string;
   private readonly baseUrl: string;
   private readonly portalUrl: string;
 
   constructor(config: CoinPayConfig) {
     this.apiKey = config.apiKey;
-    this.businessId = config.businessId;
+    this.businessId = config.businessId ?? '';
+    this.property = config.property ?? 'outreachgraph.com';
     this.webhookSecret = config.webhookSecret;
     this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
     this.portalUrl = this.baseUrl.replace(/\/api\/?$/, '');
@@ -258,6 +321,60 @@ export class CoinPayClient {
       expiresAt: body.payment.expires_at,
       status: body.payment.status,
     };
+  }
+
+  /**
+   * The request body for `POST /checkout/sessions`. Public so tests can pin it.
+   */
+  checkoutSessionBody(input: CheckoutSessionInput): Record<string, unknown> {
+    return {
+      amount: input.amountUsd,
+      currency: 'USD',
+      description: input.description,
+      customer_email: input.customerEmail.trim().toLowerCase(),
+      account_id: input.accountId,
+      property: this.property,
+      metadata: { site: this.property, ...(input.metadata ?? {}) },
+      ...(input.successUrl ? { success_url: input.successUrl } : {}),
+      ...(input.cancelUrl ? { cancel_url: input.cancelUrl } : {}),
+      expires_in_minutes: input.expiresInMinutes ?? 60,
+    };
+  }
+
+  /**
+   * Opens a hosted checkout session. The customer picks any coin the business
+   * takes, or PayPal, on CoinPay's page; we never choose a chain for them.
+   */
+  async createCheckoutSession(input: CheckoutSessionInput): Promise<CheckoutSession> {
+    const body = await this.request<{
+      id: string;
+      url: string;
+      status?: string;
+      expires_at?: string;
+    }>('/checkout/sessions', {
+      method: 'POST',
+      body: JSON.stringify(this.checkoutSessionBody(input)),
+    });
+
+    if (!body.id || !body.url) {
+      throw new CoinPayError('CoinPayPortal returned a checkout session with no id or url', 502);
+    }
+
+    return {
+      sessionId: body.id,
+      url: body.url,
+      status: body.status ?? 'open',
+      ...(body.expires_at ? { expiresAt: body.expires_at } : {}),
+    };
+  }
+
+  /** A checkout session's status (open, paid, expired, ...). */
+  async getCheckoutSession(sessionId: string): Promise<{ status: string }> {
+    const body = await this.request<{ status?: string; session?: { status?: string } }>(
+      `/checkout/sessions/${encodeURIComponent(sessionId)}`,
+    );
+
+    return { status: body.session?.status ?? body.status ?? 'unknown' };
   }
 
   /** The authoritative status, for when a webhook was missed. */
