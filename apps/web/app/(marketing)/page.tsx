@@ -3,7 +3,6 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { Footer } from '@profullstack/footer/react';
 import Script from 'next/script';
-import { AdUnit } from '../../components/ad-unit';
 import { BrandLockup, BrandWordmark } from '../../components/brand';
 
 export const dynamic = 'force-dynamic';
@@ -36,7 +35,6 @@ export default async function LandingPage() {
     <div>
       <SiteNav />
       <Hero />
-      <AdUnit />
       <EvidenceSection />
       <CapabilitiesSection />
       <IdeasSection />

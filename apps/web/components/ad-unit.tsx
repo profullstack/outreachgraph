@@ -4,16 +4,14 @@ import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 
 /**
- * One CrawlProof ad unit, under the hero of the public landing page.
+ * One low-profile CrawlProof ad unit (the text_link line). Not used on the
+ * homepage, which carries no ad.
  * Manage the slot at https://crawlproof.com/ads/slots
  */
 const AD_SLOT = '121bb0bc-5e2e-4056-beeb-3c5166283991';
 
 /** Account, auth and checkout pages carry no ad. */
 const EXCLUDED_PREFIXES = ['/login', '/join', '/verify', '/reset', '/forgot'];
-
-/** 728x90 needs the full row; anything narrower gets the 300x250 rectangle. */
-const LEADERBOARD_QUERY = '(min-width: 768px)';
 
 const SCAN_RETRY_MS = 200;
 const SCAN_MAX_TRIES = 25;
@@ -43,11 +41,8 @@ function AdSlot() {
     const el = ref.current;
     if (!el) return;
     // The server renders the element without data-slot, so ad.js's own
-    // DOMContentLoaded pass skips it; the format is chosen here from the real
-    // viewport and the unit fills exactly once.
-    el.dataset.format = window.matchMedia(LEADERBOARD_QUERY).matches
-      ? 'banner_728x90'
-      : 'banner_300x250';
+    // DOMContentLoaded pass skips it; the unit fills exactly once.
+    el.dataset.format = 'text_link';
     el.dataset.slot = AD_SLOT;
 
     // ad.js scans once at DOMContentLoaded and may not have loaded yet, so
