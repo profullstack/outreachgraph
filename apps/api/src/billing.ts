@@ -12,7 +12,7 @@
 import { CREDIT_PACKS, creditPackById, newId, type CreditPack } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import { creditsFor, grantCredits } from '@outreachgraph/pipeline';
-import { CoinPayClient, normaliseBlockchain } from '@outreachgraph/payments';
+import { CoinPayClient, readWebhookEvent } from '@outreachgraph/payments';
 
 export class BillingError extends Error {
   readonly status: number;
@@ -37,13 +37,12 @@ export interface PurchaseRow {
 }
 
 /**
- * Opens a checkout and records our side of it before the customer sees a page.
+ * Opens a hosted CoinPay checkout session and records our side of it.
  *
- * The row is written *first*, deliberately. A payment that exists at
- * CoinPayPortal with no row here is a payment whose webhook we would have to
- * refuse, and refunding crypto is a support conversation rather than an API
- * call. The opposite ordering — row first, payment second — leaves at worst an
- * abandoned `pending` row, which costs nothing and is visible.
+ * The buyer picks the coin (or PayPal) on CoinPay's page, so no chain is chosen
+ * here. The row is keyed by the session id (`cs_…`), which CoinPay echoes on
+ * every webhook as `data.checkout_session_id`; the organization credited is
+ * read from this row, never from the webhook's metadata.
  */
 export async function startCreditPurchase(
   db: Client,
@@ -53,43 +52,51 @@ export async function startCreditPurchase(
     readonly workspaceId: string;
     readonly userId: string;
     readonly packId: string;
-    readonly blockchain: string;
+    /** Ignored: kept so older clients that still send a chain are not refused. */
+    readonly blockchain?: string;
+    /** The buyer's email; looked up from the user row when absent. */
+    readonly email?: string;
     readonly appUrl: string;
     readonly apiUrl?: string;
   },
 ): Promise<{
   readonly purchaseId: string;
   readonly paymentUrl: string;
+  readonly sessionId: string;
   readonly pack: CreditPack;
 }> {
   const pack = creditPackById(input.packId);
   if (!pack) throw new BillingError(`No such credit pack: ${input.packId}`);
 
-  // Normalised rather than merely validated, because the portal upper-cases
-  // before matching: a UI sending `usdc_sol` means the same request, and
-  // refusing it would be a 400 nobody could explain.
-  const blockchain = normaliseBlockchain(input.blockchain);
-
-  if (!blockchain) {
-    throw new BillingError(`Unsupported blockchain: ${input.blockchain}`);
+  let email = input.email?.trim();
+  if (!email) {
+    const user = await queryOne<{ email: string }>(db, 'SELECT email FROM users WHERE id = ?', [
+      input.userId,
+    ]);
+    email = user?.email?.trim();
   }
+  if (!email) throw new BillingError('Your account has no email to send the receipt to.');
+
   const purchaseId = newId('creditPurchase');
 
-  const payment = await coinpay.createPayment({
+  const session = await coinpay.createCheckoutSession({
     amountUsd: pack.priceUsd,
-    blockchain,
-    description: `OutreachGraph — ${pack.name}`,
+    description: `OutreachGraph: ${pack.name}`,
+    customerEmail: email,
+    accountId: input.userId,
     // Read on the way back only to cross-check and to make a support ticket
     // legible. The organization credited comes from the row below.
     metadata: {
       purchase_id: purchaseId,
       organization_id: input.organizationId,
+      workspace_id: input.workspaceId,
+      user_id: input.userId,
       pack_id: pack.id,
     },
-    ...(input.apiUrl ? { webhookUrl: `${input.apiUrl}/api/v1/coinpay/callback` } : {}),
     // Back to the page they left from, which is where the new balance and the
     // purchase's status are shown.
-    redirectUrl: `${input.appUrl}/billing?purchase=${purchaseId}`,
+    successUrl: `${input.appUrl}/billing?purchase=${purchaseId}`,
+    cancelUrl: `${input.appUrl}/billing`,
   });
 
   const stamp = now();
@@ -106,24 +113,26 @@ export async function startCreditPurchase(
       pack.id,
       pack.credits,
       pack.priceUsd,
-      blockchain,
-      payment.paymentId,
-      payment.paymentUrl,
+      // The buyer chooses on CoinPay's page; the session decides nothing here.
+      'ANY',
+      session.sessionId,
+      session.url,
       stamp,
       stamp,
     ],
   });
 
-  return { purchaseId, paymentUrl: payment.paymentUrl, pack };
+  return { purchaseId, paymentUrl: session.url, sessionId: session.sessionId, pack };
 }
 
 /**
  * Applies a CoinPayPortal webhook.
  *
- * Only `payment.confirmed` moves money into credits. `payment.detected` means
- * the transaction is visible but not yet buried under enough blocks, and
- * crediting on it would hand out prospects for a payment that can still be
- * reorganised out of existence.
+ * `payment.confirmed` and `payment.forwarded` move money into credits (CoinPay
+ * re-sends a failed `forwarded` but gives up on `confirmed`, so both must
+ * count). `payment.detected` means visible but not yet buried under enough
+ * blocks, and crediting on it would hand out prospects for a payment that can
+ * still be reorganised out of existence.
  *
  * Returns what happened, so the caller can answer 200 to everything it
  * understood. A webhook endpoint that returns 500 for "I have already handled
@@ -142,57 +151,76 @@ export async function handleCoinPayWebhook(
   const verified = await coinpay.verifyWebhook(input.rawBody, input.signature);
   if (!verified) throw new BillingError('Bad webhook signature', 401);
 
-  let event: { type?: string; data?: { payment_id?: string } };
+  let payload: unknown;
   try {
-    event = JSON.parse(input.rawBody);
+    payload = JSON.parse(input.rawBody);
   } catch {
     throw new BillingError('Webhook body is not JSON', 400);
   }
 
-  const type = String(event.type ?? '');
-  const paymentId = String(event.data?.payment_id ?? '');
+  const event = readWebhookEvent(payload);
 
-  if (type === 'test.webhook') {
+  if (event.type === 'test.webhook') {
     return { handled: true, credited: false, detail: 'test webhook acknowledged' };
   }
 
-  if (!paymentId) throw new BillingError('Webhook carried no payment id', 400);
+  if (event.refs.length === 0) throw new BillingError('Webhook carried no payment id', 400);
 
-  const purchase = await queryOne<{
-    id: string;
-    organization_id: string;
-    credits: number;
-    status: string;
-    pack_id: string;
-  }>(
-    db,
-    `SELECT id, organization_id, credits, status, pack_id
-       FROM credit_purchases WHERE payment_id = ?`,
-    [paymentId],
-  );
+  // Keyed by the checkout session id for hosted checkout, by the payment id for
+  // purchases opened before it. Either way the row decides who is credited.
+  let purchase:
+    | {
+        id: string;
+        organization_id: string;
+        credits: number;
+        status: string;
+        pack_id: string;
+        payment_id: string;
+      }
+    | undefined;
+  for (const ref of event.refs) {
+    purchase =
+      (await queryOne<{
+        id: string;
+        organization_id: string;
+        credits: number;
+        status: string;
+        pack_id: string;
+        payment_id: string;
+      }>(
+        db,
+        `SELECT id, organization_id, credits, status, pack_id, payment_id
+           FROM credit_purchases WHERE payment_id = ?`,
+        [ref],
+      )) ?? undefined;
+    if (purchase) break;
+  }
 
   // A payment we never opened. Answered rather than raised: it is either
   // another product on the same CoinPayPortal business, or noise, and neither
   // is served by us retrying.
   if (!purchase) {
-    return { handled: false, credited: false, detail: `unknown payment ${paymentId}` };
+    return { handled: false, credited: false, detail: `unknown payment ${event.refs.join(',')}` };
   }
 
-  if (type !== 'payment.confirmed') {
-    await db.execute({
-      sql: `UPDATE credit_purchases SET status = ?, updated_at = ? WHERE id = ?`,
-      args: [webhookStatus(type), now(), purchase.id],
-    });
+  if (!event.paid) {
+    if (purchase.status !== 'confirmed') {
+      await db.execute({
+        sql: `UPDATE credit_purchases SET status = ?, updated_at = ? WHERE id = ?`,
+        args: [webhookStatus(event.type, event.status), now(), purchase.id],
+      });
+    }
 
-    return { handled: true, credited: false, detail: `recorded ${type}` };
+    return { handled: true, credited: false, detail: `recorded ${event.type || event.status}` };
   }
 
-  // `grantCredits` collides on the payment id if this confirmation has already
-  // been applied, so a duplicate delivery is a no-op rather than free credits.
+  // `grantCredits` collides on the purchase's own key if this payment has
+  // already been applied (confirmed then forwarded, or a redelivery), so a
+  // duplicate is a no-op rather than free credits.
   const credited = await grantCredits(db, {
     organizationId: purchase.organization_id,
     credits: purchase.credits,
-    paymentId,
+    paymentId: purchase.payment_id,
     reason: `CoinPayPortal ${purchase.pack_id}`,
   });
 
@@ -210,11 +238,11 @@ export async function handleCoinPayWebhook(
   };
 }
 
-function webhookStatus(type: string): string {
-  if (type === 'payment.detected') return 'detected';
-  if (type === 'payment.failed') return 'failed';
-  if (type === 'payment.expired') return 'expired';
-  if (type === 'payment.forwarded') return 'confirmed';
+function webhookStatus(type: string, status: string): string {
+  const s = status || type.replace(/^payment\./, '');
+  if (s === 'detected') return 'detected';
+  if (s === 'failed') return 'failed';
+  if (s === 'expired') return 'expired';
   return 'pending';
 }
 

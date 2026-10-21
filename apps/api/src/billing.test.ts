@@ -66,20 +66,43 @@ function confirmedBody(paymentId: string): string {
   });
 }
 
-/** A client whose `createPayment` does not reach the network. */
-function stubbedClient(paymentId = 'pay_stub'): CoinPayClient {
+/** A client whose `createCheckoutSession` does not reach the network. */
+function stubbedClient(
+  sessionId = 'pay_stub',
+  seen?: { body?: Record<string, unknown> },
+): CoinPayClient {
   const stub = client();
 
-  stub.createPayment = async () => ({
-    paymentId,
-    paymentUrl: `https://coinpayportal.com/pay/${paymentId}`,
-    paymentAddress: 'bc1qexample',
-    cryptoAmount: '0.0009',
-    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-    status: 'pending',
-  });
+  stub.createCheckoutSession = async (input) => {
+    if (seen) seen.body = stub.checkoutSessionBody(input);
+    return {
+      sessionId,
+      url: `https://coinpayportal.com/checkout/${sessionId}`,
+      status: 'open',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+  };
 
   return stub;
+}
+
+/** A nested CoinPay event for a hosted checkout session. */
+function sessionEvent(sessionId: string, status: string, paymentId = 'pay_real'): string {
+  return JSON.stringify({
+    id: `evt_${paymentId}_1761040000`,
+    type: `payment.${status}`,
+    business_id: 'biz',
+    created_at: new Date().toISOString(),
+    data: {
+      payment_id: paymentId,
+      status,
+      checkout_session_id: sessionId,
+      customer_email: 'owner@example.com',
+      account_id: SEED.userId,
+      property: 'outreachgraph.com',
+      metadata: { organization_id: SEED.organizationId },
+    },
+  });
 }
 
 async function purchase(db: SeededDatabase['db'], paymentId = 'pay_stub'): Promise<string> {
@@ -88,7 +111,6 @@ async function purchase(db: SeededDatabase['db'], paymentId = 'pay_stub'): Promi
     workspaceId: SEED.workspaceId,
     userId: SEED.userId,
     packId: 'pack_500',
-    blockchain: 'BTC',
     appUrl: 'https://outreachgraph.com',
   });
 
@@ -108,7 +130,7 @@ describe('startCreditPurchase', () => {
       appUrl: 'https://outreachgraph.com',
     });
 
-    expect(result.paymentUrl).toContain('coinpayportal.com/pay/');
+    expect(result.paymentUrl).toContain('coinpayportal.com/checkout/');
     expect(result.pack.credits).toBe(500);
 
     const row = await queryOne<{ status: string; credits: number }>(
@@ -138,72 +160,59 @@ describe('startCreditPurchase', () => {
     ).rejects.toThrow(BillingError);
   });
 
-  test('refuses a chain CoinPayPortal would reject at checkout', async () => {
-    seeded = await seedDatabase('billing-badchain');
+  test('opens a hosted session with the buyer email, account id and property', async () => {
+    seeded = await seedDatabase('billing-session');
+    const seen: { body?: Record<string, unknown> } = {};
 
-    await expect(
-      startCreditPurchase(seeded.db, stubbedClient(), {
-        organizationId: SEED.organizationId,
-        workspaceId: SEED.workspaceId,
-        userId: SEED.userId,
-        packId: 'pack_500',
-        blockchain: 'NOT_A_CHAIN',
-        appUrl: 'https://outreachgraph.com',
-      }),
-    ).rejects.toThrow(BillingError);
-  });
-
-  test('refuses a chain name where a ticker code is required', async () => {
-    // The bug this pins. CoinPayPortal upper-cases and matches, so "bitcoin"
-    // becomes "BITCOIN", matches nothing, and is refused *after* the API key
-    // has been accepted — a 400 that looks exactly like a credentials fault.
-    seeded = await seedDatabase('billing-chainname');
-
-    await expect(
-      startCreditPurchase(seeded.db, stubbedClient(), {
-        organizationId: SEED.organizationId,
-        workspaceId: SEED.workspaceId,
-        userId: SEED.userId,
-        packId: 'pack_500',
-        blockchain: 'bitcoin',
-        appUrl: 'https://outreachgraph.com',
-      }),
-    ).rejects.toThrow(BillingError);
-  });
-
-  test('accepts a ticker in either case and sends the canonical form', async () => {
-    seeded = await seedDatabase('billing-chaincase');
-    let sent: string | undefined;
-
-    const stub = stubbedClient();
-    stub.createPayment = async (input) => {
-      sent = input.blockchain;
-      return {
-        paymentId: 'pay_case',
-        paymentUrl: 'https://coinpayportal.com/pay/pay_case',
-        paymentAddress: 'addr',
-        cryptoAmount: '1',
-        expiresAt: new Date().toISOString(),
-        status: 'pending',
-      };
-    };
-
-    await startCreditPurchase(seeded.db, stub, {
+    const result = await startCreditPurchase(seeded.db, stubbedClient('cs_test1', seen), {
       organizationId: SEED.organizationId,
       workspaceId: SEED.workspaceId,
       userId: SEED.userId,
       packId: 'pack_500',
-      blockchain: 'usdc_sol',
       appUrl: 'https://outreachgraph.com',
     });
 
-    expect(sent).toBe('USDC_SOL');
+    const body = seen.body ?? {};
+    const user = await queryOne<{ email: string }>(
+      seeded.db,
+      'SELECT email FROM users WHERE id = ?',
+      [SEED.userId],
+    );
+    expect(body.customer_email).toBe(user?.email.toLowerCase());
+    expect(body.account_id).toBe(SEED.userId);
+    expect(body.property).toBe('outreachgraph.com');
+    expect(body.currency).toBe('USD');
+    expect(body.blockchain).toBeUndefined();
+    expect(body.success_url).toBe(
+      `https://outreachgraph.com/billing?purchase=${result.purchaseId}`,
+    );
+    expect((body.metadata as Record<string, string>).organization_id).toBe(SEED.organizationId);
+    expect(result.paymentUrl).toBe('https://coinpayportal.com/checkout/cs_test1');
+
+    const row = await queryOne<{ payment_id: string; blockchain: string }>(
+      seeded.db,
+      'SELECT payment_id, blockchain FROM credit_purchases WHERE id = ?',
+      [result.purchaseId],
+    );
+    expect(row?.payment_id).toBe('cs_test1');
+    expect(row?.blockchain).toBe('ANY');
   });
 
-  test('does not offer a chain with no wallet behind it', () => {
-    // USDC_BASE is a valid code on the portal side. Offering it would produce
-    // "No wallet configured for this business" at the worst moment.
-    expect(BLOCKCHAINS).not.toContain('USDC_BASE' as never);
+  test('refuses a buyer with no email', async () => {
+    seeded = await seedDatabase('billing-noemail');
+
+    await expect(
+      startCreditPurchase(seeded.db, stubbedClient(), {
+        organizationId: SEED.organizationId,
+        workspaceId: SEED.workspaceId,
+        userId: 'usr_nobody',
+        packId: 'pack_500',
+        appUrl: 'https://outreachgraph.com',
+      }),
+    ).rejects.toThrow(BillingError);
+  });
+
+  test('still exports the chain list for older callers', () => {
     expect(BLOCKCHAINS).toContain('USDC_SOL');
   });
 });
@@ -374,6 +383,79 @@ describe('handleCoinPayWebhook', () => {
 
     expect(result.handled).toBe(true);
     expect(result.credited).toBe(false);
+  });
+});
+
+describe('handleCoinPayWebhook with hosted checkout sessions', () => {
+  test('a nested confirmed event settles the purchase keyed by checkout_session_id', async () => {
+    seeded = await seedDatabase('billing-cs-confirm');
+    await purchase(seeded.db, 'cs_abc');
+
+    const body = sessionEvent('cs_abc', 'confirmed');
+    const result = await handleCoinPayWebhook(seeded.db, client(), {
+      rawBody: body,
+      signature: await sign(body),
+    });
+
+    expect(result.credited).toBe(true);
+    expect((await creditsFor(seeded.db, SEED.organizationId)).remaining).toBe(500);
+  });
+
+  test('confirmed then forwarded credits once; forwarded alone also counts', async () => {
+    seeded = await seedDatabase('billing-cs-forwarded');
+    await purchase(seeded.db, 'cs_fwd');
+
+    for (const status of ['confirmed', 'forwarded']) {
+      const body = sessionEvent('cs_fwd', status);
+      await handleCoinPayWebhook(seeded.db, client(), {
+        rawBody: body,
+        signature: await sign(body),
+      });
+    }
+    expect((await creditsFor(seeded.db, SEED.organizationId)).remaining).toBe(500);
+  });
+
+  test('forwarded without a prior confirmed still credits', async () => {
+    seeded = await seedDatabase('billing-cs-fwd-only');
+    await purchase(seeded.db, 'cs_fwd2');
+
+    const body = sessionEvent('cs_fwd2', 'forwarded');
+    const result = await handleCoinPayWebhook(seeded.db, client(), {
+      rawBody: body,
+      signature: await sign(body),
+    });
+    expect(result.credited).toBe(true);
+  });
+
+  test('an expired session is recorded and credits nothing', async () => {
+    seeded = await seedDatabase('billing-cs-expired');
+    await purchase(seeded.db, 'cs_exp');
+
+    const body = sessionEvent('cs_exp', 'expired');
+    const result = await handleCoinPayWebhook(seeded.db, client(), {
+      rawBody: body,
+      signature: await sign(body),
+    });
+    expect(result.credited).toBe(false);
+    const row = await queryOne<{ status: string }>(
+      seeded.db,
+      'SELECT status FROM credit_purchases WHERE payment_id = ?',
+      ['cs_exp'],
+    );
+    expect(row?.status).toBe('expired');
+  });
+
+  test('an unsigned session event is refused', async () => {
+    seeded = await seedDatabase('billing-cs-unsigned');
+    await purchase(seeded.db, 'cs_uns');
+
+    await expect(
+      handleCoinPayWebhook(seeded.db, client(), {
+        rawBody: sessionEvent('cs_uns', 'confirmed'),
+        signature: null,
+      }),
+    ).rejects.toThrow(BillingError);
+    expect((await creditsFor(seeded.db, SEED.organizationId)).remaining).toBe(0);
   });
 });
 
