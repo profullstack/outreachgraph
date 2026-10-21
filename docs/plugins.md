@@ -12,17 +12,17 @@ Status: proposal. Nothing here is built yet.
 The seams are already there. What is missing is a registry: every
 implementation is listed by hand.
 
-| Kind | Interface | Where it is wired by hand |
-| --- | --- | --- |
-| Company importer | `LeadSourceDefinition` (`pipeline/src/lead-sources/sources.ts`) | `defaultLeadSources()`; `sweepLeadSources` already takes `deps.sources` |
-| Listening feed | `FeedSource` (`providers/src/feeds/source.ts`) | `LISTEN_SOURCE_SLUGS` tuple + `buildListeningSources()` `if` chain (`apps/server/src/index.ts`) |
-| Buyer-lead feed | same `FeedSource` | `LEAD_SOURCES` tuple + `buildLeadSources()` (`community-leads.ts`) |
-| Audience reader | `AudienceReader` (`providers/src/audience.ts`) | `AUDIENCE_NETWORKS` + `audienceReaderFor()` |
-| Enricher | `PersonEnrichmentProvider` (`providers/src/provider.ts`) | `fanOutProviders = [new BlueskyProvider()]` |
-| CRM | `CrmClient` | `crmClientFor()` |
-| Job | `JOB_KINDS` tuple | `switch (job.kind)` in `runJob` |
-| MCP tool | `ToolDefinition` (`apps/mcp/src/tools.ts`) | static `TOOLS` |
-| CLI verb | `Command` (`apps/cli/src/commands.ts`) | static `COMMANDS` |
+| Kind             | Interface                                                       | Where it is wired by hand                                                                       |
+| ---------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Company importer | `LeadSourceDefinition` (`pipeline/src/lead-sources/sources.ts`) | `defaultLeadSources()`; `sweepLeadSources` already takes `deps.sources`                         |
+| Listening feed   | `FeedSource` (`providers/src/feeds/source.ts`)                  | `LISTEN_SOURCE_SLUGS` tuple + `buildListeningSources()` `if` chain (`apps/server/src/index.ts`) |
+| Buyer-lead feed  | same `FeedSource`                                               | `LEAD_SOURCES` tuple + `buildLeadSources()` (`community-leads.ts`)                              |
+| Audience reader  | `AudienceReader` (`providers/src/audience.ts`)                  | `AUDIENCE_NETWORKS` + `audienceReaderFor()`                                                     |
+| Enricher         | `PersonEnrichmentProvider` (`providers/src/provider.ts`)        | `fanOutProviders = [new BlueskyProvider()]`                                                     |
+| CRM              | `CrmClient`                                                     | `crmClientFor()`                                                                                |
+| Job              | `JOB_KINDS` tuple                                               | `switch (job.kind)` in `runJob`                                                                 |
+| MCP tool         | `ToolDefinition` (`apps/mcp/src/tools.ts`)                      | static `TOOLS`                                                                                  |
+| CLI verb         | `Command` (`apps/cli/src/commands.ts`)                          | static `COMMANDS`                                                                               |
 
 Senders (email, X, LinkedIn, Bluesky) have no common interface. They stay core
 for now (see Non-goals).
@@ -34,23 +34,23 @@ npm packages (`@outreachgraph/plugin-<name>`):
 
 ```ts
 export interface OutreachPlugin {
-  readonly id: string;              // 'reddit-archive'; namespaces everything below
+  readonly id: string; // 'reddit-archive'; namespaces everything below
   readonly version: string;
   readonly label: string;
-  readonly config?: JsonSchema;     // per-workspace settings, validated on install
+  readonly config?: JsonSchema; // per-workspace settings, validated on install
   readonly secrets?: readonly string[]; // names; values stored encrypted per workspace
 
   readonly leadSources?: readonly LeadSourceDefinition[];
-  readonly feeds?: readonly FeedFactory[];          // (ctx) => FeedSource
-  readonly enrichers?: readonly EnricherFactory[];  // (ctx) => PersonEnrichmentProvider
+  readonly feeds?: readonly FeedFactory[]; // (ctx) => FeedSource
+  readonly enrichers?: readonly EnricherFactory[]; // (ctx) => PersonEnrichmentProvider
   readonly audienceReaders?: readonly AudienceReaderFactory[];
   readonly crm?: readonly CrmFactory[];
 
-  readonly tasks?: readonly PluginTask[];           // background work, see Jobs
+  readonly tasks?: readonly PluginTask[]; // background work, see Jobs
   readonly schedules?: readonly { task: string; everyMinutes: number }[];
 
-  readonly mcpTools?: readonly ToolDefinition[];    // names prefixed `<id>_`
-  readonly cliCommands?: readonly Command[];        // `og <id> <verb>`
+  readonly mcpTools?: readonly ToolDefinition[]; // names prefixed `<id>_`
+  readonly cliCommands?: readonly Command[]; // `og <id> <verb>`
   readonly routes?: (app: Hono, ctx: PluginRouteContext) => void; // under /api/v1/plugins/<id>
   readonly capabilityRules?: readonly CapabilityRule[]; // additive only, see Policy
 }
@@ -92,15 +92,15 @@ A plugin never gets the `db` handle. It gets a `PluginContext`:
 
 ```ts
 interface PluginContext {
-  workspaceId: string | null;  // null for global lead sources
-  config: unknown;             // validated against plugin.config
+  workspaceId: string | null; // null for global lead sources
+  config: unknown; // validated against plugin.config
   secret(name: string): Promise<string | undefined>;
-  fetch: typeof fetch;         // paced, timeout, UA set, logged per plugin
+  fetch: typeof fetch; // paced, timeout, UA set, logged per plugin
   state: { get<T>(k: string): Promise<T | undefined>; set(k: string, v: unknown): Promise<void> };
   emit: {
-    posts(posts: FeedPost[]): Promise<number>;           // -> listen.ts writeSignal path
+    posts(posts: FeedPost[]): Promise<number>; // -> listen.ts writeSignal path
     leads(monitorId: string, posts: FeedPost[]): Promise<number>; // -> community_leads + scoring
-    companies(c: LeadCandidate[]): Promise<number>;      // -> storeLeadCandidates
+    companies(c: LeadCandidate[]): Promise<number>; // -> storeLeadCandidates
     person(c: PersonCandidate, origin: CandidateOrigin): Promise<void>; // -> runPipelineForCandidate
   };
   log: Logger;
@@ -218,13 +218,16 @@ export default definePlugin({
   id: 'reddit-archive',
   version: '0.1.0',
   label: 'Reddit (Arctic Shift archive)',
-  config: { type: 'object', properties: {
-    subreddits: { type: 'array', items: { type: 'string' }, default: ['LocalLLaMA'] },
-    comments:   { type: 'boolean', default: true },
-    builders:   { type: 'boolean', default: true },
-  } },
-  feeds: [(ctx) => new ArchiveFeed(ctx)],              // slug 'reddit-archive', network 'reddit'
-  tasks: [{ name: 'sweep', run: sweepSubreddits }],    // posts + comments since cursor
+  config: {
+    type: 'object',
+    properties: {
+      subreddits: { type: 'array', items: { type: 'string' }, default: ['LocalLLaMA'] },
+      comments: { type: 'boolean', default: true },
+      builders: { type: 'boolean', default: true },
+    },
+  },
+  feeds: [(ctx) => new ArchiveFeed(ctx)], // slug 'reddit-archive', network 'reddit'
+  tasks: [{ name: 'sweep', run: sweepSubreddits }], // posts + comments since cursor
   schedules: [{ task: 'sweep', everyMinutes: 30 }],
   mcpTools: [/* reddit-archive_recent: latest builders seen, by subreddit */],
 });
