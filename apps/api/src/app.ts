@@ -275,6 +275,13 @@ import { importReport, importReportCsv } from './import-report';
 import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
 import { audienceRoutes } from './audience';
+import {
+  BrainValidationError,
+  brainImportSchema,
+  exportBrain,
+  importBrain,
+  validateBrain,
+} from './brain';
 import { jobPostRoutes } from './job-posts';
 import { workflowRoutes } from './workflows';
 import { personSiteAuditRoutes, siteAuditForPerson, siteAuditRoutes } from './site-audits';
@@ -2878,6 +2885,61 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ offeringId: c.req.param('id'), demoUrl });
+  });
+
+  /**
+   * A product's brain as markdown files: positioning, voice, audience and
+   * objections in the layout a marketing team keeps in git (docs/brain-repo.md).
+   * `?slug=` writes the paths under `knowledge/<slug>/` for a multi-product brain.
+   */
+  api.get('/products/:id/brain', async (c) => {
+    const actor = c.get('actor');
+    const slug = c.req.query('slug')?.trim() || undefined;
+    const brain = await exportBrain(c.get('db'), actor.workspaceId, c.req.param('id'), {
+      ...(slug ? { slug } : {}),
+    });
+    if (!brain) throw ApiError.notFound('product');
+    return c.json(brain);
+  });
+
+  /**
+   * Writes edited brain files back: positioning to the offering, voice to the
+   * product's voice profile (samples and claims to avoid included). Audience
+   * and objections are export-only. Fields the files leave out are kept.
+   */
+  api.put('/products/:id/brain', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+
+    if (!canApprove(actor)) throw ApiError.forbidden('changing a product');
+
+    const body = brainImportSchema.safeParse(safeJson(await c.req.raw.text()));
+    if (!body.success) throw ApiError.badRequest('body must be {files: {path: markdown}}');
+
+    let parsed;
+    try {
+      parsed = validateBrain(body.data.files, body.data.slug || undefined);
+    } catch (error) {
+      if (error instanceof BrainValidationError) {
+        throw ApiError.badRequest(error.message, error.details);
+      }
+      throw error;
+    }
+
+    const result = await importBrain(db, actor.workspaceId, c.req.param('id'), parsed);
+    if (!result) throw ApiError.notFound('product');
+
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'onboarding.brain_imported',
+      entityKind: 'offering',
+      entityId: result.offeringId,
+      detail: { product: result.product, voice: result.voice },
+    });
+
+    return c.json({ saved: true, ...result });
   });
 
   /**
