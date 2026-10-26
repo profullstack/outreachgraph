@@ -1303,8 +1303,14 @@ async function actionCounts(db: Client, workspaceId: string, personId: string) {
   const today = await queryOne<{ n: number }>(
     db,
     // Hand-offs are exempt from the daily limit; see `actionCounts` in the API.
+    //
+    // What went out, as autopilot counts it (`countActionsToday`): not every
+    // action created. Held approvals and failed sends counted here put the
+    // workspace at 1,000 of 1,000 with 247 sent (2026-10-26), so the engine
+    // refused every new email card and wrote research cards instead.
     `SELECT count(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= ? AND mode != 'manual' AND ${countable}`,
+      WHERE workspace_id = ? AND status IN ('completed', 'executing')
+        AND COALESCE(executed_at, created_at) >= ? AND mode != 'manual' AND ${countable}`,
     [workspaceId, dayAgo, ...INTERNAL_ACTION_KINDS],
   );
   const week = await queryOne<{ n: number }>(
