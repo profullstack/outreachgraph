@@ -11,7 +11,7 @@
 # this container must not be scaled horizontally without splitting the loop
 # back out behind a lock.
 
-FROM oven/bun:1.3.14-slim AS deps
+FROM oven/bun:1.4.4-slim AS deps
 WORKDIR /app
 
 # The whole workspace, deliberately. Enumerating manifests to get a cacheable

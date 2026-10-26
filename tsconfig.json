@@ -1,7 +1,6 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
       "@outreachgraph/domain": ["./packages/domain/src/index.ts"],
       "@outreachgraph/db": ["./packages/db/src/index.ts"],

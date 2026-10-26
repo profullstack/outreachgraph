@@ -11,10 +11,10 @@
     "test": "bun test"
   },
   "dependencies": {
-    "imapflow": "^1.7.1",
-    "nodemailer": "^9.0.5"
+    "imapflow": "^2.9.1",
+    "nodemailer": "^10.2.1"
   },
   "devDependencies": {
-    "@types/nodemailer": "^8.0.1"
+    "@types/nodemailer": "^8.0.2"
   }
 }
