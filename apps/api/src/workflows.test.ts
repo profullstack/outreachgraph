@@ -17,7 +17,7 @@ import type { TextModel } from '@outreachgraph/ai';
 import type { Client } from '@outreachgraph/db';
 import { queryAll, queryOne } from '@outreachgraph/db';
 import { ENGINEERING_CONTRACT_TEMPLATE } from '@outreachgraph/domain';
-import type { WebResult, WebSearcher } from '@outreachgraph/providers';
+import type { JobFeed, WebResult, WebSearcher } from '@outreachgraph/providers';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
@@ -55,6 +55,33 @@ const brokenSearcher: WebSearcher = {
   },
 };
 
+/**
+ * The job-board step reads job feeds now; in these tests the one feed is the
+ * fake searcher's workable result, so a broken searcher is a feed outage.
+ */
+function feedsFor(source: WebSearcher | null | undefined): readonly JobFeed[] {
+  if (!source) return [];
+  return [
+    {
+      slug: 'fake',
+      async search({ keyword }) {
+        const results = await source.search(`site:apply.workable.com ${keyword}`);
+        return results
+          .flatMap((r) => (r.link ? [{ ...r, link: r.link }] : []))
+          .map((r) => ({
+            feed: 'fake',
+            url: r.link,
+            company: 'Raydar',
+            domain: 'raydar.com',
+            title: r.title,
+            text: r.title ?? '',
+            emails: [],
+          }));
+      },
+    },
+  ];
+}
+
 async function harness(
   label: string,
   options: { actor?: RequestActor; searcher?: WebSearcher | null; model?: TextModel } = {},
@@ -65,6 +92,7 @@ async function harness(
     db: seeded.db,
     authenticate: async () => options.actor ?? OWNER,
     ...(options.searcher === null ? {} : { jobSearcher: options.searcher ?? searcher }),
+    jobFeeds: feedsFor(options.searcher === null ? null : (options.searcher ?? searcher)),
     ...(options.model ? { model: options.model } : {}),
   });
   return { app, db: seeded.db };
@@ -439,6 +467,15 @@ describe('contactability', () => {
       reason: expect.stringContaining('shared company inbox'),
     });
 
+    // Not before the address search has had its go: find_email only looks for
+    // people holding a pending card, so skipping first starved it.
+    const waiting = await runNow(app, workflow.id);
+    expect(waiting.steps.find((s) => s.id === 'verify')?.detail).toContain('0 first emails');
+    await db.execute({
+      sql: `UPDATE people SET email_searched_at = ? WHERE id = ?`,
+      args: [new Date().toISOString(), SEED.personId],
+    });
+
     const run = await runNow(app, workflow.id);
     expect(run.steps.find((s) => s.id === 'verify')?.detail).toContain('1 first emails');
     const rec = await queryOne<{ status: string }>(
@@ -558,7 +595,11 @@ describe('durability', () => {
     const statuses: string[] = [];
     for (let i = 0; i < 3; i += 1) {
       at = new Date(at.getTime() + 121 * 60_000);
-      const [result] = await runDueWorkflows(db, { searcher: brokenSearcher, now: () => at });
+      const [result] = await runDueWorkflows(db, {
+        searcher: brokenSearcher,
+        jobFeeds: feedsFor(brokenSearcher),
+        now: () => at,
+      });
       expect(result?.trigger).toBe('retry');
       statuses.push(result!.status);
       const detail = await json<{ run: { steps: { id: string; status: string }[] } }>(
@@ -579,7 +620,12 @@ describe('durability', () => {
     const failed = await runNow(app, workflow.id);
     await send(app, 'POST', `/workflows/${workflow.id}/runs/${failed.runId}/cancel`);
 
-    const fixed = createApp({ db, authenticate: async () => OWNER, jobSearcher: searcher });
+    const fixed = createApp({
+      db,
+      authenticate: async () => OWNER,
+      jobSearcher: searcher,
+      jobFeeds: feedsFor(searcher),
+    });
     const resumed = await json<{ run: RunOutcome }>(
       send(fixed, 'POST', `/workflows/${workflow.id}/runs/${failed.runId}/resume?wait=1`),
     );
@@ -623,7 +669,7 @@ describe('durability', () => {
       args: [workflow.id, SEED.workspaceId, long],
     });
 
-    const ran = await runDueWorkflows(db, { searcher });
+    const ran = await runDueWorkflows(db, { searcher, jobFeeds: feedsFor(searcher) });
     expect(ran.map((r) => r.trigger)).toEqual(['retry']);
     const retry = await queryOne<{ slot_key: string; attempt: number; retry_of: string }>(
       db,
@@ -641,7 +687,10 @@ describe('durability', () => {
     expect(
       (await send(app, 'POST', `/workflows/${workflow.id}/runs/${failed.runId}/cancel`)).status,
     ).toBe(200);
-    const ran = await runDueWorkflows(db, { now: () => new Date(Date.now() + 864e5) });
+    const ran = await runDueWorkflows(db, {
+      jobFeeds: [],
+      now: () => new Date(Date.now() + 864e5),
+    });
     expect(ran.filter((r) => r.trigger === 'retry')).toEqual([]);
   });
 });
@@ -653,9 +702,15 @@ describe('scheduling', () => {
     expect(workflow.nextRunAt).not.toBeNull();
 
     const later = new Date(Date.now() + 60_000);
-    const ran = await runDueWorkflows(db, { searcher, now: () => later });
+    const ran = await runDueWorkflows(db, {
+      searcher,
+      jobFeeds: feedsFor(searcher),
+      now: () => later,
+    });
     expect(ran.map((r) => [r.workflowId, r.trigger])).toEqual([[workflow.id, 'schedule']]);
-    expect(await runDueWorkflows(db, { searcher, now: () => later })).toEqual([]);
+    expect(
+      await runDueWorkflows(db, { searcher, jobFeeds: feedsFor(searcher), now: () => later }),
+    ).toEqual([]);
 
     const row = await queryOne<{ next_run_at: string; last_run_status: string }>(
       db,
@@ -690,6 +745,7 @@ describe('scheduling', () => {
     };
     const ran = await runDueWorkflows(db, {
       searcher,
+      jobFeeds: feedsFor(searcher),
       now: () => at,
       launches: {
         sources: [
@@ -760,9 +816,15 @@ describe('scheduling', () => {
       ],
     });
     const later = new Date(Date.now() + 60_000);
-    const ran = await runDueWorkflows(db, { searcher, now: () => later });
+    const ran = await runDueWorkflows(db, {
+      searcher,
+      jobFeeds: feedsFor(searcher),
+      now: () => later,
+    });
     expect(ran.map((r) => r.trigger)).toEqual(['event']);
-    expect(await runDueWorkflows(db, { searcher, now: () => later })).toEqual([]);
+    expect(
+      await runDueWorkflows(db, { searcher, jobFeeds: feedsFor(searcher), now: () => later }),
+    ).toEqual([]);
   });
 
   test('pause stops the runs and the sending', async () => {
@@ -785,7 +847,11 @@ describe('scheduling', () => {
     );
     expect(campaign).toEqual({ status: 'paused', approval_mode: 'draft_and_approve' });
     expect(
-      await runDueWorkflows(db, { searcher, now: () => new Date(Date.now() + 864e5) }),
+      await runDueWorkflows(db, {
+        searcher,
+        jobFeeds: feedsFor(searcher),
+        now: () => new Date(Date.now() + 864e5),
+      }),
     ).toEqual([]);
 
     const resumed = await json<{ workflow: WorkflowView }>(

@@ -112,3 +112,32 @@ export function orderForExpansion<T>(
     .sort((a, b) => a.group - b.group || a.rank - b.rank || a.index - b.index)
     .map((entry) => entry.item);
 }
+
+// ------------------------------------------------------ engineering buyers
+
+/** Default people kept per company in a capped campaign. */
+export const DEFAULT_MAX_PEOPLE_PER_COMPANY = 3;
+
+const ENGINEERING_BUYER_TIERS: readonly RegExp[] = [
+  // Owns the engineering budget.
+  /\b(cto|chief technology officer|chief technical officer|vp,? (?:of )?engineering|vice president,? (?:of )?engineering|svp,? (?:of )?engineering|head of (?:engineering|software|platform|technology|product engineering)|engineering director|director,? (?:of )?(?:engineering|software engineering|platform))\b/i,
+  // Owns the company, so owns the hiring call at 10 to 1000 people.
+  /\b(co-?founder|founder|ceo|chief executive|president|owner|managing director|chief product officer|cpo)\b/i,
+  // Runs a team that needs the engineers.
+  /\b(engineering manager|manager,? engineering|software (?:development )?manager|head of|tech(?:nical)? lead|team lead|lead engineer|principal engineer|staff engineer|architect|vp|vice president|director)\b/i,
+  // Fills the seat.
+  /\b(technical recruiter|engineering recruiter|recruiter|talent|recruiting|people partner|hr)\b/i,
+];
+
+/**
+ * Who to keep first when a campaign takes only a few people per company, for
+ * an offer of engineering capacity: the CTO / VP or Head of Engineering, then
+ * the founder or CEO, then the managers and leads who own a team, then the
+ * recruiters. Everyone else, then the untitled, last. Lower is better.
+ */
+export function engineeringBuyerRank(title: string | null | undefined): number {
+  const text = (title ?? '').trim();
+  if (!text) return ENGINEERING_BUYER_TIERS.length + 1;
+  const tier = ENGINEERING_BUYER_TIERS.findIndex((pattern) => pattern.test(text));
+  return tier === -1 ? ENGINEERING_BUYER_TIERS.length : tier;
+}

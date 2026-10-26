@@ -47,3 +47,19 @@ export {
 } from './nostr';
 export { DevToSource, DEVTO_API, type DevToSourceOptions } from './devto';
 export { GitHubRepoSource, type GitHubRepoSourceOptions } from './github-repos';
+export {
+  addressesIn,
+  buildJobFeeds,
+  employerDomain,
+  hnPost,
+  HimalayasFeed,
+  HnHiringFeed,
+  JobicyFeed,
+  jobFeedQuery,
+  matchesJobKeyword,
+  RemoteOkFeed,
+  type JobFeed,
+  type JobFeedOptions,
+  type JobFeedPost,
+  type JobFeedSearch,
+} from './job-feeds';

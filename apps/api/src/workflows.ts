@@ -42,6 +42,7 @@ import {
   describeSchedule,
   interpretWorkflowPrompt,
   launchTerms,
+  DEFAULT_MAX_PEOPLE_PER_COMPANY,
   newId,
   nextWorkflowRunAt,
   normaliseWorkflowSettings,
@@ -62,16 +63,18 @@ import {
   crmStatus,
   dueWorkflowRetries,
   emitEvent,
+  enforceCompanyCap,
   enqueue,
+  enqueueFindEmail,
   executeWorkflowRun,
   failWorkflowRun,
   buildLaunchSources,
   findLaunches,
+  intakeJobFeeds,
   intakeLaunches,
   isSuppressed,
   loadOutreachSettings,
   recoverInterruptedWorkflowRuns,
-  searchJobPosts,
   startWorkflowRun,
   type WorkflowHandlers,
   type WorkflowRunContext,
@@ -79,7 +82,13 @@ import {
   type WorkflowStepOutcome,
 } from '@outreachgraph/pipeline';
 import { evaluatePolicy } from '@outreachgraph/policy';
-import { GitHubClient, type FeedSource, type WebSearcher } from '@outreachgraph/providers';
+import {
+  buildJobFeeds,
+  GitHubClient,
+  type FeedSource,
+  type JobFeed,
+  type WebSearcher,
+} from '@outreachgraph/providers';
 import { saveTargeting } from './autogtm';
 import {
   createCampaignFromIntake,
@@ -92,8 +101,13 @@ import * as repo from './repository';
 
 export interface WorkflowDeps {
   readonly model?: TextModel | undefined;
-  /** ValueSERP in production; job-board steps skip without it. */
+  /**
+   * ValueSERP in production: a job-board step looks up the domain of a
+   * company a feed names without one. Without it those companies are skipped.
+   */
   readonly searcher?: WebSearcher | undefined;
+  /** Test seam: replaces the keyless public job feeds (`buildJobFeeds`). */
+  readonly jobFeeds?: readonly JobFeed[] | undefined;
   /** Launch radar: keyless; a GitHub token only raises its rate limit. */
   readonly launches?:
     | {
@@ -165,7 +179,7 @@ const SETTINGS_SHAPE = `{
   "goal": string,                                  // one sentence
   "sources": [                                     // 1-6, where to find people
     { "kind": "discover", "query": string }        // a market: "fintech startups hiring engineers"
-    | { "kind": "job_posts", "query": string, "limit": 1-50 }  // a job-board keyword
+    | { "kind": "job_posts", "query": string, "limit": 1-200 }  // a job-board keyword; limit = new companies a run
     | { "kind": "launches", "query": string, "limit": 1-50, "hours": 1-168 }
       // comma-separated phrases; new Show HN, dev.to, GitHub and Bluesky launches mentioning them
   ],
@@ -498,6 +512,17 @@ function stepHandlers(
     return created.campaignId;
   }
 
+  /** The score step's per-company cap, on the campaign's budget and its members. */
+  async function applyCompanyCap(context: WorkflowRunContext, campaignId: string) {
+    const score = definition.nodes.find((n) => n.type === 'score_filter');
+    const maxPerCompany = Number(score?.config.maxPerCompany ?? DEFAULT_MAX_PEOPLE_PER_COMPANY);
+    await setCampaignLimits(context.db, context.workspaceId, campaignId, {
+      maxPeoplePerCompany: maxPerCompany,
+    });
+    const capped = await enforceCompanyCap(context.db, { campaignId, maxPerCompany });
+    return { maxPerCompany, capped };
+  }
+
   const report = (detail: string, counts?: Record<string, number>): WorkflowStepOutcome => ({
     status: 'ok',
     detail,
@@ -559,21 +584,37 @@ function stepHandlers(
         );
       }
       if (node.config.source === 'job_posts') {
-        if (!deps.searcher) {
-          return { status: 'skipped', detail: 'job search is not configured on this server' };
-        }
-        const found = await searchJobPosts(
-          { db: context.db, searcher: deps.searcher },
+        // The public feeds, not `site:` searches: ValueSERP stopped honouring
+        // `site:` and this step found 0 postings a run (2026-10-26).
+        const found = await intakeJobFeeds(
+          {
+            db: context.db,
+            feeds: deps.jobFeeds ?? buildJobFeeds(),
+            searcher: deps.searcher,
+            now: context.at,
+          },
           {
             workspaceId: context.workspaceId,
-            keyword: query,
             campaignId,
+            keyword: query,
             limit: Number(node.config.limit ?? 20),
           },
         );
+        const feeds = Object.entries(found.byFeed)
+          .map(([slug, n]) => `${slug} ${String(n)}`)
+          .join(', ');
         return report(
-          `${found.saved.length} new postings, ${found.duplicates.length} already known`,
-          { found: found.found, saved: found.saved.length, duplicates: found.duplicates.length },
+          `${found.companies} new companies queued for a crawl from ${found.postings} postings (${feeds}); ` +
+            `${found.known} already known, ${found.agencies} agencies skipped, ${found.noDomain} without a findable site, ` +
+            `${found.postedPeople} people from addresses their posting published`,
+          {
+            postings: found.postings,
+            companies: found.companies,
+            known: found.known,
+            agencies: found.agencies,
+            noDomain: found.noDomain,
+            postedPeople: found.postedPeople,
+          },
         );
       }
       if (created && context.state.intakeQuery === query) {
@@ -594,12 +635,18 @@ function stepHandlers(
 
     async enrich(node, context) {
       const campaignId = await campaign(context);
+      // The cap first, so the address searches go to the few kept at each
+      // company and not to the two hundred colleagues the score step drops.
+      await applyCompanyCap(context, campaignId);
       const counts = await addressCounts(context.db, context.workspaceId, campaignId);
+      const searches = node.config.findEmail
+        ? await queueAddressSearches(context.db, context.workspaceId, campaignId, context.at)
+        : 0;
       return report(
         node.config.findEmail
-          ? `${counts.people} people; ${counts.withoutAddress} still need an address — the enrichment sweep and find_email look them up`
+          ? `${counts.people} people; ${counts.withoutAddress} still need an address — ${searches} address searches queued (find_email: the domain's pattern, then the mail server's answer)`
           : `${counts.people} people; address search is off for this workflow`,
-        counts,
+        { ...counts, searchesQueued: searches },
       );
     },
 
@@ -622,6 +669,7 @@ function stepHandlers(
     async score_filter(node, context) {
       const campaignId = await campaign(context);
       const c = node.config;
+      const { maxPerCompany, capped } = await applyCompanyCap(context, campaignId);
       const list = (value: unknown) => (Array.isArray(value) ? value.map(String) : []);
       await saveTargeting(context.db, campaignId, {
         titles: list(c.titles),
@@ -635,7 +683,15 @@ function stepHandlers(
         employee_count_max: c.employeeCountMax === null ? null : Number(c.employeeCountMax),
       });
       return report(
-        `targeting saved: ${list(c.titles).length} titles, ${list(c.exclusions).length} exclusions`,
+        `targeting saved: ${list(c.titles).length} titles, ${list(c.exclusions).length} exclusions; ` +
+          `${capped.kept} people kept across ${capped.companies} companies (at most ${maxPerCompany} each), ` +
+          `${capped.excluded} colleagues held back, ${capped.cardsSkipped} of their cards skipped`,
+        {
+          companies: capped.companies,
+          kept: capped.kept,
+          heldBack: capped.excluded,
+          cardsSkipped: capped.cardsSkipped,
+        },
       );
     },
 
@@ -774,6 +830,41 @@ async function addressCounts(db: Client, workspaceId: string, campaignId: string
   };
 }
 
+/** Address searches queued per run by the enrich step; each holds an SMTP check. */
+const ADDRESS_SEARCHES_PER_RUN = 400;
+
+/**
+ * Queues `find_email` for the people this campaign kept who have no address
+ * and have not been searched recently. The worker's own sweep only reaches
+ * people holding a pending card, twenty a tick, across every campaign.
+ */
+async function queueAddressSearches(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+  at: Date,
+): Promise<number> {
+  const people = await queryAll<{ person_id: string }>(
+    db,
+    `SELECT cp.person_id FROM campaign_people cp JOIN people p ON p.id = cp.person_id
+      WHERE cp.campaign_id = ? AND p.status = 'active' AND p.kind = 'person'
+        AND p.outreach_eligible = 1 AND p.email_searched_at IS NULL
+        AND cp.status NOT IN ('unqualified', 'suppressed', 'not_interested')
+        AND NOT EXISTS (SELECT 1 FROM person_emails pe WHERE pe.person_id = p.id)
+        AND NOT EXISTS (SELECT 1 FROM social_identities si
+                         WHERE si.person_id = p.id AND si.network = 'email'
+                           AND si.handle IS NOT NULL AND trim(si.handle) <> '')
+      ORDER BY cp.discovered_at DESC
+      LIMIT ?`,
+    [campaignId, ADDRESS_SEARCHES_PER_RUN],
+  );
+  let queued = 0;
+  for (const { person_id: personId } of people) {
+    if (await enqueueFindEmail(db, { workspaceId, personId, now: at })) queued += 1;
+  }
+  return queued;
+}
+
 /**
  * Skips pending first-touch sends to anyone already handled elsewhere.
  *
@@ -827,7 +918,10 @@ export async function deduplicateCampaign(
  * address that is theirs, or not at all. Without this, a crawl that names
  * eighty people at one company queues eighty first emails to its `team@`.
  * A follow-up to someone already written to is left alone, and so is anyone
- * with a personal address on file. Cards are skipped, not deleted.
+ * with a personal address on file — and anyone whose address search has not
+ * run yet: skipping them first meant `find_email`, which only looks for people
+ * holding a pending card, never searched 512 of them (2026-10-26). Cards are
+ * skipped, not deleted.
  */
 export async function skipSharedInboxOnly(
   db: Client,
@@ -838,6 +932,9 @@ export async function skipSharedInboxOnly(
     sql: `UPDATE recommendations SET status = 'skipped'
            WHERE campaign_id = ? AND workspace_id = ? AND status = 'pending'
              AND action = 'send_email'
+             AND EXISTS (SELECT 1 FROM people p
+                          WHERE p.id = recommendations.person_id
+                            AND p.email_searched_at IS NOT NULL)
              AND NOT EXISTS (SELECT 1 FROM social_identities si
                               WHERE si.person_id = recommendations.person_id
                                 AND si.network = 'email'

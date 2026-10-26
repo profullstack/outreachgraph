@@ -124,6 +124,7 @@ import {
   disconnectBlueskyAccount,
   deliverBlueskyAction,
   deliverEmailAction,
+  emailCardReadiness,
   enrollInCadence,
   readResearchGrid,
   applyUnsubscribe,
@@ -173,6 +174,7 @@ import {
 import type {
   FetchLike as ProviderFetchLike,
   HostLookup,
+  JobFeed,
   JobReaderOptions,
   WebSearcher,
   XOAuthClient,
@@ -401,6 +403,8 @@ export interface AppOptions {
    * site: queries routinely take 40-120 s. Falls back to `jobSearcher`.
    */
   readonly workflowSearcher?: WebSearcher | undefined;
+  /** Test seam: the workflows' job feeds, keyless public ones by default. */
+  readonly jobFeeds?: readonly JobFeed[] | undefined;
   /** Raises the launch radar's GitHub reads from 60 to 5,000 an hour. */
   readonly githubToken?: string | undefined;
   /**
@@ -1605,6 +1609,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     workflowRoutes({
       model: options.model,
       searcher: options.workflowSearcher ?? options.jobSearcher,
+      jobFeeds: options.jobFeeds,
       launches: { githubToken: options.githubToken },
       requireVerifiedEmail: (db, actor, action) => requireVerifiedEmail(db, actor, action),
     }),
@@ -6553,6 +6558,43 @@ async function approveRecommendation(
       decision: decision.decision,
       policyVersion: decision.policyVersion,
     };
+  }
+
+  // An email that would be sent now needs words and an address. Approving
+  // one without either recorded an action that could only fail, and the card
+  // left the queue looking handled: 37 of them in the Engineering Contracts
+  // campaign (2026-10-26). It stays pending instead, where autopilot drafts it
+  // and `find_email` looks for an address, and the reason says which is missing.
+  if (
+    !handoff &&
+    recommendation.network === 'email' &&
+    recommendation.action === 'send_email' &&
+    recommendation.expected_goal !== 'continue_conversation'
+  ) {
+    const ready = await emailCardReadiness(db, actor.workspaceId, recommendation.id);
+    const missing = !ready.recipient
+      ? 'no address published for this person or their company'
+      : !ready.hasDraft && !input.editedBody?.trim()
+        ? 'no drafted message yet'
+        : undefined;
+    if (missing) {
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'recommendation.approval_blocked',
+        entityKind: 'recommendation',
+        entityId: recommendation.id,
+        detail: { gate: 'not_sendable', reason: missing },
+      });
+      return {
+        ok: false,
+        gate: 'not_sendable',
+        reason: missing,
+        decision: decision.decision,
+        policyVersion: decision.policyVersion,
+      };
+    }
   }
 
   let draft = await db.execute({

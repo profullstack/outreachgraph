@@ -56,6 +56,61 @@ export function pickEmailRecipient(row: {
   return undefined;
 }
 
+/**
+ * The person's own address, as autopilot reads it: published on a page they
+ * control first, then one imported or found for them (`person_emails`, where
+ * `find_email` promotes a server-confirmed address), never one that failed
+ * verification. Expects the person as `p` and the workspace as `?`.
+ *
+ * The approval route and the held-send job read only the first table, so an
+ * address `find_email` had confirmed reached autopilot and nothing else, and
+ * an approved card for that person failed "no address published".
+ */
+export const PERSON_EMAIL_SQL = `COALESCE(
+              (SELECT si.handle FROM social_identities si
+                WHERE si.person_id = p.id AND si.network = 'email'
+                  AND si.handle IS NOT NULL AND trim(si.handle) <> ''
+                  AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+                    WHERE ev.address = lower(trim(si.handle)) AND ev.status = 'invalid')
+                ORDER BY si.confidence DESC LIMIT 1),
+              (SELECT pe.address FROM person_emails pe
+                WHERE pe.person_id = p.id AND pe.workspace_id = a.workspace_id
+                  AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+                    WHERE ev.address = lower(trim(pe.address)) AND ev.status = 'invalid')
+                ORDER BY pe.created_at LIMIT 1))`;
+
+/**
+ * Whether an email card has what a send needs: words, and somewhere to send
+ * them. Asked before approving, because approving is the instruction to send
+ * and an approval with neither only records a failure (2026-10-26: 37 cards
+ * approved with no draft and no address became 37 dead actions).
+ */
+export async function emailCardReadiness(
+  db: Client,
+  workspaceId: string,
+  recommendationId: string,
+): Promise<{ readonly hasDraft: boolean; readonly recipient: EmailRecipient | undefined }> {
+  const row = await queryOne<{
+    draft_body: string | null;
+    person_email: string | null;
+    company_contact_email: string | null;
+  }>(
+    db,
+    `SELECT d.body AS draft_body, co.contact_email AS company_contact_email,
+            ${PERSON_EMAIL_SQL.replace('a.workspace_id', 'r.workspace_id')} AS person_email
+       FROM recommendations r
+       JOIN people p ON p.id = r.person_id
+       LEFT JOIN drafts d ON d.recommendation_id = r.id
+       LEFT JOIN companies co ON co.id = p.current_company_id
+      WHERE r.id = ? AND r.workspace_id = ?`,
+    [recommendationId, workspaceId],
+  );
+  return {
+    hasDraft: Boolean(row?.draft_body?.trim()),
+    recipient: row ? pickEmailRecipient(row) : undefined,
+  };
+}
+
 /** A subject the composer did not supply. Kept plain and specific. */
 export function defaultEmailSubject(companyName: string | null | undefined): string {
   return companyName ? `Quick question about ${companyName}` : 'Quick question';
@@ -538,9 +593,7 @@ export async function deliverEmailAction(
             p.display_name,
             d.subject AS draft_subject, d.body AS draft_body,
             co.name AS company_name, co.contact_email AS company_contact_email,
-            (SELECT si.handle FROM social_identities si
-              WHERE si.person_id = p.id AND si.network = 'email'
-              ORDER BY si.confidence DESC LIMIT 1) AS person_email
+            ${PERSON_EMAIL_SQL} AS person_email
        FROM actions a
        JOIN recommendations r ON r.id = a.recommendation_id
        JOIN people p ON p.id = a.person_id

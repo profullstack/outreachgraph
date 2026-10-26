@@ -260,29 +260,68 @@ describe('approving an email', () => {
     expect(action?.error).toContain('535');
   });
 
-  test('says so plainly when the prospect has no published address', async () => {
+  test('refuses, plainly, when the prospect has no published address', async () => {
     const { sent, mailer } = recordingMailer();
     const { app, db } = await harness('approve-no-address', { mailer });
     await makeEmailCard(db);
 
-    const payload = (await (await approve(app)).json()) as {
-      delivery?: { sent: boolean; reason?: string };
-    };
+    const response = await approve(app);
+    const payload = (await response.json()) as { error?: { message?: string } };
 
     // Inventing `firstname@company.com` is how a sending domain gets burned.
-    expect(payload.delivery?.sent).toBe(false);
-    expect(payload.delivery?.reason).toContain('no address published');
+    // And approving anyway recorded an action that could only fail, while the
+    // card left the queue looking handled (37 of them, 2026-10-26): it stays
+    // pending for find_email instead.
+    expect(response.status).toBe(409);
+    expect(JSON.stringify(payload)).toContain('no address published');
     expect(sent).toHaveLength(0);
-
-    // Failed with the reason, not left `queued` where it read as pending
-    // forever and counted against autopilot's daily limit.
-    const action = await queryOne<{ status: string; error: string | null }>(
+    const card = await queryOne<{ status: string }>(
       db,
-      'SELECT status, error FROM actions WHERE workspace_id = ?',
+      'SELECT status FROM recommendations WHERE id = ?',
+      [SEED.recommendationId],
+    );
+    expect(card?.status).toBe('pending');
+    const actions = await queryOne<{ n: number }>(
+      db,
+      'SELECT COUNT(*) AS n FROM actions WHERE workspace_id = ?',
       [SEED.workspaceId],
     );
-    expect(action?.status).toBe('failed');
-    expect(action?.error).toContain('no address published');
+    expect(Number(actions?.n)).toBe(0);
+  });
+
+  test('refuses a card with no drafted message, unless the reviewer wrote one', async () => {
+    const { sent, mailer } = recordingMailer();
+    const { app, db } = await harness('approve-no-draft', { mailer });
+    await makeEmailCard(db, { personEmail: 'jane@acme.com' });
+    await db.execute({ sql: 'DELETE FROM drafts WHERE id = ?', args: [SEED.draftId] });
+
+    const refused = await approve(app);
+    expect(refused.status).toBe(409);
+    expect(JSON.stringify(await refused.json())).toContain('no drafted message');
+
+    const edited = await approve(app, { editedBody: 'Two lines I wrote myself.' });
+    expect(edited.status).toBe(200);
+    expect(sent[0]?.text).toContain('Two lines I wrote myself.');
+  });
+
+  test('sends to an address find_email confirmed, not only a published one', async () => {
+    // find_email promotes into `person_emails`. Autopilot read that table and
+    // the approval route did not, so a confirmed address reached one sender
+    // and "no address published" came back from the other.
+    const { sent, mailer } = recordingMailer();
+    const { app, db } = await harness('approve-person-emails', { mailer });
+    await makeEmailCard(db);
+    await db.execute({
+      sql: `INSERT INTO person_emails (id, workspace_id, person_id, address, dedupe_key, source,
+            verified, created_at)
+            VALUES ('pem_jane', ?, ?, 'jane.smith@acme.com', 'jane.smith@acme.com', 'find_email',
+            1, ?)`,
+      args: [SEED.workspaceId, SEED.personId, now()],
+    });
+
+    const response = await approve(app);
+    expect(response.status).toBe(200);
+    expect(sent[0]?.to).toBe('jane.smith@acme.com');
   });
 
   test('hands off to the reviewer when this deployment genuinely cannot send', async () => {
