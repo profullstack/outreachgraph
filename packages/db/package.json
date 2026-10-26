@@ -13,9 +13,11 @@
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",
-    "@profullstack/libsql-pg": "^0.1.4"
+    "@profullstack/libsql-pg": "^0.1.4",
+    "pg": "8.23.1"
   },
   "devDependencies": {
-    "@outreachgraph/domain": "workspace:*"
+    "@outreachgraph/domain": "workspace:*",
+    "@types/pg": "^8.23.1"
   }
 }

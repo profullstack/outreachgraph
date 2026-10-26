@@ -1338,6 +1338,43 @@ async function readKnowledge(dir: string, slug?: string): Promise<Record<string,
   return files;
 }
 
+/** `og redeem <code>`: a credit code into this organization's prospect credits. */
+async function runRedeem({ client, args }: CommandContext): Promise<string> {
+  const code = args.join(' ').trim();
+  if (!code) throw new Error('og redeem <code>');
+  const result = (await client.post('/credits/redeem', { code })) as {
+    prospects?: number;
+    remaining?: number;
+  };
+  return `Added ${result.prospects ?? 0} prospect credits. ${result.remaining ?? 0} credits left.`;
+}
+
+/** `og invites [create [--note x]]`: your three invites and your ?ref= link. */
+async function runInvites({ client, args, flags }: CommandContext): Promise<string> {
+  if (args[0] === 'create' || args[0] === 'new') {
+    const note = flagString(flags, 'note') ?? args.slice(1).join(' ');
+    const made = (await client.post('/invites', { note })) as {
+      url: string;
+      quota: { left: number };
+    };
+    return `${made.url}\nShown once. ${made.quota.left} invites left.`;
+  }
+  if (args[0] && args[0] !== 'list') throw new Error('og invites [list | create [--note x]]');
+  const view = (await client.get('/invites')) as {
+    quota: { total: number; left: number };
+    invites: { note: string; used: boolean; revoked: boolean; createdAt: string }[];
+    affiliateUrl: string;
+  };
+  return [
+    `${view.quota.left} of ${view.quota.total} invites left`,
+    ...view.invites.map(
+      (i) =>
+        `  ${i.createdAt.slice(0, 10)}  ${i.revoked ? 'withdrawn' : i.used ? 'accepted ' : 'waiting  '}  ${i.note}`,
+    ),
+    `Your link: ${view.affiliateUrl}`,
+  ].join('\n');
+}
+
 /**
  * `og brain export | import | show`: a product's positioning, voice, audience
  * and objections as markdown files in a git-friendly "brain repo".
@@ -2544,6 +2581,18 @@ export const COMMANDS: readonly Command[] = [
     summary:
       'A product as markdown (positioning, voice, audience, objections) for a git brain repo.',
     run: runBrain,
+  },
+  {
+    name: 'redeem',
+    usage: 'og redeem <code>',
+    summary: 'Redeem a credit code for prospect credits on this organization.',
+    run: runRedeem,
+  },
+  {
+    name: 'invites',
+    usage: 'og invites [list | create [--note x]]',
+    summary: 'Your three invites (both sides get credits) and your open ?ref= link.',
+    run: runInvites,
   },
   {
     name: 'status',

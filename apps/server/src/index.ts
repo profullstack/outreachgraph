@@ -19,7 +19,14 @@
  * the loop split back out behind a lock.
  */
 
-import { closeDatabase, getDatabase, migrate, migrationsDir, queryAll } from '@outreachgraph/db';
+import {
+  closeDatabase,
+  getDatabase,
+  migrate,
+  migrationsDir,
+  openRawHandle,
+  queryAll,
+} from '@outreachgraph/db';
 import {
   ClaudeModel,
   FallbackModel,
@@ -33,6 +40,7 @@ import { chovyConfig } from '@outreachgraph/ideas';
 import { CoinPayClient } from '@outreachgraph/payments';
 import { secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
+import { codeOptionsFromEnv, codeServicesFor } from '../../api/src/credit-codes';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import { runBootstrapProductJob } from '../../api/src/bulk-products';
@@ -641,7 +649,12 @@ const xOAuth =
 if (!xOAuth) console.log('X_CLIENT_ID/X_CLIENT_SECRET unset: X cards stay hand-offs');
 
 // ---------------------------------------------------------------------- api
+// Credit codes and invites: the house packages over a raw handle on the same
+// database (their SQL is already Postgres; see packages/db/src/raw.ts).
+const codes = codeServicesFor(openRawHandle(), codeOptionsFromEnv(process.env));
+
 const api = createApp({
+  codes,
   ...(xOAuth ? { xOAuth } : {}),
   db,
   ...(coinpay ? { coinpay } : {}),
@@ -663,7 +676,7 @@ const api = createApp({
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
-  version: process.env.APP_VERSION ?? '0.21.1',
+  version: process.env.APP_VERSION ?? '0.22.0',
   ...(commitHash ? { commitHash } : {}),
 });
 

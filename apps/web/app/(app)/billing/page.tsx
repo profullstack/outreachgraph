@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { CreditPacks } from '../../../components/credit-packs';
+import { RedeemCode } from '../../../components/redeem-code';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -45,7 +46,10 @@ export default async function BillingPage() {
           Waiting for the API.
         </p>
       ) : (
-        <CreditPacks initial={billing} />
+        <>
+          <CreditPacks initial={billing} />
+          <RedeemCode />
+        </>
       )}
     </div>
   );

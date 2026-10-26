@@ -45,7 +45,12 @@ export const metadata = { title: 'Settings · OutreachGraph' };
  */
 const TOOLS = [
   { href: '/team', label: 'Team', hint: 'Invite colleagues and see who has access' },
-  { href: '/billing', label: 'Billing', hint: 'Your plan, what is left this month, credits' },
+  {
+    href: '/billing',
+    label: 'Billing',
+    hint: 'Your plan, what is left this month, credits, have a code?',
+  },
+  { href: '/invites', label: 'Invites', hint: 'Three invites to give; both of you get credits' },
   { href: '/import', label: 'Import contacts', hint: 'A CSV of people who already know you' },
   { href: '/cadences', label: 'Follow-ups', hint: 'A sequence of touches over days' },
   { href: '/rules', label: 'Rules', hint: 'When this happens, do that' },

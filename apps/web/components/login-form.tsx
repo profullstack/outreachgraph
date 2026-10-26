@@ -27,9 +27,18 @@ const SIGNUP_FIELDS = [
  * page validates the one it reads from the query string before passing it
  * here, so this component cannot be pointed at another origin.
  */
-export function LoginForm({ next = '/inbox' }: { next?: string }) {
+export function LoginForm({
+  next = '/inbox',
+  invite,
+  initialMode = 'login',
+}: {
+  next?: string;
+  /** An /i/<code> invite: sent with a new account so it counts on any device. */
+  invite?: string;
+  initialMode?: 'login' | 'register';
+}) {
   const router = useRouter();
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | undefined>();
@@ -52,7 +61,12 @@ export function LoginForm({ next = '/inbox' }: { next?: string }) {
         headers: { 'content-type': 'application/json' },
         // The session cookie is set by this response.
         credentials: 'same-origin',
-        body: JSON.stringify({ email, password, ...profile }),
+        body: JSON.stringify({
+          email,
+          password,
+          ...profile,
+          ...(mode === 'register' && invite ? { invite } : {}),
+        }),
       });
 
       if (!response.ok) {
