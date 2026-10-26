@@ -26,6 +26,25 @@ export type RawHandle =
   | { readonly kind: 'sqlite'; readonly db: Database; close(): Promise<void> };
 
 /**
+ * `sslmode=` read the way the main client (libsql-pg) reads it. node-postgres
+ * treats `require` as verify-full, so the self-signed certificate production's
+ * Postgres presents would be refused here while the main client connects fine.
+ */
+export function pgConnection(url: string): {
+  connectionString: string;
+  ssl?: pg.PoolConfig['ssl'];
+} {
+  const parsed = new URL(url);
+  const mode = parsed.searchParams.get('sslmode');
+  parsed.searchParams.delete('sslmode');
+  const connectionString = parsed.toString();
+  if (mode === 'require' || mode === 'prefer')
+    return { connectionString, ssl: { rejectUnauthorized: false } };
+  if (mode === 'verify-ca' || mode === 'verify-full') return { connectionString, ssl: true };
+  return { connectionString };
+}
+
+/**
  * Opens a raw handle for `options.url` (or the environment's database).
  *
  * The pool is small on purpose: codes and invites are a few queries a day, and
@@ -36,7 +55,7 @@ export function openRawHandle(options: DatabaseOptions = {}): RawHandle {
 
   if (config.driver === 'postgres') {
     const pool = new pg.Pool({
-      connectionString: config.url,
+      ...pgConnection(config.url),
       max: 3,
       idleTimeoutMillis: 30_000,
       application_name: 'outreachgraph-codes',
