@@ -539,12 +539,19 @@ function stepHandlers(
       );
     },
 
-    async verify_contact(_node, context) {
+    async verify_contact(node, context) {
       const campaignId = await campaign(context);
       const counts = await addressCounts(context.db, context.workspaceId, campaignId);
+      const held =
+        node.config.allowSharedInbox === true
+          ? 0
+          : await skipSharedInboxOnly(context.db, context.workspaceId, campaignId);
       return report(
-        `${counts.withAddress} with an address, ${counts.invalid} failed verification and are never sent to; the rest are verified again at send time`,
-        counts,
+        `${counts.withAddress} with a personal address, ${counts.invalid} failed verification and are never sent to` +
+          (node.config.allowSharedInbox === true
+            ? '; shared inboxes allowed'
+            : `; ${held} first emails whose only route was a shared company inbox were skipped`),
+        { ...counts, sharedInboxSkipped: held },
       );
     },
 
@@ -749,6 +756,41 @@ export async function deduplicateCampaign(
   return { checked: pending.length, suppressed, alreadyContacted };
 }
 
+/**
+ * Skips pending first emails that could only reach a shared company inbox.
+ *
+ * The contactability rule (PRD-ECO §4.A.5): a person is written to at an
+ * address that is theirs, or not at all. Without this, a crawl that names
+ * eighty people at one company queues eighty first emails to its `team@`.
+ * A follow-up to someone already written to is left alone, and so is anyone
+ * with a personal address on file. Cards are skipped, not deleted.
+ */
+export async function skipSharedInboxOnly(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+): Promise<number> {
+  const result = await db.execute({
+    sql: `UPDATE recommendations SET status = 'skipped'
+           WHERE campaign_id = ? AND workspace_id = ? AND status = 'pending'
+             AND action = 'send_email'
+             AND NOT EXISTS (SELECT 1 FROM social_identities si
+                              WHERE si.person_id = recommendations.person_id
+                                AND si.network = 'email'
+                                AND si.handle IS NOT NULL AND trim(si.handle) <> '')
+             AND NOT EXISTS (SELECT 1 FROM person_emails pe
+                              WHERE pe.person_id = recommendations.person_id
+                                AND pe.workspace_id = recommendations.workspace_id)
+             AND NOT EXISTS (SELECT 1 FROM actions a JOIN recommendations r2
+                                ON r2.id = a.recommendation_id
+                              WHERE r2.campaign_id = recommendations.campaign_id
+                                AND a.person_id = recommendations.person_id
+                                AND a.kind = 'send_email' AND a.status != 'failed')`,
+    args: [campaignId, workspaceId],
+  });
+  return result.rowsAffected;
+}
+
 /** The addresses a person can be reached at, lower-cased. */
 const PERSON_ADDRESSES = `
   SELECT lower(trim(si.handle)) FROM social_identities si
@@ -939,7 +981,8 @@ export async function previewWorkflow(
       company: string | null;
       believed_minor: number | null;
       address: string | null;
-      ev_status: string | null;
+      company_inbox: string | null;
+      queued: number;
     }>(
       db,
       `SELECT p.id, p.display_name, p.current_title, co.name AS company, p.believed_minor,
@@ -951,19 +994,31 @@ export async function previewWorkflow(
                 (SELECT pe.address FROM person_emails pe
                   WHERE pe.person_id = p.id AND pe.workspace_id = ? ORDER BY pe.created_at LIMIT 1)
               ) AS address,
-              NULL AS ev_status
+              co.contact_email AS company_inbox,
+              (SELECT COUNT(*) FROM recommendations r
+                WHERE r.campaign_id = cp.campaign_id AND r.person_id = p.id
+                  AND r.status = 'pending' AND r.action = 'send_email') AS queued
          FROM campaign_people cp
          JOIN people p ON p.id = cp.person_id
          LEFT JOIN companies co ON co.id = p.current_company_id
         WHERE cp.campaign_id = ?
-        ORDER BY p.id LIMIT 25`,
+        -- The people a send would actually reach first: queued emails, then
+        -- anyone with an address, then the rest.
+        ORDER BY CASE WHEN (SELECT COUNT(*) FROM recommendations r
+                             WHERE r.campaign_id = cp.campaign_id AND r.person_id = p.id
+                               AND r.status = 'pending' AND r.action = 'send_email') > 0
+                      THEN 0 ELSE 1 END,
+                 p.id
+        LIMIT 25`,
       [row.workspace_id, row.campaign_id],
     );
 
     const cutoff = new Date(at.getTime() - cooldownDays * 864e5).toISOString();
     const weekAgo = new Date(at.getTime() - 7 * 864e5).toISOString();
     for (const person of people) {
-      const address = person.address?.trim().toLowerCase() ?? null;
+      // Autopilot falls back to the company's shared inbox; so does this.
+      const personal = person.address?.trim().toLowerCase() ?? null;
+      const address = personal ?? person.company_inbox?.trim().toLowerCase() ?? null;
       const verification = address
         ? await queryOne<{ status: string }>(
             db,
@@ -998,9 +1053,12 @@ export async function previewWorkflow(
             AND kind = 'send_email' AND status != 'failed' AND created_at >= ?`,
         [row.workspace_id, person.id, weekAgo],
       );
-      const shared = address
-        ? /^(?:info|hello|contact|support|sales|admin|team|careers|jobs|hr)@/.test(address)
-        : false;
+      const shared =
+        !personal && address
+          ? true
+          : address
+            ? /^(?:info|hello|contact|support|sales|admin|team|careers|jobs|hr)@/.test(address)
+            : false;
 
       let decision: DryRunCandidate['decision'] = 'no_send';
       let reason: string;
@@ -1010,7 +1068,8 @@ export async function previewWorkflow(
       else if (addressStatus === 'none') reason = 'no verified route to them yet';
       else if (addressStatus === 'invalid') reason = 'the address failed verification';
       else if (shared && verify?.config.allowSharedInbox !== true)
-        reason = 'a shared inbox, not a person';
+        reason =
+          'only a shared company inbox, not a person (skipped until a personal address is found)';
       else if (evidence.length === 0) reason = 'no stored evidence to ground a message in';
       else {
         const result = policyProbe(definition, estimate, {
@@ -1114,6 +1173,11 @@ export async function runWorkflow(
 ): Promise<WorkflowRunOutcome & { campaignId: string | null }> {
   const definition = await publishedDefinition(db, row);
   if (!definition) throw ApiError.conflict('publish the workflow before running it');
+  // One run at a time: two runs of one workflow would search the same boards
+  // and queue the same discovery twice, under different slots.
+  if (await hasLiveRun(db, row.id)) {
+    throw ApiError.conflict('a run of this workflow is already in progress');
+  }
   const clock = () => deps.now?.() ?? new Date();
   const at = clock();
   const slotKey = options.slotKey ?? `${trigger}:${newId('workflowRun')}`;
@@ -1183,6 +1247,15 @@ export async function runWorkflow(
 }
 
 const DUE_PER_TICK = 5;
+
+async function hasLiveRun(db: Client, workflowId: string): Promise<boolean> {
+  const row = await queryOne<{ n: number }>(
+    db,
+    `SELECT COUNT(*) AS n FROM workflow_runs WHERE workflow_id = ? AND status = 'running'`,
+    [workflowId],
+  );
+  return Number(row?.n ?? 0) > 0;
+}
 
 /**
  * The worker's entry point, once a tick: scheduled slots that have come,
@@ -1260,6 +1333,8 @@ export async function runDueWorkflows(
 
   // Retries with backoff, on the slot they repeat.
   for (const retry of await dueWorkflowRetries(db, at)) {
+    // Not while another run is live; the retry waits for the next tick.
+    if (await hasLiveRun(db, retry.workflow_id)) continue;
     if (!(await claimWorkflowRetry(db, retry.id))) continue;
     const row = await queryOne<WorkflowRow>(db, 'SELECT * FROM workflows WHERE id = ?', [
       retry.workflow_id,

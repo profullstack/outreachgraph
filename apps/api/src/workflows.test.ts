@@ -401,7 +401,82 @@ describe('dry run', () => {
   });
 });
 
+describe('contactability', () => {
+  /** Jane, queued for a first email, reachable only at her company's shared inbox. */
+  async function janeOnlyAtTeamInbox(db: Client, campaignId: string) {
+    const stamp = new Date().toISOString();
+    await db.execute({
+      sql: `INSERT INTO campaign_people (campaign_id, person_id, workspace_id, status,
+              interaction_state, discovered_at, updated_at)
+            VALUES (?, ?, ?, 'recommended', 'never_contacted', ?, ?)`,
+      args: [campaignId, SEED.personId, SEED.workspaceId, stamp, stamp],
+    });
+    await db.execute({
+      sql: `UPDATE companies SET contact_email = 'team@acme.example' WHERE id = ?`,
+      args: [SEED.companyId],
+    });
+    await db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
+              priority, reason, policy_status, policy_version, expected_goal, status, created_at)
+            VALUES ('rec_wf_team', ?, ?, ?, 'send_email', 'email', 80, 'Hiring engineers',
+              'allow_with_approval', '2026-09-24', 'start_conversation', 'pending', ?)`,
+      args: [SEED.workspaceId, campaignId, SEED.personId, stamp],
+    });
+  }
+
+  test('the dry run says why, and a run skips the first email to a shared inbox', async () => {
+    const { app, db } = await harness('workflows-shared-inbox');
+    const workflow = await published(app);
+    const first = await runNow(app, workflow.id);
+    await janeOnlyAtTeamInbox(db, first.campaignId!);
+
+    const { preview } = await json<{
+      preview: { candidates: { decision: string; reason: string; address: string }[] };
+    }>(send(app, 'POST', `/workflows/${workflow.id}/dry-run`));
+    expect(preview.candidates[0]).toMatchObject({
+      decision: 'no_send',
+      address: 'te••@acme.example',
+      reason: expect.stringContaining('shared company inbox'),
+    });
+
+    const run = await runNow(app, workflow.id);
+    expect(run.steps.find((s) => s.id === 'verify')?.detail).toContain('1 first emails');
+    const rec = await queryOne<{ status: string }>(
+      db,
+      `SELECT status FROM recommendations WHERE id = 'rec_wf_team'`,
+    );
+    expect(rec?.status).toBe('skipped');
+  });
+
+  test('a person with their own address is left alone', async () => {
+    const { app, db } = await harness('workflows-personal-address');
+    const workflow = await published(app);
+    const first = await runNow(app, workflow.id);
+    await janeAwaitingEmail(db, first.campaignId!);
+    await runNow(app, workflow.id);
+    const rec = await queryOne<{ status: string }>(
+      db,
+      `SELECT status FROM recommendations WHERE id = 'rec_wf_jane'`,
+    );
+    expect(rec?.status).toBe('pending');
+  });
+});
+
 describe('running', () => {
+  test('one run at a time: a second Run now is refused while one is live', async () => {
+    const { app, db } = await harness('workflows-one-at-a-time');
+    const workflow = await published(app);
+    await db.execute({
+      sql: `INSERT INTO workflow_runs (id, workflow_id, workspace_id, version, run_trigger, status,
+              slot_key, started_at)
+            VALUES ('wfr_live', ?, ?, 1, 'manual', 'running', 'manual:live', ?)`,
+      args: [workflow.id, SEED.workspaceId, new Date().toISOString()],
+    });
+    const response = await send(app, 'POST', `/workflows/${workflow.id}/run`);
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain('already in progress');
+  });
+
   test('drives a campaign through targeting, discovery, job boards and limits', async () => {
     const { app, db } = await harness('workflows-run');
     const workflow = await published(app);
