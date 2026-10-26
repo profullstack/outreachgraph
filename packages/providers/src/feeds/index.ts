@@ -45,3 +45,5 @@ export {
   type NostrSocketFactory,
   type NostrSourceOptions,
 } from './nostr';
+export { DevToSource, DEVTO_API, type DevToSourceOptions } from './devto';
+export { GitHubRepoSource, type GitHubRepoSourceOptions } from './github-repos';

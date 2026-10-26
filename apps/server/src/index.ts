@@ -652,6 +652,7 @@ const api = createApp({
   ...(appUrl ? { appUrl } : {}),
   ...(jobSearcher ? { jobSearcher } : {}),
   ...(workflowSearcher ? { workflowSearcher } : {}),
+  ...(process.env.GITHUB_TOKEN ? { githubToken: process.env.GITHUB_TOKEN } : {}),
   ...(leadSearcher ? { leadSearcher } : {}),
   leadEnrichment,
   ...(chovy ? { chovy } : {}),
@@ -662,7 +663,7 @@ const api = createApp({
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
-  version: process.env.APP_VERSION ?? '0.20.0',
+  version: process.env.APP_VERSION ?? '0.21.0',
   ...(commitHash ? { commitHash } : {}),
 });
 
@@ -1191,6 +1192,7 @@ async function tick(): Promise<void> {
         for (const result of await runDueWorkflows(db, {
           ...(model ? { model } : {}),
           ...(workflowSearcher ? { searcher: workflowSearcher } : {}),
+          launches: { githubToken: process.env.GITHUB_TOKEN },
         })) {
           console.log(
             `workflow ${result.workflowId}: ${result.trigger} run ${result.runId} ${result.status}`,

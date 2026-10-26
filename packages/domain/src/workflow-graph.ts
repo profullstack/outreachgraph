@@ -26,6 +26,9 @@ import {
   EMPTY_TARGETING,
   MAX_WORKFLOW_DAILY_LIMIT,
   MAX_WORKFLOW_JOB_RESULTS,
+  MAX_WORKFLOW_LAUNCH_HOURS,
+  MAX_WORKFLOW_LAUNCH_RESULTS,
+  launchTerms,
   normaliseSchedule,
   normaliseWorkflowSettings,
   WORKFLOW_APPROVALS,
@@ -298,9 +301,23 @@ export function normaliseNodeConfig(
   const errors: string[] = [];
   switch (type) {
     case 'discover_opportunities': {
-      const source = c.source === 'job_posts' ? 'job_posts' : 'discover';
+      const source =
+        c.source === 'job_posts' ? 'job_posts' : c.source === 'launches' ? 'launches' : 'discover';
       const query = typeof c.query === 'string' ? c.query.replace(/\s+/g, ' ').trim() : '';
       if (!query) errors.push('say what to search for');
+      if (source === 'launches') {
+        const terms = launchTerms(query);
+        if (query && terms.length === 0) errors.push('name at least one phrase a launch mentions');
+        return {
+          config: {
+            source,
+            query: terms.join(', '),
+            limit: clamp(c.limit, 1, MAX_WORKFLOW_LAUNCH_RESULTS, 25),
+            hours: clamp(c.hours, 1, MAX_WORKFLOW_LAUNCH_HOURS, 24),
+          },
+          errors,
+        };
+      }
       // A dot reads as a website to campaign intake; a market is not a URL.
       const safe = (source === 'discover' ? query.replace(/\.(?=\S)/g, ' ') : query).slice(0, 200);
       return {
@@ -388,7 +405,7 @@ export function compileWorkflow(settings: WorkflowSettings): WorkflowDefinition 
   const discover: WorkflowNode[] = settings.sources.map((source, index) => ({
     id: `discover-${index + 1}`,
     type: 'discover_opportunities',
-    label: source.kind === 'job_posts' ? 'Search job boards' : 'Discover companies',
+    label: sourceLabel(source),
     after: [],
     config: sourceConfig(source),
   }));
@@ -449,7 +466,12 @@ export function settingsOf(definition: WorkflowDefinition): WorkflowSettings {
     goal: definition.goal,
     sources: definition.nodes
       .filter((n) => n.type === 'discover_opportunities')
-      .map((n) => ({ kind: n.config.source, query: n.config.query, limit: n.config.limit })),
+      .map((n) => ({
+        kind: n.config.source,
+        query: n.config.query,
+        limit: n.config.limit,
+        hours: n.config.hours,
+      })),
     targeting: of('score_filter') ?? {},
     outreach: {
       dailyLimit: send?.dailyLimit ?? 0,
@@ -490,7 +512,7 @@ export function applySettings(
     kept.push({
       id: `discover-${next}`,
       type: 'discover_opportunities',
-      label: source.kind === 'job_posts' ? 'Search job boards' : 'Discover companies',
+      label: sourceLabel(source),
       after: [],
       config: sourceConfig(source),
     });
@@ -541,7 +563,14 @@ function sourceConfig(source: WorkflowSource): Record<string, unknown> {
     source: source.kind,
     query: source.query,
     limit: source.limit,
+    hours: source.hours,
   }).config;
+}
+
+function sourceLabel(source: WorkflowSource): string {
+  if (source.kind === 'job_posts') return 'Search job boards';
+  if (source.kind === 'launches') return 'Watch new launches';
+  return 'Discover companies';
 }
 
 // ------------------------------------------------------------------ plan
@@ -615,6 +644,19 @@ function describeNode(
   const c = node.config;
   switch (node.type) {
     case 'discover_opportunities':
+      if (c.source === 'launches') {
+        return {
+          detail: `New launches from the last ${String(c.hours)} hours mentioning ${launchTerms(
+            String(c.query),
+          )
+            .map((t) => `“${t}”`)
+            .join(
+              ', ',
+            )}: Show HN and Launch HN, dev.to, new GitHub repositories and Bluesky. Up to ${String(c.limit)} makers a run, each with the launch as evidence.`,
+          uses: 'launch radar → openprofile + find_email',
+          warnings: [],
+        };
+      }
       return c.source === 'job_posts'
         ? {
             detail: `Job boards: “${String(c.query)}”, up to ${String(c.limit)} postings a run; the hiring contact behind each is resolved.`,
@@ -745,6 +787,8 @@ const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 export function describeSchedule(schedule: WorkflowSchedule): string {
   const time = `${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')} ${schedule.timezone}`;
   switch (schedule.kind) {
+    case 'hourly':
+      return `Every hour at :${String(schedule.minute).padStart(2, '0')}`;
     case 'manual':
       return 'Runs when you start it';
     case 'event':
@@ -768,6 +812,15 @@ export function describeSchedule(schedule: WorkflowSchedule): string {
  */
 export function nextWorkflowRunAt(schedule: WorkflowSchedule, from: Date): Date | null {
   if (schedule.kind === 'manual' || schedule.kind === 'event') return null;
+  if (schedule.kind === 'hourly') {
+    // The zone only matters where its offset is not whole hours (India, Nepal).
+    const offsetMinutes = Math.round(offsetMs(from, schedule.timezone) / 60_000);
+    const minute = (((schedule.minute - offsetMinutes) % 60) + 60) % 60;
+    const at = new Date(from);
+    at.setUTCMinutes(minute, 0, 0);
+    while (at <= from) at.setUTCHours(at.getUTCHours() + 1);
+    return at;
+  }
   const today = localDate(from, schedule.timezone);
   for (let i = 0; i < 9; i += 1) {
     const day = new Date(Date.UTC(today.year, today.month - 1, today.day + i));
@@ -906,7 +959,51 @@ export const ENGINEERING_CONTRACT_TEMPLATE: WorkflowTemplate = {
   }),
 };
 
-export const WORKFLOW_TEMPLATES: readonly WorkflowTemplate[] = [ENGINEERING_CONTRACT_TEMPLATE];
+/**
+ * Reach the people building next to you within hours of their launch: the
+ * makers of new Show HN posts, dev.to articles, GitHub repositories and
+ * Bluesky announcements in your space, plus the established companies in it.
+ * Rivals become partners, integrations or early users; the email cites their
+ * launch, so it reads as the note it is rather than a list blast.
+ */
+export const LAUNCH_RADAR_TEMPLATE: WorkflowTemplate = {
+  id: 'launch-radar',
+  name: 'Launch Radar: rivals and adjacent builders',
+  summary:
+    'Every hour, find people who just launched something in your space on Hacker News, ' +
+    'dev.to, GitHub or Bluesky, plus the companies already selling there, and email them ' +
+    'about partnering, integrating or trading notes. Each email cites their launch.',
+  prompt:
+    'Watch new launches about AI agents, voice agents. Also find companies building AI agent ' +
+    'tools. Email the founder, CEO, CTO or maker. Send up to 50 emails per day with my ' +
+    'approval, every hour.',
+  definition: compileWorkflow({
+    version: 1,
+    goal: 'Meet the people building in our space while their launch is fresh.',
+    sources: [
+      { kind: 'launches', query: 'AI agents, voice agents', limit: 25, hours: 24 },
+      { kind: 'discover', query: 'companies building AI agent tools' },
+    ],
+    targeting: {
+      titles: ['Founder', 'Co-Founder', 'CEO', 'CTO', 'Maker'],
+      seniorities: [],
+      industries: [],
+      countries: [],
+      keywords: [],
+      technologies: [],
+      exclusions: [],
+      employeeCountMin: null,
+      employeeCountMax: null,
+    },
+    outreach: { channel: 'email', dailyLimit: 50, approval: 'review', maxPerAddressPerWeek: 1 },
+    schedule: { kind: 'hourly', hour: 0, minute: 5, timezone: DEFAULT_WORKFLOW_TIMEZONE },
+  }),
+};
+
+export const WORKFLOW_TEMPLATES: readonly WorkflowTemplate[] = [
+  ENGINEERING_CONTRACT_TEMPLATE,
+  LAUNCH_RADAR_TEMPLATE,
+];
 
 export function workflowTemplate(id: string): WorkflowTemplate | undefined {
   return WORKFLOW_TEMPLATES.find((template) => template.id === id);

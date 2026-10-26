@@ -1307,7 +1307,7 @@ export interface WorkflowNodeView {
 }
 
 export interface WorkflowScheduleView {
-  readonly kind: 'daily' | 'weekdays' | 'weekly' | 'manual' | 'event';
+  readonly kind: 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'manual' | 'event';
   readonly hour: number;
   readonly minute: number;
   readonly timezone: string;

@@ -118,6 +118,16 @@ export class GitHubClient {
     );
   }
 
+  /** Repository search, newest first; `query` uses GitHub's search syntax. */
+  async searchRepos(
+    query: string,
+    limit = 20,
+  ): Promise<{ items: (GitHubRepo & { owner: { login: string; type: string } })[] }> {
+    return this.#request(
+      `/search/repositories?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=${limit}`,
+    );
+  }
+
   async #request<T>(path: string): Promise<T> {
     const headers: Record<string, string> = {
       accept: 'application/vnd.github+json',

@@ -674,3 +674,16 @@ export {
 } from './company-refresh';
 export * from './workflow-runner';
 export { isSuppressed } from './cadence-runner';
+export {
+  buildLaunchSources,
+  findLaunches,
+  intakeLaunches,
+  LAUNCH_WORDING,
+  publishedEmail,
+  resolveMaker,
+  type FoundLaunches,
+  type LaunchIntakeResult,
+  type LaunchRadarOptions,
+  type Maker,
+  type MakerDeps,
+} from './launch-radar';
