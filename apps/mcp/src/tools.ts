@@ -1686,6 +1686,184 @@ export const TOOLS: readonly ToolDefinition[] = [
     inputSchema: { type: 'object', properties: {} },
     run: (client) => client.get('/site-audits/stats'),
   },
+
+  // ------------------------------------------------------------ workflows
+  //
+  // Custom workflows (PRD-ECO §14). The same /api/v1/workflows routes the web
+  // app and `og` use: a workflow an agent creates is a draft until published,
+  // a dry run sends nothing, and a run's sends still pass the policy engine.
+  {
+    name: 'list_workflows',
+    title: 'List workflows',
+    description:
+      'Saved workflows with their state, published and current version, last run status, and ' +
+      'failures this week.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/workflows'),
+  },
+  {
+    name: 'get_workflow',
+    title: 'Inspect a workflow',
+    description:
+      'One workflow: its typed step graph, the plan in dependency order (what each step does and ' +
+      'which existing feature it reuses), the schedule and recent runs.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+    run: (client, args) =>
+      client.get(`/workflows/${encodeURIComponent(require(args, 'workflowId'))}`),
+  },
+  {
+    name: 'create_workflow',
+    title: 'Create a workflow',
+    description:
+      'Create a draft workflow from a plain-English description, or from a template ' +
+      '(templateId "engineering-contract-acquisition"). Returns the plan. Nothing runs until it ' +
+      'is published, and approval stays "review every send" unless the description explicitly ' +
+      'asks for unattended sending.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'What the workflow should do, in English.' },
+        templateId: { type: 'string' },
+        name: { type: 'string' },
+      },
+    },
+    run: (client, args) =>
+      client.post('/workflows', {
+        ...(str(args, 'prompt') ? { prompt: str(args, 'prompt') } : {}),
+        ...(str(args, 'templateId') ? { templateId: str(args, 'templateId') } : {}),
+        ...(str(args, 'name') ? { name: str(args, 'name') } : {}),
+      }),
+  },
+  {
+    name: 'edit_workflow',
+    title: 'Edit a workflow in English',
+    description:
+      'Apply a plain-English change ("make it 100 a day, add Canada") as a new version. The ' +
+      'published version keeps running until publish_workflow is called.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' }, instruction: { type: 'string' } },
+      required: ['workflowId', 'instruction'],
+    },
+    run: (client, args) => {
+      if (!client.patch) throw new Error('this client cannot edit');
+      return client.patch(`/workflows/${encodeURIComponent(require(args, 'workflowId'))}`, {
+        instruction: require(args, 'instruction'),
+      });
+    },
+  },
+  {
+    name: 'dry_run_workflow',
+    title: 'Dry-run a workflow',
+    description:
+      'Preview a run without sending anything: per-step checks, matched job postings, and for ' +
+      'each person the address on file, the evidence, and the send / no-send decision from the ' +
+      'policy engine and de-duplication.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+    run: (client, args) =>
+      client.post(`/workflows/${encodeURIComponent(require(args, 'workflowId'))}/dry-run`, {}),
+  },
+  {
+    name: 'publish_workflow',
+    title: 'Publish a workflow',
+    description: 'Make the current version the one that runs, and switch the workflow on.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+    run: (client, args) =>
+      client.post(`/workflows/${encodeURIComponent(require(args, 'workflowId'))}/publish`, {}),
+  },
+  {
+    name: 'run_workflow',
+    title: 'Run a workflow now',
+    description:
+      'Run the published version once and return the per-step log. It feeds the campaign; it ' +
+      'never sends directly — sends go through the approval queue or autopilot, policy-checked.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+    run: (client, args) =>
+      client.post(`/workflows/${encodeURIComponent(require(args, 'workflowId'))}/run`, {}),
+  },
+  {
+    name: 'pause_workflow',
+    title: 'Pause a workflow',
+    description: 'Stop scheduled runs and the campaign’s sending until resumed.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+    run: (client, args) =>
+      client.post(`/workflows/${encodeURIComponent(require(args, 'workflowId'))}/pause`, {}),
+  },
+  {
+    name: 'resume_workflow',
+    title: 'Resume a workflow',
+    description: 'Resume a paused workflow on its schedule.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+    run: (client, args) =>
+      client.post(`/workflows/${encodeURIComponent(require(args, 'workflowId'))}/resume`, {}),
+  },
+  {
+    name: 'list_workflow_runs',
+    title: 'Workflow run history',
+    description:
+      'Runs of one workflow, newest first, or one run (runId) with its per-step log: what each ' +
+      'step did, skipped or failed and why, its idempotency key, and the run’s errors.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' }, runId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+    run: (client, args) => {
+      const base = `/workflows/${encodeURIComponent(require(args, 'workflowId'))}/runs`;
+      const runId = str(args, 'runId');
+      return client.get(runId ? `${base}/${encodeURIComponent(runId)}` : base);
+    },
+  },
+  {
+    name: 'cancel_workflow_run',
+    title: 'Cancel a workflow run',
+    description: 'Cancel a running run or a pending retry. Steps already done stay done.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { workflowId: { type: 'string' }, runId: { type: 'string' } },
+      required: ['workflowId', 'runId'],
+    },
+    run: (client, args) =>
+      client.post(
+        `/workflows/${encodeURIComponent(require(args, 'workflowId'))}/runs/${encodeURIComponent(require(args, 'runId'))}/cancel`,
+        {},
+      ),
+  },
 ];
 
 export function toolByName(name: string): ToolDefinition | undefined {

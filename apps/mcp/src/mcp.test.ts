@@ -169,6 +169,10 @@ describe('tools', () => {
           outcome: 'done',
           enabled: true,
           id: 'lmn_1',
+          workflowId: 'wfl_1',
+          runId: 'wfr_1',
+          instruction: 'make it 100 a day',
+          prompt: 'Find SaaS startups hiring engineers.',
         })
         .catch(() => undefined);
 
@@ -356,6 +360,34 @@ describe('lead tools', () => {
       consent_source: 'signups',
       allow_flagged: false,
     });
+  });
+
+  test('workflow tools use the same /workflows routes as the web app and og', async () => {
+    const { fetchImpl, calls } = recorder(ok({ workflow: { id: 'wfl_1' } }));
+    const client = createClient(CONFIG, fetchImpl);
+
+    await runTool(toolByName('create_workflow')!, client, {
+      templateId: 'engineering-contract-acquisition',
+    });
+    await runTool(toolByName('dry_run_workflow')!, client, { workflowId: 'wfl_1' });
+    await runTool(toolByName('run_workflow')!, client, { workflowId: 'wfl_1' });
+    await runTool(toolByName('list_workflow_runs')!, client, {
+      workflowId: 'wfl_1',
+      runId: 'wfr_1',
+    });
+    await runTool(toolByName('pause_workflow')!, client, { workflowId: 'wfl_1' });
+
+    expect(calls.map((c) => `${c.method} ${c.url.replace('https://api.test/api/v1', '')}`)).toEqual(
+      [
+        'POST /workflows',
+        'POST /workflows/wfl_1/dry-run',
+        'POST /workflows/wfl_1/run',
+        'GET /workflows/wfl_1/runs/wfr_1',
+        'POST /workflows/wfl_1/pause',
+      ],
+    );
+    expect(toolByName('dry_run_workflow')!.readOnly).toBe(true);
+    expect(toolByName('run_workflow')!.readOnly).toBe(false);
   });
 
   test('screening tools read the held list and override one lead', async () => {

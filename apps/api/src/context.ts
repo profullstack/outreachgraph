@@ -67,6 +67,11 @@ export class ApiError extends Error {
   static policyDenied(reason: string, details?: unknown): ApiError {
     return new ApiError(409, 'policy_denied', reason, details);
   }
+
+  /** The resource is in the wrong state for this request ("publish it first"). */
+  static conflict(message: string): ApiError {
+    return new ApiError(409, 'conflict', message);
+  }
 }
 
 /** Roles permitted to approve outbound actions. */

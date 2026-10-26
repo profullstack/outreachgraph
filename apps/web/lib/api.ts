@@ -1275,3 +1275,152 @@ export interface ProductOverviewView {
 export async function fetchProductOverview(offeringId: string): Promise<ProductOverviewView> {
   return request<ProductOverviewView>(`/products/${encodeURIComponent(offeringId)}/overview`);
 }
+
+// ------------------------------------------------------------- workflows
+
+export interface WorkflowNodeView {
+  readonly id: string;
+  readonly type: string;
+  readonly label: string;
+  readonly after: readonly string[];
+  readonly when?: readonly string[];
+  readonly config: Readonly<Record<string, unknown>>;
+}
+
+export interface WorkflowScheduleView {
+  readonly kind: 'daily' | 'weekdays' | 'weekly' | 'manual' | 'event';
+  readonly hour: number;
+  readonly minute: number;
+  readonly timezone: string;
+  readonly weekday?: number;
+  readonly event?: string;
+}
+
+export interface WorkflowDefinitionView {
+  readonly version: 2;
+  readonly goal: string;
+  readonly nodes: readonly WorkflowNodeView[];
+  readonly schedule: WorkflowScheduleView;
+}
+
+export interface WorkflowPlanStepView {
+  readonly id: string;
+  readonly type: string;
+  readonly title: string;
+  readonly detail: string;
+  readonly uses: string;
+  readonly after: readonly string[];
+  readonly when?: readonly string[];
+  readonly sideEffect: boolean;
+  readonly warnings: readonly string[];
+}
+
+export interface WorkflowView {
+  readonly id: string;
+  readonly name: string;
+  readonly prompt: string;
+  readonly templateId: string | null;
+  readonly status: 'draft' | 'active' | 'paused' | 'archived';
+  readonly owner: string | null;
+  readonly version: number;
+  readonly publishedVersion: number | null;
+  readonly unpublishedChanges: boolean;
+  readonly campaignId: string | null;
+  readonly campaignName: string | null;
+  readonly schedule: string;
+  readonly nextRunAt: string | null;
+  readonly lastRunAt: string | null;
+  readonly lastRunStatus: string | null;
+  readonly failuresThisWeek: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly definition: WorkflowDefinitionView;
+  readonly plan: readonly WorkflowPlanStepView[];
+}
+
+export interface WorkflowStepLogView {
+  readonly id: string;
+  readonly type?: string;
+  readonly title: string;
+  readonly status: string;
+  readonly detail: string;
+  readonly counts?: Readonly<Record<string, number>>;
+  readonly idempotencyKey?: string;
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
+}
+
+export interface WorkflowRunView {
+  readonly id: string;
+  readonly workflowId: string;
+  readonly version: number;
+  readonly trigger: string;
+  readonly status: string;
+  readonly slotKey: string;
+  readonly attempt: number;
+  readonly retryOf: string | null;
+  readonly retryAt: string | null;
+  readonly startedAt: string;
+  readonly finishedAt: string | null;
+  readonly steps: readonly WorkflowStepLogView[];
+  readonly summary: Readonly<Record<string, unknown>>;
+  readonly error: string | null;
+}
+
+export interface WorkflowVersionView {
+  readonly version: number;
+  readonly note: string | null;
+  readonly createdAt: string;
+  readonly published: boolean;
+  readonly current: boolean;
+}
+
+export interface WorkflowTemplateView {
+  readonly id: string;
+  readonly name: string;
+  readonly summary: string;
+  readonly prompt: string;
+  readonly plan: readonly WorkflowPlanStepView[];
+}
+
+/** A 404 from the API, as `undefined`, so a page can call `notFound()`. */
+async function requestOrMissing<T>(path: string): Promise<T | undefined> {
+  try {
+    return await request<T>(path);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('API 404')) return undefined;
+    throw error;
+  }
+}
+
+export async function fetchWorkflows(): Promise<{
+  workflows: WorkflowView[];
+  jobSearchEnabled: boolean;
+}> {
+  return request('/workflows');
+}
+
+export async function fetchWorkflow(
+  id: string,
+): Promise<{ workflow: WorkflowView; runs: WorkflowRunView[] } | undefined> {
+  return requestOrMissing(`/workflows/${encodeURIComponent(id)}`);
+}
+
+export async function fetchWorkflowVersions(id: string): Promise<WorkflowVersionView[]> {
+  const body = await requestOrMissing<{ versions: WorkflowVersionView[] }>(
+    `/workflows/${encodeURIComponent(id)}/versions`,
+  );
+  return body?.versions ?? [];
+}
+
+export async function fetchWorkflowRun(
+  id: string,
+  runId: string,
+): Promise<{ workflow: { id: string; name: string }; run: WorkflowRunView } | undefined> {
+  return requestOrMissing(`/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function fetchWorkflowTemplates(): Promise<WorkflowTemplateView[]> {
+  const body = await request<{ templates: WorkflowTemplateView[] }>('/workflows/templates');
+  return body.templates;
+}

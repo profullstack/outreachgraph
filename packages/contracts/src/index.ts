@@ -425,3 +425,58 @@ export const healthSchema = z.object({
 });
 
 export type HealthResponse = z.infer<typeof healthSchema>;
+
+// ------------------------------------------------------------- workflows
+//
+// Custom workflows (PRD-ECO §14). The definition itself is checked node by
+// node by `validateWorkflowDefinition` in the domain package; these schemas
+// bound the envelope, and the free text, before any of it reaches a model.
+
+/** English is data, never instructions: bounded, and only ever read into a spec. */
+const workflowText = z.string().trim().min(3).max(4_000);
+
+export const workflowCreateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    /** A plain-English description, read into a definition. */
+    prompt: workflowText.optional(),
+    templateId: z.string().max(80).optional(),
+    /** A definition the client already has (an editor, an import). */
+    definition: z.unknown().optional(),
+  })
+  .strict();
+
+export const workflowInterpretSchema = z
+  .object({
+    prompt: workflowText,
+    /** Read as an edit to this workflow's current definition. */
+    workflowId: z.string().max(64).optional(),
+  })
+  .strict();
+
+export const workflowPatchSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    /** An English change to apply: "make it 100 a day, add Germany". */
+    instruction: workflowText.optional(),
+    /** A whole new description, read from scratch. */
+    prompt: workflowText.optional(),
+    /** Node-level edits from the editor. */
+    definition: z.unknown().optional(),
+    /** Version history note. */
+    note: z.string().trim().max(200).optional(),
+  })
+  .strict();
+
+export const workflowImportSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    prompt: z.string().max(8_000).optional(),
+    definition: z.unknown(),
+  })
+  .strict();
+
+export const workflowValidateSchema = z.object({ definition: z.unknown() }).strict();
+
+export type WorkflowCreateInput = z.infer<typeof workflowCreateSchema>;
+export type WorkflowPatchInput = z.infer<typeof workflowPatchSchema>;

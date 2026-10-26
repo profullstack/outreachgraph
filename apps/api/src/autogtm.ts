@@ -492,7 +492,7 @@ async function targetingFor(db: Client, campaignId: string) {
   };
 }
 
-async function saveTargeting(
+export async function saveTargeting(
   db: Client,
   campaignId: string,
   patch: z.infer<typeof targetingBody>,
