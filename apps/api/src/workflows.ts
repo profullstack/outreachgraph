@@ -544,7 +544,9 @@ function stepHandlers(
           .join(', ');
         return report(
           `${taken.launches} launches (${sources}); ${taken.people} makers added, ${taken.withEmail} with a published address, ${taken.known} seen before, ${taken.own} ours` +
-            (taken.deferred ? `, ${taken.deferred} left for the next run` : ''),
+            (taken.handleOnly
+              ? `, ${taken.handleOnly} on their GitHub handle alone (API budget spent)`
+              : ''),
           {
             launches: taken.launches,
             people: taken.people,
@@ -552,7 +554,7 @@ function stepHandlers(
             withEmail: taken.withEmail,
             known: taken.known,
             own: taken.own,
-            deferred: taken.deferred,
+            handleOnly: taken.handleOnly,
           },
         );
       }
