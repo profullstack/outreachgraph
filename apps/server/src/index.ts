@@ -37,6 +37,7 @@ import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import { runBootstrapProductJob } from '../../api/src/bulk-products';
 import { runCampaignSources } from '../../api/src/campaign-source';
+import { runDueWorkflows } from '../../api/src/workflows';
 import { routesToApi } from './routing';
 import {
   drainQueue,
@@ -1161,6 +1162,23 @@ async function tick(): Promise<void> {
     } catch (error) {
       console.error('campaign sources failed', error);
     }
+  }
+
+  // Custom workflows: scheduled slots that have come, replies that start an
+  // event workflow, and retries that are due. Each slot is claimed before it
+  // runs, so an overrunning tick cannot start it twice; nothing here sends —
+  // the steps feed the queue the send sweep below drains under policy.
+  try {
+    for (const result of await runDueWorkflows(db, {
+      ...(model ? { model } : {}),
+      ...(jobSearcher ? { searcher: jobSearcher } : {}),
+    })) {
+      console.log(
+        `workflow ${result.workflowId}: ${result.trigger} run ${result.runId} ${result.status}`,
+      );
+    }
+  } catch (error) {
+    console.error('workflows failed', error);
   }
 
   // A face for the people about to be written to. Bounded per tick and per

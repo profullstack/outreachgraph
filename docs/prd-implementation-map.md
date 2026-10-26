@@ -116,3 +116,36 @@ therefore establishes the Bun pattern rather than following precedent.
 (§1.1). A forward-only runner over numbered `.sql` files satisfies that with a
 smaller dependency surface. Drizzle with `dialect: "turso"` is the alternative
 already proven in the `nightcell7` repository if an ORM becomes worthwhile.
+
+## Engineering Contract Outreach PRD (`docs/prd/engineering-contract-outreach.md`)
+
+Cited in code as `PRD-ECO §n`.
+
+| Section                              | Implementation                                                                                                                                                     | Tests                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
+| §14 English → workflow               | `packages/domain/src/workflow.ts` (deterministic reader), `apps/api/src/workflows.ts` `interpretWorkflow` (model proposes; rules decide autopilot)                 | 12 + API tests                   |
+| §14 Typed, validated DAG             | `packages/domain/src/workflow-graph.ts`: 13 step types, unknown actions/cycles refused, send must follow verify + dedupe + draft + approval                        | 18 tests                         |
+| §14 Versions, publish                | `workflow_versions` (migration `0075`); edits never change the running version until published                                                                     | `apps/api/src/workflows.test.ts` |
+| §14 Durable runner                   | `packages/pipeline/src/workflow-runner.ts`: per-step idempotency keys (`workflow_step_effects`), blocked-step isolation, cancel, 5/30/120 min retries, dead-letter | API tests                        |
+| §14 Schedule + events                | `nextWorkflowRunAt` (IANA zone, DST-correct), `runDueWorkflows` in the worker tick: slots, reply events, retries, each claimed once                                | domain + API tests               |
+| §14 Dry run                          | `previewWorkflow`: per-step checks, matched postings, per-person address + evidence + send / no-send from the policy engine and dedupe                             | API tests                        |
+| §14 De-duplication                   | `deduplicateCampaign`: suppression + any email from another campaign or recorded outside the product, by person and by address                                     | API tests                        |
+| §14 API / CLI / MCP                  | `/api/v1/workflows/*`, `apps/cli/src/workflow-commands.ts` (`og workflow*`), MCP `*_workflow*` tools; request schemas in `packages/contracts`                      | 4 CLI + 1 MCP + API tests        |
+| §14 UI                               | Workflows tab; `/workflows`, `/workflows/new`, `/workflows/[id]`, `/workflows/[id]/runs/[runId]`; plan graph, node editor, versions, run log                       | web typecheck                    |
+| §14 Engineering Contract Acquisition | `ENGINEERING_CONTRACT_TEMPLATE`: job boards + Bay Area / remote-US discovery, hiring-authority titles, agencies excluded, 200/day ceiling, review mode             | domain tests                     |
+
+What §14 does **not** yet cover, because the Phase 1 pieces it builds on do not
+exist yet:
+
+- **Imported Sent history.** Dedupe reads every send the product made and any
+  outbound email `interactions` row from outside a campaign; there is no Gmail
+  Sent import (`POST /outreach-imports/gmail`, `external_outreach_events`) to
+  fill that table from Gmail yet.
+- **Contract-specific steps.** `discover_opportunities` uses the existing job-post
+  search and market discovery; `contract_opportunities`, pay-rate filters
+  ("above $100/hour") and the Contracts navigation (§5) are not built.
+- **Per-domain daily caps and a sender ramp** beyond what the sender pool and the
+  per-address weekly limit already enforce.
+- **`wait`, `classify_reply`, `branch`, `notify`, `log_crm`** describe and report the
+  existing cadence timing, reply triage, alerts and CRM sync; they do not yet
+  schedule anything of their own.

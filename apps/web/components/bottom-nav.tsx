@@ -16,12 +16,18 @@ import { useEffect, useState } from 'react';
  *
  * Everything that lost its tab is still a route, and Settings lists it.
  * Import got its tab back: behind More, nobody could find it. Ideas got one
- * for the same reason: as a link inside Products it was invisible.
+ * for the same reason: as a link inside Products it was invisible. Workflows
+ * is a tab of its own (PRD-ECO §14): standing instructions are a different
+ * thing from any one product, and they were the feature people could not find.
+ *
+ * Eight tabs do not fit a 375px phone at a readable size, so below that the
+ * bar scrolls sideways rather than shrinking every label.
  */
 const TABS = [
   { href: '/inbox', label: 'Inbox', icon: InboxIcon, badge: true },
   { href: '/approvals', label: 'Approve', icon: CheckIcon },
   { href: '/products', label: 'Products', icon: BoxIcon },
+  { href: '/workflows', label: 'Workflows', icon: FlowIcon },
   { href: '/ideas', label: 'Ideas', icon: BulbIcon },
   { href: '/funnel', label: 'Results', icon: FunnelIcon },
   { href: '/import', label: 'Import', icon: UploadIcon },
@@ -106,14 +112,14 @@ export function BottomNav() {
       aria-label="Primary"
       className="border-border bg-surface/95 fixed inset-x-0 bottom-0 z-50 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur"
     >
-      <ul className="mx-auto flex w-full max-w-2xl">
+      <ul className="mx-auto flex w-full max-w-2xl overflow-x-auto [scrollbar-width:none]">
         {TABS.map((tab) => {
           const active = owner === tab.href;
           const Icon = tab.icon;
           const badge = 'badge' in tab && tab.badge ? unread : undefined;
 
           return (
-            <li key={tab.href} className="flex-1">
+            <li key={tab.href} className="min-w-[64px] flex-1">
               <Link
                 href={tab.href}
                 aria-current={active ? 'page' : undefined}
@@ -185,6 +191,17 @@ function BoxIcon() {
     <svg {...ICON_PROPS}>
       <path d="M21 8 12 3 3 8v8l9 5 9-5V8z" />
       <path d="m3 8 9 5 9-5M12 13v8" />
+    </svg>
+  );
+}
+
+function FlowIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <rect x="3" y="3" width="6" height="6" rx="1.5" />
+      <rect x="15" y="15" width="6" height="6" rx="1.5" />
+      <path d="M6 9v3a3 3 0 0 0 3 3h6" />
+      <path d="m13 13 2 2-2 2" />
     </svg>
   );
 }

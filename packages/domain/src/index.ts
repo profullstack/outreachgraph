@@ -46,3 +46,5 @@ export * from './timing';
 export * from './planner';
 export * from './list-sources';
 export * from './warmup';
+export * from './workflow';
+export * from './workflow-graph';

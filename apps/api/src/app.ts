@@ -270,6 +270,7 @@ import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
 import { audienceRoutes } from './audience';
 import { jobPostRoutes } from './job-posts';
+import { workflowRoutes } from './workflows';
 import { personSiteAuditRoutes, siteAuditForPerson, siteAuditRoutes } from './site-audits';
 import { ideaRoutes } from './ideas';
 import { leadRoutes } from './buyer-leads';
@@ -1481,6 +1482,19 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   api.route(
     '/job-posts',
     jobPostRoutes({ searcher: options.jobSearcher, reader: options.jobReader, throttles }),
+  );
+
+  // ------------------------------------------------------------- workflows
+  //
+  // Standing instructions in English, run on a schedule through the campaign,
+  // targeting, discovery and job-post machinery above (PRD-ECO §14).
+  api.route(
+    '/workflows',
+    workflowRoutes({
+      model: options.model,
+      searcher: options.jobSearcher,
+      requireVerifiedEmail: (db, actor, action) => requireVerifiedEmail(db, actor, action),
+    }),
   );
 
   // ----------------------------------------------------------------- ideas

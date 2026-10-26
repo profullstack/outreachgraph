@@ -37,6 +37,7 @@ export {
 } from './nichedb-discovery';
 export {
   runAutopilot,
+  countActionsToday,
   HoldLedger,
   holdLedger,
   heldSummary,
@@ -671,3 +672,5 @@ export {
   type CompanyRefreshOptions,
   type CompanyRefreshResult,
 } from './company-refresh';
+export * from './workflow-runner';
+export { isSuppressed } from './cadence-runner';
