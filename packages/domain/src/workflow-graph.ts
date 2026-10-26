@@ -71,6 +71,7 @@ export const WORKFLOW_NOTIFY_ON = ['positive_reply', 'run_failed', 'daily_summar
 /** Steps that change state when run, and so carry an idempotency key. */
 export const SIDE_EFFECT_NODE_TYPES: readonly WorkflowNodeType[] = [
   'discover_opportunities',
+  'verify_contact',
   'score_filter',
   'deduplicate',
   'approval',
@@ -638,7 +639,9 @@ function describeNode(
       };
     case 'verify_contact':
       return {
-        detail: `Only addresses that pass verification; no guessed patterns${c.allowSharedInbox ? '' : ', no shared inboxes'}.`,
+        detail: c.allowSharedInbox
+          ? 'Only addresses that pass verification; no guessed patterns.'
+          : 'Only addresses that pass verification; no guessed patterns. A first email whose only route is a shared company inbox (team@, info@) is skipped until a personal address is found.',
         uses: 'email verification + lead screening',
         warnings: [],
       };
