@@ -79,10 +79,14 @@ import {
   TeamError,
 } from './team';
 import {
+  DEFAULT_ADDRESS_CAP_PER_WEEK,
+  DEFAULT_COOLDOWN_HOURS,
   evaluateAddressLimits,
   evaluatePolicy,
   isExecutable,
   POLICY_VERSION,
+  type PolicyRequest,
+  type PolicyResult,
 } from '@outreachgraph/policy';
 import {
   campaignFunnel,
@@ -515,7 +519,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.json({
       service: 'api',
       name: 'outreachgraph',
-      version: options.version ?? '0.19.1',
+      version: options.version ?? '0.20.0',
       ...(options.commitHash ? { commitHash: options.commitHash } : {}),
       docs: 'https://github.com/profullstack/outreachgraph',
       endpoints: {
@@ -648,7 +652,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.json({
       status: 'ok' as const,
       service: 'api',
-      version: options.version ?? '0.19.1',
+      version: options.version ?? '0.20.0',
       ...(options.commitHash ? { commitHash: options.commitHash } : {}),
       uptimeSeconds: Math.round((Date.now() - STARTED_AT) / 1000),
     }),
@@ -3657,7 +3661,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     return c.json({
       recommendations,
-      counts: { ...counts, held, approvable: Math.max(0, counts.buckets.ready - held) },
+      // Every ready card is approvable: a held one is approved and sent when
+      // its hold clears (approvals are never limited, 2026-10-26).
+      counts: { ...counts, held, approvable: counts.buckets.ready },
       filter,
       channel,
     });
@@ -6319,10 +6325,34 @@ async function approveRecommendation(
     readonly allowHandoff?: boolean;
   },
 ): Promise<ApproveOutcome> {
-  const decision =
+  let decision: PolicyResult & { readonly pacedUntil?: string } =
     input.allowHandoff === true
       ? await handoffAwareDecision(db, actor, recommendation, options.mailer !== undefined)
       : await recheckPolicy(db, actor, recommendation, options.mailer !== undefined);
+
+  // Approving is never limited (owner's call, 2026-10-26: "approvals should be
+  // unlimited"). When the only thing in the way is pacing — today's cap, a
+  // cooldown, a weekly limit — the card is approved now and the send waits
+  // for `holdUntil`. Everything else (suppression, screening, confidence, an
+  // open conversation) still refuses, exactly as before.
+  let holdUntil: string | undefined;
+  const acceptable = (d: PolicyResult): boolean =>
+    isExecutable(d.decision, true) || (input.allowHandoff === true && isHandoffDecision(d));
+  if (!acceptable(decision) && onlyPacing(decision)) {
+    const unpaced = await recheckPolicy(
+      db,
+      actor,
+      recommendation,
+      options.mailer !== undefined,
+      undefined,
+      false,
+      true,
+    );
+    if (acceptable(unpaced)) {
+      holdUntil = decision.pacedUntil;
+      decision = unpaced;
+    }
+  }
 
   // `manual_only` from the capability matrix or a missing account is not a
   // refusal: it is permitted work a person has to do by hand. Production held
@@ -6465,7 +6495,9 @@ async function approveRecommendation(
   // see beats an approved action sitting in a queue nobody is watching.
   const delivery =
     mode === 'customer_managed' && recommendation.network === 'email'
-      ? await sendEmailAction(db, options, actor, actionId, decision.policyVersion)
+      ? holdUntil
+        ? await holdEmailAction(db, actor, actionId, decision.policyVersion, holdUntil)
+        : await sendEmailAction(db, options, actor, actionId, decision.policyVersion)
       : undefined;
 
   // Approving an X or LinkedIn card is the same instruction, carried out at a
@@ -6482,6 +6514,7 @@ async function approveRecommendation(
           kind: recommendation.action,
           actor: { actorKind: 'user', actorId: actor.userId },
           policyVersion: decision.policyVersion,
+          ...(holdUntil ? { notBeforeMs: Date.parse(holdUntil) } : {}),
         })
       : undefined;
 
@@ -6607,7 +6640,13 @@ async function recheckPolicy(
   excludeActionId?: string,
   /** Evaluate as if nothing had been done today; see `handoffDecisionFor`. */
   ignoreDailyLimit = false,
-) {
+  /**
+   * Evaluate with every pacing gate — the daily cap, the per-prospect and
+   * per-address weekly limits and the cooldowns — out of the way. Used by
+   * approval, which those limits never refuse: they decide when it is sent.
+   */
+  ignorePacing = false,
+): Promise<PolicyResult & { readonly pacedUntil?: string }> {
   const [person, workspace, campaign, counts, flags, connected, contact] = await Promise.all([
     repo.getPerson(db, recommendation.person_id),
     repo.getWorkspace(db, actor.workspaceId),
@@ -6645,7 +6684,7 @@ async function recheckPolicy(
   // and one of them eventually will not.
   const budgetState = await budgetStatus(db, actor.workspaceId);
 
-  return evaluatePolicy({
+  const request: PolicyRequest = {
     network: recommendation.network as Network,
     action: recommendation.action as ActionKind,
     approvalMode: campaign.approval_mode as 'draft_and_approve',
@@ -6689,7 +6728,86 @@ async function recheckPolicy(
       recommendation.action === 'reply' || recommendation.expected_goal === 'continue_conversation',
     budgetExhausted: budgetState.exhausted,
     featureFlags: flags,
-  });
+  };
+
+  if (ignorePacing) {
+    return evaluatePolicy({
+      ...withoutPacing(request),
+      maxActionsPerDay: Number.POSITIVE_INFINITY,
+    });
+  }
+
+  const result = evaluatePolicy(request);
+  const pacedUntil = pacingClearsAt(request);
+  return pacedUntil ? { ...result, pacedUntil } : result;
+}
+
+/** The gates that only decide *when* something goes out, never whether. */
+const PACING_GATES: ReadonlySet<string> = new Set([
+  'rate_limit_daily',
+  'rate_limit_prospect',
+  'rate_limit_address',
+  'cooldown',
+]);
+
+/** True when every refusal in the trace is a pacing gate. */
+function onlyPacing(decision: PolicyResult): boolean {
+  const refusals = decision.trace.filter((entry) => entry.decision === decision.decision);
+  return refusals.length > 0 && refusals.every((entry) => PACING_GATES.has(entry.gate));
+}
+
+/** The request with nothing counted against any pacing limit. */
+function withoutPacing(request: PolicyRequest): PolicyRequest {
+  const {
+    hoursSinceLastActionToProspect: _prospect,
+    actionsToThisAddressThisWeek: _address,
+    hoursSinceLastActionToAddress: _addressLast,
+    ...rest
+  } = request;
+  return { ...rest, actionsToday: 0, actionsToThisProspectThisWeek: 0 };
+}
+
+/**
+ * When every pacing limit this request breaches has cleared: the next UTC day
+ * for the daily cap, the end of the cooldown, a week after the last message
+ * for a weekly limit. The latest of them, or undefined when none is breached.
+ */
+function pacingClearsAt(request: PolicyRequest, nowMs: number = Date.now()): string | undefined {
+  const HOUR = 3_600_000;
+  const cooldown = request.minHoursBetweenActions ?? DEFAULT_COOLDOWN_HOURS;
+  const candidates: number[] = [];
+
+  if (request.actionsToday >= request.maxActionsPerDay) {
+    const d = new Date(nowMs);
+    candidates.push(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1));
+  }
+
+  const last = [request.hoursSinceLastActionToProspect, request.hoursSinceLastActionToAddress];
+  for (const elapsed of last) {
+    if (elapsed !== undefined && elapsed < cooldown) {
+      candidates.push(nowMs + (cooldown - elapsed) * HOUR);
+    }
+  }
+
+  const weekly: [number | undefined, number | undefined, number | undefined][] = [
+    [
+      request.actionsToThisProspectThisWeek,
+      request.maxActionsPerProspectPerWeek,
+      request.hoursSinceLastActionToProspect,
+    ],
+    [
+      request.actionsToThisAddressThisWeek,
+      request.maxActionsPerAddressPerWeek ?? DEFAULT_ADDRESS_CAP_PER_WEEK,
+      request.hoursSinceLastActionToAddress,
+    ],
+  ];
+  for (const [count, cap, elapsed] of weekly) {
+    if (count !== undefined && cap !== undefined && count >= cap) {
+      candidates.push(nowMs + Math.max(1, 168 - (elapsed ?? 0)) * HOUR);
+    }
+  }
+
+  return candidates.length === 0 ? undefined : new Date(Math.max(...candidates)).toISOString();
 }
 
 /**
@@ -6764,6 +6882,32 @@ async function sendEmailAction(
   );
 
   return result.sent ? { sent: true, to: result.to } : { sent: false, reason: result.reason };
+}
+
+/**
+ * An approved email whose send waits for a pacing hold to clear. Queued as a
+ * `deliver_email` job for that moment; the job checks suppression, replies
+ * and the mailbox caps again when it runs.
+ */
+async function holdEmailAction(
+  db: Client,
+  actor: RequestActor,
+  actionId: string,
+  policyVersion: string,
+  holdUntil: string,
+): Promise<{ sent: boolean; reason?: string; deferredUntil?: string }> {
+  const queued = await scheduleEmailDelivery(db, {
+    workspaceId: actor.workspaceId,
+    actionId,
+    actor: { actorKind: 'user', actorId: actor.userId },
+    policyVersion,
+    retryAt: holdUntil,
+  });
+  return {
+    sent: false,
+    reason: `approved; held by a sending limit, it will go out after ${queued.runAt}`,
+    deferredUntil: queued.runAt,
+  };
 }
 
 /** Networks we can act on through an API; everything else is manual. */

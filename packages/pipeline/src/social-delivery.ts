@@ -9,6 +9,8 @@
  * workspace and network, with jitter, and capped per UTC day; anything over
  * the cap starts the next day.
  *
+ * A public post is held to one every four hours per account (`POST_PACING`).
+ *
  * The numbers are conservative on purpose. LinkedIn restricts accounts at
  * volumes well below what its UI allows a person to click, and X's API caps
  * posts per user per day by access tier.
@@ -38,11 +40,24 @@ export type PacedNetwork = 'x' | 'linkedin';
 
 export const PACING: Record<PacedNetwork, { minGapMs: number; maxGapMs: number; perDay: number }> =
   {
-    // Tuned for posting through a browser session (X locks accounts that
-    // post like a script); an API grant would tolerate more.
+    // Tuned for acting through a browser session (X locks accounts that act
+    // like a script); an API grant would tolerate more. These gaps are for
+    // the person-directed kinds — invitations, visits, follows, messages.
     x: { minGapMs: 3 * 60_000, maxGapMs: 8 * 60_000, perDay: 20 },
     linkedin: { minGapMs: 4 * 60_000, maxGapMs: 11 * 60_000, perDay: 25 },
   };
+
+/**
+ * A public post (a reply, a comment, a post) goes out at most once every four
+ * hours per account, on every network (owner's call, 2026-10-26: "posting
+ * needs to be limited to once every 4 hours per account"). Cold email has its
+ * own ceiling; this is the one for anything the public can see.
+ */
+export const POST_PACING = {
+  minGapMs: 4 * 3_600_000,
+  maxGapMs: 4 * 3_600_000 + 20 * 60_000,
+  perDay: 6,
+} as const;
 
 export function isPacedNetwork(network: string): network is PacedNetwork {
   return network === 'x' || network === 'linkedin';
@@ -58,7 +73,8 @@ export function capsFor(
   network: PacedNetwork,
   group: CapGroup,
 ): { readonly perDay: number; readonly perWeek?: number } {
-  if (network === 'linkedin' && group !== 'post') return LINKEDIN_ACTION_CAPS[group];
+  if (group === 'post') return { perDay: POST_PACING.perDay };
+  if (network === 'linkedin') return LINKEDIN_ACTION_CAPS[group];
   return { perDay: PACING[network].perDay };
 }
 
@@ -85,18 +101,33 @@ export async function scheduleSocialDelivery(
     actor: AuditActor;
     policyVersion?: string;
     kind?: string;
+    /**
+     * Not before this moment: approved while a per-prospect hold (cooldown,
+     * weekly limit) was still running, so it waits for the hold to clear.
+     */
+    notBeforeMs?: number;
   },
   nowMs: number = Date.now(),
 ): Promise<{ queued: boolean; runAt: string }> {
-  const pace = PACING[input.network];
   const like = `%"network":"${input.network}"%`;
   const group = capGroupFor(input.kind);
+  const pace = group === 'post' ? POST_PACING : PACING[input.network];
   const caps = capsFor(input.network, group);
 
+  // Jobs in this cap group. A post is anything marked as one, plus every job
+  // queued before groups existed (no `capGroup` in its payload at all).
+  const inGroup =
+    group === 'post'
+      ? `(payload_json LIKE '%"capGroup":"post"%' OR payload_json NOT LIKE '%"capGroup":%')`
+      : `payload_json LIKE '%"capGroup":"${group}"%'`;
+
+  // Posts are spaced from the last post, so four hours between them is not
+  // eaten by an unrelated profile visit; the other kinds from anything.
   const last = await queryOne<{ run_after: string }>(
     db,
     `SELECT run_after FROM jobs
       WHERE workspace_id = ? AND kind = 'deliver_social' AND payload_json LIKE ?
+        ${group === 'post' ? `AND ${inGroup}` : ''}
         AND status IN ('pending', 'running', 'done')
       ORDER BY run_after DESC LIMIT 1`,
     [input.workspaceId, like],
@@ -106,14 +137,11 @@ export async function scheduleSocialDelivery(
   // their number and each account keeps about the single-account spacing.
   const pool = await poolCapacity(db, input.workspaceId, input.network, new Date(nowMs));
   const gap = Math.round(randomInt(pace.minGapMs, pace.maxGapMs + 1) / Math.max(1, pool.accounts));
-  let runAt = Math.max(nowMs, last ? Date.parse(last.run_after) + gap : nowMs);
-
-  // Jobs in this cap group. A post is anything marked as one, plus every job
-  // queued before groups existed (no `capGroup` in its payload at all).
-  const inGroup =
-    group === 'post'
-      ? `(payload_json LIKE '%"capGroup":"post"%' OR payload_json NOT LIKE '%"capGroup":%')`
-      : `payload_json LIKE '%"capGroup":"${group}"%'`;
+  let runAt = Math.max(
+    nowMs,
+    input.notBeforeMs ?? nowMs,
+    last ? Date.parse(last.run_after) + gap : nowMs,
+  );
 
   const scheduledBetween = async (from: number, to: number): Promise<number> => {
     const row = await queryOne<{ n: number }>(
@@ -191,8 +219,12 @@ async function poolLimits(
     kind,
   );
   if (pool.accounts === 0) return single;
+  // However much room the accounts' caps leave, a post is still one per
+  // account every four hours.
+  const ceiling =
+    capGroupFor(kind) === 'post' ? POST_PACING.perDay * pool.accounts : Number.POSITIVE_INFINITY;
   return {
-    perDay: Math.max(1, pool.capacity),
+    perDay: Math.max(1, Math.min(pool.capacity, ceiling)),
     ...(pool.weeklyCapacity === undefined ? {} : { perWeek: pool.weeklyCapacity }),
   };
 }

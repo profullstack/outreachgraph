@@ -155,7 +155,7 @@ describe('a shared company inbox', () => {
     expect(interaction?.shared_inbox).toBe(1);
   });
 
-  test('refuses a second colleague whose mail lands in the same inbox', async () => {
+  test('approves a second colleague but holds the send for the shared inbox', async () => {
     const { sent, mailer } = recordingMailer();
     const { app, db } = await harness('shared-blocks-second', mailer);
     await giveCompanySharedInbox(db);
@@ -167,24 +167,28 @@ describe('a shared company inbox', () => {
     expect(sent[0]?.to).toBe(SHARED_INBOX);
 
     // Bob has never been contacted, is inside every per-person limit, and
-    // would still have put a second message in the same human's inbox.
+    // would still put a second message in the same human's inbox. Approving
+    // is never limited, so the card is approved — and the send waits out the
+    // inbox's week rather than going now.
     const second = await approve(app, colleague.recommendationId);
-    expect(second.status).toBe(409);
-
-    // Both address gates fire here — the inbox is over its weekly count *and*
-    // inside the cooldown — and the engine reports the last one to restrict.
-    // Which of the two is named matters less than that the refusal is about
-    // the address rather than about Bob, who is a stranger to us.
+    expect(second.status).toBe(200);
     const payload = (await second.json()) as {
-      error?: { message?: string; details?: { gate?: string } };
+      delivery?: { sent: boolean; deferredUntil?: string };
     };
-    expect(['rate_limit_address', 'cooldown']).toContain(payload.error?.details?.gate ?? '');
-    expect(payload.error?.message).toMatch(/address|inbox/i);
+    expect(payload.delivery?.sent).toBe(false);
+    expect(Date.parse(payload.delivery?.deferredUntil ?? '')).toBeGreaterThan(
+      Date.now() + 6 * 24 * 3_600_000,
+    );
 
+    const job = await queryOne<{ n: number }>(
+      db,
+      `SELECT COUNT(*) AS n FROM jobs WHERE kind = 'deliver_email' AND status = 'pending'`,
+    );
+    expect(Number(job?.n)).toBe(1);
     expect(sent).toHaveLength(1);
   });
 
-  test('names the shared inbox when the count is what stops it', async () => {
+  test('holds the send until the weekly count clears, not just the cooldown', async () => {
     const { sent, mailer } = recordingMailer();
     const { app, db } = await harness('shared-names-inbox', mailer);
     await giveCompanySharedInbox(db);
@@ -200,13 +204,13 @@ describe('a shared company inbox', () => {
     });
 
     const second = await approve(app, colleague.recommendationId);
-    expect(second.status).toBe(409);
+    expect(second.status).toBe(200);
 
-    const payload = (await second.json()) as {
-      error?: { message?: string; details?: { gate?: string } };
-    };
-    expect(payload.error?.details?.gate).toBe('rate_limit_address');
-    expect(payload.error?.message).toContain('shares a company inbox');
+    // 96h since the last send, so the week clears in about 72h.
+    const payload = (await second.json()) as { delivery?: { deferredUntil?: string } };
+    const wait = Date.parse(payload.delivery?.deferredUntil ?? '') - Date.now();
+    expect(wait).toBeGreaterThan(71 * 3_600_000);
+    expect(wait).toBeLessThan(74 * 3_600_000);
     expect(sent).toHaveLength(1);
   });
 
@@ -277,7 +281,7 @@ describe('the queue, before anything is clicked', () => {
     expect(card?.hold?.shared).toBe(true);
   });
 
-  test('the hold says exactly what approving would have said', async () => {
+  test('approving a held card queues it for when the hold clears', async () => {
     const { mailer } = recordingMailer();
     const { app, db } = await harness('queue-hold-matches', mailer);
     await giveCompanySharedInbox(db);
@@ -288,16 +292,16 @@ describe('the queue, before anything is clicked', () => {
     const listed = await queue(app);
     const hold = listed.recommendations.find((row) => row.id === colleague.recommendationId)?.hold;
 
-    const refused = await approve(app, colleague.recommendationId);
-    expect(refused.status).toBe(409);
-    const payload = (await refused.json()) as {
-      error?: { message?: string; details?: { gate?: string } };
-    };
+    expect(hold).toBeDefined();
 
-    // A preview that disagrees with the refusal is worse than no preview:
-    // it teaches the reviewer to distrust the badge.
-    expect(hold?.reason).toBe(payload.error?.message);
-    expect(hold?.gate).toBe(payload.error?.details?.gate);
+    const approved = await approve(app, colleague.recommendationId);
+    expect(approved.status).toBe(200);
+    const payload = (await approved.json()) as { delivery?: { deferredUntil?: string } };
+
+    // Never sent before the hold the card showed has cleared.
+    expect(Date.parse(payload.delivery?.deferredUntil ?? '')).toBeGreaterThanOrEqual(
+      Date.parse(String(hold?.clears_at ?? new Date(0).toISOString())) - 60_000,
+    );
   });
 
   test('counts how many ready cards can actually be sent', async () => {
@@ -312,10 +316,11 @@ describe('the queue, before anything is clicked', () => {
     const listed = await queue(app);
 
     // Jane's card is gone — approved. Both colleagues are drafted and both are
-    // behind the one inbox she used, so the tab must not claim two are ready.
+    // behind the one inbox she used: held, but still approvable (the send
+    // waits for the hold).
     expect(listed.counts.buckets.ready).toBe(2);
     expect(listed.counts.held).toBe(2);
-    expect(listed.counts.approvable).toBe(0);
+    expect(listed.counts.approvable).toBe(2);
   });
 
   test('a prospect with their own address is never held', async () => {

@@ -269,18 +269,14 @@ function HeldSummary({
   const held = counts.held ?? 0;
   if (filter !== 'ready' || held === 0) return null;
 
-  const approvable = counts.approvable ?? 0;
-
   return (
     <p className="border-border text-ink-muted mb-3 rounded-xl border border-dashed p-3 text-xs">
       <span className="text-ink font-medium">
-        {approvable === 0
-          ? 'None of these can be sent right now.'
-          : `${approvable} of these can be sent right now.`}
+        {held} {held === 1 ? 'waits' : 'wait'} for a hold to clear.
       </span>{' '}
-      {held} {held === 1 ? 'is' : 'are'} held because the mailbox behind{' '}
-      {held === 1 ? 'it' : 'them'} was contacted recently — often one shared company inbox standing
-      in for several people. Each card says which address, and when it clears.
+      The mailbox behind {held === 1 ? 'it' : 'them'} was contacted recently — often one shared
+      company inbox standing in for several people. Approve anyway: the message is queued and sent
+      when the hold clears. Each card says which address, and when.
     </p>
   );
 }
