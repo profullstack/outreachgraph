@@ -69,6 +69,7 @@ import {
   executeWorkflowRun,
   failWorkflowRun,
   buildLaunchSources,
+  cardReachableMembers,
   findLaunches,
   intakeJobFeeds,
   intakeLaunches,
@@ -106,6 +107,11 @@ export interface WorkflowDeps {
    * company a feed names without one. Without it those companies are skipped.
    */
   readonly searcher?: WebSearcher | undefined;
+  /**
+   * Whether this deployment can put an email on the wire (a platform sender),
+   * for the engine's re-decision of people who gained an address.
+   */
+  readonly emailSendingEnabled?: boolean | undefined;
   /** Test seam: replaces the keyless public job feeds (`buildJobFeeds`). */
   readonly jobFeeds?: readonly JobFeed[] | undefined;
   /** Launch radar: keyless; a GitHub token only raises its rate limit. */
@@ -712,6 +718,13 @@ function stepHandlers(
 
     async draft(node, context) {
       const campaignId = await campaign(context);
+      // People who gained an address since they were decided hold no email
+      // card until something asks the engine again; this does.
+      const cards = await cardReachableMembers(context.db, {
+        workspaceId: context.workspaceId,
+        campaignId,
+        emailSendingEnabled: deps.emailSendingEnabled,
+      });
       const row2 = await queryOne<{ drafts: number; held: number }>(
         context.db,
         `SELECT COUNT(d.id) AS drafts,
@@ -721,8 +734,13 @@ function stepHandlers(
         [campaignId],
       );
       return report(
-        `${Number(row2?.drafts ?? 0)} drafts ready (≤${String(node.config.maxWords)} words, evidence-cited); ${Number(row2?.held ?? 0)} waiting on the composer`,
-        { drafts: Number(row2?.drafts ?? 0), waiting: Number(row2?.held ?? 0) },
+        `${cards.carded} new email cards for people who gained an address; ` +
+          `${Number(row2?.drafts ?? 0)} drafts ready (≤${String(node.config.maxWords)} words, evidence-cited); ${Number(row2?.held ?? 0)} waiting on the composer (autopilot drafts each card as it sends)`,
+        {
+          carded: cards.carded,
+          drafts: Number(row2?.drafts ?? 0),
+          waiting: Number(row2?.held ?? 0),
+        },
       );
     },
 

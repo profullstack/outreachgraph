@@ -676,7 +676,7 @@ const api = createApp({
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
-  version: process.env.APP_VERSION ?? '0.23.2',
+  version: process.env.APP_VERSION ?? '0.23.3',
   ...(commitHash ? { commitHash } : {}),
 });
 
@@ -1205,6 +1205,7 @@ async function tick(): Promise<void> {
         for (const result of await runDueWorkflows(db, {
           ...(model ? { model } : {}),
           ...(workflowSearcher ? { searcher: workflowSearcher } : {}),
+          emailSendingEnabled: mailer !== undefined,
           launches: { githubToken: process.env.GITHUB_TOKEN },
         })) {
           console.log(

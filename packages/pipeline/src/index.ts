@@ -705,3 +705,4 @@ export {
   excludedByCompanyCap,
   type CompanyCapResult,
 } from './company-cap';
+export { cardReachableMembers } from './campaign-cards';

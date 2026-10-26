@@ -1610,6 +1610,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       model: options.model,
       searcher: options.workflowSearcher ?? options.jobSearcher,
       jobFeeds: options.jobFeeds,
+      emailSendingEnabled: options.mailer !== undefined,
       launches: { githubToken: options.githubToken },
       requireVerifiedEmail: (db, actor, action) => requireVerifiedEmail(db, actor, action),
     }),
