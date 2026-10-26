@@ -14,8 +14,8 @@ describe('interpretWorkflowPrompt', () => {
     );
 
     expect(spec.sources).toEqual([
-      { kind: 'job_posts', query: 'rust engineer', limit: 20 },
-      { kind: 'job_posts', query: 'platform engineer', limit: 20 },
+      { kind: 'job_posts', query: 'rust engineer', limit: 100 },
+      { kind: 'job_posts', query: 'platform engineer', limit: 100 },
       { kind: 'discover', query: 'fintech startups that are hiring backend engineers' },
     ]);
     expect(spec.targeting.titles).toEqual(['CTO', 'VP of Engineering']);
@@ -130,7 +130,7 @@ describe('normaliseWorkflowSettings', () => {
 
     expect(result.spec.sources).toEqual([
       { kind: 'discover', query: 'shopify com agencies' },
-      { kind: 'job_posts', query: 'rust', limit: 50 },
+      { kind: 'job_posts', query: 'rust', limit: 200 },
     ]);
     expect(result.spec.targeting.titles).toEqual(['CTO']);
     expect(result.spec.targeting.employeeCountMin).toBe(10);

@@ -745,8 +745,10 @@ async function promote(
  * Asks the engine again, now that the person has an address.
  *
  * Every campaign where they hold a card that could be improved on — a held
- * `manual_only` one, or an internal research card. `regenerateFor` supersedes
- * those itself and never touches a card that can already run.
+ * `manual_only` one, or an internal research card — and every campaign they
+ * are still in with no live card at all: an email card skipped because there
+ * was nowhere to send it, or none ever written. `regenerateFor` supersedes
+ * what it replaces and never touches a card that can already run.
  */
 async function redecide(
   deps: FindEmailDeps,
@@ -757,8 +759,16 @@ async function redecide(
     deps.db,
     `SELECT DISTINCT campaign_id FROM recommendations
       WHERE workspace_id = ? AND person_id = ? AND status = 'pending'
-        AND (policy_status = 'manual_only' OR action IN ('refresh_research', 'observe', 'wait'))`,
-    [workspaceId, personId],
+        AND (policy_status = 'manual_only' OR action IN ('refresh_research', 'observe', 'wait'))
+     UNION
+     SELECT cp.campaign_id FROM campaign_people cp
+      WHERE cp.workspace_id = ? AND cp.person_id = ?
+        AND cp.status IN ('discovered', 'resolved', 'researching', 'qualified', 'recommended',
+                          'awaiting_approval')
+        AND NOT EXISTS (SELECT 1 FROM recommendations r
+                         WHERE r.campaign_id = cp.campaign_id AND r.person_id = cp.person_id
+                           AND r.status IN ('pending', 'approved', 'executed'))`,
+    [workspaceId, personId, workspaceId, personId],
   );
 
   const created: string[] = [];

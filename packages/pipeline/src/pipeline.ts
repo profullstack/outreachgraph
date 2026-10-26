@@ -41,6 +41,7 @@ import { enqueueFindEmail } from './find-email-queue';
 import { screenHold } from './lead-screen';
 import { ownDomains, personOnOwnDomain } from './recipient-guard';
 import { queueSiteAudit } from './site-audits';
+import { excludedByCompanyCap } from './company-cap';
 
 export interface PipelineOptions {
   readonly db: Client;
@@ -180,6 +181,18 @@ export async function runPipelineForCandidate(
 
   await recordProvenance(db, personId, candidate, origin, stamp);
   await ensureCampaignMembership(db, campaignId, personId, workspaceId, stamp);
+
+  // Held back by the campaign's per-company cap: a re-crawl of their team
+  // page must not research, score and card them all over again.
+  if (await excludedByCompanyCap(db, campaignId, personId)) {
+    return {
+      personId,
+      stage: 'stopped',
+      identitiesLinked: 0,
+      signalsStored: 0,
+      stoppedBecause: 'company cap',
+    };
+  }
 
   // Suppression outranks everything: a suppressed person is never researched
   // or scored, only recorded as excluded (PRD §6.6, §17.3).
@@ -901,6 +914,9 @@ async function createRecommendation(
   );
   if (!campaign) return undefined;
 
+  // Over the campaign's per-company cap: colleagues of the people kept get no card.
+  if (await excludedByCompanyCap(db, campaignId, personId)) return undefined;
+
   const workspace = await queryOne<{ min_outreach_confidence: number }>(
     db,
     'SELECT min_outreach_confidence FROM workspaces WHERE id = ?',
@@ -922,16 +938,17 @@ async function createRecommendation(
   }>(
     db,
     // The person's own signals, plus timely news about their company — it
-    // raised, it named a new leader, its site runs a competitor. Those are
-    // company-level rows (no person), and without them a lead found because
-    // their company just raised would be written to about their homepage.
+    // raised, it named a new leader, its site runs a competitor, a job feed
+    // says it is hiring. Those are company-level rows (no person), and without
+    // them a lead found because their company just raised would be written to
+    // about their homepage.
     `SELECT id, network, signal_type, summary, evidence, source_url, source_timestamp,
             observed_at, confidence, relevance, expires_at
        FROM signals
       WHERE workspace_id = ?
         AND (person_id = ?
              OR (person_id IS NULL
-                 AND signal_type IN ('funding', 'role_change', 'technology_adoption')
+                 AND signal_type IN ('funding', 'role_change', 'technology_adoption', 'hiring')
                  AND company_id = (SELECT current_company_id FROM people WHERE id = ?)))`,
     [workspaceId, personId, personId],
   );

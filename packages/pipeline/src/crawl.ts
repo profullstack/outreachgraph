@@ -7,7 +7,7 @@
  * test. The server now supplies its dependencies and calls this.
  */
 
-import { newId } from '@outreachgraph/domain';
+import { engineeringBuyerRank, newId } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import {
   competitorMatches,
@@ -18,6 +18,7 @@ import {
   type SiteProvider,
 } from '@outreachgraph/providers';
 import type { TextModel } from '@outreachgraph/ai';
+import { campaignCompanyCap, enforceCompanyCap } from './company-cap';
 import { emitEvent } from './events';
 import { runPipelineForCandidate } from './pipeline';
 import { queueSiteAudit } from './site-audits';
@@ -275,7 +276,19 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
     inboxLeadQueued = outcome.stage !== 'stopped';
   }
 
-  for (const candidate of result.people) {
+  // A campaign that keeps only a few people per company researches only those
+  // few: the best-ranked titles on the page, not all two hundred colleagues.
+  // People already in the campaign are among them again and pass straight
+  // through; `enforceCompanyCap` below settles who is kept.
+  const cap = await campaignCompanyCap(deps.db, campaign.id);
+  const people =
+    cap === undefined
+      ? result.people
+      : [...result.people]
+          .sort((a, b) => engineeringBuyerRank(a.title) - engineeringBuyerRank(b.title))
+          .slice(0, cap);
+
+  for (const candidate of people) {
     await runPipelineForCandidate(
       {
         db: deps.db,
@@ -298,6 +311,10 @@ export async function runCrawlJob(deps: CrawlJobDeps, job: QueuedJob): Promise<C
       },
     );
     queued += 1;
+  }
+
+  if (cap !== undefined && domain) {
+    await enforceCompanyCap(deps.db, { campaignId: campaign.id, maxPerCompany: cap, domain });
   }
 
   return {

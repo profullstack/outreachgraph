@@ -37,6 +37,7 @@ import {
   type WorkflowSource,
   type WorkflowTargeting,
 } from './workflow';
+import { DEFAULT_MAX_PEOPLE_PER_COMPANY } from './personas';
 
 export const WORKFLOW_NODE_TYPES = [
   'discover_opportunities',
@@ -341,7 +342,13 @@ export function normaliseNodeConfig(
       };
     case 'score_filter': {
       const t = normaliseTargeting(c);
-      return { config: { ...t }, errors };
+      return {
+        config: {
+          ...t,
+          maxPerCompany: clamp(c.maxPerCompany, 1, 25, DEFAULT_MAX_PEOPLE_PER_COMPANY),
+        },
+        errors,
+      };
     }
     case 'deduplicate':
       return {
@@ -533,7 +540,14 @@ export function applySettings(
       }
       switch (n.type) {
         case 'score_filter':
-          return { ...n, after, config: normaliseNodeConfig(n.type, settings.targeting).config };
+          return {
+            ...n,
+            after,
+            config: normaliseNodeConfig(n.type, {
+              ...settings.targeting,
+              maxPerCompany: n.config.maxPerCompany,
+            }).config,
+          };
         case 'approval':
           return { ...n, after, config: { mode: settings.outreach.approval } };
         case 'send':
@@ -659,11 +673,13 @@ function describeNode(
       }
       return c.source === 'job_posts'
         ? {
-            detail: `Job boards: “${String(c.query)}”, up to ${String(c.limit)} postings a run; the hiring contact behind each is resolved.`,
-            uses: 'POST /api/v1/job-posts/search',
+            detail: `Job boards: “${String(c.query)}” on Hacker News Who is hiring, Himalayas, RemoteOK and Jobicy; up to ${String(c.limit)} new companies a run, each one’s site crawled for the people who hire.`,
+            uses: 'job feeds → crawl_site jobs',
             warnings:
               context.jobSearchEnabled === false
-                ? ['job search is not configured on this server, so this step skips']
+                ? [
+                    'no ValueSERP key on this server, so this step skips companies a feed names without a site',
+                  ]
                 : [],
           }
         : {
@@ -683,7 +699,7 @@ function describeNode(
       return {
         detail: c.allowSharedInbox
           ? 'Only addresses that pass verification; no guessed patterns.'
-          : 'Only addresses that pass verification; no guessed patterns. A first email whose only route is a shared company inbox (team@, info@) is skipped until a personal address is found.',
+          : 'Only addresses that pass verification; no guessed patterns. A first email whose only route is a shared company inbox (team@, info@) is skipped once the address search has found nothing personal.',
         uses: 'email verification + lead screening',
         warnings: [],
       };
@@ -696,6 +712,7 @@ function describeNode(
         sizeLabel(t),
         t.technologies.length ? `uses ${t.technologies.join(', ')}` : '',
         t.exclusions.length ? `never ${t.exclusions.join(', ')}` : '',
+        `at most ${String(c.maxPerCompany ?? DEFAULT_MAX_PEOPLE_PER_COMPANY)} people per company, engineering leaders first`,
       ].filter(Boolean);
       return {
         detail: parts.join(' · '),
@@ -931,8 +948,8 @@ export const ENGINEERING_CONTRACT_TEMPLATE: WorkflowTemplate = {
     version: 1,
     goal: 'Win engineering contracts from direct employers hiring engineers right now.',
     sources: [
-      { kind: 'job_posts', query: 'contract software engineer', limit: 20 },
-      { kind: 'job_posts', query: 'contract full stack engineer', limit: 20 },
+      { kind: 'job_posts', query: 'contract software engineer', limit: 100 },
+      { kind: 'job_posts', query: 'contract full stack engineer', limit: 100 },
       { kind: 'discover', query: 'Bay Area software companies hiring engineers' },
       { kind: 'discover', query: 'remote-first US startups hiring engineers' },
     ],

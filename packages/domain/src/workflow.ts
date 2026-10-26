@@ -61,8 +61,11 @@ export type WorkflowApproval = (typeof WORKFLOW_APPROVALS)[number];
 export const MAX_WORKFLOW_DAILY_LIMIT = 1_000;
 export const DEFAULT_WORKFLOW_DAILY_LIMIT = 50;
 export const MAX_WORKFLOW_SOURCES = 6;
-/** A job-board search per run; `MAX_SEARCH_RESULTS` is the API's own ceiling. */
-export const MAX_WORKFLOW_JOB_RESULTS = 50;
+/**
+ * New companies a job-board step takes per run. Each costs at most one domain
+ * search and one crawl; the feeds are keyless (`buildJobFeeds`).
+ */
+export const MAX_WORKFLOW_JOB_RESULTS = 200;
 /** Launches read per run (`launches` only); each one may cost a profile lookup. */
 export const MAX_WORKFLOW_LAUNCH_RESULTS = 50;
 /** How far back a launch search looks, in hours. */
@@ -556,7 +559,7 @@ export function interpretWorkflowPrompt(text: string, base?: WorkflowSettings): 
       if (MARKET.test(part)) continue;
       const query = part.replace(/^(?:an?|some|more)\s+/i, '').trim();
       if (query.length >= 3)
-        addSource({ kind: 'job_posts', query: query.slice(0, 120), limit: 20 });
+        addSource({ kind: 'job_posts', query: query.slice(0, 120), limit: 100 });
     }
   }
 

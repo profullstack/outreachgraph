@@ -310,6 +310,8 @@ export {
 export {
   deliverEmailAction,
   defaultEmailSubject,
+  emailCardReadiness,
+  PERSON_EMAIL_SQL,
   loadOutreachSettings,
   prepareOutgoingEmail,
   htmlTwin,
@@ -687,3 +689,19 @@ export {
   type Maker,
   type MakerDeps,
 } from './launch-radar';
+export {
+  DEFAULT_DOMAIN_LOOKUPS,
+  intakeJobFeeds,
+  nameFromAddress,
+  readJobFeeds,
+  type JobFeedIntakeDeps,
+  type JobFeedIntakeInput,
+  type JobFeedIntakeResult,
+} from './job-feeds';
+export {
+  campaignCompanyCap,
+  COMPANY_CAP_REASON,
+  enforceCompanyCap,
+  excludedByCompanyCap,
+  type CompanyCapResult,
+} from './company-cap';
