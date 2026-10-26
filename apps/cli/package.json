@@ -1,6 +1,6 @@
 {
   "name": "@profullstack/outreachgraph",
-  "version": "0.22.1",
+  "version": "0.22.2",
   "description": "og: OutreachGraph from a terminal. Approval queue, prospects, campaigns and imports over the /api/v1 API.",
   "type": "module",
   "license": "UNLICENSED",

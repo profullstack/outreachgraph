@@ -1138,8 +1138,16 @@ export async function countActionsToday(
   const row = await queryOne<{ n: number }>(
     db,
     // Hand-offs are exempt from the daily limit: a person paces those.
+    //
+    // Only what went out today, or is going out now. A queued action is
+    // either waiting on a pacing hold (an approved email held until the
+    // prospect's weekly limit clears, days from now) or an approval that
+    // never sent; counting those spent today's limit on mail that was not
+    // sent today. Production on 2026-10-26: 247 sent plus 749 queued read as
+    // 996/1000, and every autopilot campaign in the workspace stopped.
     `SELECT COUNT(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= ? AND status != 'failed'
+      WHERE workspace_id = ? AND status IN ('completed', 'executing')
+        AND COALESCE(executed_at, created_at) >= ?
         AND mode != 'manual' AND ${COUNTABLE_KINDS}`,
     [workspaceId, dayStart(at), ...INTERNAL_ACTION_KINDS],
   );
