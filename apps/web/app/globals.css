@@ -75,3 +75,27 @@
   min-height: 40px;
   align-items: stretch;
 }
+
+/* The signup profile from @profullstack/profile (sign-up form, Settings):
+   the same look as the email and password boxes in components/login-form.tsx. */
+.pfs-profile {
+  @apply m-0 flex min-w-0 flex-col gap-3 border-0 p-0;
+}
+.pfs-profile__row {
+  @apply flex flex-col gap-1;
+}
+.pfs-profile__row label {
+  @apply text-ink-muted text-xs font-medium;
+}
+.pfs-profile__optional {
+  @apply font-normal;
+}
+.pfs-profile input {
+  @apply border-border bg-surface-raised rounded-xl border px-3 py-3;
+}
+.pfs-profile input[aria-invalid='true'] {
+  @apply border-hot;
+}
+.pfs-profile__error {
+  @apply text-hot m-0 text-xs;
+}

@@ -761,6 +761,8 @@ describe('email verification', () => {
     const response = await post(app, '/auth/register', {
       email: 'new@example.com',
       password: 'correct horse battery',
+      first_name: 'New',
+      last_name: 'User',
     });
 
     expect(response.status).toBe(201);
@@ -778,6 +780,8 @@ describe('email verification', () => {
     await post(app, '/auth/register', {
       email: 'new@example.com',
       password: 'correct horse battery',
+      first_name: 'New',
+      last_name: 'User',
     });
 
     const row = await seeded.db.execute({
@@ -796,6 +800,8 @@ describe('email verification', () => {
     await post(app, '/auth/register', {
       email: 'new@example.com',
       password: 'correct horse battery',
+      first_name: 'New',
+      last_name: 'User',
     });
 
     const token = sent[0]!.text.match(/token=([a-f0-9]+)/)?.[1];
@@ -814,6 +820,8 @@ describe('email verification', () => {
     await post(app, '/auth/register', {
       email: 'new@example.com',
       password: 'correct horse battery',
+      first_name: 'New',
+      last_name: 'User',
     });
 
     const token = sent[0]!.text.match(/token=([a-f0-9]+)/)?.[1];
@@ -831,6 +839,8 @@ describe('email verification', () => {
     await post(app, '/auth/register', {
       email: 'new@example.com',
       password: 'correct horse battery',
+      first_name: 'New',
+      last_name: 'User',
     });
 
     await seeded.db.execute({
@@ -870,6 +880,8 @@ describe('email verification', () => {
       await post(open, '/auth/register', {
         email: 'new@example.com',
         password: 'correct horse battery',
+        first_name: 'New',
+        last_name: 'User',
       })
     ).json();
     userId = registered.userId;
@@ -935,6 +947,8 @@ describe('email verification', () => {
     const response = await post(app, '/auth/register', {
       email: 'new@example.com',
       password: 'correct horse battery',
+      first_name: 'New',
+      last_name: 'User',
     });
 
     // Losing the account over a transient provider outage is worse than an
@@ -964,7 +978,12 @@ describe('password reset', () => {
   ) {
     const open = createApp({ db: seeded.db, mailer, appUrl: 'https://og.test' });
     const body = await (
-      await post(open, '/auth/register', { email, password: 'correct horse battery' })
+      await post(open, '/auth/register', {
+        email,
+        password: 'correct horse battery',
+        first_name: 'New',
+        last_name: 'User',
+      })
     ).json();
     return { app: open, userId: body.userId as string };
   }
@@ -1028,6 +1047,8 @@ describe('password reset', () => {
         await post(app, '/auth/login', {
           email: 'new@example.com',
           password: 'correct horse battery',
+          first_name: 'New',
+          last_name: 'User',
         })
       ).status,
     ).toBe(401);

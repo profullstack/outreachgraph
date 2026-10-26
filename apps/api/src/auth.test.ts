@@ -30,7 +30,12 @@ function post(app: Hono<AppEnv>, path: string, body: unknown, cookie?: string) {
   });
 }
 
-const CREDENTIALS = { email: 'Jane@Example.com', password: 'correct horse battery staple' };
+const CREDENTIALS = {
+  email: 'Jane@Example.com',
+  password: 'correct horse battery staple',
+  first_name: 'Jane',
+  last_name: 'Doe',
+};
 
 function cookieFrom(response: Response): string {
   const header = response.headers.get('set-cookie') ?? '';
@@ -106,6 +111,59 @@ describe('registration', () => {
     const { app } = await harness('bademail');
     const response = await post(app, '/auth/register', { ...CREDENTIALS, email: 'not-an-email' });
     expect(response.status).toBe(400);
+  });
+});
+
+describe('signup profile', () => {
+  test('stores the six fields, normalized, and serves them at /me/profile', async () => {
+    const { app, seeded } = await harness('profile');
+    const response = await post(app, '/auth/register', {
+      ...CREDENTIALS,
+      company_domain: 'https://www.Acme.com/about',
+      job_title: 'VP Engineering',
+      linkedin_url: 'in/jane-doe',
+    });
+    expect(response.status).toBe(201);
+    const cookie = cookieFrom(response);
+
+    const me = await app.request('/api/v1/me/profile', { headers: { cookie } });
+    expect(me.status).toBe(200);
+    const body = await me.json();
+    const profile = body.profile ?? body;
+    expect(profile).toMatchObject({
+      email: 'jane@example.com',
+      first_name: 'Jane',
+      last_name: 'Doe',
+      company_domain: 'acme.com',
+      job_title: 'VP Engineering',
+      linkedin_url: 'https://www.linkedin.com/in/jane-doe',
+    });
+
+    // The account's own name comes from the profile when none was given.
+    const user = await seeded.db.execute({
+      sql: 'SELECT name FROM users WHERE email = ?',
+      args: ['jane@example.com'],
+    });
+    expect(user.rows[0]?.name).toBe('Jane Doe');
+  });
+
+  test('refuses a signup without a last name and creates nothing', async () => {
+    const { app, seeded } = await harness('profile-missing');
+    const response = await post(app, '/auth/register', { ...CREDENTIALS, last_name: '' });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error.details.fields.last_name).toBeTruthy();
+
+    const users = await seeded.db.execute({
+      sql: 'SELECT id FROM users WHERE email = ?',
+      args: ['jane@example.com'],
+    });
+    expect(users.rows).toHaveLength(0);
+  });
+
+  test('answers 401 to /me/profile without a session', async () => {
+    const { app } = await harness('profile-anon');
+    expect((await app.request('/api/v1/me/profile')).status).toBe(401);
   });
 });
 

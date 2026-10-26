@@ -126,6 +126,25 @@ export async function fetchMe(): Promise<CurrentUser> {
   return request<CurrentUser>('/auth/me');
 }
 
+/** The signed-in person's own profile (@profullstack/profile): the six fields. */
+export type MyProfileView = Record<
+  'email' | 'first_name' | 'last_name' | 'company_domain' | 'job_title' | 'linkedin_url',
+  string | null
+>;
+
+export async function fetchMyProfile(): Promise<MyProfileView> {
+  const body = await request<{ profile?: MyProfileView } & Partial<MyProfileView>>('/me/profile');
+  const profile = (body.profile ?? body) as Partial<MyProfileView>;
+  return {
+    email: profile.email ?? null,
+    first_name: profile.first_name ?? null,
+    last_name: profile.last_name ?? null,
+    company_domain: profile.company_domain ?? null,
+    job_title: profile.job_title ?? null,
+    linkedin_url: profile.linkedin_url ?? null,
+  };
+}
+
 /** What the workspace believes about one of its products, for the setup page. */
 export interface WorkspaceProfileView {
   readonly configured: boolean;

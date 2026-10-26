@@ -42,6 +42,12 @@ import {
 } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
+  createProfileStore,
+  mountProfileRoutes,
+  saveSignupProfile,
+  validateProfile,
+} from '@profullstack/profile';
+import {
   actorFromSession,
   clearedCookie,
   isEmailVerified,
@@ -658,6 +664,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   const secure = options.secureCookies ?? true;
+  // The account holder's signup profile (@profullstack/profile), user_profiles.
+  const profiles = createProfileStore(options.db);
 
   /**
    * Resolves the caller: a session cookie for humans, or the service token for
@@ -751,7 +759,27 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   auth.post('/register', async (c) => {
     await guardPublic(c.req.raw, 'register');
     const body = await parseBody(c.req.raw, registerSchema);
-    const result = await registerUser(options.db, body);
+
+    // The signup profile is checked before the account exists, so a refused
+    // form leaves nothing half-made. `details.fields` maps field to message.
+    const check = validateProfile(body);
+    if (!check.ok) {
+      const first = Object.values(check.errors)[0] ?? 'check the highlighted fields';
+      throw ApiError.badRequest(first, { fields: check.errors });
+    }
+    const name =
+      body.name?.trim() ||
+      [check.profile.first_name, check.profile.last_name].filter(Boolean).join(' ') ||
+      undefined;
+    const result = await registerUser(options.db, { ...body, name });
+
+    // A failed profile write never fails the signup: the account exists and
+    // the fields can be filled in from Settings.
+    try {
+      await saveSignupProfile(profiles, result.userId, body, { email: body.email });
+    } catch (error) {
+      console.error('signup profile save failed', error);
+    }
 
     // Registering logs you straight in; a signup that then demands a login is
     // just a worse signup. Verification gates outbound actions, not access —
@@ -911,6 +939,24 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   });
 
   api.route('/auth', auth);
+
+  // GET/PUT/PATCH /api/v1/me/profile: the signed-in person's own profile. Above
+  // the session guard because the handlers answer 401 themselves, and only a
+  // browser session counts: it is a person's details, not a workspace's.
+  mountProfileRoutes(api, {
+    path: '/me/profile',
+    store: profiles,
+    getUser: async (request: Request) => {
+      const actor = await resolveActor(request);
+      if (!actor || actor.credential !== 'session') return null;
+      const user = await queryOne<{ email: string }>(
+        options.db,
+        'SELECT email FROM users WHERE id = ?',
+        [actor.userId],
+      );
+      return { id: actor.userId, email: user?.email ?? null };
+    },
+  });
 
   /**
    * CoinPayPortal telling us a payment moved.

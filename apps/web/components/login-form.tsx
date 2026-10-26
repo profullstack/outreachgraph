@@ -3,6 +3,16 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
+import { ProfileFields } from '@profullstack/profile/react';
+
+/** Asked for when creating an account, beside the email box; never on sign-in. */
+const SIGNUP_FIELDS = [
+  'first_name',
+  'last_name',
+  'company_domain',
+  'job_title',
+  'linkedin_url',
+] as const;
 
 /**
  * Sign in / create account.
@@ -23,12 +33,18 @@ export function LoginForm({ next = '/inbox' }: { next?: string }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | undefined>();
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
-  async function submit(event: FormEvent) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setError(undefined);
+    const form = new FormData(event.currentTarget);
+    const profile =
+      mode === 'register'
+        ? Object.fromEntries(SIGNUP_FIELDS.map((f) => [f, form.get(f) ?? '']))
+        : {};
 
     try {
       const response = await fetch(`/api/v1/auth/${mode}`, {
@@ -36,11 +52,12 @@ export function LoginForm({ next = '/inbox' }: { next?: string }) {
         headers: { 'content-type': 'application/json' },
         // The session cookie is set by this response.
         credentials: 'same-origin',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, ...profile }),
       });
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
+        setFieldErrors(body?.error?.details?.fields ?? {});
         setError(body?.error?.message ?? 'that did not work');
         return;
       }
@@ -67,6 +84,10 @@ export function LoginForm({ next = '/inbox' }: { next?: string }) {
           className="border-border bg-surface-raised rounded-xl border px-3 py-3"
         />
       </label>
+
+      {mode === 'register' ? (
+        <ProfileFields fields={SIGNUP_FIELDS} errors={fieldErrors} idPrefix="signup-" />
+      ) : null}
 
       <label className="flex flex-col gap-1">
         <span className="text-ink-muted text-xs font-medium">Password</span>
@@ -109,6 +130,7 @@ export function LoginForm({ next = '/inbox' }: { next?: string }) {
         onClick={() => {
           setMode(mode === 'login' ? 'register' : 'login');
           setError(undefined);
+          setFieldErrors({});
         }}
         className="text-ink-muted text-sm underline"
       >
