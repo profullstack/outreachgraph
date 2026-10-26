@@ -34,7 +34,9 @@ describe('posting pace', () => {
 
   test('a profile visit is not spaced four hours behind a post', async () => {
     seeded = await seedDatabase('social-visit-gap');
-    const nowMs = Date.parse('2026-10-26T15:00:00.000Z');
+    // The real clock: the queue stores a job due in the past as due now, and a
+    // fixed instant made this fail once the wall clock passed it by an hour.
+    const nowMs = Date.now();
 
     await scheduleSocialDelivery(
       seeded.db,
