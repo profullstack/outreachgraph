@@ -273,6 +273,16 @@ describe('approving an email', () => {
     expect(payload.delivery?.sent).toBe(false);
     expect(payload.delivery?.reason).toContain('no address published');
     expect(sent).toHaveLength(0);
+
+    // Failed with the reason, not left `queued` where it read as pending
+    // forever and counted against autopilot's daily limit.
+    const action = await queryOne<{ status: string; error: string | null }>(
+      db,
+      'SELECT status, error FROM actions WHERE workspace_id = ?',
+      [SEED.workspaceId],
+    );
+    expect(action?.status).toBe('failed');
+    expect(action?.error).toContain('no address published');
   });
 
   test('hands off to the reviewer when this deployment genuinely cannot send', async () => {
