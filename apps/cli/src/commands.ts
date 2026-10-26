@@ -1284,6 +1284,141 @@ async function runWebhooks({ client, args, flags }: CommandContext): Promise<str
 }
 
 /**
+ * Where an existing file is copied before it is overwritten:
+ * `voice.md` -> `voice.bak-001.md`, then `-002`, never reusing a name.
+ */
+export function backupPath(path: string, exists: (candidate: string) => boolean): string {
+  const dot = path.lastIndexOf('.');
+  const slash = path.lastIndexOf('/');
+  const [stem, ext] = dot > slash ? [path.slice(0, dot), path.slice(dot)] : [path, ''];
+  for (let n = 1; ; n += 1) {
+    const candidate = `${stem}.bak-${String(n).padStart(3, '0')}${ext}`;
+    if (!exists(candidate)) return candidate;
+  }
+}
+
+/** The directory name `--slug` would suggest for a product. */
+function brainSlugOf(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 64);
+}
+
+/** Every `knowledge/**.md` under a brain directory, keyed by its path relative to it. */
+async function readKnowledge(dir: string, slug?: string): Promise<Record<string, string>> {
+  const { existsSync, readdirSync, readFileSync, statSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const base = join(dir, 'knowledge');
+  if (!existsSync(base)) throw new Error(`no knowledge/ directory in ${dir}`);
+
+  const files: Record<string, string> = {};
+  const add = (relative: string) => {
+    const full = join(dir, relative);
+    // Backups made by export are history, not knowledge.
+    if (/\.bak-\d+\.md$/.test(relative) || !statSync(full).isFile()) return;
+    files[relative] = readFileSync(full, 'utf8');
+  };
+
+  const sub = slug ? `knowledge/${slug}` : 'knowledge';
+  if (!existsSync(join(dir, sub))) throw new Error(`no ${sub}/ directory in ${dir}`);
+  for (const name of readdirSync(join(dir, sub))) {
+    if (name.endsWith('.md')) add(`${sub}/${name}`);
+    else if (!slug && statSync(join(dir, sub, name)).isDirectory()) {
+      for (const inner of readdirSync(join(dir, sub, name))) {
+        if (inner.endsWith('.md')) add(`${sub}/${name}/${inner}`);
+      }
+    }
+  }
+  return files;
+}
+
+/**
+ * `og brain export | import | show`: a product's positioning, voice, audience
+ * and objections as markdown files in a git-friendly "brain repo".
+ */
+async function runBrain({ client, args, flags }: CommandContext): Promise<string> {
+  const [verb, id] = args;
+  const usageLine =
+    'og brain list | export <productId> [--dir .] [--slug x] | import <productId> [--dir .] [--slug x] | show <productId> [--slug x]';
+  if (verb === 'list' || verb === 'ls') {
+    const products = rows(await client.get('/products'), 'products');
+    if (products.length === 0) return 'No products yet.';
+    return products
+      .map(
+        (p) =>
+          `${pad(text(p, 'offeringId'), 32)} ${brainSlugOf(text(p, 'name'))}  ${text(p, 'name')}`,
+      )
+      .join('\n');
+  }
+  if (!verb || !id) throw new Error(usageLine);
+
+  const slug = flagString(flags, 'slug');
+  const dir = flagString(flags, 'dir') ?? '.';
+  const path = `/products/${encodeURIComponent(id)}/brain`;
+
+  if (verb === 'show' || verb === 'export') {
+    const result = (await client.get(path, slug ? { slug } : {})) as {
+      files?: Record<string, string>;
+    };
+    const files = result.files ?? {};
+
+    if (verb === 'show') {
+      return Object.entries(files)
+        .map(([name, content]) => `==> ${name} <==\n${content.trimEnd()}`)
+        .join('\n\n');
+    }
+
+    const { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } =
+      await import('node:fs');
+    const { dirname, join } = await import('node:path');
+    const lines: string[] = [];
+    for (const [name, content] of Object.entries(files)) {
+      // The server names the paths; refuse anything that would leave the brain.
+      if (name.startsWith('/') || name.split('/').includes('..')) {
+        throw new Error(`refusing to write outside ${dir}: ${name}`);
+      }
+      const target = join(dir, name);
+      mkdirSync(dirname(target), { recursive: true });
+      if (existsSync(target)) {
+        if (readFileSync(target, 'utf8') === content) {
+          lines.push(`unchanged ${name}`);
+          continue;
+        }
+        const backup = backupPath(target, existsSync);
+        copyFileSync(target, backup);
+        writeFileSync(target, content);
+        lines.push(`updated   ${name}  (previous kept as ${backup})`);
+      } else {
+        writeFileSync(target, content);
+        lines.push(`wrote     ${name}`);
+      }
+    }
+    return lines.join('\n') || 'Nothing to write.';
+  }
+
+  if (verb === 'import') {
+    const files = await readKnowledge(dir, slug);
+    const result = (await client.put(path, { files, ...(slug ? { slug } : {}) })) as {
+      product?: string[];
+      voice?: string[];
+    };
+    const product = result.product ?? [];
+    const voice = result.voice ?? [];
+    if (product.length === 0 && voice.length === 0) return `No changes for ${id}.`;
+    return [
+      product.length > 0 ? `positioning: ${product.join(', ')}` : '',
+      voice.length > 0 ? `voice: ${voice.join(', ')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  throw new Error(usageLine);
+}
+
+/**
  * Opens the person's editor on a file and returns what they saved. Injected
  * through `edit` on the context so tests never spawn anything.
  */
@@ -2395,6 +2530,14 @@ export const COMMANDS: readonly Command[] = [
       'og webhooks list | add <https-url> [--slack] [--events a,b] | rm <id> | test <id> | deliveries [id]',
     summary: 'Send events to Slack, Zapier, Make, n8n or your own endpoint.',
     run: runWebhooks,
+  },
+  {
+    name: 'brain',
+    usage:
+      'og brain list | export <productId> [--dir .] [--slug x] | import <productId> [--dir .] [--slug x] | show <productId> [--slug x]',
+    summary:
+      'A product as markdown (positioning, voice, audience, objections) for a git brain repo.',
+    run: runBrain,
   },
   {
     name: 'status',

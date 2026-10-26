@@ -668,6 +668,58 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'get_product_brain',
+    title: 'Get a product brain as markdown files',
+    description:
+      'A product as the shared "brain repo" markdown files a marketing team keeps in git: ' +
+      'knowledge/positioning.md (what it is, who for, why different), voice.md (brand voice, ' +
+      'samples, claims never to make), audience.md (ICP from its campaigns) and objections.md ' +
+      '(what prospects pushed back on or asked, redacted). Returns {files: {path: markdown}}. ' +
+      'Pass slug to nest the paths under knowledge/<slug>/ for a multi-product brain.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        offeringId: { type: 'string', description: 'The product id from GET /products.' },
+        slug: { type: 'string', description: 'Optional directory name under knowledge/.' },
+      },
+      required: ['offeringId'],
+    },
+    run: (client, args) =>
+      client.get(`/products/${encodeURIComponent(require(args, 'offeringId'))}/brain`, {
+        slug: str(args, 'slug'),
+      }),
+  },
+  {
+    name: 'set_product_brain',
+    title: 'Write edited brain files back to a product',
+    description:
+      'Imports edited brain markdown: knowledge/positioning.md updates the product (name, ' +
+      'category, url, description, value propositions, problems it solves, competitors) and ' +
+      'knowledge/voice.md updates its voice (style, instructions, max_words, samples, never ' +
+      'claim). Audience and objections are export-only. Fields absent from the files are kept. ' +
+      'Returns which fields changed.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        offeringId: { type: 'string', description: 'The product id from GET /products.' },
+        files: {
+          type: 'object',
+          description: 'Path to markdown, e.g. {"knowledge/voice.md": "---\\nstyle: ..."}.',
+          additionalProperties: { type: 'string' },
+        },
+        slug: { type: 'string', description: 'Read the files under knowledge/<slug>/.' },
+      },
+      required: ['offeringId', 'files'],
+    },
+    run: (client, args) =>
+      client.put(`/products/${encodeURIComponent(require(args, 'offeringId'))}/brain`, {
+        files: args.files && typeof args.files === 'object' ? args.files : {},
+        ...(str(args, 'slug') ? { slug: str(args, 'slug') } : {}),
+      }),
+  },
+  {
     name: 'update_buyer_lead',
     title: 'Mark a buyer lead replied or dismissed',
     description:

@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { ApiError, createClient, type FetchLike } from '@outreachgraph/mcp/src/client';
-import { commandByName, parseStepSpec, usage } from './commands';
+import { backupPath, commandByName, parseStepSpec, usage } from './commands';
 import { explain, parseArgv } from './index';
 
 const CONFIG = {
@@ -691,5 +691,64 @@ describe('og linkpost', () => {
     });
     expect(calls[0]!.url).toEndWith('/api/v1/link-posts/lpo_1/done');
     expect(calls[0]!.body).toEqual({ postedUrl: 'https://x.com/me/status/1' });
+  });
+});
+
+describe('og brain', () => {
+  test('backups count up and never reuse a name', () => {
+    const taken = new Set(['k/voice.bak-001.md']);
+    expect(backupPath('k/voice.md', (p) => taken.has(p))).toBe('k/voice.bak-002.md');
+    expect(backupPath('k/voice.md', () => false)).toBe('k/voice.bak-001.md');
+  });
+
+  test('export writes the files, keeps the previous copy, and import sends them back', async () => {
+    const { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } =
+      await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'og-brain-'));
+    try {
+      const files = { 'knowledge/pay/voice.md': '---\nstyle: plain\n---\n# Voice\n' };
+      const first = client({ files });
+      const out = await commandByName('brain')!.run({
+        client: first.client,
+        args: ['export', 'off_1'],
+        flags: { dir, slug: 'pay' },
+      });
+      expect(out).toContain('wrote     knowledge/pay/voice.md');
+      expect(first.calls[0]?.url).toBe('https://api.test/api/v1/products/off_1/brain?slug=pay');
+
+      writeFileSync(join(dir, 'knowledge/pay/voice.md'), 'hand edit');
+      await commandByName('brain')!.run({
+        client: first.client,
+        args: ['export', 'off_1'],
+        flags: { dir, slug: 'pay' },
+      });
+      expect(readFileSync(join(dir, 'knowledge/pay/voice.bak-001.md'), 'utf8')).toBe('hand edit');
+      expect(readFileSync(join(dir, 'knowledge/pay/voice.md'), 'utf8')).toBe(
+        files['knowledge/pay/voice.md'],
+      );
+
+      const second = client({ product: [], voice: ['style'] });
+      const imported = await commandByName('brain')!.run({
+        client: second.client,
+        args: ['import', 'off_1'],
+        flags: { dir, slug: 'pay' },
+      });
+      expect(imported).toBe('voice: style');
+      expect(second.calls[0]?.method).toBe('PUT');
+      // The backup stays on disk but is not sent as knowledge.
+      expect(second.calls[0]?.body).toEqual({ files, slug: 'pay' });
+      expect(existsSync(join(dir, 'knowledge/pay/voice.bak-001.md'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses a path that would leave the brain directory', async () => {
+    const { client: c } = client({ files: { '../evil.md': 'x' } });
+    await expect(
+      commandByName('brain')!.run({ client: c, args: ['export', 'off_1'], flags: { dir: '.' } }),
+    ).rejects.toThrow('refusing');
   });
 });
