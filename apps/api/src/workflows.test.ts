@@ -668,6 +668,74 @@ describe('scheduling', () => {
     expect([15, 16]).toContain(new Date(row!.next_run_at).getUTCHours());
   });
 
+  test('Launch Radar: published hourly, its run takes the maker of a new launch in', async () => {
+    const { app, db } = await harness('workflows-launch-radar');
+    const created = await json<{ workflow: WorkflowView }>(
+      send(app, 'POST', '/workflows', { templateId: 'launch-radar' }),
+    );
+    const response = await send(app, 'POST', `/workflows/${created.workflow.id}/publish`);
+    const workflow = (await json<{ workflow: WorkflowView }>(response)).workflow;
+    // Never run before: due at once; hourly from then on.
+    expect(workflow.nextRunAt).not.toBeNull();
+
+    const at = new Date(Date.now() + 60_000);
+    const launch = {
+      network: 'github' as const,
+      externalId: 'github:ada/callbot',
+      authorHandle: 'ada',
+      url: 'https://github.com/ada/callbot',
+      title: 'ada/callbot',
+      text: 'an AI voice agent that joins calls',
+      postedAt: new Date(at.getTime() - 3_600_000).toISOString(),
+    };
+    const ran = await runDueWorkflows(db, {
+      searcher,
+      now: () => at,
+      launches: {
+        sources: [
+          {
+            network: 'github',
+            slug: 'github',
+            displayName: 'GitHub',
+            search: async () => [launch],
+          },
+        ],
+        fetchImpl: (async () =>
+          new Response(
+            JSON.stringify({ login: 'ada', id: 1, email: 'ada@callbot.dev', html_url: 'x' }),
+          )) as unknown as typeof fetch,
+      },
+    });
+    expect(ran.map((r) => r.trigger)).toEqual(['schedule']);
+
+    const run = await queryOne<{ steps_json: string }>(
+      db,
+      'SELECT steps_json FROM workflow_runs WHERE id = ?',
+      [ran[0]!.runId],
+    );
+    const step = (JSON.parse(run!.steps_json) as RunOutcome['steps']).find(
+      (s) => s.id === 'discover-1',
+    );
+    expect(step?.status).toBe('ok');
+    expect(step?.detail).toContain('1 makers added, 1 with a published address');
+
+    const row = await queryOne<{ next_run_at: string; campaign_id: string }>(
+      db,
+      'SELECT next_run_at, campaign_id FROM workflows WHERE id = ?',
+      [workflow.id],
+    );
+    const next = new Date(row!.next_run_at).getTime() - at.getTime();
+    expect(next > 0 && next <= 3_600_000).toBe(true);
+    const members = await queryAll<{ handle: string }>(
+      db,
+      `SELECT si.handle FROM campaign_people cp
+         JOIN social_identities si ON si.person_id = cp.person_id AND si.network = 'github'
+        WHERE cp.campaign_id = ?`,
+      [row!.campaign_id],
+    );
+    expect(members.map((m) => m.handle)).toEqual(['ada']);
+  });
+
   test('a reply starts an event-triggered workflow, once', async () => {
     const { app, db } = await harness('workflows-event');
     const workflow = await fromTemplate(app);

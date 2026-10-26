@@ -1728,7 +1728,7 @@ export function workflowRoutes(deps: WorkflowRouteDeps): Hono<AppEnv> {
 
     // Never run: due now. Run before: back to its own slot.
     const next = !row.last_run_at ? clock() : nextWorkflowRunAt(definition.schedule, clock());
-    const scheduled = ['daily', 'weekdays', 'weekly'].includes(definition.schedule.kind);
+    const scheduled = !['manual', 'event'].includes(definition.schedule.kind);
     await db.execute({
       sql: `UPDATE workflows SET status = 'active', published_version = version, trigger_kind = ?,
               next_run_at = ?, updated_at = ? WHERE id = ?`,
@@ -1770,7 +1770,7 @@ export function workflowRoutes(deps: WorkflowRouteDeps): Hono<AppEnv> {
     const definition = await publishedDefinition(db, row);
     if (!definition) throw ApiError.conflict('publish the workflow first');
     await gateAutopilot(db, actor, definition);
-    const scheduled = ['daily', 'weekdays', 'weekly'].includes(definition.schedule.kind);
+    const scheduled = !['manual', 'event'].includes(definition.schedule.kind);
     const next = nextWorkflowRunAt(definition.schedule, clock());
     await db.execute({
       sql: `UPDATE workflows SET status = 'active', next_run_at = ?, updated_at = ? WHERE id = ?`,
