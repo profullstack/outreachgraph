@@ -7,6 +7,8 @@
  * Contracts campaign kept with an address had no email card at all, so
  * autopilot had nothing to send them. This asks the engine again for each,
  * through `regenerateFor`: the same policy, the same card, nothing sent here.
+ * A pending research card does not count as a card: it is what the engine
+ * writes when it could not send, and `regenerateFor` supersedes it.
  */
 
 import { queryAll, type Client } from '@outreachgraph/db';
@@ -36,7 +38,8 @@ export async function cardReachableMembers(
                            AND si.handle IS NOT NULL AND trim(si.handle) <> ''))
         AND NOT EXISTS (SELECT 1 FROM recommendations r
                          WHERE r.campaign_id = cp.campaign_id AND r.person_id = cp.person_id
-                           AND r.status IN ('pending', 'approved', 'executed'))
+                           AND r.status IN ('pending', 'approved', 'executed')
+                           AND r.action NOT IN ('refresh_research', 'observe', 'wait'))
       LIMIT ?`,
     [input.campaignId, input.limit ?? DEFAULT_LIMIT],
   );
