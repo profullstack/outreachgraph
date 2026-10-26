@@ -65,7 +65,13 @@ describe('public auth routes', () => {
       const response = await post(
         app,
         '/auth/register',
-        { email: `bot${i}@example.com`, password: 'correct-horse-battery-9', name: 'Bot' },
+        {
+          email: `bot${i}@example.com`,
+          password: 'correct-horse-battery-9',
+          name: 'Bot',
+          first_name: 'Bot',
+          last_name: 'Net',
+        },
         { 'x-real-ip': '203.0.113.7', 'x-forwarded-for': `198.51.100.${i}, 203.0.113.7` },
       );
       statuses.push(response.status);
@@ -79,7 +85,13 @@ describe('public auth routes', () => {
     const other = await post(
       app,
       '/auth/register',
-      { email: 'person@example.com', password: 'correct-horse-battery-9', name: 'Person' },
+      {
+        email: 'person@example.com',
+        password: 'correct-horse-battery-9',
+        name: 'Person',
+        first_name: 'Pat',
+        last_name: 'Person',
+      },
       { 'x-real-ip': '192.0.2.44' },
     );
     expect(other.status).toBe(201);

@@ -30,6 +30,7 @@
         "@outreachgraph/signals": "workspace:*",
         "@profullstack/form-guard": "^0.1.1",
         "@profullstack/openprofile": "^0.2.0",
+        "@profullstack/profile": "0.1.6",
         "hono": "^4.6.14",
         "zod": "^3.24.1",
       },
@@ -84,6 +85,7 @@
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
         "@profullstack/footer": "latest",
+        "@profullstack/profile": "0.1.6",
         "@profullstack/x402-gateway": "^0.11.0",
         "next": "16.3.6",
         "react": "19.2.8",
@@ -415,6 +417,8 @@
     "@profullstack/openprofile": ["@profullstack/openprofile@0.2.0", "", {}, "sha512-cdFsBbfRXurvy5KqHDNcKXxurK2s/YlfVgnILFRpVl2hq3860rExqDee8IfsFGxw5cPdqGv2fxUxtek1Xy2U5Q=="],
 
     "@profullstack/outreachgraph": ["@profullstack/outreachgraph@workspace:apps/cli"],
+
+    "@profullstack/profile": ["@profullstack/profile@0.1.6", "", { "peerDependencies": { "@libsql/client": ">=0.6.0", "postgres": "^3.4.0", "react": ">=18" }, "optionalPeers": ["@libsql/client", "postgres", "react"], "bin": { "profile": "src/cli.js" } }, "sha512-xkn0P3ANz151QJdlBwcBXkHk813qW9qAmuTZKcuvpEZYkyHDC9J9KfvpVSRepfjECzz4ONGHWO5Zwc4BHpfK8g=="],
 
     "@profullstack/x402-gateway": ["@profullstack/x402-gateway@0.11.0", "", { "dependencies": { "@profullstack/keys": "^0.1.0" } }, "sha512-Lfrz+SRTwQZfcoCaVtaaMNPJx74Lp/5oyS7vJJAEuJmH1TjBzhE7dWquISkj1p42oc+VW5I9xH9p7YhEKqmr4Q=="],
 

@@ -122,6 +122,13 @@ export const registerSchema = z.object({
   password: z.string().min(12).max(512),
   name: z.string().max(200).optional(),
   organizationName: z.string().max(200).optional(),
+  // The signup profile (@profullstack/profile). Strings here; the API checks
+  // and normalizes them with validateProfile, which requires the two names.
+  first_name: z.string().max(200).optional(),
+  last_name: z.string().max(200).optional(),
+  company_domain: z.string().max(300).optional(),
+  job_title: z.string().max(200).optional(),
+  linkedin_url: z.string().max(300).optional(),
 });
 
 export const loginSchema = z.object({

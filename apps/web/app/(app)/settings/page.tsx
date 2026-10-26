@@ -9,11 +9,13 @@ import { SendersPanel } from '../../../components/senders-panel';
 import { WebhooksForm } from '../../../components/webhooks-form';
 import { CrmForm } from '../../../components/crm-form';
 import { PageGuide } from '../../../components/page-guide';
+import { ProfileForm } from '../../../components/profile-form';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
   fetchApiKeys,
   fetchMe,
+  fetchMyProfile,
   fetchBlueskyIntegration,
   fetchCrmIntegration,
   fetchSenders,
@@ -21,6 +23,7 @@ import {
   fetchWebhooks,
   type ApiKeyView,
   type BlueskyIntegrationView,
+  type MyProfileView,
   type SenderView,
   type CrmIntegrationView,
   type SettingsView,
@@ -83,12 +86,13 @@ export default async function SettingsPage() {
   let webhooks: WebhooksView | undefined;
   let crm: CrmIntegrationView | undefined;
   let me: Awaited<ReturnType<typeof fetchMe>> | undefined;
+  let profile: MyProfileView | undefined;
   let offline = false;
 
   try {
     // Webhooks and CRM are approver-only, and a viewer's 403 must hide the
     // two sections rather than bounce the whole page to the login screen.
-    [settings, bluesky, apiKeys, senders, webhooks, crm, me] = await Promise.all([
+    [settings, bluesky, apiKeys, senders, webhooks, crm, me, profile] = await Promise.all([
       fetchSettings(),
       fetchBlueskyIntegration(),
       fetchApiKeys(),
@@ -96,6 +100,8 @@ export default async function SettingsPage() {
       fetchWebhooks().catch(() => undefined),
       fetchCrmIntegration().catch(() => undefined),
       fetchMe(),
+      // Session-only; an API-key caller gets a 401 here, which must not bounce the page.
+      fetchMyProfile().catch(() => undefined),
     ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
@@ -130,6 +136,14 @@ export default async function SettingsPage() {
         </p>
       ) : (
         <div className="flex flex-col gap-6">
+          {profile ? (
+            <Section title="Your details">
+              <ProfileForm
+                initial={{ ...profile, email: profile.email ?? me?.user.email ?? null }}
+              />
+            </Section>
+          ) : null}
+
           <Section title="Sending">
             {/* First: nothing leaves without a mailbox to leave through. */}
             <MailboxesLink senders={senders} />
