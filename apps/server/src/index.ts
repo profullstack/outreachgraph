@@ -352,6 +352,12 @@ const leadImportDailyTotal = Number(process.env.LEAD_IMPORT_DAILY_TOTAL ?? LEAD_
 let leadImportRunning = false;
 /** Buyer-lead monitors scan beside the tick, one at a time, like idea scans. */
 let leadScanRunning = false;
+/**
+ * Custom workflows run beside the tick too. A run's job-board searches take
+ * 60-120 s each, and the first deploy ran them inside the tick, which held the
+ * send sweep and everything after it for minutes.
+ */
+let workflowsRunning = false;
 const chovy = chovyConfig();
 if (!chovy) console.log('no CHOVY_CAMPAIGN_SECRET: ideas are found and ranked, Build it is off');
 
@@ -1167,18 +1173,26 @@ async function tick(): Promise<void> {
   // Custom workflows: scheduled slots that have come, replies that start an
   // event workflow, and retries that are due. Each slot is claimed before it
   // runs, so an overrunning tick cannot start it twice; nothing here sends —
-  // the steps feed the queue the send sweep below drains under policy.
-  try {
-    for (const result of await runDueWorkflows(db, {
-      ...(model ? { model } : {}),
-      ...(jobSearcher ? { searcher: jobSearcher } : {}),
-    })) {
-      console.log(
-        `workflow ${result.workflowId}: ${result.trigger} run ${result.runId} ${result.status}`,
-      );
-    }
-  } catch (error) {
-    console.error('workflows failed', error);
+  // the steps feed the queue the send sweep below drains under policy. Beside
+  // the tick, one sweep at a time: a run can take minutes.
+  if (!workflowsRunning) {
+    workflowsRunning = true;
+    void (async () => {
+      try {
+        for (const result of await runDueWorkflows(db, {
+          ...(model ? { model } : {}),
+          ...(jobSearcher ? { searcher: jobSearcher } : {}),
+        })) {
+          console.log(
+            `workflow ${result.workflowId}: ${result.trigger} run ${result.runId} ${result.status}`,
+          );
+        }
+      } catch (error) {
+        console.error('workflows failed', error);
+      }
+    })().finally(() => {
+      workflowsRunning = false;
+    });
   }
 
   // A face for the people about to be written to. Bounded per tick and per

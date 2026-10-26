@@ -1793,8 +1793,9 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: 'run_workflow',
     title: 'Run a workflow now',
     description:
-      'Run the published version once and return the per-step log. It feeds the campaign; it ' +
-      'never sends directly — sends go through the approval queue or autopilot, policy-checked.',
+      'Start one run of the published version. Returns the run id at once (a run takes minutes); ' +
+      'read its per-step log with list_workflow_runs. It feeds the campaign; it never sends ' +
+      'directly — sends go through the approval queue or autopilot, policy-checked.',
     readOnly: false,
     inputSchema: {
       type: 'object',

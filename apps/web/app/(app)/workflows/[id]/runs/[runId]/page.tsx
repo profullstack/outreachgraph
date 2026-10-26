@@ -1,7 +1,10 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { StatusChip } from '../../../../../../components/workflow-plan';
-import { WorkflowRunActions } from '../../../../../../components/workflow-run-actions';
+import {
+  RefreshWhileRunning,
+  WorkflowRunActions,
+} from '../../../../../../components/workflow-run-actions';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -79,6 +82,7 @@ export default async function WorkflowRunPage({
         </header>
       </div>
 
+      <RefreshWhileRunning running={run.status === 'running'} />
       <WorkflowRunActions workflowId={workflow.id} runId={run.id} status={run.status} />
 
       {summary.estimate ? (

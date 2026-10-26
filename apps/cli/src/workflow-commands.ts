@@ -10,6 +10,10 @@
 
 import type { Command, CommandContext } from './commands';
 
+/** How long `og workflow-run` follows a run before handing back the log so far. */
+const WAIT_FOR_RUN_MS = 15 * 60_000;
+const POLL_MS = Number(process.env.OG_POLL_MS ?? 3_000);
+
 function text(record: Record<string, unknown>, key: string, fallback = ''): string {
   const value = record[key];
   if (value === null || value === undefined) return fallback;
@@ -227,11 +231,23 @@ export const WORKFLOW_COMMANDS: readonly Command[] = [
   },
   {
     name: 'workflow-run',
-    usage: 'og workflow-run <id>',
-    summary: 'Run the published version now and print the per-step log.',
-    async run({ client, args }) {
-      const result = await client.post(`/workflows/${idArg(args, 'og workflow-run <id>')}/run`, {});
-      return renderRun(object(result, 'run'));
+    usage: 'og workflow-run <id> [--no-wait]',
+    summary: 'Run the published version now and print the per-step log when it finishes.',
+    async run({ client, args, flags }) {
+      const id = idArg(args, 'og workflow-run <id>');
+      // The API answers at once (a run's searches take minutes); follow the log here.
+      const started = object(await client.post(`/workflows/${id}/run`, {}), 'run');
+      const runId = text(started, 'runId');
+      if (flags['no-wait'] === true || !runId) {
+        return `Started ${runId}. Follow it: og workflow-runs ${args[0]} ${runId}`;
+      }
+      const deadline = Date.now() + WAIT_FOR_RUN_MS;
+      let run = started;
+      while (text(run, 'status') === 'running' && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        run = object(await client.get(`/workflows/${id}/runs/${encodeURIComponent(runId)}`), 'run');
+      }
+      return renderRun(run);
     },
   },
   {

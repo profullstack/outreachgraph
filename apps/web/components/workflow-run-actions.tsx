@@ -1,7 +1,22 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+
+/** Re-reads the page every few seconds while a run is still going. */
+export function RefreshWhileRunning({ running }: { running: boolean }) {
+  const router = useRouter();
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => router.refresh(), 4_000);
+    return () => clearInterval(timer);
+  }, [running, router]);
+  return running ? (
+    <p role="status" className="text-ink-muted text-xs">
+      Running — this page updates by itself. Job-board searches take a minute or two each.
+    </p>
+  ) : null;
+}
 
 async function post(path: string) {
   const response = await fetch(`/api/v1${path}`, {

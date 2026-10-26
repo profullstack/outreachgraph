@@ -63,8 +63,10 @@ import {
   emitEvent,
   enqueue,
   executeWorkflowRun,
+  failWorkflowRun,
   isSuppressed,
   loadOutreachSettings,
+  recoverInterruptedWorkflowRuns,
   searchJobPosts,
   startWorkflowRun,
   type WorkflowHandlers,
@@ -1108,7 +1110,7 @@ export async function runWorkflow(
   deps: WorkflowDeps,
   row: WorkflowRow,
   trigger: Exclude<WorkflowRunTrigger, 'dry_run'>,
-  options: { slotKey?: string; attempt?: number; retryOf?: string } = {},
+  options: { slotKey?: string; attempt?: number; retryOf?: string; background?: boolean } = {},
 ): Promise<WorkflowRunOutcome & { campaignId: string | null }> {
   const definition = await publishedDefinition(db, row);
   if (!definition) throw ApiError.conflict('publish the workflow before running it');
@@ -1127,36 +1129,57 @@ export async function runWorkflow(
     at,
   });
   const state: Record<string, unknown> = {};
-  const outcome = await executeWorkflowRun(db, {
-    runId,
-    definition,
-    handlers: stepHandlers(deps, row, definition),
-    state,
-    at,
-    clock,
-  });
-
-  const campaignId = typeof state.campaignId === 'string' ? state.campaignId : row.campaign_id;
-  await db.execute({
-    sql: `UPDATE workflows SET last_run_at = ?, last_run_status = ?, updated_at = ? WHERE id = ?`,
-    args: [at.toISOString(), outcome.status, now(), row.id],
-  });
-  if (campaignId) {
-    await emitEvent(db, {
-      workspaceId: row.workspace_id,
-      campaignId,
-      phase: 'system',
-      level:
-        outcome.status === 'succeeded'
-          ? 'success'
-          : outcome.status === 'cancelled'
-            ? 'warn'
-            : 'error',
-      message: `Workflow “${row.name}” run ${outcome.status.replace('_', ' ')}`,
-      detail: { workflowId: row.id, runId },
+  const finished = execute();
+  if (options.background) {
+    // A run's job-board searches take minutes: the caller gets the run id now
+    // and follows the log. Anything thrown outside a step is still recorded.
+    finished.catch((error: unknown) => {
+      console.error(`workflow ${row.id} run ${runId} failed`, error);
+      return failWorkflowRun(db, runId, error);
     });
+    return {
+      runId,
+      status: 'running',
+      steps: [],
+      error: null,
+      retryAt: null,
+      campaignId: row.campaign_id,
+    };
   }
-  return { ...outcome, campaignId };
+  return finished;
+
+  async function execute(): Promise<WorkflowRunOutcome & { campaignId: string | null }> {
+    const outcome = await executeWorkflowRun(db, {
+      runId,
+      definition: definition!,
+      handlers: stepHandlers(deps, row, definition!),
+      state,
+      at,
+      clock,
+    });
+
+    const campaignId = typeof state.campaignId === 'string' ? state.campaignId : row.campaign_id;
+    await db.execute({
+      sql: `UPDATE workflows SET last_run_at = ?, last_run_status = ?, updated_at = ? WHERE id = ?`,
+      args: [at.toISOString(), outcome.status, now(), row.id],
+    });
+    if (campaignId) {
+      await emitEvent(db, {
+        workspaceId: row.workspace_id,
+        campaignId,
+        phase: 'system',
+        level:
+          outcome.status === 'succeeded'
+            ? 'success'
+            : outcome.status === 'cancelled'
+              ? 'warn'
+              : 'error',
+        message: `Workflow “${row.name}” run ${outcome.status.replace('_', ' ')}`,
+        detail: { workflowId: row.id, runId },
+      });
+    }
+    return { ...outcome, campaignId };
+  }
 }
 
 const DUE_PER_TICK = 5;
@@ -1186,6 +1209,10 @@ export async function runDueWorkflows(
       console.error(`workflow ${row.id} ${trigger} run failed to start`, error);
     }
   };
+
+  // Runs a restart orphaned become retries of their own slots first.
+  const recovered = await recoverInterruptedWorkflowRuns(db, at);
+  if (recovered > 0) console.log(`workflows: ${recovered} interrupted run(s) rescheduled`);
 
   // Scheduled slots.
   const due = await queryAll<WorkflowRow>(
@@ -1637,9 +1664,11 @@ export function workflowRoutes(deps: WorkflowRouteDeps): Hono<AppEnv> {
     const definition = await publishedDefinition(db, row);
     if (!definition) throw ApiError.conflict('publish the workflow before running it');
     await gateAutopilot(db, actor, definition);
-    const outcome = await runWorkflow(db, deps, row, 'manual');
-    await audit(db, actor, 'ran', row.id, { runId: outcome.runId, status: outcome.status });
-    return c.json({ run: outcome });
+    // Asynchronous unless asked: a run outlives any proxy's request timeout.
+    const wait = c.req.query('wait') === '1';
+    const outcome = await runWorkflow(db, deps, row, 'manual', { background: !wait });
+    await audit(db, actor, 'ran', row.id, { runId: outcome.runId });
+    return c.json({ run: outcome }, wait ? 200 : 202);
   });
 
   router.post('/:id/clone', async (c) => {
@@ -1749,12 +1778,14 @@ export function workflowRoutes(deps: WorkflowRouteDeps): Hono<AppEnv> {
       throw ApiError.conflict(`a ${run.status} run has nothing to resume`);
     }
     if (run.status === 'retry_scheduled') await claimWorkflowRetry(db, run.id);
+    const wait = c.req.query('wait') === '1';
     const outcome = await runWorkflow(db, deps, row, 'resume', {
       slotKey: run.slot_key,
       retryOf: run.id,
+      background: !wait,
     });
     await audit(db, actor, 'run_resumed', row.id, { from: run.id, runId: outcome.runId });
-    return c.json({ run: outcome });
+    return c.json({ run: outcome }, wait ? 200 : 202);
   });
 
   return router;
