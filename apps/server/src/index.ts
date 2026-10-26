@@ -335,6 +335,14 @@ const jobSearcher = valueSerp;
 const leadSearcher = process.env.VALUESERP_API_KEY
   ? new ValueSerpClient({ apiKey: process.env.VALUESERP_API_KEY, searchTimeoutMs: 90_000 })
   : undefined;
+/**
+ * Custom workflows' job-board search. Runs beside the tick and behind a 202, so
+ * it can wait as long as ValueSERP's site: queries really take (40-120 s; a
+ * minute's timeout lost every search on the first production run).
+ */
+const workflowSearcher = process.env.VALUESERP_API_KEY
+  ? new ValueSerpClient({ apiKey: process.env.VALUESERP_API_KEY, searchTimeoutMs: 150_000 })
+  : undefined;
 if (!jobSearcher)
   console.log('no VALUESERP_API_KEY: job posts are read but nobody is searched for');
 
@@ -643,6 +651,7 @@ const api = createApp({
   ...(encryptionKey ? { encryptionKey } : {}),
   ...(appUrl ? { appUrl } : {}),
   ...(jobSearcher ? { jobSearcher } : {}),
+  ...(workflowSearcher ? { workflowSearcher } : {}),
   ...(leadSearcher ? { leadSearcher } : {}),
   leadEnrichment,
   ...(chovy ? { chovy } : {}),
@@ -1181,7 +1190,7 @@ async function tick(): Promise<void> {
       try {
         for (const result of await runDueWorkflows(db, {
           ...(model ? { model } : {}),
-          ...(jobSearcher ? { searcher: jobSearcher } : {}),
+          ...(workflowSearcher ? { searcher: workflowSearcher } : {}),
         })) {
           console.log(
             `workflow ${result.workflowId}: ${result.trigger} run ${result.runId} ${result.status}`,
