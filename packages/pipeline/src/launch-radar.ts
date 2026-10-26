@@ -40,7 +40,11 @@ const PROFILE_EMAIL_CONFIDENCE = 0.75;
 const WEBSITE_CONFIDENCE = 0.6;
 const LAUNCH_SIGNAL_CONFIDENCE = 0.9;
 const LAUNCH_SIGNAL_RELEVANCE = 0.8;
-/** Profile lookups per run: unauthenticated GitHub allows 60 an hour. */
+/**
+ * GitHub API profile lookups per run: unauthenticated GitHub allows 60 an
+ * hour, shared with the rest of enrichment. Past it, makers come in on their
+ * bare handle and openprofile reads their github.com page instead.
+ */
 const MAX_LOOKUPS_PER_RUN = 25;
 
 export interface LaunchRadarOptions {
@@ -137,7 +141,8 @@ export interface Maker {
 }
 
 export interface MakerDeps {
-  readonly github: GitHubClient;
+  /** Absent: GitHub makers come in on their handle alone, no API call. */
+  readonly github?: GitHubClient | undefined;
   readonly fetchImpl?: typeof fetch | undefined;
 }
 
@@ -201,6 +206,16 @@ export async function resolveMaker(post: FeedPost, deps: MakerDeps): Promise<Mak
 }
 
 async function fromGitHub(login: string, deps: MakerDeps, post: FeedPost): Promise<Maker> {
+  const bare: Maker = {
+    person: {
+      network: 'github',
+      handle: login,
+      profileUrl: `https://github.com/${login}`,
+      displayName: post.authorDisplayName,
+      via: 'launch',
+    },
+  };
+  if (!deps.github) return bare;
   try {
     const user = await deps.github.getUser(login);
     return {
@@ -219,14 +234,7 @@ async function fromGitHub(login: string, deps: MakerDeps, post: FeedPost): Promi
     };
   } catch (error) {
     if (error instanceof GitHubRateLimitError) throw error;
-    return {
-      person: {
-        network: 'github',
-        handle: login,
-        displayName: post.authorDisplayName,
-        via: 'launch',
-      },
-    };
+    return bare;
   }
 }
 
@@ -295,8 +303,11 @@ export interface LaunchIntakeResult {
   readonly people: number;
   readonly created: number;
   readonly withEmail: number;
-  /** Left for the next run: the profile lookup budget ran out. */
-  readonly deferred: number;
+  /**
+   * Taken in on their handle alone because GitHub's API budget ran out; the
+   * openprofile job reads their profile page instead.
+   */
+  readonly handleOnly: number;
 }
 
 /**
@@ -328,8 +339,9 @@ export async function intakeLaunches(
   let people = 0;
   let created = 0;
   let withEmail = 0;
-  let deferred = 0;
+  let handleOnly = 0;
   let lookups = 0;
+  let githubSpent = false;
 
   for (const post of input.posts) {
     const seen = await queryOne<{ id: string }>(
@@ -345,20 +357,22 @@ export async function intakeLaunches(
       ownCount += 1;
       continue;
     }
-    if (lookups >= MAX_LOOKUPS_PER_RUN) {
-      deferred += 1;
-      continue;
-    }
-
+    // One rate-limited lookup must not stall the run: the first version of
+    // this deferred everything after it, and with GitHub's budget shared and
+    // spent every hour, nothing was ever taken in (2026-10-26).
+    if (lookups >= MAX_LOOKUPS_PER_RUN) githubSpent = true;
+    const makers = githubSpent ? { ...deps.makers, github: undefined } : deps.makers;
     let maker: Maker;
     try {
-      lookups += 1;
-      maker = await resolveMaker(post, deps.makers);
-    } catch {
-      // GitHub's hourly budget is spent: the rest wait for the next run.
-      deferred += input.posts.length - input.posts.indexOf(post);
-      break;
+      if (!githubSpent) lookups += 1;
+      maker = await resolveMaker(post, makers);
+    } catch (error) {
+      if (!(error instanceof GitHubRateLimitError)) throw error;
+      githubSpent = true;
+      maker = await resolveMaker(post, { ...deps.makers, github: undefined });
     }
+    if (githubSpent && maker.person.network === 'github' && !maker.person.platformUserId)
+      handleOnly += 1;
     if (onOwn(maker.email) || onOwn(maker.website)) {
       ownCount += 1;
       continue;
@@ -414,7 +428,7 @@ export async function intakeLaunches(
     people,
     created,
     withEmail,
-    deferred,
+    handleOnly,
   };
 }
 

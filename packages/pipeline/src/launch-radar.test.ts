@@ -306,6 +306,40 @@ describe('intakeLaunches', () => {
     expect(again).toMatchObject({ known: 1, people: 0 });
   });
 
+  test("GitHub's spent API budget takes makers in on their handle, and the run goes on", async () => {
+    const client = await db('launch-rate-limited');
+    const limited = new GitHubClient({
+      fetchImpl: (async () =>
+        new Response('{"message":"API rate limit exceeded"}', {
+          status: 403,
+          headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1793041884' },
+        })) as unknown as typeof fetch,
+    });
+    const result = await intakeLaunches(
+      { db: client, makers: { github: limited }, now: AT },
+      {
+        workspaceId: SEED.workspaceId,
+        campaignId: SEED.campaignId,
+        posts: [
+          post({ authorHandle: 'ada', url: 'https://github.com/ada/callbot' }),
+          post({
+            network: 'bluesky',
+            authorHandle: 'bob.bsky.social',
+            authorUrl: 'https://bsky.app/profile/bob.bsky.social',
+            url: 'https://bsky.app/profile/bob.bsky.social/post/1',
+            text: 'just shipped a voice agent',
+          }),
+        ],
+      },
+    );
+    expect(result).toMatchObject({ people: 2, handleOnly: 1, withEmail: 0 });
+    const ada = await queryOne<{ profile_url: string }>(
+      client,
+      `SELECT profile_url FROM social_identities WHERE network = 'github' AND handle = 'ada'`,
+    );
+    expect(ada?.profile_url).toBe('https://github.com/ada');
+  });
+
   test('our own launches are never taken in', async () => {
     const client = await db('launch-own');
     await client.execute({

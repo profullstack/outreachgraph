@@ -60,9 +60,11 @@ jobs:
           SEORANK_URL: ${{ secrets.SEORANK_URL }}
           SEORANK_HOST: ${{ secrets.SEORANK_HOST }}
           MODEL_CHAIN: ${{ secrets.MODEL_CHAIN }}
+          # Repo secrets may not start with GITHUB_; it lands in app.env as GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ secrets.OG_GITHUB_TOKEN }}
         run: |
           lines=""
-          for key in VALUESERP_API_KEY CHOVY_CAMPAIGN_SECRET PDL_API_KEY SERPER_API_KEY HUNTER_API_KEY CONTACTOUT_API_KEY SEORANK_API_KEY SEORANK_URL SEORANK_HOST MODEL_CHAIN; do
+          for key in VALUESERP_API_KEY CHOVY_CAMPAIGN_SECRET PDL_API_KEY SERPER_API_KEY HUNTER_API_KEY CONTACTOUT_API_KEY SEORANK_API_KEY SEORANK_URL SEORANK_HOST MODEL_CHAIN GITHUB_TOKEN; do
             value=$(printenv "$key" || true)
             [ -n "$value" ] && lines="$lines$key=$value"$'\n'
           done
