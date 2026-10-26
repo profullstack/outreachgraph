@@ -676,7 +676,7 @@ const api = createApp({
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
-  version: process.env.APP_VERSION ?? '0.23.1',
+  version: process.env.APP_VERSION ?? '0.23.2',
   ...(commitHash ? { commitHash } : {}),
 });
 
@@ -1276,11 +1276,12 @@ async function tick(): Promise<void> {
 
   // The queue drains before the send sweep, so anything discovered this tick
   // can go out on the same tick rather than waiting for the next one.
-  // Site audits have their own runner (below the loop), so thousands of them
-  // can never stand in front of a crawl or a send in this serial drain.
+  // Site audits and address searches have their own runners (below the
+  // loop), so thousands of them can never stand in front of a crawl or a send
+  // in this serial drain, and a crawl backlog never starves the searches.
   const drained = await drainQueue(db, runJob, {
     isOutage: isBudgetExhausted,
-    excludeKinds: ['seo_audit'],
+    excludeKinds: ['seo_audit', 'find_email'],
   });
   if (drained.processed > 0 || drained.reclaimed > 0) {
     console.log(
@@ -1926,6 +1927,40 @@ async function seoLoop(): Promise<void> {
 }
 void seoLoop();
 
+/**
+ * The address-search runner: `find_email` jobs, FIND_EMAIL_PER_ROUND every
+ * FIND_EMAIL_ROUND_MS. Its own loop because the main drain is serial and a
+ * job-feed run queues hundreds of crawls at once: on 2026-10-26, 275 searches
+ * sat behind 427 crawls (about three a minute) while the people they were for
+ * waited for an address. Each search is DNS plus a short SMTP conversation
+ * with a different domain, so they need no politeness gap from each other.
+ */
+const FIND_EMAIL_PER_ROUND = Number(process.env.FIND_EMAIL_PER_ROUND ?? 20);
+const FIND_EMAIL_ROUND_MS = Number(process.env.FIND_EMAIL_ROUND_MS ?? 30_000);
+let findEmailInFlight: Promise<void> = Promise.resolve();
+async function findEmailLoop(): Promise<void> {
+  while (running) {
+    const startedAt = Date.now();
+    findEmailInFlight = drainQueue(db, runJob, {
+      isOutage: isBudgetExhausted,
+      kinds: ['find_email'],
+      limit: FIND_EMAIL_PER_ROUND,
+    })
+      .then((r) => {
+        if (r.processed > 0) {
+          console.log(
+            `address searches: ${r.succeeded} done, ${r.retried} retrying, ${r.dead} failed`,
+          );
+        }
+      })
+      .catch((error: unknown) => console.error('address search round failed', error));
+    await findEmailInFlight;
+    if (!running) break;
+    await Bun.sleep(Math.max(1_000, FIND_EMAIL_ROUND_MS - (Date.now() - startedAt)));
+  }
+}
+void findEmailLoop();
+
 // ----------------------------------------------------------------- shutdown
 let shuttingDown = false;
 
@@ -1940,6 +1975,7 @@ async function shutdown(signal: string): Promise<void> {
   // with rows already removed.
   await inFlight;
   await seoInFlight;
+  await findEmailInFlight;
 
   await server.stop(false);
   web?.kill();
