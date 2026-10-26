@@ -337,6 +337,8 @@ export interface DrainOptions {
   readonly isOutage?: OutageCheck;
   /** Kinds this drain never claims, because another runner owns them. */
   readonly excludeKinds?: readonly JobKind[];
+  /** The only kinds this drain claims: a runner of its own for them. */
+  readonly kinds?: readonly JobKind[];
 }
 
 /**
@@ -353,7 +355,7 @@ export async function drainQueue(
   handler: JobHandler,
   options: DrainOptions = {},
 ): Promise<DrainSummary> {
-  const { limit = 25, isOutage, excludeKinds } = options;
+  const { limit = 25, isOutage, excludeKinds, kinds } = options;
 
   const reclaimed = await reclaimStalled(db);
   let processed = 0;
@@ -363,7 +365,10 @@ export async function drainQueue(
   let deferred = 0;
 
   for (let i = 0; i < limit; i += 1) {
-    const job = await claimNext(db, undefined, excludeKinds ? { excludeKinds } : {});
+    const job = await claimNext(db, undefined, {
+      ...(excludeKinds ? { excludeKinds } : {}),
+      ...(kinds ? { kinds } : {}),
+    });
     if (!job) break;
 
     processed += 1;

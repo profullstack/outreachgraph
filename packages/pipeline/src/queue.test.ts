@@ -374,3 +374,24 @@ describe('failJob during an outage', () => {
     expect(depth.pending).toBe(4);
   });
 });
+
+describe('a runner of its own', () => {
+  test('a drain limited to some kinds claims only those', async () => {
+    const { db } = await setup('queue-kinds');
+    await enqueue(db, { workspaceId: SEED.workspaceId, kind: 'crawl_site', payload: { url: 'x' } });
+    await enqueue(db, {
+      workspaceId: SEED.workspaceId,
+      kind: 'find_email',
+      payload: { personId: 'p' },
+    });
+    const seen: string[] = [];
+    await drainQueue(
+      db,
+      async (job) => {
+        seen.push(job.kind);
+      },
+      { kinds: ['find_email'] },
+    );
+    expect(seen).toEqual(['find_email']);
+  });
+});
