@@ -175,10 +175,16 @@ export async function executeWorkflowRun(
       continue;
     }
 
-    const blocker = node.after.find((parent) => {
+    // A join proceeds on whatever finished: four discovery sources feeding one
+    // enrich step should not all wait on the one whose search timed out. It
+    // is blocked only when every parent failed. The failure still fails the
+    // run, so the retry of this slot picks the missing source up, and the
+    // steps that already ran are replayed from their records, not repeated.
+    const unfinished = node.after.filter((parent) => {
       const status = results.get(parent)?.status;
       return status === 'failed' || status === 'blocked' || status === 'cancelled';
     });
+    const blocker = unfinished.length === node.after.length ? unfinished[0] : undefined;
     if (blocker) {
       record({
         ...base,
@@ -300,6 +306,38 @@ export async function cancelWorkflowRun(
     args: [now(), runId, workflowId],
   });
   return result.rowsAffected > 0;
+}
+
+/** How long a run may say `running` before it is presumed orphaned. */
+export const WORKFLOW_RUN_STALE_MS = 30 * 60_000;
+
+/**
+ * Runs a restarted worker left saying `running` forever. Each becomes a retry
+ * of its own slot, due now — the steps it finished are replayed from their
+ * records — or `dead_letter` when it was already the last attempt.
+ */
+export async function recoverInterruptedWorkflowRuns(db: Client, at: Date): Promise<number> {
+  const cutoff = new Date(at.getTime() - WORKFLOW_RUN_STALE_MS).toISOString();
+  const stamp = at.toISOString();
+  const result = await db.execute({
+    sql: `UPDATE workflow_runs
+             SET status = CASE WHEN attempt < ? THEN 'retry_scheduled' ELSE 'dead_letter' END,
+                 retry_at = CASE WHEN attempt < ? THEN ? ELSE NULL END,
+                 finished_at = ?,
+                 error = 'interrupted: the worker stopped during this run'
+           WHERE status = 'running' AND run_trigger != 'dry_run' AND started_at < ?`,
+    args: [MAX_WORKFLOW_ATTEMPTS, MAX_WORKFLOW_ATTEMPTS, stamp, stamp, cutoff],
+  });
+  return result.rowsAffected;
+}
+
+/** Marks a run that threw outside a step (it never reached its own bookkeeping). */
+export async function failWorkflowRun(db: Client, runId: string, error: unknown): Promise<void> {
+  await db.execute({
+    sql: `UPDATE workflow_runs SET status = 'failed', finished_at = ?, error = ?
+           WHERE id = ? AND status = 'running'`,
+    args: [now(), describeError(error), runId],
+  });
 }
 
 /** Retries that have come due, oldest first. */

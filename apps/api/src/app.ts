@@ -365,6 +365,12 @@ export interface AppOptions {
    */
   readonly jobSearcher?: WebSearcher | undefined;
   /**
+   * Custom workflows' job-board search: the same account with a longer
+   * per-query timeout, since a workflow runs in the background and ValueSERP's
+   * site: queries routinely take 40-120 s. Falls back to `jobSearcher`.
+   */
+  readonly workflowSearcher?: WebSearcher | undefined;
+  /**
    * Lead enrichment (names from addresses, ValueSERP LinkedIn search, People
    * Data Labs), for the on-demand run a campaign page can start. Absent: the
    * route still fills names from addresses.
@@ -1492,7 +1498,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     '/workflows',
     workflowRoutes({
       model: options.model,
-      searcher: options.jobSearcher,
+      searcher: options.workflowSearcher ?? options.jobSearcher,
       requireVerifiedEmail: (db, actor, action) => requireVerifiedEmail(db, actor, action),
     }),
   );

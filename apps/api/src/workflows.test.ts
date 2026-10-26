@@ -125,7 +125,7 @@ async function published(app: Hono<AppEnv>): Promise<WorkflowView> {
 }
 
 async function runNow(app: Hono<AppEnv>, id: string): Promise<RunOutcome> {
-  const response = await send(app, 'POST', `/workflows/${id}/run`);
+  const response = await send(app, 'POST', `/workflows/${id}/run?wait=1`);
   expect(response.status).toBe(200);
   return (await json<{ run: RunOutcome }>(response)).run;
 }
@@ -470,7 +470,9 @@ describe('durability', () => {
     expect(first.error).toContain('503');
     expect(first.steps.find((s) => s.id === 'discover-1')?.status).toBe('failed');
     expect(first.steps.find((s) => s.id === 'discover-3')?.status).toBe('ok');
-    expect(first.steps.find((s) => s.id === 'enrich')?.status).toBe('blocked');
+    // One failed source does not hold the rest: the join runs on what finished.
+    expect(first.steps.find((s) => s.id === 'enrich')?.status).toBe('ok');
+    expect(first.steps.find((s) => s.id === 'send')?.status).toBe('ok');
 
     // Only the retries, not the next scheduled slot.
     await db.execute({
@@ -504,11 +506,57 @@ describe('durability', () => {
 
     const fixed = createApp({ db, authenticate: async () => OWNER, jobSearcher: searcher });
     const resumed = await json<{ run: RunOutcome }>(
-      send(fixed, 'POST', `/workflows/${workflow.id}/runs/${failed.runId}/resume`),
+      send(fixed, 'POST', `/workflows/${workflow.id}/runs/${failed.runId}/resume?wait=1`),
     );
     expect(resumed.run.status).toBe('succeeded');
     expect(resumed.run.steps.find((s) => s.id === 'discover-3')?.status).toBe('replayed');
     expect(resumed.run.steps.find((s) => s.id === 'discover-1')?.status).toBe('ok');
+  });
+
+  test('run now answers at once and the run finishes in the background', async () => {
+    const { app } = await harness('workflows-async');
+    const workflow = await published(app);
+    const response = await send(app, 'POST', `/workflows/${workflow.id}/run`);
+    expect(response.status).toBe(202);
+    const { run } = await json<{ run: RunOutcome }>(response);
+    expect(run.status).toBe('running');
+
+    let status = 'running';
+    for (let i = 0; i < 100 && status === 'running'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      status = (
+        await json<{ run: { status: string } }>(
+          send(app, 'GET', `/workflows/${workflow.id}/runs/${run.runId}`),
+        )
+      ).run.status;
+    }
+    expect(status).toBe('succeeded');
+  });
+
+  test('a run a restart left behind becomes a retry of its own slot', async () => {
+    const { app, db } = await harness('workflows-orphan');
+    const workflow = await published(app);
+    await db.execute({
+      sql: 'UPDATE workflows SET next_run_at = NULL WHERE id = ?',
+      args: [workflow.id],
+    });
+    const long = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    await db.execute({
+      sql: `INSERT INTO workflow_runs (id, workflow_id, workspace_id, version, run_trigger, status,
+              slot_key, attempt, started_at)
+            VALUES ('wfr_orphan', ?, ?, 1, 'schedule', 'running', 'schedule:orphan', 1, ?)`,
+      args: [workflow.id, SEED.workspaceId, long],
+    });
+
+    const ran = await runDueWorkflows(db, { searcher });
+    expect(ran.map((r) => r.trigger)).toEqual(['retry']);
+    const retry = await queryOne<{ slot_key: string; attempt: number; retry_of: string }>(
+      db,
+      `SELECT slot_key, attempt, retry_of FROM workflow_runs WHERE id = ?`,
+      [ran[0]!.runId],
+    );
+    expect(retry).toMatchObject({ slot_key: 'schedule:orphan', retry_of: 'wfr_orphan' });
+    expect(Number(retry!.attempt)).toBe(2);
   });
 
   test('cancel stops a pending retry', async () => {
