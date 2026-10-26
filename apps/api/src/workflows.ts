@@ -41,6 +41,7 @@ import {
   compileWorkflow,
   describeSchedule,
   interpretWorkflowPrompt,
+  launchTerms,
   newId,
   nextWorkflowRunAt,
   normaliseWorkflowSettings,
@@ -64,6 +65,9 @@ import {
   enqueue,
   executeWorkflowRun,
   failWorkflowRun,
+  buildLaunchSources,
+  findLaunches,
+  intakeLaunches,
   isSuppressed,
   loadOutreachSettings,
   recoverInterruptedWorkflowRuns,
@@ -75,7 +79,7 @@ import {
   type WorkflowStepOutcome,
 } from '@outreachgraph/pipeline';
 import { evaluatePolicy } from '@outreachgraph/policy';
-import type { WebSearcher } from '@outreachgraph/providers';
+import { GitHubClient, type FeedSource, type WebSearcher } from '@outreachgraph/providers';
 import { saveTargeting } from './autogtm';
 import {
   createCampaignFromIntake,
@@ -90,6 +94,15 @@ export interface WorkflowDeps {
   readonly model?: TextModel | undefined;
   /** ValueSERP in production; job-board steps skip without it. */
   readonly searcher?: WebSearcher | undefined;
+  /** Launch radar: keyless; a GitHub token only raises its rate limit. */
+  readonly launches?:
+    | {
+        readonly githubToken?: string | undefined;
+        readonly fetchImpl?: typeof fetch | undefined;
+        /** Test seam: replaces the four public sources. */
+        readonly sources?: readonly FeedSource[] | undefined;
+      }
+    | undefined;
   readonly now?: () => Date;
 }
 
@@ -153,6 +166,8 @@ const SETTINGS_SHAPE = `{
   "sources": [                                     // 1-6, where to find people
     { "kind": "discover", "query": string }        // a market: "fintech startups hiring engineers"
     | { "kind": "job_posts", "query": string, "limit": 1-50 }  // a job-board keyword
+    | { "kind": "launches", "query": string, "limit": 1-50, "hours": 1-168 }
+      // comma-separated phrases; new Show HN, dev.to, GitHub and Bluesky launches mentioning them
   ],
   "targeting": {
     "titles": string[], "seniorities": string[], "industries": string[],
@@ -161,7 +176,7 @@ const SETTINGS_SHAPE = `{
   },
   "outreach": { "channel": "email", "dailyLimit": 1-1000,
                 "approval": "review"|"autopilot", "maxPerAddressPerWeek": 1-7 },
-  "schedule": { "kind": "daily"|"weekdays"|"weekly"|"manual"|"event", "hour": 0-23,
+  "schedule": { "kind": "hourly"|"daily"|"weekdays"|"weekly"|"manual"|"event", "hour": 0-23,
                 "minute": 0-59, "timezone": IANA zone, "weekday": 0-6 }  // weekday for weekly, 0 = Sunday
 }`;
 
@@ -494,6 +509,53 @@ function stepHandlers(
       const campaignId = await campaign(context);
       const query = String(node.config.query);
       const created = typeof context.state.campaignCreated === 'string';
+      if (node.config.source === 'launches') {
+        const launches = deps.launches ?? {};
+        const fetchImpl = launches.fetchImpl;
+        const terms = launchTerms(query);
+        const found = await findLaunches(
+          launches.sources ??
+            buildLaunchSources({
+              ...(fetchImpl ? { fetchImpl } : {}),
+              ...(launches.githubToken ? { githubToken: launches.githubToken } : {}),
+            }),
+          {
+            terms,
+            since: new Date(context.at.getTime() - Number(node.config.hours ?? 24) * 3_600_000),
+            limit: Number(node.config.limit ?? 25),
+          },
+        );
+        const taken = await intakeLaunches(
+          {
+            db: context.db,
+            now: context.at,
+            makers: {
+              github: new GitHubClient({
+                ...(launches.githubToken ? { token: launches.githubToken } : {}),
+                ...(fetchImpl ? { fetchImpl } : {}),
+              }),
+              ...(fetchImpl ? { fetchImpl } : {}),
+            },
+          },
+          { workspaceId: context.workspaceId, campaignId, posts: found.posts },
+        );
+        const sources = Object.entries(found.bySource)
+          .map(([slug, n]) => `${slug} ${String(n)}`)
+          .join(', ');
+        return report(
+          `${taken.launches} launches (${sources}); ${taken.people} makers added, ${taken.withEmail} with a published address, ${taken.known} seen before, ${taken.own} ours` +
+            (taken.deferred ? `, ${taken.deferred} left for the next run` : ''),
+          {
+            launches: taken.launches,
+            people: taken.people,
+            created: taken.created,
+            withEmail: taken.withEmail,
+            known: taken.known,
+            own: taken.own,
+            deferred: taken.deferred,
+          },
+        );
+      }
       if (node.config.source === 'job_posts') {
         if (!deps.searcher) {
           return { status: 'skipped', detail: 'job search is not configured on this server' };
@@ -1666,7 +1728,7 @@ export function workflowRoutes(deps: WorkflowRouteDeps): Hono<AppEnv> {
 
     // Never run: due now. Run before: back to its own slot.
     const next = !row.last_run_at ? clock() : nextWorkflowRunAt(definition.schedule, clock());
-    const scheduled = ['daily', 'weekdays', 'weekly'].includes(definition.schedule.kind);
+    const scheduled = !['manual', 'event'].includes(definition.schedule.kind);
     await db.execute({
       sql: `UPDATE workflows SET status = 'active', published_version = version, trigger_kind = ?,
               next_run_at = ?, updated_at = ? WHERE id = ?`,
@@ -1708,7 +1770,7 @@ export function workflowRoutes(deps: WorkflowRouteDeps): Hono<AppEnv> {
     const definition = await publishedDefinition(db, row);
     if (!definition) throw ApiError.conflict('publish the workflow first');
     await gateAutopilot(db, actor, definition);
-    const scheduled = ['daily', 'weekdays', 'weekly'].includes(definition.schedule.kind);
+    const scheduled = !['manual', 'event'].includes(definition.schedule.kind);
     const next = nextWorkflowRunAt(definition.schedule, clock());
     await db.execute({
       sql: `UPDATE workflows SET status = 'active', next_run_at = ?, updated_at = ? WHERE id = ?`,

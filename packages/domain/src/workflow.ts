@@ -41,10 +41,17 @@ export const WORKFLOW_RUN_STATUSES = [
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 
-export const WORKFLOW_SOURCE_KINDS = ['discover', 'job_posts'] as const;
+export const WORKFLOW_SOURCE_KINDS = ['discover', 'job_posts', 'launches'] as const;
 export type WorkflowSourceKind = (typeof WORKFLOW_SOURCE_KINDS)[number];
 
-export const WORKFLOW_SCHEDULE_KINDS = ['daily', 'weekdays', 'weekly', 'manual', 'event'] as const;
+export const WORKFLOW_SCHEDULE_KINDS = [
+  'hourly',
+  'daily',
+  'weekdays',
+  'weekly',
+  'manual',
+  'event',
+] as const;
 export type WorkflowScheduleKind = (typeof WORKFLOW_SCHEDULE_KINDS)[number];
 
 export const WORKFLOW_APPROVALS = ['review', 'autopilot'] as const;
@@ -56,15 +63,24 @@ export const DEFAULT_WORKFLOW_DAILY_LIMIT = 50;
 export const MAX_WORKFLOW_SOURCES = 6;
 /** A job-board search per run; `MAX_SEARCH_RESULTS` is the API's own ceiling. */
 export const MAX_WORKFLOW_JOB_RESULTS = 50;
+/** Launches read per run (`launches` only); each one may cost a profile lookup. */
+export const MAX_WORKFLOW_LAUNCH_RESULTS = 50;
+/** How far back a launch search looks, in hours. */
+export const MAX_WORKFLOW_LAUNCH_HOURS = 168;
 const MAX_LIST = 25;
 const MAX_TEXT = 300;
 
 export interface WorkflowSource {
   readonly kind: WorkflowSourceKind;
-  /** A market description for `discover`, a search keyword for `job_posts`. */
+  /**
+   * A market description for `discover`, a search keyword for `job_posts`,
+   * comma-separated phrases for `launches`.
+   */
   readonly query: string;
-  /** Postings per run, `job_posts` only. */
+  /** Postings per run for `job_posts`; launches per run for `launches`. */
   readonly limit?: number;
+  /** `launches` only: how many hours back each run looks. */
+  readonly hours?: number;
 }
 
 export interface WorkflowTargeting {
@@ -181,7 +197,14 @@ export function normaliseWorkflowSettings(raw: unknown): NormaliseResult {
     sources.push(
       kind === 'job_posts'
         ? { kind, query: safeQuery, limit: clamp(source.limit, 1, MAX_WORKFLOW_JOB_RESULTS, 20) }
-        : { kind, query: safeQuery },
+        : kind === 'launches'
+          ? {
+              kind,
+              query: launchTerms(safeQuery).join(', '),
+              limit: clamp(source.limit, 1, MAX_WORKFLOW_LAUNCH_RESULTS, 25),
+              hours: clamp(source.hours, 1, MAX_WORKFLOW_LAUNCH_HOURS, 24),
+            }
+          : { kind, query: safeQuery },
     );
   }
   if (sources.length > MAX_WORKFLOW_SOURCES) {
@@ -494,6 +517,8 @@ export function interpretWorkflowPrompt(text: string, base?: WorkflowSettings): 
     /\b(?:manual(?:ly)?|on demand|only when i (?:run|press)|no schedule)\b/i.test(additive)
   ) {
     schedule = { kind: 'manual', ...clock };
+  } else if (/\b(?:every hour|hourly|each hour|once an hour)\b/i.test(additive)) {
+    schedule = { kind: 'hourly', ...clock };
   } else if (weekly) {
     schedule = { kind: 'weekly', ...clock, weekday: WEEKDAYS.indexOf(weekly[1]!.toLowerCase()) };
   } else if (
@@ -533,6 +558,18 @@ export function interpretWorkflowPrompt(text: string, base?: WorkflowSettings): 
       if (query.length >= 3)
         addSource({ kind: 'job_posts', query: query.slice(0, 120), limit: 20 });
     }
+  }
+
+  // "watch new launches about voice agents, AI phone calls": the phrases a
+  // launch post has to mention. Show HN, dev.to, GitHub and Bluesky are read.
+  for (const launch of additive.matchAll(
+    /\b(?:new\s+)?(?:launch(?:es)?|show hn(?: posts?)?|new (?:products?|tools?|repos?|projects?))\s+(?:about|for|mentioning|on|in|like)\s+([^.;]{3,200})/gi,
+  )) {
+    const terms = launchTerms(
+      launch[1]!.replace(/\s+(?:then|and then|every|email|send)\b.*$/i, ''),
+    );
+    if (terms.length > 0)
+      addSource({ kind: 'launches', query: terms.join(', '), limit: 25, hours: 24 });
   }
 
   // "find Bay Area software companies hiring engineers and remote-first US
@@ -634,6 +671,24 @@ export function normaliseSchedule(raw: unknown): WorkflowSchedule {
 }
 
 // --------------------------------------------------------------- helpers
+
+/** `"voice agents, AI phone calls or party lines"` → three phrases, at most 8. */
+export function launchTerms(query: string): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const part of query.split(/\s*(?:,|;|\||\bor\b|\band\b)\s*/i)) {
+    const term = part
+      .replace(/^["']|["']$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 60);
+    if (term.length < 3 || seen.has(term.toLowerCase())) continue;
+    seen.add(term.toLowerCase());
+    terms.push(term);
+    if (terms.length === 8) break;
+  }
+  return terms;
+}
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
   return typeof value === 'string' && (allowed as readonly string[]).includes(value)

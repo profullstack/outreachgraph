@@ -233,3 +233,82 @@ test('the template is found by id and asks for 200 a day, approved', () => {
   expect(settings.outreach).toMatchObject({ dailyLimit: 200, approval: 'review' });
   expect(workflowTemplate('nope')).toBeUndefined();
 });
+
+describe('launch radar', () => {
+  const template = workflowTemplate('launch-radar')!;
+
+  test('the template validates, runs hourly and watches launches before discovery', () => {
+    const result = validateWorkflowDefinition(template.definition);
+    expect(result.ok).toBe(true);
+    const sources = template.definition.nodes.filter((n) => n.type === 'discover_opportunities');
+    expect(sources.map((n) => [n.label, n.config.source])).toEqual([
+      ['Watch new launches', 'launches'],
+      ['Discover companies', 'discover'],
+    ]);
+    expect(sources[0]!.config).toEqual({
+      source: 'launches',
+      query: 'AI agents, voice agents',
+      limit: 25,
+      hours: 24,
+    });
+    expect(describeSchedule(template.definition.schedule)).toBe('Every hour at :05');
+  });
+
+  test('settings survive the round trip, hours and all', () => {
+    const settings = settingsOf(template.definition);
+    expect(settings.sources[0]).toEqual({
+      kind: 'launches',
+      query: 'AI agents, voice agents',
+      limit: 25,
+      hours: 24,
+    });
+    expect(compileWorkflow(settings).nodes[0]!.config).toEqual(
+      template.definition.nodes[0]!.config,
+    );
+  });
+
+  test('a launches step needs a phrase and clamps its window', () => {
+    const swap = (config: Record<string, unknown>) =>
+      withNodes(TEMPLATE.nodes.map((n) => (n.id === 'discover-1' ? { ...n, config } : n)));
+    expect(errorsOf(swap({ source: 'launches', query: '' })).join('\n')).toContain(
+      'say what to search for',
+    );
+    const ok = validateWorkflowDefinition(
+      swap({ source: 'launches', query: 'a, voice agent', hours: 999 }),
+    );
+    expect(ok.ok && ok.definition.nodes[0]!.config).toEqual({
+      source: 'launches',
+      query: 'voice agent',
+      limit: 25,
+      hours: 168,
+    });
+  });
+
+  test('hourly runs at the minute past each hour, in half-hour zones too', () => {
+    const hourly = { kind: 'hourly', hour: 0, minute: 5, timezone: 'UTC' } as const;
+    expect(nextWorkflowRunAt(hourly, new Date('2026-10-26T18:04:00Z'))?.toISOString()).toBe(
+      '2026-10-26T18:05:00.000Z',
+    );
+    expect(nextWorkflowRunAt(hourly, new Date('2026-10-26T18:05:00Z'))?.toISOString()).toBe(
+      '2026-10-26T19:05:00.000Z',
+    );
+    // Kolkata is UTC+5:30: :05 local is :35 UTC.
+    const kolkata = { ...hourly, timezone: 'Asia/Kolkata' } as const;
+    expect(nextWorkflowRunAt(kolkata, new Date('2026-10-26T18:00:00Z'))?.toISOString()).toBe(
+      '2026-10-26T18:35:00.000Z',
+    );
+  });
+
+  test('English: "launches about" is a launches source, "every hour" is hourly', () => {
+    const { spec } = interpretWorkflowPrompt(
+      'Watch new launches about voice agents, AI phone calls or party lines. Email the founder. Every hour.',
+    );
+    expect(spec.sources).toContainEqual({
+      kind: 'launches',
+      query: 'voice agents, AI phone calls, party lines',
+      limit: 25,
+      hours: 24,
+    });
+    expect(spec.schedule.kind).toBe('hourly');
+  });
+});

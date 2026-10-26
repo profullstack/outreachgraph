@@ -28,6 +28,8 @@ export interface HackerNewsSourceOptions {
   readonly timeoutMs?: number;
   /** Least time between two requests. */
   readonly gapMs?: number;
+  /** Algolia tag filter; `(show_hn,launch_hn)` reads launches only. */
+  readonly tags?: string;
 }
 
 interface AlgoliaHit {
@@ -66,6 +68,7 @@ export class HackerNewsSource implements FeedSource {
   readonly #fetch: FetchLike;
   readonly #timeoutMs: number;
   readonly #gapMs: number;
+  readonly #tags: string;
   #last = 0;
 
   constructor(options: HackerNewsSourceOptions = {}) {
@@ -73,6 +76,7 @@ export class HackerNewsSource implements FeedSource {
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? 15_000;
     this.#gapMs = options.gapMs ?? 1_000;
+    this.#tags = options.tags ?? '(story,comment)';
   }
 
   async search(input: FeedSearchInput): Promise<readonly FeedPost[]> {
@@ -127,7 +131,7 @@ export class HackerNewsSource implements FeedSource {
 
     const params = new URLSearchParams({
       query: `"${term.replace(/"/g, '')}"`,
-      tags: '(story,comment)',
+      tags: this.#tags,
       hitsPerPage: String(limit),
     });
     if (since) params.set('numericFilters', `created_at_i>${Math.floor(since.getTime() / 1000)}`);

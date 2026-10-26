@@ -387,6 +387,8 @@ export interface AppOptions {
    * site: queries routinely take 40-120 s. Falls back to `jobSearcher`.
    */
   readonly workflowSearcher?: WebSearcher | undefined;
+  /** Raises the launch radar's GitHub reads from 60 to 5,000 an hour. */
+  readonly githubToken?: string | undefined;
   /**
    * Lead enrichment (names from addresses, ValueSERP LinkedIn search, People
    * Data Labs), for the on-demand run a campaign page can start. Absent: the
@@ -1556,6 +1558,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     workflowRoutes({
       model: options.model,
       searcher: options.workflowSearcher ?? options.jobSearcher,
+      launches: { githubToken: options.githubToken },
       requireVerifiedEmail: (db, actor, action) => requireVerifiedEmail(db, actor, action),
     }),
   );

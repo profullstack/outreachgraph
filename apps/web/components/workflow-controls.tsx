@@ -425,7 +425,7 @@ const NODE_TYPES = [
 
 /** Inputs whose values come from a fixed list. */
 const CHOICES: Record<string, readonly string[]> = {
-  source: ['discover', 'job_posts'],
+  source: ['discover', 'job_posts', 'launches'],
   mode: ['review', 'autopilot'],
   on: ['positive_reply', 'run_failed', 'daily_summary', 'reply_label'],
   channel: ['email'],
@@ -533,6 +533,7 @@ function StepEditor({
             }
             className="border-border bg-surface min-h-[40px] rounded-lg border px-2"
           >
+            <option value="hourly">Every hour</option>
             <option value="weekdays">Weekdays</option>
             <option value="daily">Every day</option>
             <option value="weekly">Weekly</option>

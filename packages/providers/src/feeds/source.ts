@@ -51,6 +51,11 @@ export interface FeedPost {
   readonly postedAt: string;
   /** Subreddit, feed title, relay — whatever names the corner it came from. */
   readonly container?: string;
+  /**
+   * Profiles and sites the author published alongside the post (a dev.to
+   * author's GitHub, X and website), so the reader need not look them up.
+   */
+  readonly authorLinks?: readonly string[];
 }
 
 export interface FeedSource {
