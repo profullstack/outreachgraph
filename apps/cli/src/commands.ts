@@ -1297,6 +1297,10 @@ export function backupPath(path: string, exists: (candidate: string) => boolean)
   }
 }
 
+function withoutStamp(text: string): string {
+  return text.replace(/^exported_at:.*$/m, '');
+}
+
 /** The directory name `--slug` would suggest for a product. */
 function brainSlugOf(name: string): string {
   return name
@@ -1382,7 +1386,9 @@ async function runBrain({ client, args, flags }: CommandContext): Promise<string
       const target = join(dir, name);
       mkdirSync(dirname(target), { recursive: true });
       if (existsSync(target)) {
-        if (readFileSync(target, 'utf8') === content) {
+        // The export stamp changes on every run; a file that differs only there
+        // is unchanged, and rewriting it would leave a backup per file per run.
+        if (withoutStamp(readFileSync(target, 'utf8')) === withoutStamp(content)) {
           lines.push(`unchanged ${name}`);
           continue;
         }

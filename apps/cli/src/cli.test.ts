@@ -718,6 +718,29 @@ describe('og brain', () => {
       expect(out).toContain('wrote     knowledge/pay/voice.md');
       expect(first.calls[0]?.url).toBe('https://api.test/api/v1/products/off_1/brain?slug=pay');
 
+      const restamped = client({
+        files: {
+          'knowledge/pay/voice.md': files['knowledge/pay/voice.md'].replace(
+            'style',
+            'exported_at: "2026-10-27T00:00:00Z"\nstyle',
+          ),
+        },
+      });
+      writeFileSync(
+        join(dir, 'knowledge/pay/voice.md'),
+        files['knowledge/pay/voice.md'].replace(
+          'style',
+          'exported_at: "2026-10-26T00:00:00Z"\nstyle',
+        ),
+      );
+      const again = await commandByName('brain')!.run({
+        client: restamped.client,
+        args: ['export', 'off_1'],
+        flags: { dir, slug: 'pay' },
+      });
+      expect(again).toBe('unchanged knowledge/pay/voice.md');
+      expect(existsSync(join(dir, 'knowledge/pay/voice.bak-001.md'))).toBe(false);
+
       writeFileSync(join(dir, 'knowledge/pay/voice.md'), 'hand edit');
       await commandByName('brain')!.run({
         client: first.client,
