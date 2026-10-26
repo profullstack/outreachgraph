@@ -467,6 +467,15 @@ describe('contactability', () => {
       reason: expect.stringContaining('shared company inbox'),
     });
 
+    // Not before the address search has had its go: find_email only looks for
+    // people holding a pending card, so skipping first starved it.
+    const waiting = await runNow(app, workflow.id);
+    expect(waiting.steps.find((s) => s.id === 'verify')?.detail).toContain('0 first emails');
+    await db.execute({
+      sql: `UPDATE people SET email_searched_at = ? WHERE id = ?`,
+      args: [new Date().toISOString(), SEED.personId],
+    });
+
     const run = await runNow(app, workflow.id);
     expect(run.steps.find((s) => s.id === 'verify')?.detail).toContain('1 first emails');
     const rec = await queryOne<{ status: string }>(
