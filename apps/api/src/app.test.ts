@@ -247,7 +247,7 @@ describe('approval re-checks policy (PRD §20.9)', () => {
     expect((await response.json()).error.details.gate).toBe('feature_flag');
   });
 
-  test('refuses to approve once the daily rate limit is reached', async () => {
+  test('approves past the daily rate limit; the limit paces the send, not the approval', async () => {
     const { app, seeded } = await harness('approve-ratelimit');
     await seeded.db.execute({
       sql: 'UPDATE campaigns SET budget_json = ? WHERE id = ?',
@@ -256,8 +256,8 @@ describe('approval re-checks policy (PRD §20.9)', () => {
 
     const response = await post(app, `/recommendations/${SEED.recommendationId}/approve`);
 
-    expect(response.status).toBe(409);
-    expect((await response.json()).error.details.gate).toBe('rate_limit_daily');
+    expect(response.status).toBe(200);
+    expect((await response.json()).approved).toBe(true);
   });
 
   test('refuses to approve a person whose identity confidence dropped', async () => {
@@ -286,6 +286,19 @@ describe('approval re-checks policy (PRD §20.9)', () => {
       `SELECT event_type FROM audit_events WHERE event_type = 'recommendation.approval_blocked'`,
     );
     expect(events.rows).toHaveLength(1);
+  });
+
+  test('the service token can approve: its decision is credited to usr_service', async () => {
+    const { app, seeded } = await harness('approve-service', { ...ACTOR, userId: 'usr_service' });
+
+    const response = await post(app, `/recommendations/${SEED.recommendationId}/approve`);
+    expect(response.status).toBe(200);
+
+    const row = await seeded.db.execute({
+      sql: 'SELECT decided_by FROM approvals WHERE recommendation_id = ?',
+      args: [SEED.recommendationId],
+    });
+    expect(row.rows[0]?.decided_by).toBe('usr_service');
   });
 
   test('refuses a viewer role', async () => {

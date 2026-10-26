@@ -905,7 +905,7 @@ export async function runAutopilot(
     if (mailbox.kind === 'deferred') {
       await note(mailbox.reason);
       // Nobody else can be sent to either, so there is no point reading on.
-      if (mailbox.code === 'all_capped') {
+      if (mailbox.code === 'all_capped' || mailbox.code === 'workspace_ceiling') {
         completed = false;
         break;
       }

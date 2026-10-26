@@ -8,6 +8,7 @@
  *
  *   - at most one action per tick, and never within `MIN_GAP_MS` of the last
  *     Bluesky action the workspace took, by hand or not;
+ *   - at most one reply (a public post) every `POST_GAP_MS`;
  *   - a daily cap per kind (`DAILY_CAPS`), counted on completed actions;
  *   - a card that failed twice is left for a human;
  *   - an account Bluesky refuses pauses the workspace until the next UTC day.
@@ -30,10 +31,17 @@ import { deliverBlueskyAction } from './outreach-bluesky';
 import { AUTOPILOT_ACTOR } from './outreach-email';
 
 /** Completed actions per UTC day, per kind. Well under what Bluesky tolerates from a person. */
-export const DAILY_CAPS = { follow: 40, reply: 10 } as const;
+export const DAILY_CAPS = { follow: 40, reply: 6 } as const;
 
 /** The least time between two Bluesky actions from one workspace. */
 export const MIN_GAP_MS = 6 * 60_000;
+
+/**
+ * The least time between two public posts (replies) from one account: one
+ * every four hours (owner's call, 2026-10-26). A follow is not a post and
+ * keeps the short gap above.
+ */
+export const POST_GAP_MS = 4 * 3_600_000;
 
 /** Failed attempts after which a card is left for a human. */
 const MAX_ATTEMPTS = 2;
@@ -129,9 +137,17 @@ export async function runBlueskyAutopilot(
         AND executed_at >= ?`,
     [workspaceId, dayStart],
   );
+  const lastPost = await queryOne<{ last_at: string | null }>(
+    db,
+    `SELECT MAX(COALESCE(executed_at, created_at)) AS last_at FROM actions
+      WHERE workspace_id = ? AND network = 'bluesky' AND kind = 'reply' AND status != 'failed'`,
+    [workspaceId],
+  );
+  const postDue = !lastPost?.last_at || at.getTime() - Date.parse(lastPost.last_at) >= POST_GAP_MS;
+
   const room: AutoKind[] = [];
   if (Number(done?.follows ?? 0) < DAILY_CAPS.follow) room.push('follow');
-  if (Number(done?.replies ?? 0) < DAILY_CAPS.reply) room.push('reply');
+  if (postDue && Number(done?.replies ?? 0) < DAILY_CAPS.reply) room.push('reply');
   if (room.length === 0) return { acted: false, reason: "today's Bluesky caps are spent" };
 
   const row = await queryOne<Candidate>(

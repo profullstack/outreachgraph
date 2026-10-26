@@ -420,12 +420,36 @@ export type SendingMailbox =
   | {
       readonly kind: 'deferred';
       readonly reason: string;
-      /** `all_capped` means no mailbox has room for anyone, not just this person. */
-      readonly code: 'all_capped' | 'continuity_capped' | 'continuity_paused';
+      /**
+       * `all_capped` means no mailbox has room for anyone, not just this person;
+       * `workspace_ceiling` that the workspace sent `EMAIL_DAILY_CEILING` today.
+       */
+      readonly code: 'all_capped' | 'continuity_capped' | 'continuity_paused' | 'workspace_ceiling';
       readonly retryAt: string;
     }
   /** Nothing can send: no active mailbox and no platform sender. */
   | { readonly kind: 'none' };
+
+/**
+ * The most cold email one workspace sends in a UTC day, across every mailbox
+ * and the platform sender (owner's call, 2026-10-26: "emails should be
+ * throttled to maybe 1k/day max"). Approving is not limited; sending is, and
+ * whatever is over the line waits for tomorrow.
+ */
+export const EMAIL_DAILY_CEILING = 1_000;
+
+/** Emails the workspace has sent since the start of `at`'s UTC day. */
+async function emailsSentToday(db: Client, workspaceId: string, at: Date): Promise<number> {
+  const dayStart = `${at.toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const row = await queryOne<{ n: number }>(
+    db,
+    `SELECT COUNT(*) AS n FROM actions
+      WHERE workspace_id = ? AND network = 'email' AND status = 'completed'
+        AND executed_at >= ?`,
+    [workspaceId, dayStart],
+  );
+  return Number(row?.n ?? 0);
+}
 
 /**
  * The mailbox one message to this person should leave from.
@@ -454,6 +478,19 @@ export async function mailerForSend(
     options.fallback
       ? { kind: 'ready', mailer: options.fallback, ownMailbox: false }
       : { kind: 'none' };
+
+  const at = options.at ?? new Date();
+  if ((await emailsSentToday(db, workspaceId, at)) >= EMAIL_DAILY_CEILING) {
+    const tomorrow = new Date(
+      Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() + 1),
+    ).toISOString();
+    return {
+      kind: 'deferred',
+      reason: `the workspace has sent ${EMAIL_DAILY_CEILING} emails today`,
+      code: 'workspace_ceiling',
+      retryAt: tomorrow,
+    };
+  }
 
   // No key means no mailbox can be read, which is the same as having none.
   if (!options.encryptionKey) return platform();

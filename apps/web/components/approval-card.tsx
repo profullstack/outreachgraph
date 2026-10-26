@@ -60,7 +60,7 @@ function HoldNotice({ hold }: { hold: NonNullable<Card['hold']> }) {
   return (
     <section className="border-border bg-surface mt-4 rounded-xl border p-3">
       <h3 className="text-ink-muted text-[11px] font-semibold tracking-wide uppercase">
-        Held — cannot approve yet
+        Held — approving queues it until the hold clears
       </h3>
       <p className="mt-1 text-sm">{hold.reason}</p>
       <p className="text-ink-muted mt-1 text-xs">
@@ -296,17 +296,17 @@ export function ApprovalCard({ card }: { card: Card }) {
       <div className="mt-4 grid grid-cols-2 gap-2">
         <button
           type="button"
-          // A held card's approval is already known to fail, so the button
-          // does not offer it. Every other control stays live: skipping,
-          // editing and suppressing a held card are all still reasonable, and
-          // are in fact what a reviewer most often wants to do with one.
-          disabled={Boolean(busy) || Boolean(card.hold)}
+          // Approving is never limited (owner's call, 2026-10-26). A held
+          // card is approved now and sent when its hold clears.
+          disabled={Boolean(busy)}
           onClick={() => act('approve', body && body !== original ? { editedBody: body } : {})}
           {...(card.hold ? { title: card.hold.reason } : {})}
           className="bg-accent rounded-xl py-2 text-sm font-medium text-white disabled:opacity-60"
         >
           {card.hold
-            ? 'Held'
+            ? busy === 'approve'
+              ? 'Queuing…'
+              : 'Approve & queue'
             : busy === 'approve'
               ? card.network === 'email'
                 ? 'Sending…'
