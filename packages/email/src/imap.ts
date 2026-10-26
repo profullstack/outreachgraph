@@ -226,7 +226,12 @@ export class ImapReader implements MailReader {
             ...(message.envelope?.subject ? { subject: message.envelope.subject } : {}),
             ...(message.envelope?.messageId ? { messageId: message.envelope.messageId } : {}),
             ...(message.envelope?.inReplyTo ? { inReplyTo: message.envelope.inReplyTo } : {}),
-            receivedAt: message.envelope?.date ?? new Date(),
+            receivedAt:
+              message.envelope?.date instanceof Date
+                ? message.envelope.date
+                : message.envelope?.date
+                  ? new Date(message.envelope.date)
+                  : new Date(),
             ...(automated ? { automated } : {}),
             ...(bodyText ? { bodyText } : {}),
             ...(headers['references'] ? { references: headers['references'] } : {}),

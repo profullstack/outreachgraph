@@ -174,7 +174,7 @@ export function readWebhookEvent(payload: unknown): ReadWebhook {
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
     .filter((value, index, all) => all.indexOf(value) === index);
   const paid = status ? PAID_STATUSES.has(status) : PAID_TYPES.has(type);
-  const metadata = ((data.metadata ?? event.metadata ?? {}) as Record<string, unknown>) ?? {};
+  const metadata = (data.metadata ?? event.metadata ?? {}) as Record<string, unknown>;
 
   return { type, status, refs, paid, metadata };
 }

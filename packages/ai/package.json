@@ -11,7 +11,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.70.0",
+    "@anthropic-ai/sdk": "^1.3.0",
     "@outreachgraph/contracts": "workspace:*",
     "@outreachgraph/domain": "workspace:*",
     "@outreachgraph/db": "workspace:*"

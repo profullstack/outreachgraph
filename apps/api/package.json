@@ -11,7 +11,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@logicsrc/openaccess": "^0.3.0",
+    "@logicsrc/openaccess": "^0.3.1",
     "@outreachgraph/ai": "workspace:*",
     "@outreachgraph/contracts": "workspace:*",
     "@outreachgraph/db": "workspace:*",
@@ -25,10 +25,10 @@
     "@outreachgraph/scoring": "workspace:*",
     "@outreachgraph/secrets": "workspace:*",
     "@outreachgraph/signals": "workspace:*",
-    "@profullstack/form-guard": "^0.1.1",
+    "@profullstack/form-guard": "^0.2.2",
     "@profullstack/openprofile": "^0.2.0",
     "@profullstack/profile": "0.1.6",
-    "hono": "^4.6.14",
-    "zod": "^3.24.1"
+    "hono": "^4.13.14",
+    "zod": "^4.6.7"
   }
 }
