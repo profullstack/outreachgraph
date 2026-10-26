@@ -480,6 +480,9 @@ export async function mintVerificationToken(
   userId: string,
   email: string,
 ): Promise<VerificationToken> {
+  // Stored as `users.email` is (normalized): verification compares the two, so
+  // an address typed with capitals at signup could otherwise never be confirmed.
+  email = normalizeEmail(email);
   const token = mintSessionToken();
   const stamp = now();
   const expiresAt = new Date(

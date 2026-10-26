@@ -173,6 +173,7 @@ describe('tools', () => {
           runId: 'wfr_1',
           instruction: 'make it 100 a day',
           prompt: 'Find SaaS startups hiring engineers.',
+          code: 'OG-AAAA-BBBB-CCCC-DDDD',
         })
         .catch(() => undefined);
 

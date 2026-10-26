@@ -66,6 +66,20 @@ import {
   workspacesForUser,
 } from './auth';
 import {
+  INVITE_COOKIE,
+  REF_COOKIE,
+  acceptAtSignup,
+  canonicalInvite,
+  cleanCode,
+  cleanRef,
+  createInvite,
+  inviteSummary,
+  mintCreditCode,
+  redeemCreditCode,
+  settleInviteBonus,
+  type CodeServices,
+} from './credit-codes';
+import {
   acceptInvitation,
   acceptInvitationForUser,
   inviteMember,
@@ -424,6 +438,11 @@ export interface AppOptions {
   readonly suggestSubreddits?: typeof suggestSubreddits;
   /** Public origin, used to build links that land in someone's inbox. */
   readonly appUrl?: string;
+  /**
+   * Credit codes and invites (@profullstack/redeem-credits, @profullstack/affiliates).
+   * Unset, the routes answer 503 and signup/verification skip invites.
+   */
+  readonly codes?: CodeServices;
   /**
    * Throttles the keyless public directory. Tests inject a small one;
    * production leaves it unset and gets sixty requests a minute per caller.
@@ -798,9 +817,27 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     // just a worse signup. Verification gates outbound actions, not access —
     // someone should be able to look around while the mail is in flight.
     const session = await login(options.db, body.email, body.password, c.req.header('user-agent'));
+
+    // An invite (from the form or the /i/<code> cookie) and a ?ref= are
+    // recorded against the new account now, server side, so the bonus is still
+    // paid when the verification mail is opened on another device. The bonus
+    // itself waits for that confirmation (settleInviteBonus in /verify).
+    if (options.codes) {
+      const cookies = c.req.header('cookie') ?? null;
+      await acceptAtSignup(options.codes, {
+        userId: result.userId,
+        invite: canonicalInvite(body.invite ?? readCookie(cookies, INVITE_COOKIE)),
+        ref: cleanRef(body.ref ?? readCookie(cookies, REF_COOKIE)),
+      });
+    }
     await sendVerification(result.userId, body.email);
 
     c.header('set-cookie', sessionCookie(session.token, session.expiresAt, secure));
+    if (options.codes) {
+      c.header('set-cookie', `${INVITE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`, {
+        append: true,
+      });
+    }
     return c.json({ userId: result.userId, workspaceId: result.workspaceId }, 201);
   });
 
@@ -814,6 +851,16 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   auth.post('/verify', async (c) => {
     const body = safeJson(await c.req.raw.text());
     const result = await verifyEmailToken(options.db, String(body.token ?? ''));
+
+    // A confirmed address is what an accepted invite's bonus waits for. A
+    // failure here never fails the verification; the next one retries it.
+    if (options.codes) {
+      try {
+        await settleInviteBonus(options.db, options.codes, result.userId);
+      } catch (error) {
+        console.error('invite bonus failed', error);
+      }
+    }
     return c.json({ verified: true, email: result.email });
   });
 
@@ -6142,6 +6189,129 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       onCredits: status.onCredits,
       usage: rows.rows,
     });
+  });
+
+  // ------------------------------------------------------- codes + invites
+  //
+  // A credit code grants prospect credits into `credit_ledger`; invites and
+  // ?ref= links come from @profullstack/affiliates. See credit-codes.ts.
+
+  const requireCodes = (): CodeServices => {
+    if (!options.codes) {
+      throw new ApiError(503, 'codes_unconfigured', 'Codes are not available here.');
+    }
+    return options.codes;
+  };
+
+  /** A person, not the service token: codes and invites belong to someone. */
+  const requirePerson = (actor: RequestActor): void => {
+    if (actor.credential === 'service' || actor.userId === 'usr_service') {
+      throw ApiError.forbidden('codes and invites need a signed-in person or their API key');
+    }
+  };
+
+  /**
+   * The public origin for links someone will share: the configured app URL,
+   * unless it still says localhost, in which case the request's own host.
+   */
+  const shareOrigin = (request: Request): string => {
+    if (options.appUrl && !/localhost|127\.0\.0\.1/.test(options.appUrl)) {
+      return options.appUrl.replace(/\/$/, '');
+    }
+    const host = request.headers.get('x-forwarded-host') ?? request.headers.get('host');
+    const proto =
+      request.headers.get('x-forwarded-proto') ?? new URL(request.url).protocol.replace(':', '');
+    return host ? `${proto}://${host}` : new URL(request.url).origin;
+  };
+
+  api.post('/credits/redeem', async (c) => {
+    const actor = c.get('actor');
+    requirePerson(actor);
+    const codes = requireCodes();
+    const body = safeJson(await c.req.raw.text());
+    const code = cleanCode(body.code);
+    if (!code) throw ApiError.badRequest('enter a code');
+
+    const outcome = await redeemCreditCode(c.get('db'), codes, {
+      userId: actor.userId,
+      organizationId: actor.organizationId,
+      code,
+    });
+    if (!outcome.ok) {
+      throw new ApiError(outcome.reason === 'invalid' ? 404 : 409, outcome.reason, outcome.message);
+    }
+
+    await repo.audit(c.get('db'), {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'billing.code_redeemed',
+      entityKind: 'organization',
+      entityId: actor.organizationId,
+      detail: { prospects: outcome.prospects },
+    });
+    return c.json(outcome);
+  });
+
+  api.get('/invites', async (c) => {
+    const actor = c.get('actor');
+    requirePerson(actor);
+    return c.json(await inviteSummary(requireCodes(), actor.userId, shareOrigin(c.req.raw)));
+  });
+
+  api.post('/invites', async (c) => {
+    const actor = c.get('actor');
+    requirePerson(actor);
+    const body = safeJson(await c.req.raw.text());
+    const note = typeof body.note === 'string' ? body.note : '';
+    const outcome = await createInvite(requireCodes(), actor.userId, note, shareOrigin(c.req.raw));
+    if (!outcome.ok) {
+      throw new ApiError(409, 'no_invites_left', 'You have used all your invites.');
+    }
+    return c.json(outcome, 201);
+  });
+
+  /**
+   * Minting is for the operator only: the service token (API_TOKEN), never a
+   * session or a workspace key, since no customer role may print credit.
+   */
+  api.post('/admin/credit-codes', async (c) => {
+    const actor = c.get('actor');
+    if (actor.credential !== 'service') throw ApiError.forbidden('minting needs the service token');
+    const body = safeJson(await c.req.raw.text());
+    try {
+      const minted = await mintCreditCode(requireCodes(), {
+        prospects: Number(body.prospects),
+        label: typeof body.label === 'string' ? body.label : '',
+        ...(body.max === undefined ? {} : { maxRedemptions: Number(body.max) }),
+        ...(body.expiresInDays === undefined || body.expiresInDays === null
+          ? {}
+          : { expiresInDays: Number(body.expiresInDays) }),
+        createdBy: 'service',
+      });
+      return c.json(minted, 201);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw ApiError.badRequest(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/admin/credit-codes', async (c) => {
+    const actor = c.get('actor');
+    if (actor.credential !== 'service') throw ApiError.forbidden('listing needs the service token');
+    return c.json({ codes: await requireCodes().credits.list() });
+  });
+
+  api.post('/admin/credit-codes/:id/revoke', async (c) => {
+    const actor = c.get('actor');
+    if (actor.credential !== 'service')
+      throw ApiError.forbidden('revoking needs the service token');
+    try {
+      await requireCodes().credits.revoke(c.req.param('id'));
+    } catch {
+      throw ApiError.notFound('code');
+    }
+    return c.json({ revoked: true });
   });
 
   // ---------------------------------------------------------------- billing

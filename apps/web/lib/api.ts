@@ -1443,3 +1443,25 @@ export async function fetchWorkflowTemplates(): Promise<WorkflowTemplateView[]> 
   const body = await request<{ templates: WorkflowTemplateView[] }>('/workflows/templates');
   return body.templates;
 }
+
+/** Invites and the open ?ref= link (@profullstack/affiliates), for /invites. */
+export interface InvitesView {
+  readonly quota: { total: number; used: number; left: number };
+  readonly invites: {
+    id: string;
+    note: string;
+    createdAt: string;
+    expiresAt: string | null;
+    used: boolean;
+    usedAt: string | null;
+    revoked: boolean;
+  }[];
+  readonly affiliateCode: string;
+  readonly affiliateUrl: string;
+  readonly invitedCount: number;
+  readonly bonusProspects: number;
+}
+
+export async function fetchInvites(): Promise<InvitesView> {
+  return request<InvitesView>('/invites');
+}

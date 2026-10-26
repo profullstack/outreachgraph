@@ -129,6 +129,10 @@ export const registerSchema = z.object({
   company_domain: z.string().max(300).optional(),
   job_title: z.string().max(200).optional(),
   linkedin_url: z.string().max(300).optional(),
+  // An invite code (/i/<code>) and an affiliate ?ref= code. Both optional and
+  // never a reason to refuse a signup: a bad one is just not recorded.
+  invite: z.string().max(64).optional(),
+  ref: z.string().max(64).optional(),
 });
 
 export const loginSchema = z.object({

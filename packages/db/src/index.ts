@@ -43,3 +43,5 @@ export {
   type TestDatabase,
   type TestDatabaseOptions,
 } from './testing';
+
+export { openRawHandle, type PgQueryable, type RawHandle } from './raw';

@@ -1917,6 +1917,45 @@ export const TOOLS: readonly ToolDefinition[] = [
         {},
       ),
   },
+  {
+    name: 'redeem_credit_code',
+    title: 'Redeem a credit code',
+    description:
+      'Redeem an OG-XXXX-XXXX-XXXX-XXXX credit code for prospect credits on this organization ' +
+      '(the balance credit packs fill). Each code works once per person. Returns {ok, prospects, ' +
+      'remaining} or an error: invalid, expired, used_up, already_redeemed, revoked.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { code: { type: 'string', description: 'The credit code.' } },
+      required: ['code'],
+    },
+    run: (client, args) => client.post('/credits/redeem', { code: require(args, 'code') }),
+  },
+  {
+    name: 'list_invites',
+    title: 'List my invites',
+    description:
+      'Your invite quota (3 per account), the invites made so far and whether each was ' +
+      'accepted, and your open ?ref= link.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/invites'),
+  },
+  {
+    name: 'create_invite',
+    title: 'Make an invite',
+    description:
+      'Spend one of your invites: returns a single-use /i/<code> link (shown once, valid 30 ' +
+      'days, new accounts only). When the invitee confirms their email both of you get prospect ' +
+      'credits.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { note: { type: 'string', description: 'Who it is for; only you see it.' } },
+    },
+    run: (client, args) => client.post('/invites', { note: str(args, 'note') ?? '' }),
+  },
 ];
 
 export function toolByName(name: string): ToolDefinition | undefined {
