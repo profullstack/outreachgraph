@@ -32,6 +32,9 @@ import { enqueue } from './queue';
 import { ownDomains } from './recipient-guard';
 import { intakeSocialPeople } from './social-intake';
 
+/** Domain searches in flight at once. */
+const LOOKUP_CONCURRENCY = 20;
+
 /** Searches for a company's domain per run; each one is a ValueSERP credit. */
 export const DEFAULT_DOMAIN_LOOKUPS = 120;
 
@@ -134,7 +137,7 @@ export async function intakeJobFeeds(
   }
   const own = await ownDomains(db, input.workspaceId);
 
-  let lookups = input.domainLookups ?? DEFAULT_DOMAIN_LOOKUPS;
+  const found = await lookUpDomains(deps, input, posts);
   let companies = 0;
   let known = 0;
   let agencies = 0;
@@ -172,10 +175,7 @@ export async function intakeJobFeeds(
       );
       domain = byName?.domain;
     }
-    if (!domain && deps.searcher && lookups > 0) {
-      lookups -= 1;
-      domain = await findCompanyDomain(deps.searcher, post.company);
-    }
+    if (!domain) domain = found.get(nameKey);
     if (!domain) {
       noDomain += 1;
       continue;
@@ -230,6 +230,54 @@ export async function intakeJobFeeds(
     noDomain,
     postedPeople,
   };
+}
+
+/**
+ * Domains for the companies the feeds named without one, searched side by
+ * side. One at a time, a ValueSERP query takes 40-150 s, so the first run of
+ * this step spent over ten minutes on its first source (2026-10-26); the
+ * account allows 250 a minute.
+ */
+async function lookUpDomains(
+  deps: JobFeedIntakeDeps,
+  input: JobFeedIntakeInput,
+  posts: readonly JobFeedPost[],
+): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  if (!deps.searcher) return found;
+  const searcher = deps.searcher;
+  const budget = input.domainLookups ?? DEFAULT_DOMAIN_LOOKUPS;
+  const wanted: { key: string; company: string }[] = [];
+  const seen = new Set<string>();
+  for (const post of posts) {
+    if (wanted.length >= budget) break;
+    const key = post.company.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (!key || seen.has(key) || post.domain) continue;
+    seen.add(key);
+    if (AGENCY_NAME.test(post.company) || isAgencyPosting(post.text)) continue;
+    const posted = await queryOne<{ id: string }>(
+      deps.db,
+      'SELECT id FROM job_posts WHERE workspace_id = ? AND url = ?',
+      [input.workspaceId, post.url],
+    );
+    if (posted) continue;
+    const byName = await queryOne<{ domain: string }>(
+      deps.db,
+      `SELECT domain FROM companies WHERE lower(name) = ? AND domain IS NOT NULL LIMIT 1`,
+      [post.company.toLowerCase()],
+    );
+    if (byName) continue;
+    wanted.push({ key, company: post.company });
+  }
+  for (let i = 0; i < wanted.length; i += LOOKUP_CONCURRENCY) {
+    await Promise.all(
+      wanted.slice(i, i + LOOKUP_CONCURRENCY).map(async ({ key, company }) => {
+        const domain = await findCompanyDomain(searcher, company);
+        if (domain) found.set(key, domain);
+      }),
+    );
+  }
+  return found;
 }
 
 /** Whether anyone at this domain is already in the campaign, or its crawl is queued. */
