@@ -1118,10 +1118,6 @@ function dayStart(at: Date): string {
   return `${at.toISOString().slice(0, 10)}T00:00:00.000Z`;
 }
 
-function nextDayStart(at: Date): string {
-  return dayStart(new Date(at.getTime() + 86_400_000));
-}
-
 /**
  * Actions the rate limits are about, and only those.
  *
@@ -1143,20 +1139,17 @@ export async function countActionsToday(
     db,
     // Hand-offs are exempt from the daily limit: a person paces those.
     //
-    // So is an approved email held for a later day (`deliver_email`, by a
-    // pacing hold or a full mailbox pool): it is that day's send, not
-    // today's. Counting them, 749 queued holds made the Engineering
-    // Contracts workflow report "996 sent today" against the 1,000 cap when
-    // 247 had gone out (2026-10-26), and autopilot stopped for the day.
+    // Only what went out today, or is going out now. A queued action is
+    // either waiting on a pacing hold (an approved email held until the
+    // prospect's weekly limit clears, days from now) or an approval that
+    // never sent; counting those spent today's limit on mail that was not
+    // sent today. Production on 2026-10-26: 247 sent plus 749 queued read as
+    // 996/1000, and every autopilot campaign in the workspace stopped.
     `SELECT COUNT(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= ? AND status NOT IN ('failed', 'cancelled')
-        AND mode != 'manual' AND ${COUNTABLE_KINDS}
-        AND NOT (status = 'queued' AND EXISTS (
-              SELECT 1 FROM jobs j
-               WHERE j.workspace_id = actions.workspace_id AND j.kind = 'deliver_email'
-                 AND j.status = 'pending' AND j.run_after >= ?
-                 AND j.dedupe_key LIKE 'deliver_email:' || actions.id || ':%'))`,
-    [workspaceId, dayStart(at), ...INTERNAL_ACTION_KINDS, nextDayStart(at)],
+      WHERE workspace_id = ? AND status IN ('completed', 'executing')
+        AND COALESCE(executed_at, created_at) >= ?
+        AND mode != 'manual' AND ${COUNTABLE_KINDS}`,
+    [workspaceId, dayStart(at), ...INTERNAL_ACTION_KINDS],
   );
   return row?.n ?? 0;
 }

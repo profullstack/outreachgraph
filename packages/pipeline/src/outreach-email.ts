@@ -557,6 +557,28 @@ interface AnsweredMessage {
  * and returned the same way, so the caller can report it and the row stays
  * retryable.
  */
+/**
+ * An approved email that can never go out as it stands: no message, no
+ * address, or an address we refuse. The action is failed with the reason
+ * rather than left `queued`, where it read as pending forever and nothing was
+ * ever going to send it.
+ */
+async function unsendable(
+  db: Client,
+  input: DeliverEmailInput,
+  reason: string,
+): Promise<DeliverEmailResult> {
+  await db.execute({
+    sql: `UPDATE actions SET status = 'failed', error = ? WHERE id = ? AND status = 'queued'`,
+    args: [reason, input.actionId],
+  });
+  await auditAction(db, input.workspaceId, input.actionId, input.actor, {
+    eventType: 'action.send_failed',
+    detail: { error: reason },
+  });
+  return { sent: false, reason };
+}
+
 export async function deliverEmailAction(
   deps: DeliverEmailDeps,
   input: DeliverEmailInput,
@@ -589,7 +611,7 @@ export async function deliverEmailAction(
   // they made one. Falling back to the draft covers an action recorded before
   // a draft existed.
   const body = (row.action_body ?? row.draft_body ?? '').trim();
-  if (!body) return { sent: false, reason: 'there is no message to send' };
+  if (!body) return unsendable(db, input, 'there is no message to send');
 
   // An answer goes back to the mailbox that wrote, in the same thread. The
   // address is theirs by definition — they used it — and it may not be the
@@ -608,13 +630,13 @@ export async function deliverEmailAction(
     ? { address: answered.contact_address, shared: answered.shared_inbox === 1 }
     : pickEmailRecipient(row);
   if (!recipient) {
-    return { sent: false, reason: 'no address published for this person or their company' };
+    return unsendable(db, input, 'no address published for this person or their company');
   }
 
   // Cold messages only: an answer goes to whoever wrote, whatever the address.
   if (!answered) {
     const refused = refuseRecipient(recipient.address, await ownDomains(db, input.workspaceId));
-    if (refused) return { sent: false, reason: refused };
+    if (refused) return unsendable(db, input, refused);
   }
 
   const settings = await loadOutreachSettings(db, input.workspaceId);
