@@ -103,6 +103,32 @@ describe('cardReachableMembers', () => {
     expect(cards.map((c) => c.action)).toEqual(['reply']);
   });
 
+  test('a pending research card is replaced, not counted as a card', async () => {
+    const db = await janeWithAddressAndNoCard('cards-over-research');
+    await db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
+            priority, reason, policy_status, policy_version, status, created_at)
+            VALUES ('rec_research', ?, ?, ?, 'refresh_research', 'website', 10, 'stale',
+                    'allow', '2026-01-01', 'pending', ?)`,
+      args: [SEED.workspaceId, SEED.campaignId, SEED.personId, now()],
+    });
+    const result = await cardReachableMembers(db, {
+      workspaceId: SEED.workspaceId,
+      campaignId: SEED.campaignId,
+      emailSendingEnabled: true,
+    });
+    expect(result).toEqual({ checked: 1, carded: 1 });
+    const cards = await queryAll<{ action: string; status: string }>(
+      db,
+      `SELECT action, status FROM recommendations WHERE person_id = ? ORDER BY action`,
+      [SEED.personId],
+    );
+    expect(cards).toEqual([
+      { action: 'refresh_research', status: 'superseded' },
+      { action: 'reply', status: 'pending' },
+    ]);
+  });
+
   test('leaves someone the company cap held back', async () => {
     const db = await janeWithAddressAndNoCard('cards-capped');
     await db.execute({
