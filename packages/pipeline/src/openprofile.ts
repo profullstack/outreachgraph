@@ -207,6 +207,28 @@ function handleOf(url: string): string | undefined {
   }
 }
 
+/**
+ * A network's profile page links to the network itself: github.com/ada links
+ * github.com/pricing, /login, /features and every repository she starred. On
+ * that page, a link to the same host is the person's only when it is their
+ * own handle (or they marked it rel=me). Found 2026-10-26 when launch radar
+ * fed GitHub profiles in: 252 "accounts" named login, pricing, security.
+ */
+function withoutSiteFurniture(profile: ProfileFacts, handle: string): ProfileFacts {
+  const host = hostOf(profile.source);
+  if (!host) return profile;
+  return {
+    ...profile,
+    accounts: profile.accounts.filter(
+      (entry) =>
+        entry.relation === 'me' ||
+        /^mailto:/i.test(entry.url) ||
+        hostOf(entry.url) !== host ||
+        handleOf(entry.url)?.toLowerCase() === handle.toLowerCase(),
+    ),
+  };
+}
+
 export async function runOpenProfileJob(
   deps: OpenProfileDeps,
   job: QueuedJob,
@@ -274,7 +296,7 @@ export async function runOpenProfileJob(
     };
   }
   const sources: string[] = [profile.source];
-  const facts: ProfileFacts[] = [profile];
+  const facts: ProfileFacts[] = [withoutSiteFurniture(profile, primary.handle)];
 
   // The home page, when the profile names one: its card, and whether it points back.
   let corroborated = false;

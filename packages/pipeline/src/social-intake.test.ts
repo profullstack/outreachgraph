@@ -304,6 +304,52 @@ describe('runOpenProfileJob', () => {
     expect(result.recommendationId).toBeDefined();
   });
 
+  test("a GitHub profile page's own navigation is not the person's accounts", async () => {
+    const client = await db('openprofile-github-furniture');
+    const intake = await intakeSocialPeople(
+      { db: client },
+      {
+        workspaceId: SEED.workspaceId,
+        campaignId: SEED.campaignId,
+        source: 'launch-radar',
+        people: [{ network: 'github', handle: 'ada', profileUrl: 'https://github.com/ada' }],
+      },
+    );
+    const personId = intake.people[0]!.id;
+    const page = `<html><head><title>ada (Ada) · GitHub</title></head><body>
+      <a href="https://github.com/login">Sign in</a><a href="https://github.com/pricing">Pricing</a>
+      <a href="https://github.com/features/copilot">Copilot</a><a href="https://github.com/security">Security</a>
+      <a href="https://github.com/ada?tab=repositories">Repositories</a>
+      <a href="https://x.com/ada_x">@ada_x</a></body></html>`;
+    await runOpenProfileJob(
+      {
+        db: client,
+        regenerate: false,
+        fetchImpl: stubFetch({
+          'https://github.com/ada': () =>
+            new Response(page, { status: 200, headers: { 'content-type': 'text/html' } }),
+        }),
+      },
+      {
+        id: 'job_gh',
+        workspaceId: SEED.workspaceId,
+        kind: 'openprofile',
+        payload: { personId, campaignId: SEED.campaignId, profileUrl: 'https://github.com/ada' },
+        attempts: 0,
+        maxAttempts: 5,
+      },
+    );
+    const identities = await queryAll<{ network: string; handle: string }>(
+      client,
+      'SELECT network, handle FROM social_identities WHERE person_id = ? ORDER BY network, handle',
+      [personId],
+    );
+    expect(identities).toEqual([
+      { network: 'github', handle: 'ada' },
+      { network: 'x', handle: 'ada_x' },
+    ]);
+  });
+
   test('a site that does not link back leaves the person at the profile-seen confidence', async () => {
     const client = await db('openprofile-uncorroborated');
     const intake = await intakeSocialPeople(
