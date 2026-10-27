@@ -98,4 +98,74 @@ describe('runEmailDelivery', () => {
     });
     expect(sent).toHaveLength(0);
   });
+
+  test('a held send waits when its address already had this week’s message', async () => {
+    seeded = await seedDatabase('email-delivery-address-cap');
+    const { db } = seeded;
+    await waitingEmail(db);
+    const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+    await db.execute({
+      sql: `INSERT INTO interactions (id, workspace_id, person_id, network, direction, state,
+            contact_address, shared_inbox, occurred_at, recorded_at)
+            VALUES ('int_colleague', ?, ?, 'email', 'outbound', 'contacted', 'jane@acme.com', 0, ?, ?)`,
+      args: [SEED.workspaceId, SEED.personId, hourAgo, hourAgo],
+    });
+    const { sent, mailer } = recording();
+
+    const result = await runEmailDelivery({ db, mailer }, JOB);
+    expect(result.sent).toBe(false);
+    expect(result.deferredUntil).toBeDefined();
+    expect(sent).toHaveLength(0);
+    const action = await queryOne<{ status: string }>(
+      db,
+      `SELECT status FROM actions WHERE id = 'act_wait'`,
+      [],
+    );
+    expect(action?.status).toBe('queued');
+  });
+
+  test('a campaign that writes to people never sends to the company inbox', async () => {
+    seeded = await seedDatabase('email-delivery-shared-refused');
+    const { db } = seeded;
+    await waitingEmail(db);
+    await db.execute(`DELETE FROM social_identities WHERE id = 'sid_jane_email'`);
+    await db.execute({
+      sql: `UPDATE companies SET contact_email = 'info@acme.com' WHERE id = ?`,
+      args: [SEED.companyId],
+    });
+    await db.execute({
+      sql: `UPDATE campaigns SET budget_json = '{"allowSharedInbox":0}' WHERE id = ?`,
+      args: [SEED.campaignId],
+    });
+    const { sent, mailer } = recording();
+
+    const result = await runEmailDelivery({ db, mailer }, JOB);
+    expect(result.sent).toBe(false);
+    expect(result.reason).toContain('shared company inbox');
+    expect(sent).toHaveLength(0);
+    const rec = await queryOne<{ status: string }>(
+      db,
+      `SELECT status FROM recommendations WHERE id = ?`,
+      [SEED.recommendationId],
+    );
+    expect(rec?.status).toBe('pending');
+  });
+
+  test('the same company inbox is still sent to where the campaign allows it', async () => {
+    seeded = await seedDatabase('email-delivery-shared-allowed');
+    const { db } = seeded;
+    await waitingEmail(db);
+    await db.execute(`DELETE FROM social_identities WHERE id = 'sid_jane_email'`);
+    await db.execute({
+      sql: `UPDATE companies SET contact_email = 'info@acme.com' WHERE id = ?`,
+      args: [SEED.companyId],
+    });
+    const { sent, mailer } = recording();
+
+    expect(await runEmailDelivery({ db, mailer }, JOB)).toMatchObject({
+      sent: true,
+      to: 'info@acme.com',
+    });
+    expect(sent).toHaveLength(1);
+  });
 });

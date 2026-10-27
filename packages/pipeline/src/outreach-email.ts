@@ -32,6 +32,8 @@ import { issueUnsubscribeToken, unsubscribeUrl } from './unsubscribe';
 import { assignSender, noteSendFailure } from './sender-pool';
 import { emitWebhookEvent } from './webhooks';
 import { ownDomains, refuseRecipient } from './recipient-guard';
+import { addressCounts } from './address-usage';
+import { evaluateAddressLimits } from '@outreachgraph/policy';
 
 export interface EmailRecipient {
   readonly address: string;
@@ -54,6 +56,33 @@ export function pickEmailRecipient(row: {
   if (row.person_email) return { address: row.person_email, shared: false };
   if (row.company_contact_email) return { address: row.company_contact_email, shared: true };
   return undefined;
+}
+
+/**
+ * Whether a campaign has said it writes to people, never to a company inbox.
+ *
+ * Stored in `budget_json` as `allowSharedInbox: 0` by a workflow whose
+ * verify step keeps shared inboxes out. Absent means allowed, which is how
+ * every campaign behaved before the flag. The workflow's own sweep only
+ * skipped people already searched, so the rest went to `info@` anyway: 62 of
+ * the Engineering Contracts campaign's first 64 sends (2026-10-27).
+ */
+export function sharedInboxRefused(budget: Record<string, unknown>): boolean {
+  return budget.allowSharedInbox === 0;
+}
+
+export const SHARED_INBOX_REFUSED =
+  'only a shared company inbox, and this campaign writes to people (held until a personal address is found)';
+
+export function parseBudget(value: string | null | undefined): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -89,25 +118,40 @@ export async function emailCardReadiness(
   db: Client,
   workspaceId: string,
   recommendationId: string,
-): Promise<{ readonly hasDraft: boolean; readonly recipient: EmailRecipient | undefined }> {
+): Promise<{
+  readonly hasDraft: boolean;
+  readonly recipient: EmailRecipient | undefined;
+  /** Why the address we would use is one this card may not be sent to. */
+  readonly refused?: string;
+}> {
   const row = await queryOne<{
     draft_body: string | null;
     person_email: string | null;
     company_contact_email: string | null;
+    budget_json: string | null;
   }>(
     db,
     `SELECT d.body AS draft_body, co.contact_email AS company_contact_email,
+            c.budget_json,
             ${PERSON_EMAIL_SQL.replace('a.workspace_id', 'r.workspace_id')} AS person_email
        FROM recommendations r
        JOIN people p ON p.id = r.person_id
+       LEFT JOIN campaigns c ON c.id = r.campaign_id
        LEFT JOIN drafts d ON d.recommendation_id = r.id
        LEFT JOIN companies co ON co.id = p.current_company_id
       WHERE r.id = ? AND r.workspace_id = ?`,
     [recommendationId, workspaceId],
   );
+  const recipient = row ? pickEmailRecipient(row) : undefined;
+  const refused = !recipient
+    ? undefined
+    : recipient.shared && sharedInboxRefused(parseBudget(row?.budget_json))
+      ? SHARED_INBOX_REFUSED
+      : refuseRecipient(recipient.address, new Set());
   return {
     hasDraft: Boolean(row?.draft_body?.trim()),
-    recipient: row ? pickEmailRecipient(row) : undefined,
+    recipient,
+    ...(refused ? { refused } : {}),
   };
 }
 
@@ -508,6 +552,13 @@ export interface DeliverEmailInput {
   readonly actionId: string;
   readonly actor: AuditActor;
   readonly policyVersion?: string;
+  /**
+   * Re-check the address's weekly limit and cooldown before sending. Set by
+   * the held-send job: approval ignores pacing by design, so three colleagues
+   * approved together behind one `info@` were three held sends, and each
+   * went out on its own (2026-10-27). Their address gate was never asked.
+   */
+  readonly checkAddressLimits?: boolean;
 }
 
 export type DeliverEmailResult =
@@ -518,7 +569,12 @@ export type DeliverEmailResult =
       readonly subject: string;
       readonly externalId?: string | undefined;
     }
-  | { readonly sent: false; readonly reason: string };
+  | {
+      readonly sent: false;
+      readonly reason: string;
+      /** Set when the send is allowed later, not refused: try again then. */
+      readonly retryAt?: string;
+    };
 
 interface DeliverableAction {
   readonly action_id: string;
@@ -536,6 +592,7 @@ interface DeliverableAction {
   readonly company_contact_email: string | null;
   readonly person_email: string | null;
   readonly reply_to_interaction_id: string | null;
+  readonly budget_json: string | null;
 }
 
 /** The inbound message a reply answers, and what threading it needs. */
@@ -557,6 +614,32 @@ interface AnsweredMessage {
  * and returned the same way, so the caller can report it and the row stays
  * retryable.
  */
+/**
+ * An approved email whose only route is one this campaign refuses, for now.
+ * Not a failure: the card goes back to pending, where `find_email` can still
+ * give the person an address and the next approval sends to it.
+ */
+async function backToQueue(
+  db: Client,
+  input: DeliverEmailInput,
+  recommendationId: string,
+  reason: string,
+): Promise<DeliverEmailResult> {
+  await db.execute({
+    sql: `UPDATE actions SET status = 'cancelled', error = ? WHERE id = ? AND status = 'queued'`,
+    args: [reason, input.actionId],
+  });
+  await db.execute({
+    sql: `UPDATE recommendations SET status = 'pending' WHERE id = ? AND status = 'approved'`,
+    args: [recommendationId],
+  });
+  await auditAction(db, input.workspaceId, input.actionId, input.actor, {
+    eventType: 'action.send_withdrawn',
+    detail: { reason },
+  });
+  return { sent: false, reason };
+}
+
 /**
  * An approved email that can never go out as it stands: no message, no
  * address, or an address we refuse. The action is failed with the reason
@@ -589,7 +672,7 @@ export async function deliverEmailAction(
     db,
     `SELECT a.id AS action_id, a.status AS action_status, a.body AS action_body,
             a.network, a.kind, a.person_id, a.recommendation_id,
-            r.campaign_id, r.reply_to_interaction_id,
+            r.campaign_id, r.reply_to_interaction_id, c.budget_json,
             p.display_name,
             d.subject AS draft_subject, d.body AS draft_body,
             co.name AS company_name, co.contact_email AS company_contact_email,
@@ -597,6 +680,7 @@ export async function deliverEmailAction(
        FROM actions a
        JOIN recommendations r ON r.id = a.recommendation_id
        JOIN people p ON p.id = a.person_id
+       LEFT JOIN campaigns c ON c.id = r.campaign_id
        LEFT JOIN drafts d ON d.recommendation_id = a.recommendation_id
        LEFT JOIN companies co ON co.id = p.current_company_id
       WHERE a.id = ? AND a.workspace_id = ?`,
@@ -637,6 +721,44 @@ export async function deliverEmailAction(
   if (!answered) {
     const refused = refuseRecipient(recipient.address, await ownDomains(db, input.workspaceId));
     if (refused) return unsendable(db, input, refused);
+
+    const budget = parseBudget(row.budget_json);
+    if (recipient.shared && sharedInboxRefused(budget)) {
+      return backToQueue(db, input, row.recommendation_id, SHARED_INBOX_REFUSED);
+    }
+
+    if (input.checkAddressLimits) {
+      const at = new Date();
+      const usage = await addressCounts(
+        db,
+        input.workspaceId,
+        recipient.address.trim().toLowerCase(),
+        at,
+      );
+      const breaches = evaluateAddressLimits({
+        actionsThisWeek: usage.thisWeek,
+        maxPerWeek:
+          typeof budget.maxActionsPerAddressPerWeek === 'number'
+            ? budget.maxActionsPerAddressPerWeek
+            : 1,
+        shared: recipient.shared,
+        ...(usage.hoursSinceLast !== undefined ? { hoursSinceLast: usage.hoursSinceLast } : {}),
+        ...(typeof budget.minHoursBetweenActions === 'number'
+          ? { cooldownHours: budget.minHoursBetweenActions }
+          : {}),
+      });
+      const breach = breaches[breaches.length - 1];
+      if (breach) {
+        // The weekly window has no fixed end from here; a day is a cheap
+        // re-check, and the cooldown says exactly when it clears.
+        const hours = Math.max(1, breach.clearsInHours ?? 24);
+        return {
+          sent: false,
+          reason: breach.reason,
+          retryAt: new Date(at.getTime() + hours * 3_600_000).toISOString(),
+        };
+      }
+    }
   }
 
   const settings = await loadOutreachSettings(db, input.workspaceId);

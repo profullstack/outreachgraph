@@ -6575,9 +6575,11 @@ async function approveRecommendation(
     const ready = await emailCardReadiness(db, actor.workspaceId, recommendation.id);
     const missing = !ready.recipient
       ? 'no address published for this person or their company'
-      : !ready.hasDraft && !input.editedBody?.trim()
-        ? 'no drafted message yet'
-        : undefined;
+      : ready.refused
+        ? ready.refused
+        : !ready.hasDraft && !input.editedBody?.trim()
+          ? 'no drafted message yet'
+          : undefined;
     if (missing) {
       await repo.audit(db, {
         workspaceId: actor.workspaceId,

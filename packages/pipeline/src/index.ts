@@ -312,6 +312,8 @@ export {
   defaultEmailSubject,
   emailCardReadiness,
   PERSON_EMAIL_SQL,
+  SHARED_INBOX_REFUSED,
+  sharedInboxRefused,
   loadOutreachSettings,
   prepareOutgoingEmail,
   htmlTwin,
@@ -542,7 +544,7 @@ export {
   type ResolveJobPostResult,
   type SearchJobPostsResult,
 } from './job-posts';
-export { isNonBuyerDesk, ownDomains, refuseRecipient } from './recipient-guard';
+export { isNonBuyerDesk, isWellFormed, ownDomains, refuseRecipient } from './recipient-guard';
 export {
   briefFor,
   cleanSubs,

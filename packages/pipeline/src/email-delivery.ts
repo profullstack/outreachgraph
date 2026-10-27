@@ -160,8 +160,24 @@ export async function runEmailDelivery(
       actionId,
       actor,
       ...(policyVersion ? { policyVersion } : {}),
+      checkAddressLimits: true,
     },
   );
+
+  if (!result.sent && result.retryAt) {
+    const again = await scheduleEmailDelivery(db, {
+      workspaceId: job.workspaceId,
+      actionId,
+      actor,
+      policyVersion,
+      retryAt: result.retryAt,
+    });
+    return {
+      sent: false,
+      reason: `deferred to ${again.runAt}: ${result.reason}`,
+      deferredUntil: again.runAt,
+    };
+  }
 
   return result.sent ? { sent: true, to: result.to } : { sent: false, reason: result.reason };
 }
