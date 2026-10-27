@@ -289,6 +289,46 @@ describe('approving an email', () => {
     expect(Number(actions?.n)).toBe(0);
   });
 
+  test('queued, unsent approvals do not use up the daily limit', async () => {
+    // The approval route counted every action created today. Held sends put
+    // the workspace over its limit with 41 sent, and every approval was held
+    // until midnight UTC instead of going out (2026-10-27).
+    const { sent, mailer } = recordingMailer();
+    const { app, db } = await harness('approve-held-not-counted', { mailer });
+    await makeEmailCard(db, { personEmail: 'jane@acme.com' });
+    const stamp = now();
+    await db.execute({
+      sql: `UPDATE campaigns SET budget_json = '{"maxActionsPerDay":2}' WHERE id = ?`,
+      args: [SEED.campaignId],
+    });
+    await db.execute({
+      sql: `INSERT INTO people (id, display_name, status, believed_minor, outreach_eligible,
+            identity_confidence, created_at, updated_at)
+            VALUES ('per_other', 'Sam Other', 'active', 0, 1, 0.95, ?, ?)`,
+      args: [stamp, stamp],
+    });
+    await db.execute({
+      sql: `INSERT INTO recommendations (id, workspace_id, campaign_id, person_id, action, network,
+            priority, reason, policy_status, policy_version, status, created_at)
+            VALUES ('rec_held', ?, ?, 'per_other', 'send_email', 'email', 50, 'held',
+                    'allow', '2026-01-01', 'approved', ?)`,
+      args: [SEED.workspaceId, SEED.campaignId, stamp],
+    });
+    for (const id of ['act_h1', 'act_h2', 'act_h3']) {
+      await db.execute({
+        sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
+              mode, status, created_at)
+              VALUES (?, ?, 'rec_held', 'per_other', 'send_email', 'email', 'customer_managed',
+                      'queued', ?)`,
+        args: [id, SEED.workspaceId, stamp],
+      });
+    }
+
+    const payload = (await (await approve(app)).json()) as { delivery?: { sent: boolean } };
+    expect(payload.delivery?.sent).toBe(true);
+    expect(sent).toHaveLength(1);
+  });
+
   test('refuses a card with no drafted message, unless the reviewer wrote one', async () => {
     const { sent, mailer } = recordingMailer();
     const { app, db } = await harness('approve-no-draft', { mailer });

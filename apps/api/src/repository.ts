@@ -459,8 +459,14 @@ export async function actionCounts(
     // decision on 2026-09-24. That limit is about how fast the product acts
     // on its own; a card a person carries out by hand is paced by the person.
     // They still count per prospect below, so nobody is contacted twice.
+    //
+    // And only what went out, as autopilot and the card engine count it
+    // (#215, #219). Held approvals and failed sends counted here put the
+    // workspace over its daily limit with 41 sent, so every approval was
+    // held until midnight UTC (2026-10-27).
     `SELECT count(*) AS n FROM actions
-      WHERE workspace_id = ? AND created_at >= ? AND status != 'cancelled'
+      WHERE workspace_id = ? AND status IN ('completed', 'executing')
+        AND COALESCE(executed_at, created_at) >= ?
         AND mode != 'manual'
         ${countable} ${exclude}`,
     [workspaceId, dayAgo, ...INTERNAL_ACTION_KINDS, ...excludeArgs],
