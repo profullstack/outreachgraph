@@ -48,6 +48,14 @@ const NON_BUYER_DESKS = new Set([
   'jobs',
   'hr',
   'recruiting',
+  'recruitment',
+  'recruiter',
+  'hiring',
+  'talent',
+  'press',
+  'media',
+  'pr',
+  'newsroom',
   'noreply',
   'donotreply',
   'mailer-daemon',
@@ -71,6 +79,17 @@ function hostOf(url: string): string {
     .replace(/^[a-z]+:\/\//, '')
     .replace(/^www\./, '')
     .split(/[/?#:]/)[0]!;
+}
+
+/**
+ * A mailbox a server could deliver to. Job-board text yields fragments:
+ * `jobs+hn@dat.com` split at the plus came back as `+hn@dat.com` and was
+ * mailed three times (2026-10-27).
+ */
+export function isWellFormed(address: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9._%+-]*[a-z0-9_-])?@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(
+    address.trim(),
+  );
 }
 
 /** True when the mailbox is a desk that files rather than reads. */
@@ -210,6 +229,9 @@ function onDomain(domain: string, own: ReadonlySet<string>): boolean {
  * offerings are read once per tick rather than once per card.
  */
 export function refuseRecipient(address: string, own: ReadonlySet<string>): string | undefined {
+  if (!isWellFormed(address)) {
+    return `${address} is not a usable address`;
+  }
   if (onDomain(domainOf(address), own)) {
     return `${address} belongs to one of this workspace's own products`;
   }

@@ -460,6 +460,14 @@ async function applyDeliverySettings(
       maxActionsPerAddressPerWeek: Number(send.config.maxPerAddressPerWeek),
     });
   }
+  const verify = definition.nodes.find((n) => n.type === 'verify_contact');
+  if (verify) {
+    // Read at every send gate, so "skip shared inboxes" holds for people the
+    // run's sweep has not reached yet, not only for those it has.
+    await setCampaignLimits(db, workspaceId, campaignId, {
+      allowSharedInbox: verify.config.allowSharedInbox === true ? 1 : 0,
+    });
+  }
 }
 
 function wantsAutopilot(definition: WorkflowDefinition): boolean {
@@ -658,6 +666,9 @@ function stepHandlers(
 
     async verify_contact(node, context) {
       const campaignId = await campaign(context);
+      await setCampaignLimits(context.db, context.workspaceId, campaignId, {
+        allowSharedInbox: node.config.allowSharedInbox === true ? 1 : 0,
+      });
       const counts = await addressCounts(context.db, context.workspaceId, campaignId);
       const held =
         node.config.allowSharedInbox === true
@@ -952,7 +963,7 @@ export async function skipSharedInboxOnly(
              AND action = 'send_email'
              AND EXISTS (SELECT 1 FROM people p
                           WHERE p.id = recommendations.person_id
-                            AND p.email_searched_at IS NOT NULL)
+                            AND (p.email_searched_at IS NOT NULL OR p.kind = 'company_inbox'))
              AND NOT EXISTS (SELECT 1 FROM social_identities si
                               WHERE si.person_id = recommendations.person_id
                                 AND si.network = 'email'

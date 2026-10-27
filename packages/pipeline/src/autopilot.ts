@@ -42,6 +42,8 @@ import {
   defaultEmailSubject,
   loadOutreachSettings,
   pickEmailRecipient,
+  SHARED_INBOX_REFUSED,
+  sharedInboxRefused,
   prepareOutgoingEmail,
   recordEmailFailure,
   recordEmailSent,
@@ -50,6 +52,10 @@ import {
 import { budgetStatus } from './metering';
 import { holdReason } from './lead-screen';
 import { ownDomains, refuseRecipient } from './recipient-guard';
+import { addressCounts, type AddressUsage } from './address-usage';
+
+export { addressCounts, type AddressUsage };
+
 import {
   catchAllAllowed,
   classifyPersona,
@@ -632,6 +638,11 @@ export async function runAutopilot(
       continue;
     }
 
+    if (recipient.shared && sharedInboxRefused(safeJson(row.budget_json))) {
+      await note(SHARED_INBOX_REFUSED);
+      continue;
+    }
+
     // Business hours where they are, inferred from their location, their
     // company's, then their mail domain. Costs no query, so it runs before
     // anything that does; a held card simply goes out on a later tick.
@@ -1089,11 +1100,6 @@ export async function runAutopilot(
   return { sent, skipped, failed };
 }
 
-export interface AddressUsage {
-  readonly thisWeek: number;
-  readonly hoursSinceLast?: number;
-}
-
 /** True when any recorded quality gate failed. Unparseable checks fail closed. */
 function hasFailingCheck(checksJson: string | null): boolean {
   if (!checksJson) return false;
@@ -1177,46 +1183,6 @@ export async function actionCounts(
   if (Number.isNaN(stamp)) return { thisProspect };
 
   return { thisProspect, hoursSinceLast: (at.getTime() - stamp) / 3_600_000 };
-}
-
-/**
- * The same two limits, counted against the mailbox rather than the person.
- *
- * Read from `interactions.contact_address` — the address a message actually
- * reached — rather than from `actions`, which records who it was addressed to.
- * For a shared inbox those are different questions, and only the first one can
- * see fourteen colleagues arriving at one `support@`.
- *
- * Counting outbound interactions also means a message sent by hand from the
- * approval queue counts against the automated path, and vice versa. A mailbox
- * does not care which half of the product wrote to it.
- */
-export async function addressCounts(
-  db: Client,
-  workspaceId: string,
-  address: string,
-  at: Date,
-): Promise<AddressUsage> {
-  const weekAgo = new Date(at.getTime() - 7 * 24 * 3_600_000).toISOString();
-
-  const row = await queryOne<{ n: number; last_at: string | null }>(
-    db,
-    `SELECT COUNT(*) AS n,
-            (SELECT MAX(occurred_at) FROM interactions
-              WHERE workspace_id = ? AND contact_address = ? AND direction = 'outbound') AS last_at
-       FROM interactions
-      WHERE workspace_id = ? AND contact_address = ? AND direction = 'outbound'
-        AND occurred_at >= ?`,
-    [workspaceId, address, workspaceId, address, weekAgo],
-  );
-
-  const thisWeek = row?.n ?? 0;
-  if (!row?.last_at) return { thisWeek };
-
-  const stamp = Date.parse(row.last_at);
-  if (Number.isNaN(stamp)) return { thisWeek };
-
-  return { thisWeek, hoursSinceLast: (at.getTime() - stamp) / 3_600_000 };
 }
 
 function safeJson(value: string): Record<string, unknown> {

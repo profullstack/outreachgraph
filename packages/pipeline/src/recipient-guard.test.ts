@@ -101,6 +101,23 @@ describe('refuseRecipient', () => {
     }
   });
 
+  test('press, media and hiring desks are not buyers either', () => {
+    for (const address of [
+      'press@acme.com',
+      'media@acme.com',
+      'recruitment@acme.com',
+      'hiring@acme.com',
+    ]) {
+      expect(isNonBuyerDesk(address)).toBe(true);
+    }
+  });
+
+  test('a fragment cut out of job-board text is refused', () => {
+    expect(refuseRecipient('+hn@dat.com', OWN)).toContain('not a usable address');
+    expect(refuseRecipient('jane@', OWN)).toContain('not a usable address');
+    expect(refuseRecipient('jane+hn@dat.com', OWN)).toBeUndefined();
+  });
+
   test('the workspace’s own domains are never prospects, subdomains included', () => {
     expect(refuseRecipient('hello@ugig.net', OWN)).toContain('own products');
     expect(refuseRecipient('jane@mail.coinpayportal.com', OWN)).toContain('own products');
