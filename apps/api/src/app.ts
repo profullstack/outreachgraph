@@ -7,6 +7,7 @@
  * tooling possible without a second implementation (PRD §24).
  */
 
+import { SecretsLockedError, type SecretVault } from '@outreachgraph/secrets';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
@@ -294,6 +295,7 @@ import { autogtmRoutes } from './autogtm';
 import { importReport, importReportCsv } from './import-report';
 import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
+import { keysRoutes } from './keys';
 import { audienceRoutes } from './audience';
 import {
   BrainValidationError,
@@ -376,7 +378,13 @@ export interface AppOptions {
    * it, connecting one is refused rather than stored in the clear, and any
    * already-stored mailbox reads as disconnected.
    */
-  readonly encryptionKey?: Buffer | undefined;
+  readonly encryptionKey?: SecretVault | undefined;
+  /**
+   * The server key for OUR webhook secrets (signing secrets we generate,
+   * endpoint URLs). Customer credentials never use it: they are sealed per
+   * workspace in `encryptionKey` (seal v2).
+   */
+  readonly webhookKey?: Buffer | undefined;
   /**
    * The X app this deployment connects accounts through (OAuth 2.1). Without
    * it `og connect x` is refused and X cards stay hand-offs.
@@ -1566,7 +1574,8 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // its own; the emitting happens in the pipeline, where the events occur.
   {
     const webhookDeps = {
-      encryptionKey: options.encryptionKey,
+      encryptionKey: options.webhookKey,
+      secretVault: options.encryptionKey,
       requireVerifiedEmail: (db: Client, actor: RequestActor) => requireVerifiedEmail(db, actor),
       lookup: options.webhookLookup,
       crmFetch: options.crmFetch,
@@ -1575,6 +1584,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     api.route('/webhooks', webhookRoutes(webhookDeps));
     api.route('/integrations/crm', crmRoutes(webhookDeps));
   }
+
+  // ------------------------------------------------------------------ keys
+  //
+  // Seal v2: the workspace passphrase that opens its stored credentials.
+  api.route('/keys', keysRoutes({ vault: options.encryptionKey }));
 
   // ------------------------------------------------------------- audience
   //
@@ -6475,6 +6489,12 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         },
         error.status as 400,
       );
+    }
+
+    // Seal v2: a credential that needs the workspace's unlock (or a passphrase
+    // that was never set) is a 409 with the way out, not a 500.
+    if (error instanceof SecretsLockedError) {
+      return c.json({ error: { code: 'keys_locked', message: error.message } }, 409);
     }
 
     console.error('unhandled error', error);

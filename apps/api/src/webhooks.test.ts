@@ -6,6 +6,7 @@
  * sent at once through the real transport.
  */
 
+import { testVault } from '@outreachgraph/secrets/testing';
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Hono } from 'hono';
 import { queryAll } from '@outreachgraph/db';
@@ -29,6 +30,7 @@ const OWNER: RequestActor = {
 };
 
 const KEY = parseSecretKey(generateSecretKey());
+const VAULT = testVault();
 
 async function harness(
   label: string,
@@ -42,7 +44,7 @@ async function harness(
   const app = createApp({
     db: seeded.db,
     authenticate: async () => options.actor ?? OWNER,
-    ...(options.key === false ? {} : { encryptionKey: KEY }),
+    ...(options.key === false ? {} : { encryptionKey: VAULT, webhookKey: KEY }),
     // Every host resolves publicly except the one the SSRF test names.
     webhookLookup: async (host) => (host === 'internal.example' ? ['10.0.0.9'] : ['93.184.216.34']),
     webhookFetch: async (input) => {

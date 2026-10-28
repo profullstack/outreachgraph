@@ -14,6 +14,7 @@
  * approval.
  */
 
+import type { SecretVault } from '@outreachgraph/secrets';
 import { randomInt } from 'node:crypto';
 import { queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer } from '@outreachgraph/email';
@@ -64,7 +65,7 @@ export async function scheduleEmailDelivery(
 
 export interface DeliverEmailJobDeps {
   readonly db: Client;
-  readonly encryptionKey?: Buffer | undefined;
+  readonly encryptionKey?: SecretVault | undefined;
   /** The platform sender, used when no workspace mailbox is active. */
   readonly mailer?: Mailer | undefined;
   readonly appUrl?: string | undefined;

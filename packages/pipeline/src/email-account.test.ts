@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { TestVault, testVault } from '@outreachgraph/secrets/testing';
+import { SecretsLockedError } from '@outreachgraph/secrets';
 import { queryOne, type Client } from '@outreachgraph/db';
-import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import type { Mailer, Message, SendResult } from '@outreachgraph/email';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import {
@@ -20,7 +21,7 @@ afterEach(() => {
   seeded = undefined;
 });
 
-const KEY = parseSecretKey(generateSecretKey());
+const KEY = testVault();
 
 const ACCOUNT: EmailAccountInput = {
   host: 'smtp.fastmail.com',
@@ -225,10 +226,14 @@ describe('loadEmailCredentials', () => {
 
     await connect(db);
 
-    // Rotating the key must not take down every send in the workspace. The
-    // honest outcome is "reconnect your mailbox".
-    const other = parseSecretKey(generateSecretKey());
-    expect(await loadEmailCredentials(db, SEED.workspaceId, other)).toBeUndefined();
+    // Seal v2: a vault that has not been unlocked for this workspace cannot
+    // read the mailbox, and says so (callers wait) rather than reading as
+    // "no mailbox" (which would fall back to the platform sender).
+    const other = new TestVault({ autoUnlock: false });
+    other.provision(SEED.workspaceId);
+    await expect(loadEmailCredentials(db, SEED.workspaceId, other)).rejects.toThrow(
+      SecretsLockedError,
+    );
   });
 
   test('no key configured reads as disconnected', async () => {

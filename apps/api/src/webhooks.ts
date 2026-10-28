@@ -48,6 +48,7 @@ import {
 } from '@outreachgraph/pipeline';
 import type { FetchLike, HostLookup } from '@outreachgraph/providers';
 import { webhooksApi } from '@profullstack/webhooks';
+import type { SecretVault } from '@outreachgraph/secrets';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
 
@@ -55,7 +56,10 @@ import * as repo from './repository';
 export const WEBHOOKS_BASE_PATH = '/api/v1/webhooks';
 
 export interface WebhookRouteDeps {
+  /** Server key for OUR webhook signing secrets and endpoint URLs (not customer credentials). */
   readonly encryptionKey: Buffer | undefined;
+  /** Customer CRM tokens are sealed per workspace and open only while it is unlocked. */
+  readonly secretVault: SecretVault | undefined;
   readonly requireVerifiedEmail: (db: Client, actor: RequestActor) => Promise<void>;
   /** Test seams: DNS for the SSRF check, and the CRM's network. */
   readonly lookup?: HostLookup | undefined;
@@ -337,7 +341,7 @@ export function crmRoutes(deps: WebhookRouteDeps): Hono<AppEnv> {
 
     return c.json({
       providers: await crmStatus(c.get('db'), actor.workspaceId),
-      canConnect: deps.encryptionKey !== undefined,
+      canConnect: deps.secretVault !== undefined,
     });
   });
 
@@ -359,7 +363,7 @@ export function crmRoutes(deps: WebhookRouteDeps): Hono<AppEnv> {
         workspaceId: actor.workspaceId,
         provider,
         token: input.token,
-        encryptionKey: deps.encryptionKey,
+        encryptionKey: deps.secretVault,
         verify: input.skipVerification !== true,
         ...(deps.crmFetch ? { fetchImpl: deps.crmFetch } : {}),
         ...(deps.crmClientFor ? { clientFor: deps.crmClientFor } : {}),

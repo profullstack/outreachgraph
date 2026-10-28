@@ -23,7 +23,7 @@ import {
   type CrmClientOptions,
   type FetchLike,
 } from '@outreachgraph/providers';
-import { decryptSecret, encryptSecret, SecretDecryptError } from '@outreachgraph/secrets';
+import { SecretDecryptError, type SecretVault } from '@outreachgraph/secrets';
 import type { QueuedJob } from './queue';
 import { eventPerson } from './webhooks';
 
@@ -73,7 +73,7 @@ export async function connectCrm(
     readonly workspaceId: string;
     readonly provider: CrmProvider;
     readonly token: string;
-    readonly encryptionKey: Buffer | undefined;
+    readonly encryptionKey: SecretVault | undefined;
     readonly verify?: boolean;
     readonly fetchImpl?: FetchLike;
     readonly clientFor?: CrmClientFactory;
@@ -140,7 +140,7 @@ export async function connectCrm(
       integrationId,
       input.workspaceId,
       input.provider,
-      encryptSecret(token, input.encryptionKey),
+      await input.encryptionKey.seal(token, input.workspaceId, 'access_token_enc'),
       stamp,
       stamp,
     ],
@@ -201,7 +201,7 @@ async function loadToken(
   db: Client,
   workspaceId: string,
   provider: CrmProvider,
-  key: Buffer,
+  key: SecretVault,
 ): Promise<string | undefined> {
   const row = await queryOne<{ access_token_enc: string | null; status: string }>(
     db,
@@ -212,7 +212,7 @@ async function loadToken(
   );
   if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
   try {
-    return decryptSecret(row.access_token_enc, key);
+    return key.open(row.access_token_enc, workspaceId, 'access_token_enc');
   } catch (error) {
     if (error instanceof SecretDecryptError) return undefined;
     throw error;
@@ -275,7 +275,7 @@ export function crmNoteFor(event: OutboundEvent): string {
 
 export interface CrmSyncDeps {
   readonly db: Client;
-  readonly encryptionKey?: Buffer | undefined;
+  readonly encryptionKey?: SecretVault | undefined;
   readonly fetchImpl?: FetchLike;
   readonly clientFor?: CrmClientFactory;
 }

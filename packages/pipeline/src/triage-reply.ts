@@ -27,6 +27,7 @@
  * twice.
  */
 
+import type { SecretVault } from '@outreachgraph/secrets';
 import {
   classifyReplyByRules,
   DRAFTABLE_REPLY_LABELS,
@@ -73,7 +74,7 @@ export interface TriageDeps {
   readonly model?: TextModel | undefined;
   /** The platform sender, for workspaces that have not connected a mailbox. */
   readonly mailer?: Mailer | undefined;
-  readonly encryptionKey?: Buffer | undefined;
+  readonly encryptionKey?: SecretVault | undefined;
   readonly appUrl?: string | undefined;
   readonly now?: Date;
 }

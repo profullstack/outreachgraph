@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { testVault } from '@outreachgraph/secrets/testing';
 import { queryAll, type Client } from '@outreachgraph/db';
 import type { Message, SweptWarmup } from '@outreachgraph/email';
-import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import { seedDatabase, type SeededDatabase, SEED } from '../../../apps/api/src/test-seed';
 import { connectEmailAccount } from './email-account';
 import { listMailboxes } from './mailboxes';
@@ -14,7 +14,7 @@ afterEach(() => {
   seeded = undefined;
 });
 
-const KEY = parseSecretKey(generateSecretKey());
+const KEY = testVault();
 const AT = new Date('2026-10-06T12:00:00.000Z');
 
 async function mailbox(db: Client, email: string, name: string): Promise<string> {

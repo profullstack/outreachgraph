@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { testVault } from '@outreachgraph/secrets/testing';
 import { queryAll, queryOne, type Client } from '@outreachgraph/db';
-import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import type { IncomingMessage, Mailer, SendResult } from '@outreachgraph/email';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { connectEmailAccount, mailerForSend } from './email-account';
@@ -23,7 +23,7 @@ afterEach(() => {
   seeded = undefined;
 });
 
-const KEY = parseSecretKey(generateSecretKey());
+const KEY = testVault();
 const AT = new Date('2026-09-24T12:00:00.000Z');
 const TODAY = '2026-09-24T09:00:00.000Z';
 const YESTERDAY = '2026-09-23T09:00:00.000Z';

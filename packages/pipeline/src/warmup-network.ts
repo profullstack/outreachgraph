@@ -19,6 +19,7 @@
  * against a mailbox's outreach cap, and the reply poller skips it by header.
  */
 
+import type { SecretVault } from '@outreachgraph/secrets';
 import {
   composeWarmup,
   composeWarmupReply,
@@ -46,7 +47,7 @@ import { loadEmailCredentials, loadImapCredentials } from './email-account';
 const SWEEP_LOOKBACK_MS = 3 * 86_400_000;
 
 export interface WarmupDeps {
-  readonly encryptionKey: Buffer | undefined;
+  readonly encryptionKey: SecretVault | undefined;
   readonly at?: Date;
   readonly random?: () => number;
   /** Injected by tests so no socket is opened. */
@@ -230,6 +231,8 @@ async function deliver(
     readonly inReplyTo?: string | undefined;
   },
 ): Promise<boolean> {
+  // A locked workspace's mailbox sits out of the warm-up until it unlocks.
+  if (!deps.encryptionKey?.canOpen(from.workspaceId)) return false;
   const credentials = await loadEmailCredentials(db, from.workspaceId, deps.encryptionKey, from.id);
   if (!credentials) return false;
   const mailer = deps.mailerFor?.(credentials) ?? new SmtpMailer(credentials);
@@ -327,6 +330,7 @@ export async function runWarmupInbox(db: Client, deps: WarmupDeps): Promise<Warm
   const dayStart = startOfDay(at);
 
   for (const member of network) {
+    if (!deps.encryptionKey.canOpen(member.workspaceId)) continue;
     const credentials = await loadImapCredentials(
       db,
       member.workspaceId,

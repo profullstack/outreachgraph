@@ -153,6 +153,18 @@ export default async function SettingsPage() {
             {/* First: nothing leaves without a mailbox to leave through. */}
             <MailboxesLink senders={senders} />
             <Link
+              href="/keys"
+              className="border-border bg-surface-raised flex items-center justify-between gap-3 rounded-2xl border p-4"
+            >
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">Keys</span>
+                <span className="text-ink-muted block text-xs">
+                  Unlock your workspace passphrase so autopilot can use your mailboxes and accounts.
+                </span>
+              </span>
+              <span className="text-accent shrink-0 text-sm font-medium">Manage ›</span>
+            </Link>
+            <Link
               href="/planner"
               className="border-border bg-surface-raised flex items-center justify-between gap-3 rounded-2xl border p-4"
             >

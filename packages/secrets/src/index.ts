@@ -138,3 +138,26 @@ export function secretEquals(a: string, b: string): boolean {
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
 }
+
+// Seal v2: credentials sealed per workspace, opened only while unlocked.
+export * from './vault';
+export {
+  createSeal,
+  rewrapSeal,
+  unlockSeal,
+  unlockSealWithRecovery,
+  isSealRecord as isSealRecordV2,
+  isSealedValue,
+  parseTtl,
+  clampUnlockTtlSeconds,
+  bytesToBase64,
+  base64ToBytes,
+  wipe,
+  WrongPassphraseError,
+  SEALED_PREFIX,
+  MIN_PASSPHRASE_LENGTH,
+  UNLOCK_DEFAULT_TTL_SECONDS,
+  UNLOCK_MAX_TTL_SECONDS,
+  type SealRecord,
+  type CreatedSeal,
+} from './seal';
