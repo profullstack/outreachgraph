@@ -106,6 +106,8 @@ export {
   parseLeadJudgements,
   parseMonitorSuggestion,
   suggestMonitor,
+  suggestPainPhrases,
+  cleanPainPhrases,
   type LeadBrand,
   type LeadJudgeInput,
   type LeadJudgement,

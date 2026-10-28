@@ -18,12 +18,21 @@
  *            automation, and a brand found spamming threads loses the channel.
  *   digest   once a UTC day, after the workspace's digest hour, the new leads
  *            above each monitor's floor, to the workspace's notify address.
+ *
+ * Pain phrases come before keywords. A keyword ("siem", a competitor) finds
+ * people talking about the category; a pain phrase ("can't find
+ * communities", "nobody sees my posts") finds the person the problem just
+ * hit, who already wants a fix. They are searched first, a match records the
+ * phrase, scores as a problem post, gets a bonus over the model's score, and
+ * lists above every keyword match.
  */
 
 import {
+  cleanPainPhrases,
   draftLeadReply,
   judgeLeads,
   suggestMonitor,
+  suggestPainPhrases,
   type LeadBrand,
   type LeadJudgement,
   type TextModel,
@@ -90,6 +99,10 @@ const PENDING_INTENT_CAP = 45;
 const WEB_EVERY_MS = 20 * 3_600_000;
 /** How far back the backlog of unjudged posts is still worth judging. */
 const BACKLOG_DAYS = 7;
+/** A post in the words of the problem reads as a problem post until the model says otherwise. */
+export const PAIN_INTENT = 72;
+/** Added to the model's score for a pain-phrase match, so it outranks the keyword match it ties. */
+export const PAIN_BONUS = 10;
 
 export function patternIntent(text: string): number {
   return PATTERN_INTENT[classifyPost(text).type] ?? 15;
@@ -135,6 +148,8 @@ export interface LeadMonitor {
   readonly url?: string | undefined;
   readonly description?: string | undefined;
   readonly keywords: readonly string[];
+  /** The words people use when the problem hits them. Searched before the keywords. */
+  readonly painPhrases: readonly string[];
   readonly subreddits: readonly string[];
   readonly exclude: readonly string[];
   readonly sources: readonly LeadSource[];
@@ -164,6 +179,8 @@ export interface CommunityLead {
   readonly container?: string | undefined;
   readonly postedAt: string;
   readonly matchedTerm?: string | undefined;
+  /** The pain phrase it matched, when it did; such leads list first. */
+  readonly painPhrase?: string | undefined;
   readonly intent: number;
   readonly reason?: string | undefined;
   readonly judged: boolean;
@@ -199,6 +216,7 @@ interface MonitorRow {
   url: string | null;
   description: string | null;
   keywords_json: string;
+  pain_phrases_json?: string | null;
   subreddits_json: string;
   exclude_json: string;
   sources_json: string;
@@ -227,6 +245,7 @@ interface LeadRow {
   container: string | null;
   posted_at: string;
   matched_term: string | null;
+  pain_phrase?: string | null;
   intent: number;
   reason: string | null;
   judged: number;
@@ -255,6 +274,7 @@ function toMonitor(row: MonitorRow): LeadMonitor {
     ...(row.url ? { url: row.url } : {}),
     ...(row.description ? { description: row.description } : {}),
     keywords: parse<string[]>(row.keywords_json, []),
+    painPhrases: parse<string[]>(row.pain_phrases_json, []),
     subreddits: parse<string[]>(row.subreddits_json, []),
     exclude: parse<string[]>(row.exclude_json, []),
     sources: cleanSources(parse<string[]>(row.sources_json, [...LEAD_SOURCES])),
@@ -287,6 +307,7 @@ function toLead(row: LeadRow): CommunityLead {
     ...(row.container ? { container: row.container } : {}),
     postedAt: row.posted_at,
     ...(row.matched_term ? { matchedTerm: row.matched_term } : {}),
+    ...(row.pain_phrase ? { painPhrase: row.pain_phrase } : {}),
     intent: Number(row.intent),
     ...(row.reason ? { reason: row.reason } : {}),
     judged: Number(row.judged) === 1,
@@ -339,6 +360,7 @@ export interface MonitorInput {
   readonly description?: string | null | undefined;
   readonly offeringId?: string | null | undefined;
   readonly keywords?: readonly string[] | undefined;
+  readonly painPhrases?: readonly string[] | undefined;
   readonly subreddits?: readonly string[] | undefined;
   readonly exclude?: readonly string[] | undefined;
   readonly sources?: readonly string[] | undefined;
@@ -434,6 +456,15 @@ export async function createLeadMonitor(
     keywords = cleanKeywords([name, ...(url && hostOf(url) ? [hostOf(url)!] : [])]);
   }
 
+  let painPhrases = cleanPainPhrases(input.painPhrases ?? [], name);
+  if (painPhrases.length === 0 && !input.painPhrases && deps.model) {
+    try {
+      painPhrases = await suggestPainPhrases(deps.model, { name, url, description });
+    } catch (error) {
+      console.log(`lead monitor: pain phrases failed for ${name}: ${(error as Error).message}`);
+    }
+  }
+
   const sources = input.sources ? cleanSources(input.sources) : [...LEAD_SOURCES];
   if (sources.length === 0)
     throw new MonitorInputError(`sources must be some of ${LEAD_SOURCES.join(', ')}`);
@@ -443,8 +474,8 @@ export async function createLeadMonitor(
   await db.execute({
     sql: `INSERT INTO lead_monitors (id, workspace_id, offering_id, name, url, description, keywords_json,
             subreddits_json, exclude_json, sources_json, enabled, every_minutes, min_intent, digest,
-            created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            created_at, updated_at, pain_phrases_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       id,
       workspaceId,
@@ -462,6 +493,7 @@ export async function createLeadMonitor(
       input.digest === false ? 0 : 1,
       at,
       at,
+      JSON.stringify(painPhrases),
     ],
   });
   return (await getLeadMonitor(db, workspaceId, id))!;
@@ -484,7 +516,7 @@ export async function updateLeadMonitor(
   await db.execute({
     sql: `UPDATE lead_monitors SET name = ?, url = ?, description = ?, keywords_json = ?, subreddits_json = ?,
             exclude_json = ?, sources_json = ?, enabled = ?, every_minutes = ?, min_intent = ?, digest = ?,
-            updated_at = ?
+            pain_phrases_json = ?, updated_at = ?
           WHERE workspace_id = ? AND id = ?`,
     args: [
       (patch.name?.trim() || cur.name).slice(0, 120),
@@ -500,6 +532,9 @@ export async function updateLeadMonitor(
       clampMinutes(patch.everyMinutes ?? cur.everyMinutes),
       clampIntent(patch.minIntent ?? cur.minIntent),
       (patch.digest ?? cur.digest) ? 1 : 0,
+      JSON.stringify(
+        patch.painPhrases ? cleanPainPhrases(patch.painPhrases, cur.name) : cur.painPhrases,
+      ),
       now(),
       workspaceId,
       id,
@@ -656,6 +691,75 @@ export function containsKeyword(text: string, keyword: string): boolean {
   return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, 'iu').test(text);
 }
 
+/**
+ * The pain phrase a text carries: whole words literally, or failing that every
+ * content word of the phrase in order inside one sentence, a few words apart,
+ * so "I can't seem to find any active communities" still matches "can't find
+ * communities". Words split across sentences do not count.
+ */
+export function matchPainPhrase(text: string, phrases: readonly string[]): string | undefined {
+  const norm = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[\u2018\u2019`]/g, "'")
+      .replace(/\bcan ?not\b/g, "can't")
+      .replace(/\b(can|don|won|isn|doesn|didn|aren)t\b/g, "$1't")
+      .replace(/[^\p{L}\p{N}' ]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const whole = ` ${norm(text)} `;
+  for (const phrase of phrases) {
+    const needle = norm(phrase);
+    if (needle && whole.includes(` ${needle} `)) return phrase;
+  }
+  const filler = new Set([
+    'a',
+    'an',
+    'the',
+    'my',
+    'our',
+    'your',
+    'i',
+    'we',
+    'to',
+    'of',
+    'for',
+    'in',
+    'on',
+    'is',
+    'are',
+    'it',
+    'me',
+  ]);
+  const sentences = text
+    .split(/(?<=[.!?\n])\s+/)
+    .map(norm)
+    .filter(Boolean);
+  for (const phrase of phrases) {
+    const words = norm(phrase)
+      .split(' ')
+      .filter((w) => w && !filler.has(w));
+    if (words.length < 2) continue;
+    for (const sentence of sentences) {
+      let at = 0;
+      let gap = 0;
+      for (const token of sentence.split(' ')) {
+        if (at >= words.length) break;
+        const word = words[at]!;
+        if (token === word || (word.length > 4 && token.startsWith(word.replace(/s$/, '')))) {
+          at += 1;
+          gap = 0;
+        } else if (at > 0 && ++gap > 4) {
+          at = 0;
+          gap = 0;
+        }
+      }
+      if (at >= words.length) return phrase;
+    }
+  }
+  return undefined;
+}
+
 /** The first keyword a post contains as whole words. */
 function matchedTerm(post: FeedPost, keywords: readonly string[]): string | undefined {
   const hay = `${post.title ?? ''}\n${post.text}`;
@@ -695,7 +799,7 @@ export async function scanLeadMonitor(
   const webRan = sources.some((source) => source.slug === 'web');
   const bySource: Record<string, number> = {};
   const failures: { source: string; reason: string }[] = [];
-  const fresh: { post: FeedPost; term: string | undefined }[] = [];
+  const fresh: { post: FeedPost; term: string | undefined; pain?: string | undefined }[] = [];
   const seenNow = new Set<string>();
   let read = 0;
 
@@ -708,7 +812,12 @@ export async function scanLeadMonitor(
         source.slug === 'web'
           ? new Date(lastWeb ? Math.max(lastWeb - OVERLAP_MS, earliest) : earliest)
           : since;
-      posts = await source.search({ terms: monitor.keywords, since: sourceSince, limit: 100 });
+      // Pain phrases first: a source that caps its terms reads the complaints before the category.
+      posts = await source.search({
+        terms: [...monitor.painPhrases, ...monitor.keywords],
+        since: sourceSince,
+        limit: 100,
+      });
     } catch (error) {
       failures.push({
         source: source.slug,
@@ -735,6 +844,11 @@ export async function scanLeadMonitor(
         [monitor.id, post.network, post.externalId],
       );
       if (known) continue;
+      const pain = matchPainPhrase(`${post.title ?? ''}\n${post.text}`, monitor.painPhrases);
+      if (pain) {
+        fresh.push({ post, term: pain, pain });
+        continue;
+      }
       const term = matchedTerm(post, monitor.keywords);
       if (!term) continue;
       fresh.push({ post, term });
@@ -747,15 +861,15 @@ export async function scanLeadMonitor(
   // Every new post is stored first. With a model, its wording guess is capped
   // below the floor until the model has looked at it; without one, the guess
   // is the score.
-  for (const { post, term } of fresh) {
-    const guess = patternIntent(post.text);
+  for (const { post, term, pain } of fresh) {
+    const guess = pain ? Math.max(patternIntent(post.text), PAIN_INTENT) : patternIntent(post.text);
     const intent = deps.model ? Math.min(guess, PENDING_INTENT_CAP) : guess;
     if (!deps.model && intent >= monitor.minIntent) leads += 1;
     await db.execute({
       sql: `INSERT INTO community_leads (id, workspace_id, monitor_id, source, external_id, url, title, excerpt,
               author, author_url, container, posted_at, matched_term, intent, reason, judged, status,
-              created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 'new', ?, ?)
+              created_at, updated_at, pain_phrase)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 'new', ?, ?, ?)
             ON CONFLICT (monitor_id, source, external_id) DO NOTHING`,
       args: [
         newId('communityLead'),
@@ -774,6 +888,7 @@ export async function scanLeadMonitor(
         intent,
         createdAt,
         createdAt,
+        pain ?? null,
       ],
     });
   }
@@ -788,9 +903,10 @@ export async function scanLeadMonitor(
       title: string | null;
       excerpt: string;
       posted_at: string;
+      pain_phrase: string | null;
     }>(
       db,
-      `SELECT id, source, title, excerpt, posted_at FROM community_leads
+      `SELECT id, source, title, excerpt, posted_at, pain_phrase FROM community_leads
         WHERE monitor_id = ? AND judged = 0 AND posted_at >= ?
         ORDER BY posted_at DESC LIMIT 1000`,
       [monitor.id, new Date(at.getTime() - BACKLOG_DAYS * DAY_MS).toISOString()],
@@ -824,13 +940,18 @@ export async function scanLeadMonitor(
       for (const verdict of verdicts) {
         const row = batch[Number(verdict.id)];
         if (!row) continue;
+        // A ruled-out post stays out: the bonus lifts a real lead, never an ad.
+        const intent =
+          row.pain_phrase && verdict.intent > 0
+            ? Math.min(100, verdict.intent + PAIN_BONUS)
+            : verdict.intent;
         await db.execute({
           sql: `UPDATE community_leads SET intent = ?, reason = ?, judged = 1, updated_at = ?
                 WHERE id = ? AND judged = 0`,
-          args: [verdict.intent, verdict.reason || null, createdAt, row.id],
+          args: [intent, verdict.reason || null, createdAt, row.id],
         });
         judged += 1;
-        if (verdict.intent >= monitor.minIntent) leads += 1;
+        if (intent >= monitor.minIntent) leads += 1;
       }
     }
   }
@@ -904,7 +1025,7 @@ export async function listCommunityLeads(
     `SELECT l.*, m.name AS monitor_name
        FROM community_leads l JOIN lead_monitors m ON m.id = l.monitor_id
       WHERE ${where.join(' AND ')}
-      ORDER BY l.posted_at DESC, l.intent DESC
+      ORDER BY CASE WHEN l.pain_phrase IS NULL THEN 1 ELSE 0 END, l.posted_at DESC, l.intent DESC
       LIMIT ?`,
     args,
   );
@@ -1093,4 +1214,22 @@ export async function sendCommunityLeadDigest(
     });
   }
   return leads.length;
+}
+
+/**
+ * Draft pain phrases for a monitor with the model and merge them into the ones
+ * it has. A person's edits survive: nothing is removed here.
+ */
+export async function generatePainPhrases(
+  deps: { readonly db: Client; readonly model?: TextModel | undefined },
+  workspaceId: string,
+  monitorId: string,
+): Promise<LeadMonitor | undefined> {
+  const monitor = await getLeadMonitor(deps.db, workspaceId, monitorId);
+  if (!monitor) return undefined;
+  if (!deps.model) throw new NoModelError();
+  const drafted = await suggestPainPhrases(deps.model, brandOf(monitor));
+  return updateLeadMonitor(deps.db, workspaceId, monitorId, {
+    painPhrases: [...monitor.painPhrases, ...drafted],
+  });
 }

@@ -572,6 +572,10 @@ export {
   createLeadMonitor,
   deleteLeadMonitor,
   draftCommunityLeadReply,
+  generatePainPhrases,
+  matchPainPhrase,
+  PAIN_BONUS,
+  PAIN_INTENT,
   getCommunityLead,
   getLeadMonitor,
   listCommunityLeads,
@@ -598,6 +602,15 @@ export {
   type LeadStatus,
   type MonitorInput,
 } from './community-leads';
+export {
+  computeCampaignHubs,
+  getCampaignHubs,
+  rankHubs,
+  CampaignNotFoundError,
+  type CampaignHub,
+  type CampaignHubs,
+  type HubOptions,
+} from './campaign-hubs';
 export {
   applyCampaignBounceGate,
   campaignBounceState,
