@@ -222,7 +222,7 @@ if (process.env.RUN_MIGRATIONS !== 'false') {
  * was paying a failed round trip to OpenAI first. OpenAI and Anthropic stay as
  * fallbacks. `GEMINI_MODEL` picks the Gemini model (default Flash-Lite, below).
  */
-const DEFAULT_CHAIN_ORDER = ['gemini', 'openai', 'anthropic'] as const;
+const DEFAULT_CHAIN_ORDER = ['gemini', 'openai', 'anthropic', 'workersai'] as const;
 
 const builders: Record<string, () => FallbackEntry | undefined> = {
   anthropic: () =>
@@ -252,6 +252,22 @@ const builders: Record<string, () => FallbackEntry | undefined> = {
           // Flash, but ~66 output tokens a call against Flash's ~1,700 (Flash
           // thinks by default, billed as output) and ~0.7 s against ~12 s.
           model: new GeminiModel({ model: process.env.GEMINI_MODEL ?? 'gemini-flash-lite-latest' }),
+        }
+      : undefined,
+  // Cloudflare Workers AI through its OpenAI-compatible endpoint. The last
+  // link: on 2026-10-28 Gemini hit its spend cap while OpenAI and Anthropic
+  // were already out of credit, and every crawl, profile read and draft in
+  // every workspace stopped. Workers AI is billed on the Cloudflare account
+  // Infernet already falls back to, so the queue keeps moving.
+  workersai: () =>
+    process.env.WORKERS_AI_TOKEN && process.env.WORKERS_AI_ACCOUNT_ID
+      ? {
+          name: 'workersai',
+          model: new OpenAIModel({
+            apiKey: process.env.WORKERS_AI_TOKEN,
+            endpoint: `https://api.cloudflare.com/client/v4/accounts/${process.env.WORKERS_AI_ACCOUNT_ID}/ai/v1/chat/completions`,
+            model: process.env.WORKERS_AI_MODEL ?? '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+          }),
         }
       : undefined,
 };
