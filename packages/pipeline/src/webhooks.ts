@@ -10,29 +10,33 @@
  * One function, `emitWebhookEvent`, is the whole outbound bus. Every place in
  * the pipeline where something worth announcing happens calls it with a type
  * and a few ids, and it decides who hears: each matching webhook endpoint gets
- * a delivery row and a queued job, and each connected CRM gets a sync job when
- * the type is one a CRM cares about. Three design points carry the weight:
+ * a delivery row on the fleet's webhook hub (`@profullstack/webhooks`), and
+ * each connected CRM gets a sync job when the type is one a CRM cares about.
  *
- *   - **Nothing is sent inline.** Emitting writes rows and returns. The HTTP
- *     call happens later, on the worker, as a `deliver_webhook` job — so a
- *     receiver that takes ten seconds to answer cannot make approving a card
- *     take ten seconds, and a receiver that is down gets retried with the
- *     queue's backoff instead of being lost.
+ *   - **Nothing is sent inline.** Emitting writes delivery rows and returns.
+ *     The hub's drainer (started once in apps/server) sends them, retries a
+ *     failure with backoff (30 s, 2 min, 10 min, 1 h, 6 h, 24 h, 48 h) and
+ *     switches an endpoint off after 20 failures in a row. The outbox lives
+ *     in `webhook_deliveries`, so a restart loses nothing.
  *   - **Emitting never throws.** It is called from inside the happy paths of
  *     sending, replying and approving. A customer's broken Zapier hook must
- *     not be able to fail a send that already went out, so every failure here
- *     is logged and swallowed, the same contract `emitEvent` keeps for the
- *     progress feed.
+ *     not be able to fail a send that already went out.
  *   - **The payload is frozen at emit time.** The delivery row stores the
- *     exact envelope, so the fifth retry sends the same bytes as the first,
- *     with the same event id, and a receiver can drop the duplicate.
+ *     exact body, so the fifth retry sends the same bytes as the first, with
+ *     the same event id, and a receiver can drop the duplicate.
+ *
+ * Every delivery carries the Standard Webhooks headers (`webhook-id`,
+ * `webhook-timestamp`, `webhook-signature`) and, so that no existing receiver
+ * has to change, the original `X-OutreachGraph-Signature: t=<unix>,v1=<hex>`
+ * over `${t}.${body}` keyed with the secret's UTF-8 bytes, plus
+ * `X-OutreachGraph-Event` and `X-OutreachGraph-Delivery`.
  */
 
 import {
-  endpointWants,
   newId,
   CRM_PROVIDERS,
   CRM_TRIGGER_EVENTS,
+  WEBHOOK_EVENT_TYPES,
   type DeliverableEventType,
   type EventPerson,
   type OutboundEvent,
@@ -43,29 +47,33 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
   assertPublicUrl,
   formatSlackMessage,
-  newWebhookSecret,
-  postWebhook,
   signWebhook,
   SIGNATURE_HEADER,
   UnsafeUrlError,
+  WEBHOOK_USER_AGENT,
   type FetchLike,
   type HostLookup,
 } from '@outreachgraph/providers';
 import { decryptSecret, encryptSecret } from '@outreachgraph/secrets';
-import { enqueue, type QueuedJob } from './queue';
+import {
+  Webhooks,
+  WebhookError as HubError,
+  TEST_EVENT,
+  type GuardOptions,
+} from '@profullstack/webhooks';
+import { enqueue } from './queue';
+import { outreachGraphWebhookStore, SLACK_HOSTS } from './webhook-store';
 
-/**
- * Attempts per delivery. With the queue's doubling backoff from 30 seconds
- * this spans a little over an hour, which covers a receiver's deploy or a
- * short outage without retrying a dead endpoint all day.
- */
-export const WEBHOOK_MAX_ATTEMPTS = 8;
+export { urlHint } from './webhook-store';
 
 /** Attempts per CRM sync. A CRM that is down for longer is recorded as an error. */
 export const CRM_SYNC_MAX_ATTEMPTS = 5;
 
 /** Endpoints a workspace may register. A ceiling, not a product tier. */
 export const MAX_WEBHOOK_ENDPOINTS = 20;
+
+/** The CloudEvents `source` of every event. */
+export const WEBHOOK_SOURCE = 'https://outreachgraph.com';
 
 export class WebhookError extends Error {
   readonly code: 'not_configured' | 'invalid_url' | 'too_many' | 'not_found';
@@ -85,6 +93,10 @@ export interface WebhookEndpointSummary {
   readonly description: string | null;
   readonly active: boolean;
   readonly createdAt: string;
+  /** Consecutive failed deliveries; the hub switches the endpoint off at 20. */
+  readonly failures?: number;
+  /** Why the endpoint was switched off, when it was. */
+  readonly disabledReason?: string;
   /** The most recent attempt, so a broken endpoint is visible on the list. */
   readonly lastDelivery?: { status: string; statusCode: number | null; at: string };
 }
@@ -109,21 +121,176 @@ export interface UrlCheckOptions {
   readonly allowPrivate?: boolean;
 }
 
-// ----------------------------------------------------------------- endpoints
+// ----------------------------------------------------------------------- hub
 
-/**
- * The part of a URL that is safe to show back.
- *
- * Not the path: a Slack hook's path is its credential, and a Zapier catch
- * hook's is too. The origin plus the last four characters is enough to tell
- * two endpoints apart and to recognise the one you pasted.
- */
-export function urlHint(url: URL): string {
-  const path = url.pathname.replace(/\/$/, '');
-  return path.length > 1 ? `${url.origin}/…${path.slice(-4)}` : url.origin;
+export interface WebhookHubOptions extends UrlCheckOptions {
+  readonly encryptionKey?: Buffer | undefined;
+  readonly fetchImpl?: FetchLike;
+  /** Seconds since the epoch, for the legacy signature. Injected by tests. */
+  readonly clock?: () => number;
+  readonly log?: (message: string) => void;
 }
 
-const SLACK_HOSTS = new Set(['hooks.slack.com', 'hooks.slack-gov.com']);
+/**
+ * The legacy headers, exactly as the old sender wrote them.
+ *
+ * Not the package's `tV1Header`: that keys the HMAC with a `whsec_` secret's
+ * base64-decoded bytes (the Standard Webhooks rule), and OutreachGraph always
+ * keyed it with the secret string's UTF-8 bytes. Receivers verify against the
+ * latter, so `signWebhook` (the original function) signs it.
+ */
+export function legacyHeaders(clock: () => number = () => Math.floor(Date.now() / 1000)) {
+  return ({ body, secret, eventType }: { body: string; secret: string; eventType: string }) => {
+    let eventId = '';
+    try {
+      const parsed = JSON.parse(body) as { id?: unknown };
+      if (typeof parsed.id === 'string') eventId = parsed.id;
+    } catch {
+      // A body that is not JSON still gets signed.
+    }
+    return {
+      // The old sender said application/json, and express.json() and friends
+      // parse nothing else; the CloudEvents media type is in the body's shape.
+      'content-type': 'application/json',
+      'user-agent': WEBHOOK_USER_AGENT,
+      [SIGNATURE_HEADER]: signWebhook(secret, body, clock()),
+      'X-OutreachGraph-Event': eventType,
+      ...(eventId ? { 'X-OutreachGraph-Delivery': eventId } : {}),
+    };
+  };
+}
+
+/**
+ * The transport under the hub: OutreachGraph's own SSRF rule on every
+ * attempt, redirects refused rather than followed (a 302 to a metadata
+ * address would otherwise walk past the address check), and a Slack
+ * incoming-webhook URL given a one-line message instead of the envelope,
+ * because Slack takes a message and cannot check a signature anyway.
+ */
+export function webhookTransport(
+  options: UrlCheckOptions & { fetchImpl?: FetchLike },
+): typeof fetch {
+  const base = options.fetchImpl ?? fetch;
+  const transport = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = String(input instanceof Request ? input.url : input);
+    try {
+      await assertPublicUrl(url, options);
+    } catch (error) {
+      if (error instanceof UnsafeUrlError) throw new Error(`refused: ${error.message}`);
+      throw error;
+    }
+    let body = init?.body;
+    let headers = init?.headers;
+    if (SLACK_HOSTS.has(new URL(url).hostname) && typeof body === 'string') {
+      body = JSON.stringify(formatSlackMessage(slackEvent(body)));
+      headers = { 'content-type': 'application/json', 'user-agent': WEBHOOK_USER_AGENT };
+    }
+    return base(url, {
+      ...init,
+      ...(body !== undefined ? { body } : {}),
+      ...(headers !== undefined ? { headers } : {}),
+      redirect: 'manual',
+    });
+  };
+  return transport as typeof fetch;
+}
+
+/** An outbound envelope from a stored body, old shape or CloudEvent. */
+function slackEvent(body: string): OutboundEvent {
+  const parsed = JSON.parse(body) as Record<string, unknown>;
+  const type = parsed.type === TEST_EVENT ? 'ping' : parsed.type;
+  return {
+    id: String(parsed.id ?? ''),
+    type: type as OutboundEvent['type'],
+    createdAt: String(parsed.createdAt ?? parsed.time ?? ''),
+    workspaceId: String(parsed.workspaceId ?? ''),
+    data: (parsed.data ?? {}) as OutboundEvent['data'],
+  };
+}
+
+/** A hub over `db`. Cheap to build: the constructor only stores its options. */
+export function createWebhookHub(db: Client, options: WebhookHubOptions = {}): Webhooks {
+  const key = options.encryptionKey;
+  const store = outreachGraphWebhookStore(db, key);
+  const guard: GuardOptions = {
+    ...(options.lookup
+      ? { lookup: async (host: string) => [...(await options.lookup!(host))] }
+      : {}),
+    ...(options.allowHttp ? { allowHttp: true } : {}),
+    ...(options.allowPrivate ? { allowPrivate: true } : {}),
+  };
+  return new Webhooks({
+    store,
+    source: WEBHOOK_SOURCE,
+    eventTypes: [...WEBHOOK_EVENT_TYPES],
+    maxEndpoints: MAX_WEBHOOK_ENDPOINTS,
+    guard,
+    fetchImpl: webhookTransport({ ...options }),
+    extraHeaders: legacyHeaders(options.clock),
+    ...(key
+      ? {
+          secretBox: {
+            seal: (secret: string) => encryptSecret(secret, key),
+            open: (sealed: string) => decryptSecret(sealed, key),
+          },
+        }
+      : {
+          secretBox: {
+            seal: () => {
+              throw new Error('SECRET_ENCRYPTION_KEY is not set');
+            },
+            open: () => {
+              throw new Error('SECRET_ENCRYPTION_KEY is not set');
+            },
+          },
+        }),
+    // 410 Gone is a receiver saying "stop", and Slack answers it for a
+    // deleted hook. Honouring it beats retrying a URL that will never return.
+    onDelivery: async ({ delivery, endpoint }) => {
+      if (delivery.last_status !== 410) return;
+      const at = Date.now();
+      await store.updateEndpoint(endpoint.id, {
+        enabled: false,
+        disabledReason: 'the endpoint answered 410 Gone',
+        updatedAt: at,
+      });
+      await store.updateDelivery(delivery.id, { status: 'failed', updatedAt: at });
+    },
+    ...(options.log ? { log: options.log } : {}),
+  });
+}
+
+/**
+ * The started hub, per database. apps/server registers the one it starts so
+ * an emit wakes its drainer at once; anything else (tests, the CLI) gets an
+ * unstarted hub whose rows the drainer picks up on its next tick.
+ */
+const hubs = new WeakMap<Client, Webhooks>();
+
+export function registerWebhookHub(db: Client, hub: Webhooks): Webhooks {
+  hubs.set(db, hub);
+  return hub;
+}
+
+function hubFor(db: Client): Webhooks {
+  let hub = hubs.get(db);
+  if (!hub) {
+    hub = createWebhookHub(db);
+    hubs.set(db, hub);
+  }
+  return hub;
+}
+
+function translate(error: unknown): never {
+  if (error instanceof HubError) {
+    if (error.status === 404) throw new WebhookError('not_found', error.message);
+    if (error.status === 409) throw new WebhookError('too_many', error.message);
+    throw new WebhookError('invalid_url', error.message.replace(/^url: /, ''));
+  }
+  throw error;
+}
+
+// ----------------------------------------------------------------- endpoints
 
 export async function createWebhookEndpoint(
   db: Client,
@@ -170,42 +337,47 @@ export async function createWebhookEndpoint(
     throw new WebhookError('too_many', `a workspace may have ${MAX_WEBHOOK_ENDPOINTS} endpoints`);
   }
 
-  const id = newId('webhookEndpoint');
-  const secret = newWebhookSecret();
-  const stamp = now();
-  const hint = urlHint(url);
+  const hub = createWebhookHub(db, input);
+  let created: Awaited<ReturnType<Webhooks['createEndpoint']>>;
+  try {
+    created = await hub.createEndpoint(input.workspaceId, {
+      url: url.toString(),
+      events: input.events.length ? [...input.events] : ['*'],
+      description: input.description?.trim().slice(0, 200) ?? '',
+    });
+  } catch (error) {
+    translate(error);
+  }
 
-  await db.execute({
-    sql: `INSERT INTO webhook_endpoints (id, workspace_id, kind, url_enc, url_hint, secret_enc,
-          events_json, description, active, created_by, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-    args: [
-      id,
-      input.workspaceId,
-      input.kind,
-      encryptSecret(url.toString(), input.encryptionKey),
-      hint,
-      encryptSecret(secret, input.encryptionKey),
-      JSON.stringify(input.events),
-      input.description?.trim().slice(0, 200) || null,
-      input.createdBy ?? null,
-      stamp,
-      stamp,
-    ],
-  });
+  if (input.createdBy) {
+    await db.execute({
+      sql: 'UPDATE webhook_endpoints SET created_by = ? WHERE id = ?',
+      args: [input.createdBy, created.endpoint.id],
+    });
+  }
 
-  return {
-    endpoint: {
-      id,
-      kind: input.kind,
-      urlHint: hint,
-      events: [...input.events],
-      description: input.description?.trim().slice(0, 200) || null,
-      active: true,
-      createdAt: stamp,
-    },
-    secret,
-  };
+  const [summary] = (await listWebhookEndpoints(db, input.workspaceId)).filter(
+    (e) => e.id === created.endpoint.id,
+  );
+  if (!summary) throw new WebhookError('not_found', 'the new endpoint was not stored');
+  return { endpoint: summary, secret: created.secret };
+}
+
+/** A new signing secret, returned once; the old one stops working at once. */
+export async function rotateWebhookSecret(
+  db: Client,
+  workspaceId: string,
+  endpointId: string,
+  options: WebhookHubOptions,
+): Promise<{ secret: string }> {
+  if (!options.encryptionKey) {
+    throw new WebhookError('not_configured', 'SECRET_ENCRYPTION_KEY is not set');
+  }
+  try {
+    return await createWebhookHub(db, options).rotateSecret(workspaceId, endpointId);
+  } catch (error) {
+    translate(error);
+  }
 }
 
 function parseEvents(raw: string | null | undefined): WebhookEventType[] {
@@ -228,6 +400,8 @@ export async function listWebhookEndpoints(
     events_json: string;
     description: string | null;
     active: number;
+    failures: number | null;
+    disabled_reason: string | null;
     created_at: string;
     last_status: string | null;
     last_code: number | null;
@@ -235,6 +409,7 @@ export async function listWebhookEndpoints(
   }>(
     db,
     `SELECT e.id, e.kind, e.url_hint, e.events_json, e.description, e.active, e.created_at,
+            e.failures, e.disabled_reason,
             d.status AS last_status, d.status_code AS last_code, d.updated_at AS last_at
        FROM webhook_endpoints e
        LEFT JOIN webhook_deliveries d ON d.id = (
@@ -251,8 +426,10 @@ export async function listWebhookEndpoints(
     urlHint: row.url_hint,
     events: parseEvents(row.events_json),
     description: row.description,
-    active: row.active === 1,
+    active: Number(row.active) === 1,
     createdAt: row.created_at,
+    failures: Number(row.failures ?? 0),
+    ...(row.disabled_reason ? { disabledReason: row.disabled_reason } : {}),
     ...(row.last_status && row.last_at
       ? {
           lastDelivery: {
@@ -270,8 +447,7 @@ export async function listWebhookEndpoints(
  *
  * Deleting rather than deactivating: the URL is a credential, and a row that
  * keeps its ciphertext after the customer said "remove it" is a credential we
- * were told to stop holding. Deliveries still queued find no endpoint and
- * cancel themselves.
+ * were told to stop holding. Its delivery log goes with it.
  */
 export async function deleteWebhookEndpoint(
   db: Client,
@@ -280,6 +456,10 @@ export async function deleteWebhookEndpoint(
 ): Promise<boolean> {
   const result = await db.execute({
     sql: 'DELETE FROM webhook_endpoints WHERE id = ? AND workspace_id = ?',
+    args: [endpointId, workspaceId],
+  });
+  await db.execute({
+    sql: 'DELETE FROM webhook_deliveries WHERE endpoint_id = ? AND workspace_id = ?',
     args: [endpointId, workspaceId],
   });
   return Number(result.rowsAffected ?? 0) > 0;
@@ -395,12 +575,12 @@ export async function emitWebhookEvent(
   data: Record<string, unknown> = {},
 ): Promise<EmitResult> {
   try {
-    const endpoints = await queryAll<{ id: string; events_json: string }>(
+    const hub = hubFor(db);
+    const listening = await queryOne<{ n: number }>(
       db,
-      `SELECT id, events_json FROM webhook_endpoints WHERE workspace_id = ? AND active = 1`,
+      'SELECT count(*) AS n FROM webhook_endpoints WHERE workspace_id = ? AND active = 1',
       [workspaceId],
     );
-    const targets = endpoints.filter((e) => endpointWants(parseEvents(e.events_json), type));
 
     const crms = CRM_TRIGGER_EVENTS.includes(type)
       ? await queryAll<{ network: string }>(
@@ -413,13 +593,16 @@ export async function emitWebhookEvent(
       : [];
 
     // The common case, by far: nobody is listening. One indexed read and out.
-    if (targets.length === 0 && crms.length === 0) return { deliveries: 0, crmSyncs: 0 };
+    if (Number(listening?.n ?? 0) === 0 && crms.length === 0) {
+      return { deliveries: 0, crmSyncs: 0 };
+    }
 
     const event = await buildEvent(db, workspaceId, type, data);
-
-    for (const target of targets) {
-      await queueDelivery(db, workspaceId, target.id, event);
-    }
+    const personId = typeof data.personId === 'string' ? data.personId : undefined;
+    const emitted = await hub.emit(workspaceId, type, event.data, {
+      id: event.id,
+      ...(personId ? { subject: `person:${personId}` } : {}),
+    });
 
     for (const crm of crms) {
       if (!(CRM_PROVIDERS as readonly string[]).includes(crm.network)) continue;
@@ -432,7 +615,7 @@ export async function emitWebhookEvent(
       });
     }
 
-    return { eventId: event.id, deliveries: targets.length, crmSyncs: crms.length };
+    return { eventId: event.id, deliveries: emitted.queued, crmSyncs: crms.length };
   } catch (error) {
     // Deliberately swallowed. See the note at the top of this file.
     console.warn(`webhook emit ${type} failed in ${workspaceId}:`, error);
@@ -470,219 +653,49 @@ async function buildEvent(
   };
 }
 
-async function queueDelivery(
-  db: Client,
-  workspaceId: string,
-  endpointId: string,
-  event: OutboundEvent,
-): Promise<string> {
-  const id = newId('webhookDelivery');
-  const stamp = now();
-
-  await db.execute({
-    sql: `INSERT INTO webhook_deliveries (id, endpoint_id, workspace_id, event_id, event_type,
-          payload_json, status, attempt, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
-    args: [id, endpointId, workspaceId, event.id, event.type, JSON.stringify(event), stamp, stamp],
-  });
-
-  await enqueue(db, {
-    workspaceId,
-    kind: 'deliver_webhook',
-    payload: { deliveryId: id },
-    maxAttempts: WEBHOOK_MAX_ATTEMPTS,
-    dedupeKey: `webhook:${id}`,
-  });
-
-  return id;
-}
-
 /**
- * Fires a `ping` at one endpoint, through the same queue as everything else.
+ * Sends a `webhook.test` event to one endpoint now and says how it went.
  *
- * Through the queue rather than inline for the same reason as real events:
- * "test" must exercise the path real deliveries take, or it tests nothing.
+ * Sent inline, through the same transport and signing as real deliveries, so
+ * a passing test proves the real path works. It is logged but never retried.
  */
 export async function sendTestEvent(
   db: Client,
   workspaceId: string,
   endpointId: string,
-): Promise<{ deliveryId: string; eventId: string } | undefined> {
+  options: WebhookHubOptions = {},
+): Promise<
+  | {
+      deliveryId: string;
+      eventId: string;
+      ok: boolean;
+      statusCode: number | null;
+      error: string | null;
+    }
+  | undefined
+> {
   const endpoint = await queryOne<{ id: string }>(
     db,
     'SELECT id FROM webhook_endpoints WHERE id = ? AND workspace_id = ?',
     [endpointId, workspaceId],
   );
   if (!endpoint) return undefined;
-
-  const event = await buildEvent(db, workspaceId, 'ping', {
-    message: 'This is a test event from OutreachGraph.',
-  });
-  const deliveryId = await queueDelivery(db, workspaceId, endpointId, event);
-  return { deliveryId, eventId: event.id };
-}
-
-// ------------------------------------------------------------------- deliver
-
-export interface WebhookDeliveryDeps extends UrlCheckOptions {
-  readonly db: Client;
-  readonly encryptionKey?: Buffer | undefined;
-  readonly fetchImpl?: FetchLike;
-  /** Seconds since the epoch, for the signature. Injected by tests. */
-  readonly clock?: () => number;
-}
-
-export interface WebhookDeliveryResult {
-  readonly status: 'delivered' | 'retrying' | 'failed' | 'cancelled';
-  readonly statusCode?: number;
-  readonly error?: string;
-}
-
-/** Thrown to make the queue retry. The delivery row already says why. */
-export class WebhookRetryError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'WebhookRetryError';
+  if (!options.encryptionKey) {
+    throw new WebhookError('not_configured', 'SECRET_ENCRYPTION_KEY is not set');
   }
-}
 
-/** The request body an endpoint of `kind` expects for `event`. */
-export function webhookBody(kind: WebhookEndpointKind, event: OutboundEvent): string {
-  return JSON.stringify(kind === 'slack' ? formatSlackMessage(event) : event);
-}
-
-/**
- * Runs one `deliver_webhook` job.
- *
- * Throws `WebhookRetryError` when another attempt could succeed, which is how
- * a job asks the queue for backoff. Returns normally for every outcome that a
- * retry cannot change: delivered, the endpoint is gone, or its URL is now one
- * we refuse to call.
- */
-export async function runWebhookDelivery(
-  deps: WebhookDeliveryDeps,
-  job: Pick<QueuedJob, 'payload' | 'attempts' | 'maxAttempts' | 'workspaceId'>,
-): Promise<WebhookDeliveryResult> {
-  const { db } = deps;
-  const deliveryId = typeof job.payload.deliveryId === 'string' ? job.payload.deliveryId : '';
-
-  const row = await queryOne<{
-    id: string;
-    status: string;
-    payload_json: string;
-    event_type: string;
-    endpoint_id: string;
-    kind: string | null;
-    url_enc: string | null;
-    secret_enc: string | null;
-    active: number | null;
-  }>(
+  const hub = createWebhookHub(db, options);
+  const result = await hub.test(workspaceId, endpointId);
+  const row = await queryOne<{ event_id: string }>(
     db,
-    `SELECT d.id, d.status, d.payload_json, d.event_type, d.endpoint_id,
-            e.kind, e.url_enc, e.secret_enc, e.active
-       FROM webhook_deliveries d
-       LEFT JOIN webhook_endpoints e ON e.id = d.endpoint_id
-      WHERE d.id = ? AND d.workspace_id = ?`,
-    [deliveryId, job.workspaceId],
+    'SELECT event_id FROM webhook_deliveries WHERE id = ?',
+    [result.delivery_id],
   );
-
-  // The endpoint was deleted, and its deliveries with it.
-  if (!row) return { status: 'cancelled', error: 'the delivery no longer exists' };
-  if (row.status === 'delivered') return { status: 'delivered' };
-
-  const stamp = now();
-  const record = async (
-    status: WebhookDeliveryResult['status'],
-    statusCode: number | undefined,
-    error: string | undefined,
-  ): Promise<void> => {
-    await db.execute({
-      sql: `UPDATE webhook_deliveries
-               SET status = ?, attempt = ?, status_code = ?, error = ?, updated_at = ?,
-                   delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END
-             WHERE id = ?`,
-      args: [
-        status,
-        job.attempts,
-        statusCode ?? null,
-        error?.slice(0, 1000) ?? null,
-        stamp,
-        status,
-        stamp,
-        row.id,
-      ],
-    });
+  return {
+    deliveryId: result.delivery_id,
+    eventId: row?.event_id ?? '',
+    ok: result.ok,
+    statusCode: result.status,
+    error: result.error,
   };
-
-  if (!row.url_enc || !row.secret_enc || row.active !== 1) {
-    await record('cancelled', undefined, 'the endpoint was removed or disabled');
-    return { status: 'cancelled', error: 'the endpoint was removed or disabled' };
-  }
-
-  const finalAttempt = job.attempts >= job.maxAttempts;
-
-  if (!deps.encryptionKey) {
-    const error = 'SECRET_ENCRYPTION_KEY is not set on the worker';
-    await record(finalAttempt ? 'failed' : 'retrying', undefined, error);
-    throw new WebhookRetryError(error);
-  }
-
-  const url = decryptSecret(row.url_enc, deps.encryptionKey);
-  const secret = decryptSecret(row.secret_enc, deps.encryptionKey);
-  const event = JSON.parse(row.payload_json) as OutboundEvent;
-  const body = webhookBody((row.kind ?? 'generic') as WebhookEndpointKind, event);
-  const timestamp = deps.clock?.() ?? Math.floor(Date.now() / 1000);
-
-  const outcome = await postWebhook({
-    url,
-    body,
-    headers: {
-      [SIGNATURE_HEADER]: signWebhook(secret, body, timestamp),
-      'X-OutreachGraph-Event': event.type,
-      'X-OutreachGraph-Delivery': row.id,
-    },
-    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-    ...(deps.lookup ? { lookup: deps.lookup } : {}),
-    ...(deps.allowHttp ? { allowHttp: true } : {}),
-    ...(deps.allowPrivate ? { allowPrivate: true } : {}),
-  });
-
-  if (outcome.ok) {
-    await record('delivered', outcome.status, undefined);
-    return { status: 'delivered', statusCode: outcome.status };
-  }
-
-  // 410 Gone is a receiver saying "stop", and Slack answers it for a deleted
-  // hook. Honouring it beats retrying a URL that will never come back.
-  if (outcome.status === 410) {
-    await db.execute({
-      sql: 'UPDATE webhook_endpoints SET active = 0, updated_at = ? WHERE id = ?',
-      args: [stamp, row.endpoint_id],
-    });
-    await record('failed', 410, 'the endpoint answered 410 Gone and has been disabled');
-    return { status: 'failed', statusCode: 410, error: 'gone' };
-  }
-
-  if (!outcome.retryable) {
-    await record('failed', outcome.status, outcome.error);
-    return {
-      status: 'failed',
-      error: outcome.error,
-      ...(outcome.status ? { statusCode: outcome.status } : {}),
-    };
-  }
-
-  await record(finalAttempt ? 'failed' : 'retrying', outcome.status, outcome.error);
-  throw new WebhookRetryError(outcome.error);
-}
-
-/** Old delivery rows are a log, not a record; a month is plenty to debug with. */
-export async function pruneWebhookDeliveries(db: Client, keepDays = 30): Promise<number> {
-  const cutoff = new Date(Date.now() - keepDays * 86_400_000).toISOString();
-  const result = await db.execute({
-    sql: `DELETE FROM webhook_deliveries
-           WHERE created_at < ? AND status IN ('delivered', 'failed', 'cancelled')`,
-    args: [cutoff],
-  });
-  return Number(result.rowsAffected ?? 0);
 }

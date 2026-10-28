@@ -334,15 +334,9 @@ export {
   verifyWebhookSignature,
   DEFAULT_TOLERANCE_SECONDS,
   SIGNATURE_HEADER,
+  WEBHOOK_USER_AGENT,
 } from './webhooks/sign';
 export { formatSlackMessage, type SlackMessage } from './webhooks/slack';
-export {
-  postWebhook,
-  WEBHOOK_TIMEOUT_MS,
-  WEBHOOK_USER_AGENT,
-  type PostWebhookInput,
-  type PostWebhookOutcome,
-} from './webhooks/deliver';
 
 export {
   crmClientFor,

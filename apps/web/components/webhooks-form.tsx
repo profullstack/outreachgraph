@@ -13,9 +13,9 @@ import type { WebhooksView } from '../lib/api';
  * list shows only a hint of each URL because the URL itself is frequently a
  * credential — anyone holding a Slack hook can post into that channel.
  *
- * "Send test" queues a ping through the same worker path real events take, so
- * the last-delivery line under an endpoint is the honest answer to "does it
- * work", a few seconds later.
+ * "Send test" sends a webhook.test event at once through the same transport
+ * and signing real events take, and says how it landed. "Rotate secret" shows
+ * the new secret once, like create.
  */
 export function WebhooksForm({ initial }: { initial: WebhooksView }) {
   const router = useRouter();
@@ -77,11 +77,45 @@ export function WebhooksForm({ initial }: { initial: WebhooksView }) {
         method: 'POST',
         credentials: 'same-origin',
       });
+      const result = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        statusCode?: number | null;
+        error?: string | null | { message?: string };
+      };
       if (!response.ok) {
-        setError(`could not queue a test (${response.status})`);
+        const message = typeof result.error === 'object' ? result.error?.message : undefined;
+        setError(message ?? `could not send a test (${response.status})`);
         return;
       }
-      setNotice('Test queued. It goes out within a minute; refresh to see how it landed.');
+      if (result.ok) setNotice(`Test delivered (${result.statusCode ?? 'ok'}).`);
+      else
+        setError(
+          `Test failed: ${typeof result.error === 'string' ? result.error : `HTTP ${result.statusCode ?? '?'}`}`,
+        );
+      router.refresh();
+    } catch {
+      setError('could not reach the server');
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function rotate(id: string, label: string): Promise<void> {
+    if (!confirm(`Rotate the signing secret for ${label}? The old one stops working now.`)) return;
+    setBusy(id);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const response = await fetch(`/api/v1/webhooks/${id}/rotate`, {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      const payload = (await response.json().catch(() => ({}))) as { secret?: string };
+      if (!response.ok || !payload.secret) {
+        setError(`could not rotate (${response.status})`);
+        return;
+      }
+      setFresh({ urlHint: label, secret: payload.secret });
     } catch {
       setError('could not reach the server');
     } finally {
@@ -116,7 +150,8 @@ export function WebhooksForm({ initial }: { initial: WebhooksView }) {
       <p className="text-ink-muted mt-1 text-sm">
         Send replies, clicks, approvals and sends to Slack, or to Zapier, Make, n8n or your own
         server as signed JSON. Verify <code>X-OutreachGraph-Signature</code> (<code>t=…,v1=…</code>)
-        as HMAC-SHA256 of <code>t.body</code> with the secret.
+        as HMAC-SHA256 of <code>t.body</code> with the secret, or the Standard Webhooks{' '}
+        <code>webhook-signature</code> header.
       </p>
 
       {!initial.canCreate ? (
@@ -128,7 +163,7 @@ export function WebhooksForm({ initial }: { initial: WebhooksView }) {
       {fresh ? (
         <div className="border-accent mt-3 rounded-xl border p-3 text-sm">
           <p className="font-medium">
-            {fresh.urlHint} is ready. Copy the signing secret now; it is not shown again.
+            {fresh.urlHint}: copy the signing secret now; it is not shown again.
           </p>
           <code className="mt-2 block break-all rounded-lg bg-black/5 p-2 text-xs">
             {fresh.secret}
@@ -151,7 +186,9 @@ export function WebhooksForm({ initial }: { initial: WebhooksView }) {
               <p className="truncate font-medium">
                 {endpoint.kind === 'slack' ? 'Slack · ' : ''}
                 {endpoint.urlHint}
-                {endpoint.active ? '' : ' (disabled)'}
+                {endpoint.active
+                  ? ''
+                  : ` (disabled${endpoint.disabledReason ? `: ${endpoint.disabledReason}` : ''})`}
               </p>
               <p className="text-ink-muted text-xs">
                 {endpoint.events.length === 0 ? 'All events' : endpoint.events.join(', ')}
@@ -172,6 +209,14 @@ export function WebhooksForm({ initial }: { initial: WebhooksView }) {
                 className="border-border rounded-xl border px-3 py-2 text-xs disabled:opacity-40"
               >
                 Send test
+              </button>
+              <button
+                type="button"
+                disabled={busy === endpoint.id}
+                onClick={() => rotate(endpoint.id, endpoint.urlHint)}
+                className="border-border rounded-xl border px-3 py-2 text-xs disabled:opacity-40"
+              >
+                Rotate secret
               </button>
               <button
                 type="button"

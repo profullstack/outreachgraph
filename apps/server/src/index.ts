@@ -72,9 +72,9 @@ import {
   resolveJobPost,
   workspacesWithInternalBacklog,
   pruneWorkflowEvents,
-  pruneWebhookDeliveries,
+  createWebhookHub,
+  registerWebhookHub,
   runCrmSync,
-  runWebhookDelivery,
   regenerateRecommendations,
   rescoreProspect,
   reseedIdleCampaigns,
@@ -317,6 +317,16 @@ const encryptionKey = secretKeyFromEnv();
 if (!encryptionKey) {
   console.log('no SECRET_ENCRYPTION_KEY: workspaces cannot connect their own sending mailbox');
 }
+
+// Outbound webhooks: the @profullstack/webhooks hub, started once here. It
+// drains due deliveries every 5 s and prunes the month-old log itself.
+// Without the key nothing can be decrypted to send, so it is not started.
+const webhookHub = encryptionKey
+  ? registerWebhookHub(
+      db,
+      createWebhookHub(db, { encryptionKey, log: (message) => console.log(message) }),
+    ).start()
+  : undefined;
 
 /**
  * Pictures of leads, by search.
@@ -676,7 +686,7 @@ const api = createApp({
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
-  version: process.env.APP_VERSION ?? '0.23.7',
+  version: process.env.APP_VERSION ?? '0.24.0',
   ...(commitHash ? { commitHash } : {}),
 });
 
@@ -1064,13 +1074,10 @@ async function runJob(job: QueuedJob): Promise<void> {
       return;
     }
     case 'deliver_webhook': {
-      // Throws to ask for a retry; the delivery row already says why.
-      const result = await runWebhookDelivery({ db, encryptionKey }, job);
-      console.log(
-        `deliver_webhook ${String(job.payload.deliveryId)}: ${result.status}` +
-          (result.statusCode ? ` (${result.statusCode})` : '') +
-          (result.error ? ` ${result.error}` : ''),
-      );
+      // Jobs queued before the move to @profullstack/webhooks. Their delivery
+      // rows were handed to the hub by migration 0079, which sends them; the
+      // job itself has nothing left to do.
+      console.log(`deliver_webhook ${String(job.payload.deliveryId)}: handed to the webhook hub`);
       return;
     }
     case 'sync_crm': {
@@ -1124,10 +1131,6 @@ async function tick(): Promise<void> {
   // a separate table precisely so this can be aggressive.
   const prunedEvents = await pruneWorkflowEvents(db);
   if (prunedEvents > 0) console.log(`pruned ${prunedEvents} workflow events`);
-
-  // The delivery log is for debugging a receiver, and a month covers that.
-  const prunedDeliveries = await pruneWebhookDeliveries(db);
-  if (prunedDeliveries > 0) console.log(`pruned ${prunedDeliveries} webhook deliveries`);
 
   // Cards that reach nobody are cleared before the queue drains, so the crawls
   // they enqueue run on this tick rather than waiting for the next one.
@@ -1971,6 +1974,7 @@ async function shutdown(signal: string): Promise<void> {
 
   console.log(`${signal} received, draining`);
   running = false;
+  webhookHub?.stop();
 
   // Finish the current tick so a half-processed deletion is not left pending
   // with rows already removed.

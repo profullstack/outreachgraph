@@ -1,6 +1,6 @@
 {
   "name": "@outreachgraph/api",
-  "version": "0.23.7",
+  "version": "0.24.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -30,6 +30,7 @@
     "@profullstack/openprofile": "^0.2.0",
     "@profullstack/profile": "0.1.6",
     "@profullstack/redeem-credits": "^0.2.0",
+    "@profullstack/webhooks": "0.2.0",
     "hono": "^4.13.14",
     "zod": "^4.6.7"
   }

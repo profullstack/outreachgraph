@@ -21,8 +21,9 @@
     "@outreachgraph/providers": "workspace:*",
     "@outreachgraph/recommend": "workspace:*",
     "@outreachgraph/scoring": "workspace:*",
-    "@profullstack/openprofile": "^0.2.0",
     "@outreachgraph/secrets": "workspace:*",
-    "@outreachgraph/signals": "workspace:*"
+    "@outreachgraph/signals": "workspace:*",
+    "@profullstack/openprofile": "^0.2.0",
+    "@profullstack/webhooks": "0.2.0"
   }
 }

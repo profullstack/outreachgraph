@@ -1,5 +1,5 @@
 /**
- * Signing, Slack formatting and the wire. The signing tests hold both halves
+ * Signing and Slack formatting. The signing tests hold both halves
  * to the same scheme, so a receiver written from the docs verifies what the
  * sender produces.
  */
@@ -9,9 +9,6 @@ import { createHmac } from 'node:crypto';
 import type { OutboundEvent } from '@outreachgraph/domain';
 import { newWebhookSecret, signWebhook, verifyWebhookSignature } from './sign';
 import { formatSlackMessage } from './slack';
-import { postWebhook } from './deliver';
-
-const PUBLIC = async () => ['93.184.216.34'];
 
 describe('signing', () => {
   const secret = 'whsec_test';
@@ -94,88 +91,5 @@ describe('formatSlackMessage', () => {
   test('survives an event about nobody', () => {
     const text = formatSlackMessage({ ...event('cadence.completed'), data: {} }).text;
     expect(text).toContain('someone');
-  });
-});
-
-describe('postWebhook', () => {
-  test('posts the body with the headers, and does not follow redirects', async () => {
-    let seen: RequestInit | undefined;
-    const outcome = await postWebhook({
-      url: 'https://hooks.example.com/in',
-      body: '{"a":1}',
-      headers: { 'X-OutreachGraph-Signature': 't=1,v1=x' },
-      lookup: PUBLIC,
-      fetchImpl: async (_url, init) => {
-        seen = init;
-        return new Response('ok', { status: 200 });
-      },
-    });
-
-    expect(outcome.ok).toBe(true);
-    expect(seen?.method).toBe('POST');
-    expect(seen?.redirect).toBe('manual');
-    expect(seen?.body).toBe('{"a":1}');
-    expect((seen?.headers as Record<string, string>)['X-OutreachGraph-Signature']).toBe('t=1,v1=x');
-  });
-
-  test('refuses a private destination without making the request', async () => {
-    let called = false;
-    const outcome = await postWebhook({
-      url: 'https://internal.example/',
-      body: '{}',
-      lookup: async () => ['10.0.0.8'],
-      fetchImpl: async () => {
-        called = true;
-        return new Response('');
-      },
-    });
-
-    expect(called).toBe(false);
-    expect(outcome.ok).toBe(false);
-    if (!outcome.ok) expect(outcome.retryable).toBe(false);
-  });
-
-  test('a 500 and a network failure are retryable; a redirect is not success', async () => {
-    const failing = await postWebhook({
-      url: 'https://hooks.example.com/in',
-      body: '{}',
-      lookup: PUBLIC,
-      fetchImpl: async () => new Response('boom', { status: 500 }),
-    });
-    expect(failing).toMatchObject({ ok: false, status: 500, retryable: true });
-
-    const refused = await postWebhook({
-      url: 'https://hooks.example.com/in',
-      body: '{}',
-      lookup: PUBLIC,
-      fetchImpl: async () => {
-        throw new TypeError('connection refused');
-      },
-    });
-    expect(refused).toMatchObject({ ok: false, retryable: true });
-
-    const redirected = await postWebhook({
-      url: 'https://hooks.example.com/in',
-      body: '{}',
-      lookup: PUBLIC,
-      fetchImpl: async () =>
-        new Response('', { status: 302, headers: { location: 'http://169.254.169.254/' } }),
-    });
-    expect(redirected.ok).toBe(false);
-  });
-
-  test('gives up after the timeout', async () => {
-    const outcome = await postWebhook({
-      url: 'https://hooks.example.com/in',
-      body: '{}',
-      lookup: PUBLIC,
-      timeoutMs: 20,
-      fetchImpl: (_url, init) =>
-        new Promise((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
-        }),
-    });
-    expect(outcome.ok).toBe(false);
-    if (!outcome.ok) expect(outcome.error).toContain('no answer');
   });
 });
