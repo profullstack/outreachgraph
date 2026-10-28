@@ -140,8 +140,14 @@ describe('pain phrases', () => {
 /** Answers the Bluesky AppView for three leads. */
 function bsky(calls: string[]): typeof fetch {
   const follows: Record<string, string[]> = {
-    'a.bsky.social': ['hub.bsky.social', 'bsky.app', 'solo.bsky.social', 'b.bsky.social'],
-    'b.bsky.social': ['hub.bsky.social', 'bsky.app', 'replied.bsky.social'],
+    'a.bsky.social': [
+      'hub.bsky.social',
+      'bsky.app',
+      'handle.invalid',
+      'solo.bsky.social',
+      'b.bsky.social',
+    ],
+    'b.bsky.social': ['hub.bsky.social', 'bsky.app', 'handle.invalid', 'replied.bsky.social'],
     'c.bsky.social': ['other.bsky.social'],
   };
   const replies: Record<string, string[]> = {

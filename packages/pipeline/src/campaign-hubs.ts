@@ -25,6 +25,12 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 const BSKY = 'https://api.bsky.app';
 /** The default follow of every Bluesky account says nothing about the audience. */
 const IGNORED = new Set(['bsky.app']);
+/**
+ * Accounts that are not a room: Bluesky's default follow, and `handle.invalid`,
+ * which the AppView reports for every account whose handle no longer resolves,
+ * so unrelated broken accounts would add up into one fake hub.
+ */
+const ignored = (handle: string): boolean => IGNORED.has(handle) || handle.endsWith('.invalid');
 const READABLE = new Set(['bluesky', 'mastodon']);
 
 export interface CampaignHub {
@@ -316,10 +322,10 @@ export async function computeCampaignHubs(
       if (lead.network === 'bluesky') {
         const { follows, replied } = await readBluesky(fetchImpl, lead.handle, gapMs);
         for (const f of follows)
-          if (!IGNORED.has(f.handle) && f.handle.toLowerCase() !== self)
+          if (!ignored(f.handle) && f.handle.toLowerCase() !== self)
             note('bluesky', f.handle, f.displayName).followers.add(lead.personId);
         for (const r of replied)
-          if (!IGNORED.has(r.handle) && r.handle.toLowerCase() !== self)
+          if (!ignored(r.handle) && r.handle.toLowerCase() !== self)
             note('bluesky', r.handle, r.displayName).repliers.add(lead.personId);
       } else {
         for (const f of await readMastodon(fetchImpl, lead.handle)) {
