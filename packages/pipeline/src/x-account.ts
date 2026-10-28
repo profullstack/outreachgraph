@@ -31,7 +31,7 @@ import {
   type XOAuthClient,
   type XTokens,
 } from '@outreachgraph/providers';
-import { decryptSecret, encryptSecret } from '@outreachgraph/secrets';
+import { type SecretVault } from '@outreachgraph/secrets';
 import { upsertPoolAccount } from './sender-pool';
 
 const KIND = 'social';
@@ -78,7 +78,7 @@ function parseConfig(raw: string | null | undefined): Record<string, unknown> {
 
 export async function startXConnect(
   db: Client,
-  input: { workspaceId: string; oauth: XOAuthClient; encryptionKey: Buffer },
+  input: { workspaceId: string; oauth: XOAuthClient; encryptionKey: SecretVault },
 ): Promise<{ authorizeUrl: string; state: string; expiresAt: string }> {
   const { verifier, challenge } = pkcePair();
   const state = newOAuthState();
@@ -92,7 +92,7 @@ export async function startXConnect(
 
   const pending: PendingConnect = {
     state,
-    verifier_enc: encryptSecret(verifier, input.encryptionKey),
+    verifier_enc: await input.encryptionKey.seal(verifier, input.workspaceId, 'verifier_enc'),
     started_at: stamp,
   };
 
@@ -134,7 +134,7 @@ export async function completeXConnect(
     state: string;
     code: string;
     oauth: XOAuthClient;
-    encryptionKey: Buffer;
+    encryptionKey: SecretVault;
     fetchImpl?: FetchLike;
   },
 ): Promise<{ workspaceId: string; username: string }> {
@@ -165,7 +165,11 @@ export async function completeXConnect(
   let username: string;
   let userId: string;
   try {
-    const verifier = decryptSecret(pending.verifier_enc, input.encryptionKey);
+    const verifier = input.encryptionKey.open(
+      pending.verifier_enc,
+      row.workspace_id,
+      'verifier_enc',
+    );
     tokens = await exchangeXCode(input.oauth, input.code, verifier, input.fetchImpl);
     const me = await new XClient(tokens.accessToken, {
       ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
@@ -191,8 +195,16 @@ export async function completeXConnect(
     network: NETWORK,
     identity: userId,
     handle: username,
-    accessTokenEnc: encryptSecret(tokens.accessToken, input.encryptionKey),
-    refreshTokenEnc: encryptSecret(tokens.refreshToken, input.encryptionKey),
+    accessTokenEnc: await input.encryptionKey.seal(
+      tokens.accessToken,
+      row.workspace_id,
+      'access_token_enc',
+    ),
+    refreshTokenEnc: await input.encryptionKey.seal(
+      tokens.refreshToken,
+      row.workspace_id,
+      'refresh_token_enc',
+    ),
     scopes: JSON.stringify(tokens.scopes),
     expiresAt: tokens.expiresAt,
   });
@@ -250,7 +262,7 @@ function parseScopes(raw: string): readonly string[] {
 
 export interface XCredentialDeps {
   oauth?: XOAuthClient;
-  encryptionKey?: Buffer;
+  encryptionKey?: SecretVault;
   fetchImpl?: FetchLike;
   sessionOptions?: XSessionOptions;
   /** One account in the pool. Omitted, the workspace's first active one. */
@@ -298,7 +310,9 @@ export async function xCredentialsForWorkspace(
   // the stored secret is the cookie pair.
   if (row.scopes.includes('"session"')) {
     try {
-      const cookies = JSON.parse(decryptSecret(row.access_token_enc, deps.encryptionKey)) as {
+      const cookies = JSON.parse(
+        deps.encryptionKey.open(row.access_token_enc, workspaceId, 'access_token_enc'),
+      ) as {
         authToken: string;
         ct0: string;
       };
@@ -310,7 +324,7 @@ export async function xCredentialsForWorkspace(
 
   let accessToken: string;
   try {
-    accessToken = decryptSecret(row.access_token_enc, deps.encryptionKey);
+    accessToken = deps.encryptionKey.open(row.access_token_enc, workspaceId, 'access_token_enc');
   } catch {
     return undefined;
   }
@@ -323,15 +337,19 @@ export async function xCredentialsForWorkspace(
   if (!deps.oauth || !row.refresh_token_enc) return undefined;
 
   try {
-    const refreshToken = decryptSecret(row.refresh_token_enc, deps.encryptionKey);
+    const refreshToken = deps.encryptionKey.open(
+      row.refresh_token_enc,
+      workspaceId,
+      'refresh_token_enc',
+    );
     const tokens = await refreshXToken(deps.oauth, refreshToken, deps.fetchImpl);
     await db.execute({
       sql: `UPDATE integration_accounts
                SET access_token_enc = ?, refresh_token_enc = ?, expires_at = ?, updated_at = ?
              WHERE id = ?`,
       args: [
-        encryptSecret(tokens.accessToken, deps.encryptionKey),
-        encryptSecret(tokens.refreshToken, deps.encryptionKey),
+        await deps.encryptionKey.seal(tokens.accessToken, workspaceId, 'access_token_enc'),
+        await deps.encryptionKey.seal(tokens.refreshToken, workspaceId, 'refresh_token_enc'),
         tokens.expiresAt,
         now(),
         row.id,
@@ -416,7 +434,7 @@ export async function connectXSession(
     workspaceId: string;
     authToken: string;
     ct0: string;
-    encryptionKey: Buffer;
+    encryptionKey: SecretVault;
     verify?: boolean;
     sessionOptions?: XSessionOptions;
   },
@@ -465,7 +483,11 @@ export async function connectXSession(
     network: NETWORK,
     identity: userId,
     handle: username || null,
-    accessTokenEnc: encryptSecret(JSON.stringify(cookies), input.encryptionKey),
+    accessTokenEnc: await input.encryptionKey.seal(
+      JSON.stringify(cookies),
+      input.workspaceId,
+      'access_token_enc',
+    ),
     scopes: '["session"]',
   });
 

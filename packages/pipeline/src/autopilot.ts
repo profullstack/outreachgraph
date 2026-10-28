@@ -29,12 +29,14 @@
  * it was, so the next tick retries rather than silently dropping a lead.
  */
 
+import { LOCKED_MESSAGE, type SecretVault } from '@outreachgraph/secrets';
 import { INTERNAL_ACTION_KINDS, newId, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import { evaluateAddressLimits, evaluatePolicy, isExecutable } from '@outreachgraph/policy';
 import type { Mailer } from '@outreachgraph/email';
 import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { mailerForSend, mailerForWorkspace } from './email-account';
+import { workspaceLocked } from './workspace-keys';
 import { SmtpMailer, type SmtpCredentials } from '@outreachgraph/email';
 import { noteSendFailure } from './sender-pool';
 import { emitEvent } from './events';
@@ -87,7 +89,7 @@ export interface AutopilotDeps {
    * Unlocks a workspace's stored SMTP password. Without it, connected
    * mailboxes are unreadable and every workspace falls back to `mailer`.
    */
-  readonly encryptionKey?: Buffer | undefined;
+  readonly encryptionKey?: SecretVault | undefined;
   /**
    * Origin tracked links resolve from, for workspaces that opted in.
    *
@@ -156,6 +158,8 @@ export interface AutopilotResult {
   readonly sent: readonly SentOutreach[];
   readonly skipped: readonly SkippedOutreach[];
   readonly failed: number;
+  /** True when nothing ran because the workspace's keys are locked. */
+  readonly locked?: boolean;
 }
 
 interface Candidate {
@@ -442,6 +446,18 @@ export async function runAutopilot(
   const sent: SentOutreach[] = [];
   const skipped: SkippedOutreach[] = [];
   let failed = 0;
+
+  // Sealed keys: a workspace whose credentials are locked pauses autopilot
+  // entirely (no card is touched, nothing falls back to the platform sender)
+  // until the owner unlocks. A restart locks every workspace.
+  if (await workspaceLocked(db, deps.encryptionKey, workspaceId)) {
+    return {
+      sent,
+      skipped: [{ recommendationId: '', personName: '(autopilot)', reason: LOCKED_MESSAGE }],
+      failed,
+      locked: true,
+    };
+  }
 
   const settings = await loadOutreachSettings(db, workspaceId);
   const cap = settings.autopilot_daily_cap;

@@ -15,6 +15,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import type { ApiClient } from '@outreachgraph/mcp/src/client';
 import { WORKFLOW_COMMANDS } from './workflow-commands';
+import { KEYS_COMMANDS } from './keys-commands';
 
 export interface CommandContext {
   readonly client: ApiClient;
@@ -2691,6 +2692,7 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   ...WORKFLOW_COMMANDS,
+  ...KEYS_COMMANDS,
 ];
 
 /**

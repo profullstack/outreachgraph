@@ -41,6 +41,7 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@outreachgraph/mcp": "workspace:*"
+    "@outreachgraph/mcp": "workspace:*",
+    "@outreachgraph/secrets": "workspace:*"
   }
 }

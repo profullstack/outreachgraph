@@ -722,3 +722,12 @@ export {
   type CompanyCapResult,
 } from './company-cap';
 export { cardReachableMembers } from './campaign-cards';
+export {
+  loadWorkspaceSeal,
+  saveWorkspaceSeal,
+  migrateWorkspaceSecrets,
+  unmigratedCredentialCount,
+  workspaceLocked,
+  resealRow as resealCredentialRow,
+  type MigrationReport,
+} from './workspace-keys';

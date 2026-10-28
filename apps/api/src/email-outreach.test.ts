@@ -15,11 +15,12 @@
  * the broken one.
  */
 
+import type { SecretVault } from '@outreachgraph/secrets';
+import { testVault } from '@outreachgraph/secrets/testing';
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Hono } from 'hono';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer, Message, SendResult } from '@outreachgraph/email';
-import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import { connectEmailAccount } from '@outreachgraph/pipeline';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
@@ -32,7 +33,7 @@ const ACTOR: RequestActor = {
   role: 'owner',
 };
 
-const KEY = parseSecretKey(generateSecretKey());
+const KEY = testVault();
 
 let active: SeededDatabase | undefined;
 
@@ -91,7 +92,7 @@ async function makeEmailCard(
 
 async function harness(
   label: string,
-  options: { mailer?: Mailer; encryptionKey?: Buffer; appUrl?: string } = {},
+  options: { mailer?: Mailer; encryptionKey?: SecretVault; appUrl?: string } = {},
 ): Promise<{ app: Hono<AppEnv>; db: Client }> {
   const seeded = await seedDatabase(label);
   active = seeded;

@@ -38,7 +38,7 @@ import {
 import { ImapReader, ResendMailer } from '@outreachgraph/email';
 import { chovyConfig } from '@outreachgraph/ideas';
 import { CoinPayClient } from '@outreachgraph/payments';
-import { secretKeyFromEnv } from '@outreachgraph/secrets';
+import { SecretVault, secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { codeOptionsFromEnv, codeServicesFor } from '../../api/src/credit-codes';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
@@ -120,6 +120,7 @@ import {
   refreshStaleCompanies,
   runSiteAuditJob,
   runSiteAuditRound,
+  loadWorkspaceSeal,
 } from '@outreachgraph/pipeline';
 import {
   BlueskyFeedSource,
@@ -328,19 +329,32 @@ if (!mailer) console.log('no RESEND_API_KEY/EMAIL_FROM: verification links are l
  * as no-account, and a product that quietly stops sending is worse than one
  * that refuses to start.
  */
-const encryptionKey = secretKeyFromEnv();
+const webhookKey = secretKeyFromEnv();
 
-if (!encryptionKey) {
-  console.log('no SECRET_ENCRYPTION_KEY: workspaces cannot connect their own sending mailbox');
+if (!webhookKey) {
+  console.log('no SECRET_ENCRYPTION_KEY: outbound webhooks are off');
 }
+
+/**
+ * Customer credentials (seal v2): sealed per workspace, opened only while the
+ * workspace owner has unlocked (POST /api/v1/keys/unlock). This process holds
+ * unlocked keys in memory only; a restart locks every workspace and their
+ * autopilot waits. SECRET_ENCRYPTION_KEY is read for these only by the
+ * one-shot migration, and not at all once LEGACY_KEY_MIGRATION=off.
+ */
+const encryptionKey = new SecretVault({
+  loadSeal: (workspaceId) => loadWorkspaceSeal(db, workspaceId),
+  legacyKey: webhookKey,
+  legacyMigration: (process.env.LEGACY_KEY_MIGRATION ?? 'on').toLowerCase() !== 'off',
+});
 
 // Outbound webhooks: the @profullstack/webhooks hub, started once here. It
 // drains due deliveries every 5 s and prunes the month-old log itself.
 // Without the key nothing can be decrypted to send, so it is not started.
-const webhookHub = encryptionKey
+const webhookHub = webhookKey
   ? registerWebhookHub(
       db,
-      createWebhookHub(db, { encryptionKey, log: (message) => console.log(message) }),
+      createWebhookHub(db, { encryptionKey: webhookKey, log: (message) => console.log(message) }),
     ).start()
   : undefined;
 
@@ -687,7 +701,8 @@ const api = createApp({
   ...(apiUrl ? { apiUrl } : {}),
   ...(model ? { model } : {}),
   ...(mailer ? { mailer } : {}),
-  ...(encryptionKey ? { encryptionKey } : {}),
+  encryptionKey,
+  ...(webhookKey ? { webhookKey } : {}),
   ...(appUrl ? { appUrl } : {}),
   ...(jobSearcher ? { jobSearcher } : {}),
   ...(workflowSearcher ? { workflowSearcher } : {}),
@@ -1536,6 +1551,8 @@ async function tick(): Promise<void> {
     if (Date.now() - last < RECEIVE_POLL_MS) continue;
     lastPolledAt.set(accountId, Date.now());
 
+    // Locked workspace: its replies wait until the owner unlocks.
+    if (!encryptionKey.canOpen(workspaceId)) continue;
     try {
       const credentials = await loadImapCredentials(db, workspaceId, encryptionKey, accountId);
       // Undefined covers "no mailbox", "no IMAP host" and "the key changed so
@@ -1801,6 +1818,14 @@ async function tick(): Promise<void> {
         workspace.id,
       );
 
+      if (result.locked) {
+        if (encryptionKey.firstLockedNotice(workspace.id)) {
+          console.warn(
+            `autopilot ${workspace.id}: paused, workspace keys locked (unlock to resume)`,
+          );
+        }
+      }
+
       if (result.sent.length > 0 || result.failed > 0) {
         console.log(
           `autopilot ${workspace.id}: ${result.sent.length} sent, ` +
@@ -1812,7 +1837,7 @@ async function tick(): Promise<void> {
       // published" and "still requires human approval" are the two reasons a
       // campaign looks like it is doing nothing, and neither is an error
       // anywhere else.
-      for (const skip of result.skipped.slice(0, 5)) {
+      for (const skip of result.locked ? [] : result.skipped.slice(0, 5)) {
         console.log(`autopilot skip ${skip.personName}: ${skip.reason}`);
       }
     } catch (error) {

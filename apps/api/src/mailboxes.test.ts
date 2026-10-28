@@ -3,11 +3,11 @@
  * detecting an address's servers.
  */
 
+import { testVault } from '@outreachgraph/secrets/testing';
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Hono } from 'hono';
 import { now, queryAll, type Client } from '@outreachgraph/db';
 import { recordReplyCheck, sweepBlacklists } from '@outreachgraph/pipeline';
-import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
@@ -19,7 +19,7 @@ const OWNER: RequestActor = {
   role: 'owner',
 };
 
-const KEY = parseSecretKey(generateSecretKey());
+const KEY = testVault();
 
 let active: SeededDatabase | undefined;
 

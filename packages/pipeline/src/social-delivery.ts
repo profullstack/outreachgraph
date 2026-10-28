@@ -24,6 +24,7 @@
  * person" and "who has room today" have their final answers.
  */
 
+import type { SecretVault } from '@outreachgraph/secrets';
 import { randomInt } from 'node:crypto';
 import { capGroupFor, LINKEDIN_ACTION_CAPS, type CapGroup } from '@outreachgraph/domain';
 import { queryOne, type Client } from '@outreachgraph/db';
@@ -231,7 +232,7 @@ async function poolLimits(
 
 export interface DeliverSocialDeps {
   readonly db: Client;
-  readonly encryptionKey?: Buffer;
+  readonly encryptionKey?: SecretVault;
   readonly xOAuth?: XOAuthClient;
 }
 

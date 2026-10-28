@@ -16,7 +16,7 @@ import {
   LinkedInSessionError,
   type LinkedInSessionOptions,
 } from '@outreachgraph/providers';
-import { decryptSecret, encryptSecret } from '@outreachgraph/secrets';
+import { type SecretVault } from '@outreachgraph/secrets';
 import { upsertPoolAccount } from './sender-pool';
 
 const KIND = 'social';
@@ -43,7 +43,7 @@ export async function connectLinkedInSession(
   input: {
     workspaceId: string;
     liAt: string;
-    encryptionKey: Buffer;
+    encryptionKey: SecretVault;
     verify?: boolean;
     sessionOptions?: LinkedInSessionOptions;
   },
@@ -97,7 +97,7 @@ export async function connectLinkedInSession(
     network: NETWORK,
     identity: entityUrn || publicIdentifier,
     handle: publicIdentifier || null,
-    accessTokenEnc: encryptSecret(liAt, input.encryptionKey),
+    accessTokenEnc: await input.encryptionKey.seal(liAt, input.workspaceId, 'access_token_enc'),
     scopes: '["comment"]',
   });
 
@@ -114,7 +114,7 @@ export async function connectLinkedInSession(
 export async function linkedInSessionForWorkspace(
   db: Client,
   workspaceId: string,
-  encryptionKey: Buffer | undefined,
+  encryptionKey: SecretVault | undefined,
   options: LinkedInSessionOptions = {},
   accountId?: string,
 ): Promise<LinkedInSession | undefined> {
@@ -130,7 +130,10 @@ export async function linkedInSessionForWorkspace(
   if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
 
   try {
-    return new LinkedInSession(decryptSecret(row.access_token_enc, encryptionKey), options);
+    return new LinkedInSession(
+      encryptionKey.open(row.access_token_enc, workspaceId, 'access_token_enc'),
+      options,
+    );
   } catch {
     return undefined;
   }

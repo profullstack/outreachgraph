@@ -18,6 +18,8 @@
  * capability matrix and are never sent from here.
  */
 
+import { LOCKED_MESSAGE, type SecretVault } from '@outreachgraph/secrets';
+import { workspaceLocked } from './workspace-keys';
 import { newId, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import { evaluatePolicy, isExecutable } from '@outreachgraph/policy';
@@ -50,7 +52,7 @@ type AutoKind = keyof typeof DAILY_CAPS;
 
 export interface BlueskyAutopilotDeps {
   readonly db: Client;
-  readonly encryptionKey?: Buffer | undefined;
+  readonly encryptionKey?: SecretVault | undefined;
   readonly now?: Date;
   /** Injected in tests; defaults to logging in with the stored app password. */
   readonly agentFor?: (workspaceId: string) => Promise<BlueskyAgent | undefined>;
@@ -109,6 +111,9 @@ export async function runBlueskyAutopilot(
 
   if (!(await blueskyAutopilotEnabled(db, workspaceId))) {
     return { acted: false, reason: 'Bluesky autopilot is off' };
+  }
+  if (await workspaceLocked(db, deps.encryptionKey, workspaceId)) {
+    return { acted: false, reason: LOCKED_MESSAGE };
   }
   const paused = pausedUntil.get(workspaceId);
   if (paused && paused > stamp) {

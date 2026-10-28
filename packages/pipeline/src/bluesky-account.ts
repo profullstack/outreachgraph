@@ -18,7 +18,7 @@
 import { newId } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import { BlueskyAgent, BlueskyAuthError } from '@outreachgraph/providers';
-import { decryptSecret, encryptSecret } from '@outreachgraph/secrets';
+import { type SecretVault } from '@outreachgraph/secrets';
 
 const KIND = 'social';
 const NETWORK = 'bluesky';
@@ -37,7 +37,7 @@ export interface ConnectBlueskyInput {
   /** Handle or email the account signs in with. */
   readonly identifier: string;
   readonly appPassword: string;
-  readonly encryptionKey: Buffer;
+  readonly encryptionKey: SecretVault;
   /** Skips the live check. Only for tests that have no network. */
   readonly verify?: boolean;
   readonly agent?: BlueskyAgent;
@@ -114,7 +114,7 @@ export async function connectBlueskyAccount(
       NETWORK,
       did || handle,
       handle,
-      encryptSecret(input.appPassword, input.encryptionKey),
+      await input.encryptionKey.seal(input.appPassword, input.workspaceId, 'access_token_enc'),
       stamp,
       stamp,
     ],
@@ -180,7 +180,7 @@ export interface BlueskyCredentials {
 export async function loadBlueskyCredentials(
   db: Client,
   workspaceId: string,
-  encryptionKey: Buffer | undefined,
+  encryptionKey: SecretVault | undefined,
 ): Promise<BlueskyCredentials | undefined> {
   if (!encryptionKey) return undefined;
 
@@ -201,7 +201,7 @@ export async function loadBlueskyCredentials(
   try {
     return {
       identifier: row.handle,
-      appPassword: decryptSecret(row.access_token_enc, encryptionKey),
+      appPassword: encryptionKey.open(row.access_token_enc, workspaceId, 'access_token_enc'),
       did: row.external_account_id ?? '',
     };
   } catch {
@@ -215,7 +215,7 @@ export async function loadBlueskyCredentials(
 export async function agentForWorkspace(
   db: Client,
   workspaceId: string,
-  encryptionKey: Buffer | undefined,
+  encryptionKey: SecretVault | undefined,
   factory: () => BlueskyAgent = () => new BlueskyAgent(),
 ): Promise<BlueskyAgent | undefined> {
   const credentials = await loadBlueskyCredentials(db, workspaceId, encryptionKey);

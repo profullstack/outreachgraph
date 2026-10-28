@@ -3,11 +3,11 @@
  * them, and what approving an email does when every mailbox is full.
  */
 
+import { testVault } from '@outreachgraph/secrets/testing';
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Hono } from 'hono';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import type { Mailer, Message, SendResult } from '@outreachgraph/email';
-import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
@@ -19,7 +19,7 @@ const OWNER: RequestActor = {
   role: 'owner',
 };
 
-const KEY = parseSecretKey(generateSecretKey());
+const KEY = testVault();
 
 let active: SeededDatabase | undefined;
 

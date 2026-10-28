@@ -5,6 +5,7 @@
  * pushes the right person.
  */
 
+import { testVault } from '@outreachgraph/secrets/testing';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHmac, randomBytes } from 'node:crypto';
 import { verifySignature } from '@profullstack/webhooks';
@@ -38,6 +39,7 @@ afterEach(() => {
 });
 
 const KEY = parseSecretKey(generateSecretKey());
+const VAULT = testVault();
 const PUBLIC = async () => ['93.184.216.34'];
 
 async function endpoint(
@@ -495,7 +497,7 @@ describe('CRM sync', () => {
       workspaceId: SEED.workspaceId,
       provider: 'hubspot',
       token: 'pat-secret-token',
-      encryptionKey: KEY,
+      encryptionKey: VAULT,
       verify: false,
     });
 
@@ -512,7 +514,7 @@ describe('CRM sync', () => {
 
     const fake = recorder();
     const result = await runCrmSync(
-      { db, encryptionKey: KEY, clientFor: fake.clientFor },
+      { db, encryptionKey: VAULT, clientFor: fake.clientFor },
       jobFor(job!),
     );
 
@@ -540,7 +542,7 @@ describe('CRM sync', () => {
       workspaceId: SEED.workspaceId,
       provider: 'pipedrive',
       token: 'pd-token-1234',
-      encryptionKey: KEY,
+      encryptionKey: VAULT,
       verify: false,
     });
     await emitWebhookEvent(db, SEED.workspaceId, 'recommendation.approved', {
@@ -551,7 +553,7 @@ describe('CRM sync', () => {
     const fake = recorder();
 
     const result = await runCrmSync(
-      { db, encryptionKey: KEY, clientFor: fake.clientFor },
+      { db, encryptionKey: VAULT, clientFor: fake.clientFor },
       jobFor(job!),
     );
     expect(result.outcome).toBe('no_email');
@@ -566,7 +568,7 @@ describe('CRM sync', () => {
       workspaceId: SEED.workspaceId,
       provider: 'hubspot',
       token: 'pat-secret-token',
-      encryptionKey: KEY,
+      encryptionKey: VAULT,
       verify: false,
     });
     await emitWebhookEvent(db, SEED.workspaceId, 'reply.received', { personId: SEED.personId });
@@ -574,7 +576,7 @@ describe('CRM sync', () => {
 
     const fake = recorder({ fail: new CrmError('HubSpot: the token was refused', 401, false) });
     const result = await runCrmSync(
-      { db, encryptionKey: KEY, clientFor: fake.clientFor },
+      { db, encryptionKey: VAULT, clientFor: fake.clientFor },
       jobFor(job!),
     );
     expect(result.outcome).toBe('failed');
@@ -598,7 +600,7 @@ describe('CRM sync', () => {
       workspaceId: SEED.workspaceId,
       provider: 'hubspot',
       token: 'pat-secret-token',
-      encryptionKey: KEY,
+      encryptionKey: VAULT,
       verify: false,
     });
     await emitWebhookEvent(db, SEED.workspaceId, 'reply.received', { personId: SEED.personId });
@@ -606,7 +608,7 @@ describe('CRM sync', () => {
 
     const fake = recorder({ fail: new CrmError('HubSpot: HTTP 503', 503, true) });
     await expect(
-      runCrmSync({ db, encryptionKey: KEY, clientFor: fake.clientFor }, jobFor(job!)),
+      runCrmSync({ db, encryptionKey: VAULT, clientFor: fake.clientFor }, jobFor(job!)),
     ).rejects.toThrow('503');
   });
 
@@ -618,7 +620,7 @@ describe('CRM sync', () => {
         workspaceId: SEED.workspaceId,
         provider: 'hubspot',
         token: 'bad-token-123',
-        encryptionKey: KEY,
+        encryptionKey: VAULT,
         fetchImpl: async () => new Response('{}', { status: 401 }),
       }),
     ).rejects.toThrow('refused');

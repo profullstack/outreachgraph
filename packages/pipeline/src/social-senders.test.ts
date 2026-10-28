@@ -3,8 +3,9 @@
  * both. No network: every HTTP call goes to a fake that records it.
  */
 
+import { testVault } from '@outreachgraph/secrets/testing';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { newId } from '@outreachgraph/domain';
 import {
   LinkedInSession,
@@ -29,7 +30,7 @@ afterEach(() => {
   seeded = undefined;
 });
 
-const KEY = randomBytes(32);
+const KEY = testVault();
 const ACTOR = { actorKind: 'user' as const, actorId: SEED.userId };
 const OAUTH = {
   clientId: 'cid',

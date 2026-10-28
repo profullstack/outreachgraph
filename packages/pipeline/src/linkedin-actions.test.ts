@@ -7,8 +7,8 @@
  * captured from the web client, and records what it was asked.
  */
 
+import { testVault } from '@outreachgraph/secrets/testing';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { randomBytes } from 'node:crypto';
 import { newId } from '@outreachgraph/domain';
 import { LinkedInSession } from '@outreachgraph/providers';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
@@ -26,7 +26,7 @@ afterEach(() => {
   seeded = undefined;
 });
 
-const KEY = randomBytes(32);
+const KEY = testVault();
 const COOKIE = 'AQEDAtestcookievalue1234567890';
 const ACTOR = { actorKind: 'user' as const, actorId: SEED.userId };
 const THEM = 'urn:li:fsd_profile:ACoAAAjane00000000000000000000000000000';

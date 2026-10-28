@@ -33,7 +33,7 @@ import {
   type Mailer,
   type SmtpCredentials,
 } from '@outreachgraph/email';
-import { decryptSecret, encryptSecret, SecretDecryptError } from '@outreachgraph/secrets';
+import { SecretDecryptError, SecretsLockedError, type SecretVault } from '@outreachgraph/secrets';
 import { chooseSender, describeDeferral, upsertPoolAccount } from './sender-pool';
 
 /** The kind recorded on the `integrations` row. */
@@ -136,7 +136,7 @@ export async function connectEmailAccount(
   input: {
     readonly workspaceId: string;
     readonly account: EmailAccountInput;
-    readonly encryptionKey: Buffer | undefined;
+    readonly encryptionKey: SecretVault | undefined;
     readonly verify?: boolean;
     /** Injected by tests so no socket is opened. */
     readonly mailerFor?: (credentials: SmtpCredentials) => { verify(): Promise<void> };
@@ -248,7 +248,11 @@ export async function connectEmailAccount(
     network: NETWORK,
     identity: input.account.username,
     handle: input.account.fromEmail,
-    accessTokenEnc: encryptSecret(input.account.password, input.encryptionKey),
+    accessTokenEnc: await input.encryptionKey.seal(
+      input.account.password,
+      input.workspaceId,
+      'access_token_enc',
+    ),
     scopes: '["send"]',
     configJson: JSON.stringify(config),
   });
@@ -300,7 +304,7 @@ export async function emailAccountSummary(
 export async function loadEmailCredentials(
   db: Client,
   workspaceId: string,
-  encryptionKey: Buffer | undefined,
+  encryptionKey: SecretVault | undefined,
   /** One mailbox in the pool. Omitted, the workspace's first active one. */
   accountId?: string,
 ): Promise<(SmtpCredentials & { readonly replyTo?: string }) | undefined> {
@@ -314,7 +318,9 @@ export async function loadEmailCredentials(
 
   let password: string;
   try {
-    password = decryptSecret(row.access_token_enc, encryptionKey);
+    // Throws SecretsLockedError while the workspace is locked: callers must
+    // wait, never fall back to the platform sender under the customer's name.
+    password = encryptionKey.open(row.access_token_enc, workspaceId, 'access_token_enc');
   } catch (error) {
     if (error instanceof SecretDecryptError) return undefined;
     throw error;
@@ -344,7 +350,7 @@ export async function loadEmailCredentials(
 export async function loadImapCredentials(
   db: Client,
   workspaceId: string,
-  encryptionKey: Buffer | undefined,
+  encryptionKey: SecretVault | undefined,
   /** One mailbox in the pool. Omitted, the workspace's first active one. */
   accountId?: string,
 ): Promise<ImapCredentials | undefined> {
@@ -358,7 +364,9 @@ export async function loadImapCredentials(
 
   let password: string;
   try {
-    password = decryptSecret(row.access_token_enc, encryptionKey);
+    // Throws SecretsLockedError while the workspace is locked: callers must
+    // wait, never fall back to the platform sender under the customer's name.
+    password = encryptionKey.open(row.access_token_enc, workspaceId, 'access_token_enc');
   } catch (error) {
     if (error instanceof SecretDecryptError) return undefined;
     throw error;
@@ -388,7 +396,7 @@ export async function mailerForWorkspace(
   db: Client,
   workspaceId: string,
   options: {
-    readonly encryptionKey: Buffer | undefined;
+    readonly encryptionKey: SecretVault | undefined;
     readonly fallback?: Mailer | undefined;
   },
 ): Promise<{ mailer: Mailer; ownMailbox: boolean; replyTo?: string } | undefined> {
@@ -424,7 +432,12 @@ export type SendingMailbox =
        * `all_capped` means no mailbox has room for anyone, not just this person;
        * `workspace_ceiling` that the workspace sent `EMAIL_DAILY_CEILING` today.
        */
-      readonly code: 'all_capped' | 'continuity_capped' | 'continuity_paused' | 'workspace_ceiling';
+      readonly code:
+        | 'all_capped'
+        | 'continuity_capped'
+        | 'continuity_paused'
+        | 'workspace_ceiling'
+        | 'keys_locked';
       readonly retryAt: string;
     }
   /** Nothing can send: no active mailbox and no platform sender. */
@@ -466,7 +479,7 @@ export async function mailerForSend(
   db: Client,
   workspaceId: string,
   options: {
-    readonly encryptionKey: Buffer | undefined;
+    readonly encryptionKey: SecretVault | undefined;
     readonly fallback?: Mailer | undefined;
     readonly personId?: string | undefined;
     readonly at?: Date;
@@ -512,12 +525,27 @@ export async function mailerForSend(
   }
   if (!selection.account) return platform();
 
-  const credentials = await loadEmailCredentials(
-    db,
-    workspaceId,
-    options.encryptionKey,
-    selection.account.id,
-  );
+  let credentials: Awaited<ReturnType<typeof loadEmailCredentials>>;
+  try {
+    credentials = await loadEmailCredentials(
+      db,
+      workspaceId,
+      options.encryptionKey,
+      selection.account.id,
+    );
+  } catch (error) {
+    // Sealed and locked: wait for the owner's unlock. Never fall back to the
+    // platform sender for a message the customer meant to send as themselves.
+    if (error instanceof SecretsLockedError) {
+      return {
+        kind: 'deferred',
+        reason: error.message,
+        code: 'keys_locked',
+        retryAt: new Date(at.getTime() + 15 * 60_000).toISOString(),
+      };
+    }
+    throw error;
+  }
   if (!credentials) return platform();
 
   return {
