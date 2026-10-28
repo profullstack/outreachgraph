@@ -18,6 +18,7 @@ import {
   createLeadMonitor,
   deleteLeadMonitor,
   draftCommunityLeadReply,
+  generatePainPhrases,
   getCommunityLead,
   getLeadMonitor,
   listCommunityLeads,
@@ -50,6 +51,8 @@ const monitorFields = {
   url: z.string().max(500).nullable().optional(),
   description: z.string().max(2000).nullable().optional(),
   keywords: z.array(z.string().max(60)).max(25).optional(),
+  /** The words people use when the problem hits them; searched first, ranked first. */
+  painPhrases: z.array(z.string().max(80)).max(30).optional(),
   subreddits: z.array(z.string().max(40)).max(25).optional(),
   exclude: z.array(z.string().max(60)).max(25).optional(),
   sources: z.array(z.string().max(20)).max(5).optional(),
@@ -178,6 +181,27 @@ export function leadRoutes(deps: LeadRouteDeps): Hono<AppEnv> {
     if (!(await deleteLeadMonitor(c.get('db'), actor.workspaceId, c.req.param('id'))))
       throw ApiError.notFound('lead monitor');
     return c.json({ deleted: true });
+  });
+
+  /** Draft pain phrases with the model and merge them into the monitor's. */
+  router.post('/monitors/:id/phrases', async (c) => {
+    const actor = c.get('actor');
+    requireApprover(actor, 'drafting pain phrases');
+    let monitor;
+    try {
+      monitor = await generatePainPhrases(
+        { db: c.get('db'), model: deps.model },
+        actor.workspaceId,
+        c.req.param('id'),
+      );
+    } catch (error) {
+      if (error instanceof NoModelError) {
+        return c.json({ error: { code: 'no_model', message: error.message } }, 503);
+      }
+      throw error;
+    }
+    if (!monitor) throw ApiError.notFound('lead monitor');
+    return c.json({ monitor });
   });
 
   /** Scan now, rather than waiting for the schedule. Takes up to a minute. */

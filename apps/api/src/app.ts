@@ -307,6 +307,11 @@ import { workflowRoutes } from './workflows';
 import { personSiteAuditRoutes, siteAuditForPerson, siteAuditRoutes } from './site-audits';
 import { ideaRoutes } from './ideas';
 import { leadRoutes } from './buyer-leads';
+import {
+  CampaignNotFoundError,
+  computeCampaignHubs,
+  getCampaignHubs,
+} from '@outreachgraph/pipeline';
 import { linkPostRoutes } from './link-posts';
 import {
   campaignSourceStatus,
@@ -2569,6 +2574,40 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // per campaign and not per deployment on purpose: a workspace selling to
   // plumbers and one selling to clinics share a container and share nothing
   // else, and a single set of subreddits could only ever suit one of them.
+
+  /**
+   * Campaign hubs: the accounts the campaign's leads follow and reply to on
+   * Bluesky and Mastodon, ranked, plus the leads' own X and LinkedIn handles
+   * to watch by hand. GET is the last ranking; POST recomputes it (reads the
+   * leads' public graphs, about a second per lead). Nothing is followed or
+   * posted: myna watches the hubs and drafts replies a person approves.
+   */
+  api.get('/campaigns/:id/hubs', async (c) => {
+    const actor = c.get('actor');
+    try {
+      const result = await getCampaignHubs(c.get('db'), actor.workspaceId, c.req.param('id'));
+      const limit = Number(c.req.query('limit') ?? 0);
+      return c.json(limit > 0 ? { ...result, hubs: result.hubs.slice(0, limit) } : result);
+    } catch (error) {
+      if (error instanceof CampaignNotFoundError) throw ApiError.notFound('campaign');
+      throw error;
+    }
+  });
+
+  api.post('/campaigns/:id/hubs', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('ranking campaign hubs');
+    try {
+      const limit = Number(c.req.query('limit') ?? 0);
+      const result = await computeCampaignHubs(c.get('db'), actor.workspaceId, c.req.param('id'), {
+        ...(limit > 0 ? { limit } : {}),
+      });
+      return c.json(result);
+    } catch (error) {
+      if (error instanceof CampaignNotFoundError) throw ApiError.notFound('campaign');
+      throw error;
+    }
+  });
 
   api.get('/campaigns/:id/listening', async (c) => {
     const actor = c.get('actor');

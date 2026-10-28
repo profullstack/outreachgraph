@@ -223,3 +223,47 @@ export function parseMonitorSuggestion(raw: string): MonitorSuggestion | undefin
   if (keywords.length === 0 && subreddits.length === 0) return undefined;
   return { keywords, subreddits };
 }
+
+const PAIN_SYSTEM = `You write the search phrases that find people at the moment a problem hits them.
+Given a product, list the words its buyers type when they are stuck: the complaint itself, first person or as a question, the way it shows up in a post title or a reply. Not the product category, not marketing words, not "SaaS", "startup", "tool", "platform", not the product's name.
+Good: "can't find communities", "nobody sees my posts", "no one replies to my cold emails", "got only 2 users".
+Bad: "social media management", "best scheduling tool", "SaaS marketing".
+8-15 phrases, 2-6 words each, lowercase, no punctuation except apostrophes. Cover different moments: before they know a fix exists, while a workaround fails, after giving up.
+Return only JSON: {"phrases": ["..."]}.`;
+
+/** Words a pain phrase may not be built on: they find people discussing products, not people with the problem. */
+const CATEGORY = /\b(?:saas|startups?|platform|software|solution)\b/;
+
+/**
+ * Tidy pain phrases: lowercase, 2-6 words, no category words or brand name,
+ * no duplicates, at most 15.
+ */
+export function cleanPainPhrases(phrases: readonly unknown[], brandName?: string): string[] {
+  const brand = brandName?.trim().toLowerCase();
+  const out: string[] = [];
+  for (const raw of phrases) {
+    const phrase = String(raw)
+      .toLowerCase()
+      .replace(/[\u2018\u2019`]/g, "'")
+      .replace(/[^a-z0-9' ]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const words = phrase.split(' ').filter(Boolean);
+    if (words.length < 2 || words.length > 6) continue;
+    if (CATEGORY.test(phrase) || (brand && phrase.includes(brand))) continue;
+    if (!out.includes(phrase)) out.push(phrase);
+  }
+  return out.slice(0, 15);
+}
+
+/** Pain phrases for a brand, or [] when the model refused or returned nothing usable. */
+export async function suggestPainPhrases(model: TextModel, brand: LeadBrand): Promise<string[]> {
+  const generated = await model.generate({
+    system: PAIN_SYSTEM,
+    user: brandBlock(brand),
+    maxTokens: 600,
+  });
+  if (generated.refused) return [];
+  const parsed = jsonObject(generated.text);
+  return cleanPainPhrases(Array.isArray(parsed?.phrases) ? parsed.phrases : [], brand.name);
+}

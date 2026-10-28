@@ -743,6 +743,39 @@ async function runIdeas({ client, args, flags }: CommandContext): Promise<string
 }
 
 /**
+ * `og hubs <campaign>`: the accounts the campaign's leads follow and answer.
+ * `--refresh` re-reads the leads' public graphs first. Nothing is followed or
+ * posted; myna (`myna outreachgraph hubs`) watches them and drafts replies.
+ */
+async function runHubs({ client, args, flags }: CommandContext): Promise<string> {
+  const [campaign] = args;
+  if (!campaign) throw new Error('og hubs <campaignId> [--refresh] [--limit 25]');
+  const limit = flagString(flags, 'limit');
+  const path = `/campaigns/${encodeURIComponent(campaign)}/hubs${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`;
+  const result = (
+    flags.refresh === true ? await client.post(path, {}) : await client.get(path)
+  ) as Record<string, unknown>;
+  if (flags.json === true) return JSON.stringify(result, null, 2);
+  const hubs = rows(result, 'hubs');
+  const head = `${text((result.campaign ?? {}) as Record<string, unknown>, 'name')}: ${text(result, 'leads')} leads, ${text(result, 'handles')} with a social handle, ${text(result, 'read')} read${text(result, 'computedAt') ? ` (ranked ${text(result, 'computedAt')})` : ''}`;
+  if (!text(result, 'computedAt'))
+    return `${head}
+Not ranked yet: og hubs ${campaign} --refresh`;
+  if (hubs.length === 0)
+    return `${head}
+No hubs: no account is followed or answered by two or more leads.`;
+  return [
+    head,
+    ...hubs.map(
+      (h) =>
+        `${pad(String(h.score), 5)} ${pad(`${text(h, 'network')}:${text(h, 'handle')}`, 44)} ${text(h, 'why')}`,
+    ),
+    '',
+    `Watch them and draft replies: myna outreachgraph hubs ${campaign} && myna hubs scan --campaign ${campaign}`,
+  ].join('\n');
+}
+
+/**
  * `og buyers` — buyer leads from public communities.
  *
  * A monitor watches Reddit, Hacker News and Bluesky for one brand; `list`
@@ -766,6 +799,7 @@ async function runBuyers({ client, args, flags }: CommandContext): Promise<strin
         ? { description: flagString(flags, 'description') }
         : {}),
       ...(csv('keywords') ? { keywords: csv('keywords') } : {}),
+      ...(csv('phrases') ? { painPhrases: csv('phrases') } : {}),
       ...(csv('subreddits') ? { subreddits: csv('subreddits') } : {}),
       ...(csv('exclude') ? { exclude: csv('exclude') } : {}),
       ...(csv('sources') ? { sources: csv('sources') } : {}),
@@ -778,6 +812,11 @@ async function runBuyers({ client, args, flags }: CommandContext): Promise<strin
     const last = (m.lastResult ?? {}) as Record<string, unknown>;
     return [
       `${text(m, 'id')}  ${text(m, 'name')}${text(m, 'url') ? `  ${text(m, 'url')}` : ''}${m.enabled === false ? '  (paused)' : ''}`,
+      `  pain phrases: ${
+        list('painPhrases')
+          .map((p) => `"${p}"`)
+          .join(', ') || '- (og buyers phrases <id> --generate)'
+      }`,
       `  keywords: ${list('keywords').join(', ')}`,
       `  subreddits: ${
         list('subreddits')
@@ -816,6 +855,7 @@ async function runBuyers({ client, args, flags }: CommandContext): Promise<strin
       .map((l) =>
         [
           `${pad(text(l, 'id'), 30)} ${pad(String(text(l, 'intent')), 3)} ${pad(text(l, 'source'), 10)} ${pad(text(l, 'container'), 18)} ${text(l, 'status')}${text(l, 'replyDraft') ? ' (drafted)' : ''}`,
+          text(l, 'painPhrase') ? `  pain: "${text(l, 'painPhrase')}"` : '',
           `  ${(text(l, 'title') || text(l, 'excerpt')).slice(0, 110)}`,
           text(l, 'reason') ? `  why: ${text(l, 'reason')}` : '',
           `  ${text(l, 'url')}`,
@@ -860,6 +900,30 @@ async function runBuyers({ client, args, flags }: CommandContext): Promise<strin
       ...(target && !flagString(flags, 'name') ? { name: [target, ...rest].join(' ') } : {}),
       ...(product ? { offeringId: product } : {}),
     })) as { monitor: Record<string, unknown> };
+    return showMonitor(monitor);
+  }
+
+  if (verb === 'phrases' || verb === 'pain') {
+    if (!target)
+      throw new Error('og buyers phrases <monitorId> [--generate] [--set "a, b"] [--add "a, b"]');
+    let monitor: Record<string, unknown>;
+    if (flags.generate === true) {
+      ({ monitor } = (await client.post(
+        `/buyer-leads/monitors/${encodeURIComponent(target)}/phrases`,
+        {},
+      )) as { monitor: Record<string, unknown> });
+    } else {
+      ({ monitor } = (await client.get(`/buyer-leads/monitors/${encodeURIComponent(target)}`)) as {
+        monitor: Record<string, unknown>;
+      });
+    }
+    const current = Array.isArray(monitor.painPhrases) ? (monitor.painPhrases as string[]) : [];
+    const next = csv('set') ?? (csv('add') ? [...current, ...csv('add')!] : undefined);
+    if (next) {
+      ({ monitor } = (await client.patch!(`/buyer-leads/monitors/${encodeURIComponent(target)}`, {
+        painPhrases: next,
+      })) as { monitor: Record<string, unknown> });
+    }
     return showMonitor(monitor);
   }
 
@@ -1099,7 +1163,7 @@ async function runLinkPost({ client, args, flags }: CommandContext): Promise<str
 }
 
 const BUYERS_USAGE =
-  'og buyers list [--status new|replied|dismissed] [--monitor <id>] [--min-intent 60] | show <leadId> | draft <leadId> | replied|dismiss|reopen <leadId> | monitors | add <name> [--url u] [--product <offeringId>] [--keywords a,b] [--subreddits x,y] [--sources reddit,hackernews,bluesky,web] [--min-intent 60] [--every 360] | set <monitorId> [same flags] [--pause|--resume] | scan <monitorId> | rm <monitorId>';
+  'og buyers list [--status new|replied|dismissed] [--monitor <id>] [--min-intent 60] | show <leadId> | draft <leadId> | replied|dismiss|reopen <leadId> | monitors | phrases <monitorId> [--generate] [--set a,b] [--add a,b] | add <name> [--url u] [--product <offeringId>] [--keywords a,b] [--phrases a,b] [--subreddits x,y] [--sources reddit,hackernews,bluesky,web] [--min-intent 60] [--every 360] | set <monitorId> [same flags] [--pause|--resume] | scan <monitorId> | rm <monitorId>';
 
 async function runAudience({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target] = args;
@@ -2541,6 +2605,13 @@ export const COMMANDS: readonly Command[] = [
       'og ideas list [--status build] | show <id> | scan [--subs a,b] | build <id> | dismiss <id> | subs [a b c]',
     summary: 'What people keep asking for on Reddit, ranked; build one with chovy.com.',
     run: runIdeas,
+  },
+  {
+    name: 'hubs',
+    usage: 'og hubs <campaignId> [--refresh] [--limit 25] [--json]',
+    summary:
+      "The accounts a campaign's leads follow and reply to (Bluesky, Mastodon), ranked; X/LinkedIn leads to watch by hand.",
+    run: runHubs,
   },
   {
     name: 'buyers',

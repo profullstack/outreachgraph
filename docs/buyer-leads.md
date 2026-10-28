@@ -58,6 +58,28 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
    is sent once (`digested_at`). Claimed through `notifications`
    (`community_leads_digest`), so overlapping ticks cannot send two.
 
+## Pain phrases
+
+Keywords ("siem", a competitor's name) find people talking about the
+category. Pain phrases find the person the problem just hit, who already
+wants a fix: "can't find communities", "nobody sees my posts", "no one
+replies to my cold emails". A monitor keeps up to 15 of them in
+`painPhrases`, drafted by the model when the monitor is created (or with
+`og buyers phrases <id> --generate`, which merges and never removes) and
+edited by a person. Category words (saas, startup, platform, software,
+solution) and the brand's own name are refused.
+
+- **Searched first:** the source search terms are the pain phrases, then the
+  keywords.
+- **Matched loosely:** the literal phrase, or every content word of it in order
+  inside one sentence, a few words apart ("I can't seem to find any active
+  communities"). Never across sentences.
+- **Scored as a problem post:** a match waits at 72 (`problem`) instead of the
+  wording guess, and the model's score gets `+10` unless the model ruled it out
+  (0).
+- **Listed first:** `GET /buyer-leads` orders pain matches before keyword
+  matches, then newest. Each lead carries `painPhrase`.
+
 ## Surfaces
 
 - Web: `/buyer-leads` (linked from Products, each product page, Signals and
@@ -66,13 +88,18 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
   - `GET /` leads (`status`, `monitor`, `minIntent`, `limit`) and monitors
   - `GET|POST /monitors`, `GET|PATCH|DELETE /monitors/:id`
   - `POST /monitors/:id/scan`
+  - `POST /monitors/:id/phrases` (the model drafts pain phrases and merges them in);
+    `PATCH /monitors/:id` with `painPhrases` replaces them
   - `GET|PATCH /:id` (status `new|replied|dismissed`, `replyDraft`)
   - `POST /:id/draft`
-- CLI: `og buyers list|show|draft|replied|dismiss|reopen|monitors|add|set|scan|rm`
+- CLI: `og buyers list|show|draft|replied|dismiss|reopen|monitors|phrases|add|set|scan|rm`
+  (`--phrases a,b` on add/set, `og buyers phrases <id> --generate|--set|--add`)
   (`og leads` is the CSV lead import).
 - MCP: `list_buyer_leads`, `create_buyer_lead_monitor`,
-  `update_buyer_lead_monitor`, `scan_buyer_lead_monitor`,
+  `update_buyer_lead_monitor` (`painPhrases`), `generate_buyer_lead_pain_phrases`,
+  `scan_buyer_lead_monitor`,
   `draft_buyer_lead_reply`, `update_buyer_lead`.
 
 Tables: `lead_monitors`, `community_leads` (migration 0059; 0060 and 0061 re-queued
 rows scored by the earlier rules).
+`lead_monitors.pain_phrases_json` and `community_leads.pain_phrase` from migration 0080.

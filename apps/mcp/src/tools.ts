@@ -609,6 +609,12 @@ export const TOOLS: readonly ToolDefinition[] = [
         id: { type: 'string' },
         name: { type: 'string' },
         keywords: { type: 'array', items: { type: 'string' } },
+        painPhrases: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'The words people use when the problem hits them ("can\'t find communities"), not the category. Searched first; matches rank above keyword matches. Replaces the list.',
+        },
         subreddits: { type: 'array', items: { type: 'string' } },
         exclude: { type: 'array', items: { type: 'string' } },
         sources: { type: 'array', items: { type: 'string' } },
@@ -622,6 +628,42 @@ export const TOOLS: readonly ToolDefinition[] = [
     run: (client, args) => {
       const { id, ...rest } = args;
       return client.patch!(`/buyer-leads/monitors/${encodeURIComponent(String(id))}`, rest);
+    },
+  },
+  {
+    name: 'generate_buyer_lead_pain_phrases',
+    title: 'Draft pain phrases for a monitor',
+    description:
+      "Asks the model for the complaint phrases a monitor's buyers write when the problem hits them, and merges " +
+      'them into the ones it has (nothing is removed). Edit them with update_buyer_lead_monitor painPhrases.',
+    readOnly: false,
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    run: (client, args) =>
+      client.post(`/buyer-leads/monitors/${encodeURIComponent(require(args, 'id'))}/phrases`, {}),
+  },
+  {
+    name: 'campaign_hubs',
+    title: "A campaign's hubs",
+    description:
+      "The accounts a campaign's leads follow and reply to on Bluesky and Mastodon, ranked (score = leads " +
+      "following + 2 x leads replying, at least two leads behind each), plus the leads' own X and LinkedIn " +
+      "handles to watch by hand. refresh: true re-reads the leads' public graphs first (about a second per " +
+      'lead). Nothing is followed or posted.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        campaignId: { type: 'string' },
+        refresh: { type: 'boolean', description: 'Recompute the ranking now.' },
+        limit: { type: 'number', description: 'Hubs to return (default all, ranking keeps 25).' },
+      },
+      required: ['campaignId'],
+    },
+    run: (client, args) => {
+      const path = `/campaigns/${encodeURIComponent(require(args, 'campaignId'))}/hubs${
+        typeof args.limit === 'number' ? `?limit=${args.limit}` : ''
+      }`;
+      return args.refresh === true ? client.post(path, {}) : client.get(path);
     },
   },
   {
