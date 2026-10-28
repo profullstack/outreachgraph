@@ -174,6 +174,7 @@ describe('tools', () => {
           instruction: 'make it 100 a day',
           prompt: 'Find SaaS startups hiring engineers.',
           code: 'OG-AAAA-BBBB-CCCC-DDDD',
+          webhookId: 'whk_1',
         })
         .catch(() => undefined);
 

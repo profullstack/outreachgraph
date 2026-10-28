@@ -307,9 +307,8 @@ export function webhookRoutes(deps: WebhookRouteDeps): Hono<AppEnv> {
   router.all('/*', async (c) => {
     const actor = c.get('actor');
     requireApprover(actor, 'managing webhooks');
-    if (!deps.encryptionKey) {
-      throw new ApiError(503, 'not_configured', 'SECRET_ENCRYPTION_KEY is not set');
-    }
+    // With no key nothing could have been stored, so there is nothing to find.
+    if (!deps.encryptionKey) throw ApiError.notFound('route');
     const hub = createWebhookHub(c.get('db'), {
       encryptionKey: deps.encryptionKey,
       ...(deps.lookup ? { lookup: deps.lookup } : {}),
