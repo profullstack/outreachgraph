@@ -9,13 +9,15 @@
  * the prospects; they cannot point a firehose of them at a URL.
  *
  * Secrets go one way. The signing secret is returned exactly once, in the
- * response that creates the endpoint, and never again: not on the list, not
- * on the delivery log. A lost secret means deleting the endpoint and making a
- * new one, which is the correct amount of friction for a credential. CRM
- * tokens are never returned at all.
+ * response that creates the endpoint (or rotates its secret), and never again:
+ * not on the list, not on the delivery log. A lost secret means rotating it.
+ * CRM tokens are never returned at all.
  *
- * Nothing here sends. "Test" queues a `ping` through the same delivery job
- * real events use, so a passing test proves the real path works.
+ * Delivery is @profullstack/webhooks (packages/pipeline/src/webhooks.ts). The
+ * routes this module does not define (GET/PATCH `/:id`, `/:id/rotate`,
+ * `/deliveries/:id/retry`) are the package's own `webhooksApi`, behind the
+ * same approver check. "Test" sends a `webhook.test` event at once through
+ * the real transport and signing, so a passing test proves the real path.
  */
 
 import { Hono } from 'hono';
@@ -31,19 +33,26 @@ import type { Client } from '@outreachgraph/db';
 import {
   connectCrm,
   createWebhookEndpoint,
+  createWebhookHub,
   crmStatus,
   CrmAccountError,
   deleteWebhookEndpoint,
   disconnectCrm,
   listWebhookDeliveries,
   listWebhookEndpoints,
+  rotateWebhookSecret,
   sendTestEvent,
+  urlHint,
   WebhookError,
   type CrmClientFactory,
 } from '@outreachgraph/pipeline';
 import type { FetchLike, HostLookup } from '@outreachgraph/providers';
+import { webhooksApi } from '@profullstack/webhooks';
 import { ApiError, canApprove, type AppEnv, type RequestActor } from './context';
 import * as repo from './repository';
+
+/** Where `webhookRoutes` is mounted (apps/api/src/app.ts). */
+export const WEBHOOKS_BASE_PATH = '/api/v1/webhooks';
 
 export interface WebhookRouteDeps {
   readonly encryptionKey: Buffer | undefined;
@@ -51,6 +60,8 @@ export interface WebhookRouteDeps {
   /** Test seams: DNS for the SSRF check, and the CRM's network. */
   readonly lookup?: HostLookup | undefined;
   readonly crmFetch?: FetchLike | undefined;
+  /** Test seam: the network under webhook deliveries. */
+  readonly webhookFetch?: FetchLike | undefined;
   readonly crmClientFor?: CrmClientFactory | undefined;
 }
 
@@ -84,6 +95,29 @@ async function body<T extends z.ZodTypeAny>(request: Request, schema: T): Promis
     throw ApiError.badRequest('request body failed validation', parsed.error.flatten());
   }
   return parsed.data;
+}
+
+/**
+ * The package answers with an endpoint's full URL; this app never shows one
+ * back (a Slack or Zapier URL is a credential), so it becomes the hint.
+ */
+async function withoutUrls(response: Response): Promise<Response> {
+  if (!response.headers.get('content-type')?.includes('json')) return response;
+  const body = (await response.json()) as unknown;
+  const scrub = (value: unknown): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const record = { ...(value as Record<string, unknown>) };
+    if (typeof record.url === 'string') {
+      try {
+        record.urlHint = urlHint(new URL(record.url));
+      } catch {
+        record.urlHint = '';
+      }
+      delete record.url;
+    }
+    return record;
+  };
+  return Response.json(scrub(body), { status: response.status });
 }
 
 function requireApprover(actor: RequestActor, doing: string): void {
@@ -192,10 +226,58 @@ export function webhookRoutes(deps: WebhookRouteDeps): Hono<AppEnv> {
     const actor = c.get('actor');
     requireApprover(actor, 'testing a webhook');
 
-    const sent = await sendTestEvent(c.get('db'), actor.workspaceId, c.req.param('id'));
-    if (!sent) throw ApiError.notFound('webhook');
+    try {
+      const sent = await sendTestEvent(c.get('db'), actor.workspaceId, c.req.param('id'), {
+        encryptionKey: deps.encryptionKey,
+        ...(deps.lookup ? { lookup: deps.lookup } : {}),
+        ...(deps.webhookFetch ? { fetchImpl: deps.webhookFetch } : {}),
+      });
+      if (!sent) throw ApiError.notFound('webhook');
+      // 202 as before; `queued` stays for callers that read it, and the
+      // outcome is now known at once.
+      return c.json({ queued: true, ...sent }, 202);
+    } catch (error) {
+      if (error instanceof WebhookError) {
+        throw new ApiError(error.code === 'not_configured' ? 503 : 400, error.code, error.message);
+      }
+      throw error;
+    }
+  });
 
-    return c.json({ queued: true, ...sent }, 202);
+  router.post('/:id/rotate', async (c) => {
+    const actor = c.get('actor');
+    const db = c.get('db');
+    requireApprover(actor, 'rotating a webhook secret');
+
+    const id = c.req.param('id');
+    try {
+      const rotated = await rotateWebhookSecret(db, actor.workspaceId, id, {
+        encryptionKey: deps.encryptionKey,
+      });
+      await repo.audit(db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: 'webhook.secret_rotated',
+        entityKind: 'webhook_endpoint',
+        entityId: id,
+        detail: {},
+      });
+      // Shown once, like the secret on create.
+      return c.json({ id, secret: rotated.secret });
+    } catch (error) {
+      if (error instanceof WebhookError) {
+        if (error.code === 'not_found') throw ApiError.notFound('webhook');
+        throw new ApiError(error.code === 'not_configured' ? 503 : 400, error.code, error.message);
+      }
+      throw error;
+    }
+  });
+
+  // The stored secret is never read back; rotating is how a lost one is replaced.
+  router.get('/:id/secret', (c) => {
+    requireApprover(c.get('actor'), 'viewing a webhook');
+    throw ApiError.notFound('route');
   });
 
   router.delete('/:id', async (c) => {
@@ -218,6 +300,26 @@ export function webhookRoutes(deps: WebhookRouteDeps): Hono<AppEnv> {
     });
 
     return c.json({ deleted: true, id });
+  });
+
+  // Everything else is @profullstack/webhooks' own API: GET and PATCH one
+  // endpoint (url, events, description, enabled) and retrying one delivery.
+  router.all('/*', async (c) => {
+    const actor = c.get('actor');
+    requireApprover(actor, 'managing webhooks');
+    // With no key nothing could have been stored, so there is nothing to find.
+    if (!deps.encryptionKey) throw ApiError.notFound('route');
+    const hub = createWebhookHub(c.get('db'), {
+      encryptionKey: deps.encryptionKey,
+      ...(deps.lookup ? { lookup: deps.lookup } : {}),
+      ...(deps.webhookFetch ? { fetchImpl: deps.webhookFetch } : {}),
+    });
+    const handled = await webhooksApi(hub, {
+      basePath: WEBHOOKS_BASE_PATH,
+      owner: () => actor.workspaceId,
+    })(c.req.raw);
+    if (!handled) throw ApiError.notFound('route');
+    return withoutUrls(handled);
   });
 
   return router;

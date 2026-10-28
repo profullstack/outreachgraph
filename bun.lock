@@ -12,7 +12,7 @@
     },
     "apps/api": {
       "name": "@outreachgraph/api",
-      "version": "0.22.0",
+      "version": "0.24.0",
       "dependencies": {
         "@logicsrc/openaccess": "^0.3.1",
         "@outreachgraph/ai": "workspace:*",
@@ -33,13 +33,14 @@
         "@profullstack/openprofile": "^0.2.0",
         "@profullstack/profile": "0.1.6",
         "@profullstack/redeem-credits": "^0.2.0",
+        "@profullstack/webhooks": "0.2.0",
         "hono": "^4.13.14",
         "zod": "^4.6.7",
       },
     },
     "apps/cli": {
       "name": "@profullstack/outreachgraph",
-      "version": "0.22.0",
+      "version": "0.24.0",
       "bin": {
         "og": "./dist/og.js",
       },
@@ -49,7 +50,7 @@
     },
     "apps/mcp": {
       "name": "@outreachgraph/mcp",
-      "version": "0.22.0",
+      "version": "0.24.0",
       "bin": {
         "outreachgraph-mcp": "./src/index.ts",
       },
@@ -60,7 +61,7 @@
     },
     "apps/server": {
       "name": "@outreachgraph/server",
-      "version": "0.22.0",
+      "version": "0.24.0",
       "dependencies": {
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/contracts": "workspace:*",
@@ -82,7 +83,7 @@
     },
     "apps/web": {
       "name": "@outreachgraph/web",
-      "version": "0.22.0",
+      "version": "0.24.0",
       "dependencies": {
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
@@ -194,6 +195,7 @@
         "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
         "@profullstack/openprofile": "^0.2.0",
+        "@profullstack/webhooks": "0.2.0",
       },
     },
     "packages/policy": {
@@ -431,6 +433,8 @@
     "@profullstack/redeem-credits": ["@profullstack/redeem-credits@0.2.0", "", { "bin": { "redeem-credits": "dist/cli.js" } }, "sha512-JLowb7mWYfouIK7O522tuPPhvLjQjhdEfm6g3xEYrlNLGzLhrIADDhrYldBlGHfiVBWUFX7wefLuCSLF9fnyog=="],
 
     "@profullstack/referrals": ["@profullstack/referrals@0.1.0", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"] }, "sha512-u66SdBVpsv3kc0N+NWISPoYD5vjCERyv5wfD07iSkZwQeC2IA+ihX5jNA4e7Xr+Y4AUvxLycG+3b4VaROqzgRg=="],
+
+    "@profullstack/webhooks": ["@profullstack/webhooks@0.2.0", "", {}, "sha512-lfUoJwN5GmxHzCOphI7fNQAsZ9uiC2C6BZxoPA7MSxM2ryr7MKwOi2YYszwvN6aPaPTRHLhHdqoHQJbkaP9mUg=="],
 
     "@profullstack/x402-gateway": ["@profullstack/x402-gateway@0.13.1", "", { "dependencies": { "@profullstack/keys": "^0.1.0" } }, "sha512-V7liSO0tShZRlp8dancuDuUSF/rqrr5YF3bzLoZy9wn6ixf1RIRPYTepe72s36JOdSVzi3wfuhaZFm9y0RpV4w=="],
 

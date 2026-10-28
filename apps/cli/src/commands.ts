@@ -125,7 +125,7 @@ const CRM_TOKEN_HELP: Readonly<Record<(typeof CRMS)[number], string>> = {
 };
 
 /**
- * `og webhooks list | add <url> | rm <id> | test <id>`.
+ * `og webhooks list | add <url> | rm <id> | test <id> | rotate <id>`.
  *
  * `add` prints the signing secret, because it is the only time anyone will
  * see it; everything else prints one endpoint per line, id first.
@@ -1256,7 +1256,21 @@ async function runWebhooks({ client, args, flags }: CommandContext): Promise<str
       `/webhooks/${encodeURIComponent(target)}/test`,
       {},
     )) as Record<string, unknown>;
-    return `Queued a ping (${text(result, 'deliveryId')}). It goes out on the worker's next tick; see og webhooks deliveries ${target}.`;
+    return result.ok
+      ? `Test delivered (${text(result, 'statusCode')}), delivery ${text(result, 'deliveryId')}.`
+      : `Test failed: ${text(result, 'error', text(result, 'statusCode', 'no answer'))}. See og webhooks deliveries ${target}.`;
+  }
+
+  if (verb === 'rotate') {
+    if (!target) throw new Error('og webhooks rotate <webhookId>');
+    const result = (await client.post(
+      `/webhooks/${encodeURIComponent(target)}/rotate`,
+      {},
+    )) as Record<string, unknown>;
+    return [
+      `New signing secret for ${target} (shown once, store it now): ${text(result, 'secret')}`,
+      'The old secret stopped working just now.',
+    ].join('\n');
   }
 
   if (verb === 'deliveries' || verb === 'log') {
@@ -1280,7 +1294,9 @@ async function runWebhooks({ client, args, flags }: CommandContext): Promise<str
       .join('\n');
   }
 
-  throw new Error('og webhooks list | add <url> | rm <id> | test <id> | deliveries [id]');
+  throw new Error(
+    'og webhooks list | add <url> | rm <id> | test <id> | rotate <id> | deliveries [id]',
+  );
 }
 
 /**
@@ -2570,7 +2586,7 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'webhooks',
     usage:
-      'og webhooks list | add <https-url> [--slack] [--events a,b] | rm <id> | test <id> | deliveries [id]',
+      'og webhooks list | add <https-url> [--slack] [--events a,b] | rm <id> | test <id> | rotate <id> | deliveries [id]',
     summary: 'Send events to Slack, Zapier, Make, n8n or your own endpoint.',
     run: runWebhooks,
   },

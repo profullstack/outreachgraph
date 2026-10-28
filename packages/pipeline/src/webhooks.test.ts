@@ -6,6 +6,8 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHmac, randomBytes } from 'node:crypto';
+import { verifySignature } from '@profullstack/webhooks';
 import type { OutboundEvent } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
@@ -14,16 +16,16 @@ import {
   type CrmContactInput,
   CrmError,
 } from '@outreachgraph/providers';
-import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
+import { encryptSecret, generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import {
   createWebhookEndpoint,
+  createWebhookHub,
   emitWebhookEvent,
   listWebhookEndpoints,
-  runWebhookDelivery,
+  rotateWebhookSecret,
   sendTestEvent,
   WebhookError,
-  WebhookRetryError,
 } from './webhooks';
 import { connectCrm, crmStatus, runCrmSync } from './crm-sync';
 import { recordLinkClick, trackLinksInBody } from './engagement';
@@ -132,6 +134,75 @@ describe('endpoints', () => {
   });
 });
 
+/** Every row the hub's outbox holds, oldest first. */
+async function deliveryRows(db: Client) {
+  return queryAll<{
+    id: string;
+    endpoint_id: string;
+    payload_json: string;
+    status: string;
+    attempt: number;
+    status_code: number | null;
+    error: string | null;
+    next_at: number;
+    delivered_at: string | null;
+  }>(
+    db,
+    `SELECT id, endpoint_id, payload_json, status, attempt, status_code, error, next_at,
+            delivered_at FROM webhook_deliveries ORDER BY created_at, id`,
+  );
+}
+
+interface Captured {
+  url: string;
+  body: string;
+  headers: Record<string, string>;
+}
+
+/** A hub whose network is a recorder answering `status`. */
+function hubWith(db: Client, status = 200, options: { lookup?: () => Promise<string[]> } = {}) {
+  const sent: Captured[] = [];
+  const hub = createWebhookHub(db, {
+    encryptionKey: KEY,
+    lookup: options.lookup ?? PUBLIC,
+    clock: () => Math.floor(Date.now() / 1000),
+    fetchImpl: async (url, init) => {
+      sent.push({
+        url: String(url),
+        body: String(init?.body),
+        headers: init?.headers as Record<string, string>,
+      });
+      return new Response('ok', { status });
+    },
+  });
+  return { hub, sent };
+}
+
+/**
+ * A receiver written against the old docs (docs/webhooks.md before the move),
+ * and never changed: it checks X-OutreachGraph-Signature as
+ * HMAC-SHA256(secret as UTF-8, "<t>.<raw body>") in hex, then reads the old
+ * envelope fields. Deliberately not `verifyWebhookSignature`, so this proves
+ * the bytes on the wire rather than our own helper agreeing with itself.
+ */
+function oldStyleReceiver(secret: string, body: string, headers: Record<string, string>) {
+  const header = headers['X-OutreachGraph-Signature'] ?? '';
+  const parts = Object.fromEntries(
+    header.split(',').map((p) => p.split('=', 2) as [string, string]),
+  );
+  const t = Number(parts.t);
+  const expected = createHmac('sha256', secret).update(`${t}.${body}`).digest('hex');
+  const fresh = Math.abs(Date.now() / 1000 - t) <= 300;
+  const event = JSON.parse(body) as {
+    id: string;
+    type: string;
+    createdAt: string;
+    workspaceId: string;
+    data: { person?: { name: string } };
+  };
+  return { verified: fresh && parts.v1 === expected, event };
+}
+
 describe('emitWebhookEvent', () => {
   test('with nobody listening, writes nothing', async () => {
     seeded = await seedDatabase('wh-silent');
@@ -139,7 +210,7 @@ describe('emitWebhookEvent', () => {
       personId: SEED.personId,
     });
     expect(result).toEqual({ deliveries: 0, crmSyncs: 0 });
-    expect(await jobs(seeded.db, 'deliver_webhook')).toHaveLength(0);
+    expect(await deliveryRows(seeded.db)).toHaveLength(0);
   });
 
   test('queues one delivery per matching endpoint, and never sends inline', async () => {
@@ -155,22 +226,25 @@ describe('emitWebhookEvent', () => {
     });
 
     expect(result.deliveries).toBe(2);
-    const queued = await jobs(db, 'deliver_webhook');
-    expect(queued).toHaveLength(2);
-
-    const deliveries = await queryAll<{
-      endpoint_id: string;
-      payload_json: string;
-      status: string;
-    }>(db, 'SELECT endpoint_id, payload_json, status FROM webhook_deliveries');
+    const deliveries = await deliveryRows(db);
     expect(deliveries.map((d) => d.endpoint_id).sort()).toEqual(
       [all.endpoint.id, replies.endpoint.id].sort(),
     );
     expect(deliveries.every((d) => d.status === 'pending')).toBe(true);
 
-    const payload = JSON.parse(deliveries[0]!.payload_json) as OutboundEvent;
+    // A CloudEvent that still carries every field of the old envelope.
+    const payload = JSON.parse(deliveries[0]!.payload_json) as OutboundEvent & {
+      specversion: string;
+      source: string;
+      subject: string;
+    };
+    expect(payload.specversion).toBe('1.0');
+    expect(payload.source).toBe('https://outreachgraph.com');
+    expect(payload.subject).toBe(`person:${SEED.personId}`);
     expect(payload.type).toBe('reply.received');
     expect(payload.id.startsWith('evt_')).toBe(true);
+    expect(payload.workspaceId).toBe(SEED.workspaceId);
+    expect(Date.parse(payload.createdAt)).toBeGreaterThan(0);
     expect(payload.data.person).toMatchObject({
       id: SEED.personId,
       name: 'Jane Smith',
@@ -178,16 +252,26 @@ describe('emitWebhookEvent', () => {
     });
   });
 
-  test('ping reaches only the endpoint being tested', async () => {
+  test('a test reaches only the endpoint being tested, at once', async () => {
     seeded = await seedDatabase('wh-ping');
     const db = seeded.db;
     const target = await endpoint(db);
     await endpoint(db);
 
-    const sent = await sendTestEvent(db, SEED.workspaceId, target.endpoint.id);
-    expect(sent).toBeDefined();
-    expect(await jobs(db, 'deliver_webhook')).toHaveLength(1);
-    expect(await sendTestEvent(db, 'wsp_other', target.endpoint.id)).toBeUndefined();
+    const sent: string[] = [];
+    const result = await sendTestEvent(db, SEED.workspaceId, target.endpoint.id, {
+      encryptionKey: KEY,
+      lookup: PUBLIC,
+      fetchImpl: async (url) => {
+        sent.push(String(url));
+        return new Response('ok');
+      },
+    });
+    expect(result).toMatchObject({ ok: true, statusCode: 200 });
+    expect(sent).toEqual(['https://hooks.example.com/og']);
+    expect(await sendTestEvent(db, 'wsp_other', target.endpoint.id, { encryptionKey: KEY })).toBe(
+      undefined,
+    );
   });
 
   test('a human link click is announced; a scanner is not', async () => {
@@ -209,60 +293,101 @@ describe('emitWebhookEvent', () => {
       userAgent: 'Mimecast Link Protection',
       at: new Date(Date.now() + 3_600_000),
     });
-    expect(await jobs(db, 'deliver_webhook')).toHaveLength(0);
+    expect(await deliveryRows(db)).toHaveLength(0);
 
     await recordLinkClick(db, {
       token: link!.id,
       userAgent: 'Mozilla/5.0 Chrome/140',
       at: new Date(Date.now() + 3_600_000),
     });
-    expect(await jobs(db, 'deliver_webhook')).toHaveLength(1);
+    expect(await deliveryRows(db)).toHaveLength(1);
   });
 });
 
-describe('runWebhookDelivery', () => {
-  test('signs the exact body it sends, and marks it delivered', async () => {
+describe('delivery through the hub', () => {
+  test('an old-style receiver still verifies, and so does a Standard Webhooks one', async () => {
     seeded = await seedDatabase('wh-deliver');
     const db = seeded.db;
     const created = await endpoint(db);
     await emitWebhookEvent(db, SEED.workspaceId, 'action.sent', { personId: SEED.personId });
-    const [job] = await jobs(db, 'deliver_webhook');
 
-    let captured: { body: string; headers: Record<string, string> } | undefined;
-    const result = await runWebhookDelivery(
-      {
-        db,
-        encryptionKey: KEY,
-        lookup: PUBLIC,
-        clock: () => 1_800_000_000,
-        fetchImpl: async (_url, init) => {
-          captured = {
-            body: String(init?.body),
-            headers: init?.headers as Record<string, string>,
-          };
-          return new Response('ok');
-        },
-      },
-      jobFor(job!),
-    );
+    const { hub, sent } = hubWith(db);
+    expect(await hub.drain()).toBe(1);
+    const [request] = sent;
 
-    expect(result.status).toBe('delivered');
-    expect(captured?.headers['X-OutreachGraph-Event']).toBe('action.sent');
+    const old = oldStyleReceiver(created.secret, request!.body, request!.headers);
+    expect(old.verified).toBe(true);
+    expect(old.event.type).toBe('action.sent');
+    expect(old.event.workspaceId).toBe(SEED.workspaceId);
+    expect(old.event.data.person?.name).toBe('Jane Smith');
+    expect(request!.headers['X-OutreachGraph-Event']).toBe('action.sent');
+    expect(request!.headers['X-OutreachGraph-Delivery']).toBe(old.event.id);
+    expect(request!.headers['content-type']).toBe('application/json');
     expect(
       verifyWebhookSignature(
         created.secret,
-        captured!.body,
-        captured!.headers['X-OutreachGraph-Signature'],
-        { now: 1_800_000_000 },
+        request!.body,
+        request!.headers['X-OutreachGraph-Signature'],
       ),
     ).toBe(true);
 
-    const row = await queryOne<{ status: string; status_code: number; delivered_at: string }>(
-      db,
-      'SELECT status, status_code, delivered_at FROM webhook_deliveries',
-    );
-    expect(row).toMatchObject({ status: 'delivered', status_code: 200 });
+    const standard = verifySignature({
+      headers: request!.headers,
+      body: request!.body,
+      secret: created.secret,
+    });
+    expect(standard.ok).toBe(true);
+
+    const [row] = await deliveryRows(db);
+    expect(row).toMatchObject({ status: 'delivered', status_code: 200, attempt: 1 });
     expect(row?.delivered_at).toBeTruthy();
+  });
+
+  test('an endpoint and a delivery from before the move are sent and verify', async () => {
+    seeded = await seedDatabase('wh-legacy');
+    const db = seeded.db;
+    // Exactly what the old sender stored: base64url secret, old envelope, a
+    // delivery left 'retrying' that migration 0079 made 'pending' and due.
+    const secret = `whsec_${randomBytes(32).toString('base64url')}`;
+    const stamp = new Date().toISOString();
+    await db.execute({
+      sql: `INSERT INTO webhook_endpoints (id, workspace_id, kind, url_enc, url_hint, secret_enc,
+            events_json, description, active, created_at, updated_at)
+            VALUES ('whk_old', ?, 'generic', ?, 'https://old.example.com/…hook', ?, '[]', NULL, 1, ?, ?)`,
+      args: [
+        SEED.workspaceId,
+        encryptSecret('https://old.example.com/hook', KEY),
+        encryptSecret(secret, KEY),
+        stamp,
+        stamp,
+      ],
+    });
+    const envelope = JSON.stringify({
+      id: 'evt_old1',
+      type: 'reply.received',
+      createdAt: stamp,
+      workspaceId: SEED.workspaceId,
+      data: { personId: SEED.personId },
+    });
+    await db.execute({
+      sql: `INSERT INTO webhook_deliveries (id, endpoint_id, workspace_id, event_id, event_type,
+            payload_json, status, attempt, created_at, updated_at)
+            VALUES ('whd_old', 'whk_old', ?, 'evt_old1', 'reply.received', ?, 'pending', 2, ?, ?)`,
+      args: [SEED.workspaceId, envelope, stamp, stamp],
+    });
+
+    const { hub, sent } = hubWith(db);
+    expect(await hub.drain()).toBe(1);
+    expect(sent[0]?.url).toBe('https://old.example.com/hook');
+    expect(sent[0]?.body).toBe(envelope);
+    expect(oldStyleReceiver(secret, sent[0]!.body, sent[0]!.headers).verified).toBe(true);
+    expect(sent[0]?.headers['webhook-id']).toBe('evt_old1');
+
+    // A new event to the same endpoint reaches it too.
+    await emitWebhookEvent(db, SEED.workspaceId, 'link.clicked', { personId: SEED.personId });
+    await hub.drain();
+    expect(sent).toHaveLength(2);
+    expect(oldStyleReceiver(secret, sent[1]!.body, sent[1]!.headers).verified).toBe(true);
   });
 
   test('a Slack endpoint gets a message, not the envelope', async () => {
@@ -273,105 +398,73 @@ describe('runWebhookDelivery', () => {
       personId: SEED.personId,
       subject: 'Sounds good',
     });
-    const [job] = await jobs(db, 'deliver_webhook');
 
-    let body = '';
-    await runWebhookDelivery(
-      {
-        db,
-        encryptionKey: KEY,
-        lookup: PUBLIC,
-        fetchImpl: async (_url, init) => {
-          body = String(init?.body);
-          return new Response('ok');
-        },
-      },
-      jobFor(job!),
-    );
+    const { hub, sent } = hubWith(db);
+    await hub.drain();
 
-    const parsed = JSON.parse(body) as { text: string };
+    const parsed = JSON.parse(sent[0]!.body) as { text: string };
     expect(Object.keys(parsed)).toEqual(['text']);
     expect(parsed.text).toContain('Jane Smith');
     expect(parsed.text).toContain('Sounds good');
   });
 
-  test('a failure asks the queue to retry, and the last attempt is recorded as failed', async () => {
+  test('a failure stays pending with a later due time', async () => {
     seeded = await seedDatabase('wh-retry');
     const db = seeded.db;
     await endpoint(db);
     await emitWebhookEvent(db, SEED.workspaceId, 'prospect.created', { personId: SEED.personId });
-    const [job] = await jobs(db, 'deliver_webhook');
-    const deps = {
-      db,
-      encryptionKey: KEY,
-      lookup: PUBLIC,
-      fetchImpl: async () => new Response('down', { status: 503 }),
-    };
 
-    await expect(runWebhookDelivery(deps, jobFor(job!, 1))).rejects.toThrow(WebhookRetryError);
-    expect(
-      (await queryOne<{ status: string }>(db, 'SELECT status FROM webhook_deliveries'))?.status,
-    ).toBe('retrying');
-
-    await expect(runWebhookDelivery(deps, jobFor(job!, 8))).rejects.toThrow(WebhookRetryError);
-    const row = await queryOne<{ status: string; attempt: number; status_code: number }>(
-      db,
-      'SELECT status, attempt, status_code FROM webhook_deliveries',
-    );
-    expect(row).toMatchObject({ status: 'failed', attempt: 8, status_code: 503 });
+    const { hub } = hubWith(db, 503);
+    const before = Date.now();
+    await hub.drain();
+    const [row] = await deliveryRows(db);
+    expect(row).toMatchObject({ status: 'pending', attempt: 1, status_code: 503 });
+    expect(Number(row?.next_at)).toBeGreaterThanOrEqual(before + 30_000);
   });
 
-  test('refuses at delivery time a URL that now resolves privately, without retrying', async () => {
+  test('refuses at delivery time a URL that now resolves privately', async () => {
     seeded = await seedDatabase('wh-rebind');
     const db = seeded.db;
     await endpoint(db);
     await emitWebhookEvent(db, SEED.workspaceId, 'prospect.created', { personId: SEED.personId });
-    const [job] = await jobs(db, 'deliver_webhook');
 
-    let called = false;
-    const result = await runWebhookDelivery(
-      {
-        db,
-        encryptionKey: KEY,
-        lookup: async () => ['127.0.0.1'],
-        fetchImpl: async () => {
-          called = true;
-          return new Response('ok');
-        },
-      },
-      jobFor(job!),
-    );
-
-    expect(called).toBe(false);
-    expect(result.status).toBe('failed');
+    const { hub, sent } = hubWith(db, 200, { lookup: async () => ['127.0.0.1'] });
+    await hub.drain();
+    expect(sent).toHaveLength(0);
+    const [row] = await deliveryRows(db);
+    expect(row?.status).not.toBe('delivered');
+    expect(row?.error).toBeTruthy();
   });
 
-  test('410 Gone disables the endpoint; a deleted endpoint cancels its deliveries', async () => {
+  test('410 Gone disables the endpoint', async () => {
     seeded = await seedDatabase('wh-gone');
     const db = seeded.db;
     const created = await endpoint(db);
     await emitWebhookEvent(db, SEED.workspaceId, 'prospect.created', { personId: SEED.personId });
-    await emitWebhookEvent(db, SEED.workspaceId, 'prospect.created', { personId: SEED.personId });
-    const [first, second] = await jobs(db, 'deliver_webhook');
 
-    const gone = await runWebhookDelivery(
-      {
-        db,
-        encryptionKey: KEY,
-        lookup: PUBLIC,
-        fetchImpl: async () => new Response('', { status: 410 }),
-      },
-      jobFor(first!),
-    );
-    expect(gone.status).toBe('failed');
+    const { hub } = hubWith(db, 410);
+    await hub.drain();
     const listed = await listWebhookEndpoints(db, SEED.workspaceId);
-    expect(listed.find((e) => e.id === created.endpoint.id)?.active).toBe(false);
+    const gone = listed.find((e) => e.id === created.endpoint.id);
+    expect(gone?.active).toBe(false);
+    expect(gone?.disabledReason).toContain('410');
+    expect((await deliveryRows(db))[0]?.status).toBe('failed');
+  });
 
-    const cancelled = await runWebhookDelivery(
-      { db, encryptionKey: KEY, lookup: PUBLIC },
-      jobFor(second!),
-    );
-    expect(cancelled.status).toBe('cancelled');
+  test('rotating replaces the secret the next delivery is signed with', async () => {
+    seeded = await seedDatabase('wh-rotate');
+    const db = seeded.db;
+    const created = await endpoint(db);
+    const { secret } = await rotateWebhookSecret(db, SEED.workspaceId, created.endpoint.id, {
+      encryptionKey: KEY,
+    });
+    expect(secret).not.toBe(created.secret);
+
+    await emitWebhookEvent(db, SEED.workspaceId, 'action.sent', { personId: SEED.personId });
+    const { hub, sent } = hubWith(db);
+    await hub.drain();
+    expect(oldStyleReceiver(secret, sent[0]!.body, sent[0]!.headers).verified).toBe(true);
+    expect(oldStyleReceiver(created.secret, sent[0]!.body, sent[0]!.headers).verified).toBe(false);
   });
 });
 

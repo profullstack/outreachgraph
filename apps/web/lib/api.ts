@@ -1205,6 +1205,8 @@ export interface WebhookEndpointView {
   readonly events: readonly string[];
   readonly description: string | null;
   readonly active: boolean;
+  readonly failures?: number;
+  readonly disabledReason?: string;
   readonly createdAt: string;
   readonly lastDelivery?: {
     readonly status: string;

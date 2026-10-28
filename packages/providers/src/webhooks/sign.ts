@@ -26,6 +26,9 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 export const SIGNATURE_HEADER = 'X-OutreachGraph-Signature';
 
+/** The user agent every delivery carries. */
+export const WEBHOOK_USER_AGENT = 'OutreachGraph-Webhooks/1 (+https://outreachgraph.com)';
+
 /** How old a signature a receiver should accept by default. */
 export const DEFAULT_TOLERANCE_SECONDS = 300;
 

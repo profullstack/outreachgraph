@@ -1530,7 +1530,7 @@ export const TOOLS: readonly ToolDefinition[] = [
       'recommendation.approved, action.sent, cadence.completed, person.suppressed) to an https ' +
       'URL: a Zapier, Make or n8n catch hook, your own server, or a Slack incoming webhook with ' +
       'kind "slack". Private and internal addresses are refused. The response carries the signing ' +
-      'secret exactly once; deliveries are signed X-OutreachGraph-Signature: t=<unix>,v1=<hex> ' +
+      'secret exactly once; deliveries carry Standard Webhooks headers and X-OutreachGraph-Signature: t=<unix>,v1=<hex> ' +
       'over "<t>.<raw body>" with HMAC-SHA256.',
     readOnly: false,
     inputSchema: {
@@ -1554,6 +1554,69 @@ export const TOOLS: readonly ToolDefinition[] = [
         ...(Array.isArray(args.events) ? { events: args.events.map(String) } : {}),
         ...(str(args, 'description') ? { description: str(args, 'description') } : {}),
       }),
+  },
+  {
+    name: 'test_webhook',
+    title: 'Send a test event to a webhook endpoint',
+    description:
+      'Sends a signed webhook.test event to one endpoint now and returns how it went ' +
+      '(ok, statusCode, error). Only that endpoint receives it.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { webhookId: { type: 'string', description: 'The endpoint id (whk_...).' } },
+      required: ['webhookId'],
+    },
+    run: (client, args) =>
+      client.post(`/webhooks/${encodeURIComponent(require(args, 'webhookId'))}/test`, {}),
+  },
+  {
+    name: 'rotate_webhook_secret',
+    title: 'Rotate a webhook signing secret',
+    description:
+      'Replaces an endpoint signing secret and returns the new one exactly once. The old secret ' +
+      'stops working at once, so update the receiver straight after.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { webhookId: { type: 'string', description: 'The endpoint id (whk_...).' } },
+      required: ['webhookId'],
+    },
+    run: (client, args) =>
+      client.post(`/webhooks/${encodeURIComponent(require(args, 'webhookId'))}/rotate`, {}),
+  },
+  {
+    name: 'remove_webhook',
+    title: 'Remove a webhook endpoint',
+    description: 'Deletes an endpoint, its stored URL and secret, and its delivery log.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { webhookId: { type: 'string', description: 'The endpoint id (whk_...).' } },
+      required: ['webhookId'],
+    },
+    run: (client, args) => {
+      if (!client.delete) throw new Error('this client cannot delete');
+      return client.delete(`/webhooks/${encodeURIComponent(require(args, 'webhookId'))}`);
+    },
+  },
+  {
+    name: 'list_webhook_deliveries',
+    title: 'List webhook deliveries',
+    description:
+      'The delivery log: each event sent (or still being retried), its status, HTTP status and ' +
+      'error. Pass webhookId for one endpoint.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { webhookId: { type: 'string' } },
+    },
+    run: (client, args) =>
+      client.get(
+        str(args, 'webhookId')
+          ? `/webhooks/${encodeURIComponent(str(args, 'webhookId')!)}/deliveries`
+          : '/webhooks/deliveries',
+      ),
   },
   {
     name: 'draft_posts_from_link',

@@ -385,6 +385,8 @@ export interface AppOptions {
   readonly webhookLookup?: HostLookup | undefined;
   /** The network a CRM token is verified over. Tests pass a fake. */
   readonly crmFetch?: ProviderFetchLike | undefined;
+  /** The network under webhook deliveries (test sends). Tests pass a fake. */
+  readonly webhookFetch?: ProviderFetchLike | undefined;
   /**
    * The networks an audience watch is read over: X's API and the public
    * Bluesky AppView. Both are test seams — a route test must not reach either
@@ -1563,6 +1565,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       requireVerifiedEmail: (db: Client, actor: RequestActor) => requireVerifiedEmail(db, actor),
       lookup: options.webhookLookup,
       crmFetch: options.crmFetch,
+      webhookFetch: options.webhookFetch,
     };
     api.route('/webhooks', webhookRoutes(webhookDeps));
     api.route('/integrations/crm', crmRoutes(webhookDeps));
