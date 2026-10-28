@@ -38,6 +38,7 @@ export {
 export {
   runAutopilot,
   countActionsToday,
+  countCampaignActionsToday,
   HoldLedger,
   holdLedger,
   heldSummary,

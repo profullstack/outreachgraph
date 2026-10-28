@@ -575,6 +575,9 @@ export async function runAutopilot(
     (row) => classifyPersona(row.person_title),
   );
   const companyHolds = new Map<string, CompanyBusy | null>();
+  // Each campaign's sends today, read once per campaign and kept current as
+  // this run sends.
+  const campaignToday = new Map<string, number>();
 
   for (const row of queue) {
     if (today >= cap) {
@@ -777,6 +780,11 @@ export async function runAutopilot(
     //
     // Re-evaluated from live rows, never from the stored snapshot.
     const counts = await actionCounts(db, workspaceId, row.person_id, at);
+    let campaignSent = campaignToday.get(row.campaign_id);
+    if (campaignSent === undefined) {
+      campaignSent = await countCampaignActionsToday(db, workspaceId, row.campaign_id, at);
+      campaignToday.set(row.campaign_id, campaignSent);
+    }
 
     const decision = evaluatePolicy({
       network: row.network as Network,
@@ -791,7 +799,9 @@ export async function runAutopilot(
       personDeleted: row.person_status === 'deleted',
       identityConfidence: row.identity_confidence,
       minIdentityConfidence: row.min_outreach_confidence,
-      actionsToday: today,
+      // The campaign's own sends against its own allowance; the workspace
+      // ceiling is enforced by `today >= cap` at the top of the loop.
+      actionsToday: campaignSent,
       maxActionsPerDay: Math.min(numberOr(budget.maxActionsPerDay, 50), cap),
       actionsToThisProspectThisWeek: counts.thisProspect,
       maxActionsPerProspectPerWeek: numberOr(budget.maxActionsPerProspectPerWeek, 1),
@@ -1024,6 +1034,7 @@ export async function runAutopilot(
       });
 
       today += 1;
+      campaignToday.set(row.campaign_id, (campaignToday.get(row.campaign_id) ?? 0) + 1);
       if (ledger.release(workspaceId, row.recommendation_id)) {
         await forgetHolds(db, [row.recommendation_id]);
       }
@@ -1156,6 +1167,33 @@ export async function countActionsToday(
         AND COALESCE(executed_at, created_at) >= ?
         AND mode != 'manual' AND ${COUNTABLE_KINDS}`,
     [workspaceId, dayStart(at), ...INTERNAL_ACTION_KINDS],
+  );
+  return row?.n ?? 0;
+}
+
+/**
+ * The same count as `countActionsToday`, for one campaign only.
+ *
+ * A campaign's `maxActionsPerDay` is that campaign's own allowance. Compared
+ * against the whole workspace's count instead, every campaign capped below
+ * the workspace's total stopped as soon as the others had sent that many:
+ * a 200/day campaign in a workspace sending 300 sent nothing. The workspace
+ * ceiling (`autopilot_daily_cap`) is still checked against the workspace.
+ */
+export async function countCampaignActionsToday(
+  db: Client,
+  workspaceId: string,
+  campaignId: string,
+  at: Date,
+): Promise<number> {
+  const row = await queryOne<{ n: number }>(
+    db,
+    `SELECT COUNT(*) AS n FROM actions
+      WHERE workspace_id = ? AND status IN ('completed', 'executing')
+        AND COALESCE(executed_at, created_at) >= ?
+        AND mode != 'manual' AND ${COUNTABLE_KINDS}
+        AND recommendation_id IN (SELECT id FROM recommendations WHERE campaign_id = ?)`,
+    [workspaceId, dayStart(at), ...INTERNAL_ACTION_KINDS, campaignId],
   );
   return row?.n ?? 0;
 }

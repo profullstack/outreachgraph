@@ -60,6 +60,7 @@ import {
   cancelWorkflowRun,
   claimWorkflowRetry,
   countActionsToday,
+  countCampaignActionsToday,
   crmStatus,
   dueWorkflowRetries,
   emitEvent,
@@ -1064,7 +1065,10 @@ async function estimateFor(
     dailyLimit,
     workspaceDailyCap: cap,
     effectiveDailyCap: Math.min(dailyLimit, cap),
-    sentToday: await countActionsToday(db, workspaceId, at),
+    // The campaign's own sends: its daily limit is its own, not the workspace's.
+    sentToday: campaignId
+      ? await countCampaignActionsToday(db, workspaceId, campaignId, at)
+      : await countActionsToday(db, workspaceId, at),
     peopleInCampaign: Number(counts?.people ?? 0),
     awaitingApproval: Number(counts?.waiting ?? 0),
   };
