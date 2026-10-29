@@ -234,19 +234,58 @@ async function getRow(db: Client, workspaceId: string, id: string) {
   ]);
 }
 
+/**
+ * How long a network rests after a post on it is marked done. A person can
+ * post by hand on one network only every few hours, so a network used inside
+ * this window goes to the back of the open list.
+ */
+export const LINK_POST_NETWORK_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Link posts for a workspace. The history (`all`) is newest first, a batch's
+ * networks together. Any one status takes turns by network instead: the newest
+ * post on each network, then the second newest on each, and so on, with a
+ * network marked done inside LINK_POST_NETWORK_COOLDOWN_MS after every rested
+ * one. Newest first put a campaign's 200 LinkedIn drafts ahead of everything.
+ */
 export async function listLinkPosts(
   db: Client,
   workspaceId: string,
-  options: { readonly status?: LinkPostStatus | 'all'; readonly limit?: number } = {},
+  options: {
+    readonly status?: LinkPostStatus | 'all';
+    readonly limit?: number;
+    readonly now?: Date;
+  } = {},
 ): Promise<LinkPostView[]> {
   const status = options.status ?? 'open';
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  if (status !== 'all') {
+    const cooldownStart = new Date(
+      (options.now ?? new Date()).getTime() - LINK_POST_NETWORK_COOLDOWN_MS,
+    ).toISOString();
+    const rows = await queryAll<LinkPostRow>(
+      db,
+      `WITH listed AS (
+         SELECT p.*, ROW_NUMBER() OVER (PARTITION BY p.network ORDER BY p.created_at DESC, p.id) AS turn
+           FROM link_posts p
+          WHERE p.workspace_id = ? AND p.status = ?
+       ),
+       cooling AS (
+         SELECT DISTINCT d.network FROM link_posts d
+          WHERE d.workspace_id = ? AND d.status = 'done' AND d.done_at >= ?
+       )
+       SELECT * FROM listed
+        ORDER BY CASE WHEN network IN (SELECT network FROM cooling) THEN 1 ELSE 0 END,
+                 turn, created_at DESC, network
+        LIMIT ?`,
+      [workspaceId, status, workspaceId, cooldownStart, limit],
+    );
+    return rows.map(toLinkPostView);
+  }
   const rows = await queryAll<LinkPostRow>(
     db,
-    status === 'all'
-      ? 'SELECT * FROM link_posts WHERE workspace_id = ? ORDER BY created_at DESC, network ASC LIMIT ?'
-      : 'SELECT * FROM link_posts WHERE workspace_id = ? AND status = ? ORDER BY created_at DESC, network ASC LIMIT ?',
-    status === 'all' ? [workspaceId, limit] : [workspaceId, status, limit],
+    'SELECT * FROM link_posts WHERE workspace_id = ? ORDER BY created_at DESC, network ASC LIMIT ?',
+    [workspaceId, limit],
   );
   // Within a batch, the order the networks were offered in, LinkedIn first.
   const order = (n: string) => (LINK_POST_NETWORKS as readonly string[]).indexOf(n);
