@@ -301,7 +301,22 @@ interface HandoffRow {
 }
 
 /**
- * Pending hand-offs for a workspace, oldest first.
+ * How long a network rests after a hand-off on it is marked done. Networks
+ * rate-limit a person posting by hand (one post every few hours is common),
+ * so a network used inside this window goes to the back of the list.
+ */
+export const HANDOFF_NETWORK_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Pending hand-offs for a workspace, taking turns by network.
+ *
+ * Oldest first put 500 cards for one network ahead of everything else, and a
+ * person can post on one network only every few hours. So the list
+ * round-robins: the oldest card on each network, then the second oldest on
+ * each, and so on. A network with a hand-off marked done inside
+ * HANDOFF_NETWORK_COOLDOWN_MS sorts after every rested one, so working down
+ * the list never lands on a network that is still cooling down while another
+ * is ready.
  *
  * "Pending" is a manual action still `queued`. Narrowed to the actions a human
  * can do because the same shape is written by auto-approval for research —
@@ -315,7 +330,7 @@ interface HandoffRow {
 export async function listHandoffs(
   db: Client,
   workspaceId: string,
-  options: { readonly limit: number; readonly actionId?: string },
+  options: { readonly limit: number; readonly actionId?: string; readonly now?: Date },
 ): Promise<Handoff[]> {
   const kinds = HANDOFF_ACTIONS.filter(
     (kind) => !(INTERNAL_ACTION_KINDS as readonly string[]).includes(kind),
@@ -323,9 +338,24 @@ export async function listHandoffs(
   const placeholders = kinds.map(() => '?').join(', ');
   const one = options.actionId ? 'AND a.id = ?' : '';
 
+  const cooldownStart = new Date(
+    (options.now ?? new Date()).getTime() - HANDOFF_NETWORK_COOLDOWN_MS,
+  ).toISOString();
+
   const rows = await queryAll<HandoffRow>(
     db,
-    `SELECT a.id AS action_id, a.recommendation_id, a.person_id, a.kind, a.network,
+    `WITH pending AS (
+       SELECT a.*, ROW_NUMBER() OVER (PARTITION BY a.network ORDER BY a.created_at, a.id) AS turn
+         FROM actions a
+        WHERE a.workspace_id = ? AND a.mode = 'manual' AND a.status = 'queued'
+          AND a.kind IN (${placeholders}) ${one}
+     ),
+     cooling AS (
+       SELECT DISTINCT d.network FROM actions d
+        WHERE d.workspace_id = ? AND d.mode = 'manual' AND d.status = 'completed'
+          AND d.kind IN (${placeholders}) AND d.executed_at >= ?
+     )
+     SELECT a.id AS action_id, a.recommendation_id, a.person_id, a.kind, a.network,
             a.body AS action_body, a.created_at,
             p.display_name, r.reason,
             s.source_url AS signal_url, s.network AS signal_network,
@@ -341,15 +371,22 @@ export async function listHandoffs(
               WHERE si.person_id = a.person_id AND si.network = a.network
                 AND si.handle IS NOT NULL AND trim(si.handle) <> ''
               ORDER BY si.confidence DESC LIMIT 1) AS handle
-       FROM actions a
+       FROM pending a
        JOIN recommendations r ON r.id = a.recommendation_id
        JOIN people p ON p.id = a.person_id
   LEFT JOIN signals s ON s.id = r.trigger_signal_id
-      WHERE a.workspace_id = ? AND a.mode = 'manual' AND a.status = 'queued'
-        AND a.kind IN (${placeholders}) ${one}
-   ORDER BY a.created_at ASC
+   ORDER BY CASE WHEN a.network IN (SELECT network FROM cooling) THEN 1 ELSE 0 END,
+            a.turn, a.created_at, a.network
       LIMIT ?`,
-    [workspaceId, ...kinds, ...(options.actionId ? [options.actionId] : []), options.limit],
+    [
+      workspaceId,
+      ...kinds,
+      ...(options.actionId ? [options.actionId] : []),
+      workspaceId,
+      ...kinds,
+      cooldownStart,
+      options.limit,
+    ],
   );
 
   const handoffs: Handoff[] = [];
