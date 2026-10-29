@@ -290,6 +290,79 @@ describe('the hand-off list', () => {
     expect(listed.handoffs).toHaveLength(0);
   });
 
+  /** Queued manual actions straight into the table, `minutesAgo` setting their age. */
+  async function queueHandoffs(
+    seeded: SeededDatabase,
+    cards: { id: string; network: string; minutesAgo: number; status?: string }[],
+  ): Promise<void> {
+    await seeded.db.batch(
+      cards.map((card) => {
+        const at = new Date(Date.now() - card.minutesAgo * 60_000).toISOString();
+        return {
+          sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
+                mode, status, created_at, executed_at)
+                VALUES (?, ?, ?, ?, 'follow', ?, 'manual', ?, ?, ?)`,
+          args: [
+            card.id,
+            SEED.workspaceId,
+            SEED.recommendationId,
+            SEED.personId,
+            card.network,
+            card.status ?? 'queued',
+            at,
+            card.status === 'completed' ? at : null,
+          ],
+        };
+      }),
+    );
+  }
+
+  test('takes turns by network instead of listing one network first', async () => {
+    const { app, seeded } = await harness('handoff-rotate');
+    await queueHandoffs(seeded, [
+      { id: 'act_li_1', network: 'linkedin', minutesAgo: 60 },
+      { id: 'act_li_2', network: 'linkedin', minutesAgo: 59 },
+      { id: 'act_li_3', network: 'linkedin', minutesAgo: 58 },
+      { id: 'act_x_1', network: 'x', minutesAgo: 30 },
+      { id: 'act_x_2', network: 'x', minutesAgo: 29 },
+      { id: 'act_bsky_1', network: 'bluesky', minutesAgo: 10 },
+    ]);
+
+    const listed = (await (await send(app, 'GET', '/handoffs')).json()) as {
+      handoffs: { actionId: string }[];
+    };
+    expect(listed.handoffs.map((h) => h.actionId)).toEqual([
+      'act_li_1',
+      'act_x_1',
+      'act_bsky_1',
+      'act_li_2',
+      'act_x_2',
+      'act_li_3',
+    ]);
+  });
+
+  test('a network posted to in the last four hours goes to the back', async () => {
+    const { app, seeded } = await harness('handoff-cooldown');
+    await queueHandoffs(seeded, [
+      { id: 'act_li_done', network: 'linkedin', minutesAgo: 30, status: 'completed' },
+      { id: 'act_x_done', network: 'x', minutesAgo: 5 * 60, status: 'completed' },
+      { id: 'act_li_1', network: 'linkedin', minutesAgo: 60 },
+      { id: 'act_li_2', network: 'linkedin', minutesAgo: 59 },
+      { id: 'act_x_1', network: 'x', minutesAgo: 30 },
+      { id: 'act_bsky_1', network: 'bluesky', minutesAgo: 10 },
+    ]);
+
+    const listed = (await (await send(app, 'GET', '/handoffs')).json()) as {
+      handoffs: { actionId: string }[];
+    };
+    expect(listed.handoffs.map((h) => h.actionId)).toEqual([
+      'act_x_1',
+      'act_bsky_1',
+      'act_li_1',
+      'act_li_2',
+    ]);
+  });
+
   test('research auto-approved as manual never shows up as a hand-off', async () => {
     const { app, seeded } = await harness('handoff-not-research');
     await seeded.db.execute({
