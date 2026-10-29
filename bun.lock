@@ -12,7 +12,7 @@
     },
     "apps/api": {
       "name": "@outreachgraph/api",
-      "version": "0.25.2",
+      "version": "0.25.5",
       "dependencies": {
         "@logicsrc/openaccess": "^0.3.1",
         "@outreachgraph/ai": "workspace:*",
@@ -40,7 +40,7 @@
     },
     "apps/cli": {
       "name": "@profullstack/outreachgraph",
-      "version": "0.25.2",
+      "version": "0.25.5",
       "bin": {
         "og": "./dist/og.js",
       },
@@ -51,7 +51,7 @@
     },
     "apps/mcp": {
       "name": "@outreachgraph/mcp",
-      "version": "0.25.2",
+      "version": "0.25.5",
       "bin": {
         "outreachgraph-mcp": "./src/index.ts",
       },
@@ -62,7 +62,7 @@
     },
     "apps/server": {
       "name": "@outreachgraph/server",
-      "version": "0.25.2",
+      "version": "0.25.5",
       "dependencies": {
         "@outreachgraph/ai": "workspace:*",
         "@outreachgraph/contracts": "workspace:*",
@@ -84,7 +84,7 @@
     },
     "apps/web": {
       "name": "@outreachgraph/web",
-      "version": "0.25.2",
+      "version": "0.25.5",
       "dependencies": {
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
