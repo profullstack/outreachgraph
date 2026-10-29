@@ -13,7 +13,7 @@ import { StubModel } from '@outreachgraph/ai';
 import type { FetchLike, HostLookup } from '@outreachgraph/providers';
 import { createApp } from './app';
 import type { RequestActor } from './context';
-import { extractLinkPage } from './link-posts';
+import { extractLinkPage, listLinkPosts } from './link-posts';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
 
 setDefaultTimeout(30_000);
@@ -214,6 +214,63 @@ describe('link posts API', () => {
     const bare = await harness('link-posts-nomodel', { model: false });
     expect((await bare.call('POST', '', { url: ARTICLE })).status).toBe(503);
     expect((await bare.call('POST', '', { url: ARTICLE, networks: ['myspace'] })).status).toBe(400);
+  });
+});
+
+describe('the open list takes turns by network', () => {
+  /** Link posts straight into the table, `minutesAgo` setting their age. */
+  async function insertPosts(
+    seeded: SeededDatabase,
+    posts: { id: string; network: string; minutesAgo: number; status?: string; doneAgo?: number }[],
+  ): Promise<void> {
+    const at = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    await seeded.db.batch(
+      posts.map((post) => ({
+        sql: `INSERT INTO link_posts (id, workspace_id, batch_id, url, network, body, status,
+                                      created_at, updated_at, done_at)
+              VALUES (?, ?, ?, ?, ?, 'text', ?, ?, ?, ?)`,
+        args: [
+          post.id,
+          SEED.workspaceId,
+          `lpb_${post.id}`,
+          ARTICLE,
+          post.network,
+          post.status ?? 'open',
+          at(post.minutesAgo),
+          at(post.minutesAgo),
+          post.doneAgo === undefined ? null : at(post.doneAgo),
+        ],
+      })),
+    );
+  }
+
+  test('one per network per round, newest first within a network', async () => {
+    const seeded = await seedDatabase('link-posts-rotate');
+    active = seeded;
+    await insertPosts(seeded, [
+      { id: 'li1', network: 'linkedin', minutesAgo: 1 },
+      { id: 'li2', network: 'linkedin', minutesAgo: 2 },
+      { id: 'li3', network: 'linkedin', minutesAgo: 3 },
+      { id: 'x1', network: 'x', minutesAgo: 50 },
+      { id: 'x2', network: 'x', minutesAgo: 60 },
+      { id: 'bs1', network: 'bluesky', minutesAgo: 90 },
+    ]);
+    const listed = await listLinkPosts(seeded.db, SEED.workspaceId);
+    expect(listed.map((p) => p.id)).toEqual(['li1', 'x1', 'bs1', 'li2', 'x2', 'li3']);
+  });
+
+  test('a network marked done in the last 4 hours goes last', async () => {
+    const seeded = await seedDatabase('link-posts-cooldown');
+    active = seeded;
+    await insertPosts(seeded, [
+      { id: 'li1', network: 'linkedin', minutesAgo: 1 },
+      { id: 'li2', network: 'linkedin', minutesAgo: 2 },
+      { id: 'x1', network: 'x', minutesAgo: 50 },
+      { id: 'lidone', network: 'linkedin', minutesAgo: 30, status: 'done', doneAgo: 10 },
+      { id: 'xold', network: 'x', minutesAgo: 600, status: 'done', doneAgo: 300 },
+    ]);
+    const listed = await listLinkPosts(seeded.db, SEED.workspaceId);
+    expect(listed.map((p) => p.id)).toEqual(['x1', 'li1', 'li2']);
   });
 });
 
