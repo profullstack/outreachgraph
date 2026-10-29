@@ -82,6 +82,9 @@ describe('leads API', () => {
       keywords: ['intrusion detection'],
       subreddits: [],
       sources: ['hackernews'],
+      // Without this, creating a monitor asks the model for pain phrases (#225)
+      // and spends the stub's judge verdict before the scan can use it.
+      painPhrases: [],
     });
     expect(created.status).toBe(201);
     const id = created.body.monitor.id as string;
