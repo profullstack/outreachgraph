@@ -197,7 +197,7 @@ import { BulkProductsError, queueBulkProducts } from './bulk-products';
 import { checkMailDomain, type MailResolver } from './mail-domain';
 import { loadProductOverview } from './product-overview';
 import { confirmShare, recordShare, shareLinksFor, SocialError } from './social';
-import { isHandoffDecision, listHandoffs, type Handoff } from './handoff';
+import { clearManualPosts, isHandoffDecision, listHandoffs, type Handoff } from './handoff';
 import { CoinPayClient } from '@outreachgraph/payments';
 import {
   billingOverview,
@@ -4513,6 +4513,24 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
 
     return c.json({ skipped: true, actionId: action.id });
+  });
+
+  /** "Clear all": skip every pending hand-off and open link post (see clearManualPosts). */
+  api.post('/manual-posts/clear', async (c) => {
+    const actor = c.get('actor');
+    if (!canApprove(actor)) throw ApiError.forbidden('clearing manual posts');
+    const db = c.get('db');
+    const cleared = await clearManualPosts(db, actor.workspaceId, actor.userId);
+    await repo.audit(db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'manual_posts.cleared',
+      entityKind: 'workspace',
+      entityId: actor.workspaceId,
+      detail: cleared,
+    });
+    return c.json({ cleared });
   });
 
   // -------------------------------------------------------------- actions

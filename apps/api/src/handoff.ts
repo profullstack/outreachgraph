@@ -14,8 +14,13 @@
  * exact post or profile, a few numbered steps, and "Mark done".
  */
 
-import { INTERNAL_ACTION_KINDS, type ActionKind, type Network } from '@outreachgraph/domain';
-import { queryAll, type Client } from '@outreachgraph/db';
+import {
+  INTERNAL_ACTION_KINDS,
+  newId,
+  type ActionKind,
+  type Network,
+} from '@outreachgraph/domain';
+import { now, queryAll, type Client } from '@outreachgraph/db';
 import { resolveContactAddress } from './repository';
 
 /**
@@ -419,4 +424,62 @@ export async function listHandoffs(
   }
 
   return handoffs;
+}
+
+/**
+ * "Clear all" on the Manual posts page: skip every pending hand-off and every
+ * open link post at once, for when the queue is too far behind to work down.
+ *
+ * Each hand-off is skipped exactly as `POST /handoffs/:id/skip` does it (action
+ * cancelled, a skip approval, recommendation skipped), and each link post as
+ * `POST /link-posts/:id/skip` does. Only the kinds a hand-off card shows are
+ * touched; queued research and bookkeeping are not a person's to clear.
+ */
+export async function clearManualPosts(
+  db: Client,
+  workspaceId: string,
+  userId: string,
+): Promise<{ handoffs: number; linkPosts: number }> {
+  const kinds = HANDOFF_ACTIONS.filter(
+    (kind) => !(INTERNAL_ACTION_KINDS as readonly string[]).includes(kind),
+  );
+  const placeholders = kinds.map(() => '?').join(', ');
+  const pending = await queryAll<{ id: string; recommendation_id: string }>(
+    db,
+    `SELECT id, recommendation_id FROM actions
+      WHERE workspace_id = ? AND mode = 'manual' AND status = 'queued'
+        AND kind IN (${placeholders})`,
+    [workspaceId, ...kinds],
+  );
+
+  const at = now();
+  const CHUNK = 200;
+  for (let i = 0; i < pending.length; i += CHUNK) {
+    const chunk = pending.slice(i, i + CHUNK);
+    await db.batch(
+      chunk.flatMap((action) => [
+        {
+          sql: `UPDATE actions SET status = 'cancelled' WHERE id = ? AND status = 'queued'`,
+          args: [action.id],
+        },
+        {
+          sql: `INSERT INTO approvals (id, workspace_id, recommendation_id, decision, decided_by, decided_at)
+                VALUES (?, ?, ?, 'skip', ?, ?)`,
+          args: [newId('approval'), workspaceId, action.recommendation_id, userId, at],
+        },
+        {
+          sql: `UPDATE recommendations SET status = 'skipped' WHERE id = ?`,
+          args: [action.recommendation_id],
+        },
+      ]),
+    );
+  }
+
+  const skipped = await db.execute({
+    sql: `UPDATE link_posts SET status = 'skipped', done_at = NULL, updated_at = ?
+           WHERE workspace_id = ? AND status = 'open'`,
+    args: [at, workspaceId],
+  });
+
+  return { handoffs: pending.length, linkPosts: Number(skipped.rowsAffected ?? 0) };
 }
