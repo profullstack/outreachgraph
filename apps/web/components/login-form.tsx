@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { ProfileFields } from '@profullstack/profile/react';
+import { CoinpaySignInButton } from './coinpay-sign-in';
 
 /** Asked for when creating an account, beside the email box; never on sign-in. */
 const SIGNUP_FIELDS = [
@@ -87,6 +88,7 @@ export function LoginForm({
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-3">
+      <CoinpaySignInButton next={next} mode={mode} />
       <label className="flex flex-col gap-1">
         <span className="text-ink-muted text-xs font-medium">Email</span>
         <input

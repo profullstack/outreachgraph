@@ -688,6 +688,19 @@ const xOAuth =
 
 if (!xOAuth) console.log('X_CLIENT_ID/X_CLIENT_SECRET unset: X cards stay hand-offs');
 
+// Sign in with CoinPay. The callback is registered on CoinPay as exactly this
+// URL, so it is derived from the one origin the API is served on.
+const coinpaySignIn =
+  process.env.COINPAY_OAUTH_CLIENT_ID && process.env.COINPAY_OAUTH_CLIENT_SECRET && apiUrl
+    ? {
+        clientId: process.env.COINPAY_OAUTH_CLIENT_ID,
+        clientSecret: process.env.COINPAY_OAUTH_CLIENT_SECRET,
+        redirectUri: `${apiUrl.replace(/\/$/, '')}/api/v1/coinpay/oauth/callback`,
+      }
+    : undefined;
+
+if (!coinpaySignIn) console.log('COINPAY_OAUTH_CLIENT_ID/SECRET unset: no Sign in with CoinPay');
+
 // ---------------------------------------------------------------------- api
 // Credit codes and invites: the house packages over a raw handle on the same
 // database (their SQL is already Postgres; see packages/db/src/raw.ts).
@@ -696,6 +709,7 @@ const codes = codeServicesFor(openRawHandle(), codeOptionsFromEnv(process.env));
 const api = createApp({
   codes,
   ...(xOAuth ? { xOAuth } : {}),
+  ...(coinpaySignIn ? { coinpaySignIn } : {}),
   db,
   ...(coinpay ? { coinpay } : {}),
   ...(apiUrl ? { apiUrl } : {}),

@@ -412,9 +412,7 @@ describe('the hand-off list', () => {
       linkPosts: 2,
     });
 
-    const statuses = await seeded.db.execute(
-      `SELECT id, status FROM actions ORDER BY id`,
-    );
+    const statuses = await seeded.db.execute(`SELECT id, status FROM actions ORDER BY id`);
     expect(Object.fromEntries(statuses.rows.map((r) => [r.id, r.status]))).toMatchObject({
       act_li_1: 'cancelled',
       act_x_1: 'cancelled',

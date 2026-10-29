@@ -107,6 +107,10 @@ export async function registerUser(db: Client, input: RegisterInput): Promise<Re
   const email = normalizeEmail(input.email);
 
   if (!isPlausibleEmail(email)) throw ApiError.badRequest('enter a valid email address');
+  // The placeholder domain belongs to CoinPay sign-ins (coinpay-signin.ts).
+  if (email.endsWith(`@${COINPAY_PLACEHOLDER_DOMAIN}`)) {
+    throw ApiError.badRequest('enter a valid email address');
+  }
   const problem = passwordProblem(input.password);
   if (problem) throw ApiError.badRequest(problem);
 
@@ -115,13 +119,39 @@ export async function registerUser(db: Client, input: RegisterInput): Promise<Re
   ]);
   if (existing) throw new ApiError(409, 'email_taken', 'that email is already registered');
 
+  return provisionAccount(db, {
+    email,
+    name: input.name,
+    organizationName: input.organizationName,
+    passwordHash: await hashPassword(input.password),
+  });
+}
+
+/** Address domain of accounts made by Sign in with CoinPay; never deliverable. */
+export const COINPAY_PLACEHOLDER_DOMAIN = 'coinpay.outreachgraph.invalid';
+
+/**
+ * A user with their own organization, workspace, offering and campaign. The
+ * email must already be normalized and checked; a null password hash is an
+ * account that cannot sign in with a password (Sign in with CoinPay).
+ */
+export async function provisionAccount(
+  db: Client,
+  input: {
+    readonly email: string;
+    readonly name?: string | undefined;
+    readonly organizationName?: string | undefined;
+    readonly passwordHash: string | null;
+  },
+): Promise<RegisterResult> {
+  const email = input.email;
   const userId = newId('user');
   const organizationId = newId('organization');
   const workspaceId = newId('workspace');
   const offeringId = newId('offering');
   const campaignId = newId('campaign');
   const stamp = now();
-  const passwordHash = await hashPassword(input.password);
+  const passwordHash = input.passwordHash;
 
   const orgName = input.organizationName?.trim() || `${input.name?.trim() || email} workspace`;
   const slug = `${slugify(orgName)}-${userId.slice(-6)}`;
@@ -213,7 +243,24 @@ export async function login(
     throw invalid;
   }
 
-  const membership = await primaryMembership(db, user.id);
+  const session = await startSession(db, user.id, userAgent);
+  await db.execute({
+    sql: 'UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = ?',
+    args: [user.id],
+  });
+  return session;
+}
+
+/**
+ * A session for a user who has already proved who they are (a password, or a
+ * CoinPay sign-in bound to their account), in their primary workspace.
+ */
+export async function startSession(
+  db: Client,
+  userId: string,
+  userAgent?: string,
+): Promise<LoginResult> {
+  const membership = await primaryMembership(db, userId);
   if (!membership) throw ApiError.forbidden('this account has no workspace');
 
   const token = mintSessionToken();
@@ -226,7 +273,7 @@ export async function login(
             created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         newId('session'),
-        user.id,
+        userId,
         await hashToken(token),
         membership.workspaceId,
         userAgent?.slice(0, 200) ?? null,
@@ -236,8 +283,8 @@ export async function login(
       ],
     },
     {
-      sql: 'UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = ? WHERE id = ?',
-      args: [stamp, user.id],
+      sql: 'UPDATE users SET last_login_at = ? WHERE id = ?',
+      args: [stamp, userId],
     },
   ]);
 
@@ -245,7 +292,7 @@ export async function login(
     token,
     expiresAt,
     actor: {
-      userId: user.id,
+      userId: userId,
       workspaceId: membership.workspaceId,
       organizationId: membership.organizationId,
       role: membership.role,

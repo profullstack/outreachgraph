@@ -62,10 +62,24 @@ import {
   resetPassword,
   SESSION_COOKIE,
   sessionCookie,
+  startSession,
   switchSessionWorkspace,
   verifyEmailToken,
   workspacesForUser,
 } from './auth';
+import {
+  beginCoinpaySignIn,
+  COINPAY_PENDING_COOKIE,
+  COINPAY_PENDING_TTL_SECONDS,
+  coinpayStatus,
+  finishCoinpaySignIn,
+  linkCoinpay,
+  stateMatches,
+  takePendingSignIn,
+  unlinkCoinpay,
+  userForCoinpay,
+  type CoinpaySignInConfig,
+} from './coinpay-signin';
 import {
   INVITE_COOKIE,
   REF_COOKIE,
@@ -390,6 +404,11 @@ export interface AppOptions {
    * it `og connect x` is refused and X cards stay hand-offs.
    */
   readonly xOAuth?: XOAuthClient | undefined;
+  /**
+   * Sign in with CoinPay (confidential OIDC client). Absent, its routes answer
+   * 503 and the sign-in page hides the button.
+   */
+  readonly coinpaySignIn?: CoinpaySignInConfig | undefined;
   /**
    * Resolves a webhook URL's host for the SSRF check. Tests pass a fake so a
    * route test does not depend on real DNS; production uses the system
@@ -1457,6 +1476,98 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return new URL(request.url).origin;
   };
 
+  // ------------------------------------------------- Sign in with CoinPay
+  // Above the session guard: these are browser redirects to and from CoinPay.
+  // The pending state is server side and single use; the account is bound to
+  // the CoinPay `sub` only (coinpay-signin.ts).
+  const pendingCookie = (id: string, maxAge: number) =>
+    `${COINPAY_PENDING_COOKIE}=${id}; Path=/api/v1/coinpay; HttpOnly; SameSite=Lax; Max-Age=${maxAge}` +
+    (secure ? '; Secure' : '');
+
+  /** Whether to show the button on the sign-in page (public, says nothing else). */
+  api.get('/coinpay/oauth/enabled', (c) => c.json({ enabled: Boolean(options.coinpaySignIn) }));
+
+  api.get('/coinpay/oauth/start', async (c) => {
+    const config = options.coinpaySignIn;
+    if (!config) return c.text('Sign in with CoinPay is not configured.', 503);
+    const mode = c.req.query('mode') === 'connect' ? 'connect' : 'login';
+    let userId: string | null = null;
+    if (mode === 'connect') {
+      // A browser session, not a key: linking changes how the account signs in.
+      const actor = await resolveActor(c.req.raw);
+      if (!actor || actor.credential !== 'session') return c.redirect('/login?next=/settings', 302);
+      userId = actor.userId;
+    }
+    const { id, url } = await beginCoinpaySignIn(options.db, config, {
+      mode,
+      userId,
+      next: c.req.query('next') ?? null,
+    });
+    c.header('set-cookie', pendingCookie(id, COINPAY_PENDING_TTL_SECONDS));
+    return c.redirect(url, 302);
+  });
+
+  api.get('/coinpay/oauth/callback', async (c) => {
+    const config = options.coinpaySignIn;
+    if (!config) return c.text('Sign in with CoinPay is not configured.', 503);
+    const id = readCookie(c.req.header('cookie') ?? null, COINPAY_PENDING_COOKIE) ?? '';
+    c.header('set-cookie', pendingCookie('', 0));
+    const pending = await takePendingSignIn(options.db, id);
+    if (!pending) return c.redirect('/login?error=coinpay_expired', 302);
+    if (c.req.query('error')) return c.redirect('/login?error=coinpay_cancelled', 302);
+    if (!stateMatches(pending.state, c.req.query('state'))) {
+      return c.text('CoinPay sign-in failed: state mismatch.', 400);
+    }
+    const code = c.req.query('code');
+    if (!code) return c.text('CoinPay sign-in failed: no code.', 400);
+
+    let who: { sub: string; email: string | null; name: string | null };
+    try {
+      who = await finishCoinpaySignIn(config, {
+        code,
+        verifier: pending.verifier,
+        nonce: pending.nonce,
+      });
+    } catch (error) {
+      console.error('coinpay sign-in refused', error instanceof Error ? error.message : error);
+      return c.text('CoinPay sign-in could not be verified.', 400);
+    }
+
+    if (pending.mode === 'connect') {
+      const actor = await resolveActor(c.req.raw);
+      if (!actor || actor.credential !== 'session' || actor.userId !== pending.userId) {
+        return c.redirect('/login?error=coinpay_signin_first', 302);
+      }
+      const linked = await linkCoinpay(options.db, actor.userId, who);
+      await repo.audit(options.db, {
+        workspaceId: actor.workspaceId,
+        actorKind: 'user',
+        actorId: actor.userId,
+        eventType: linked.ok ? 'auth.coinpay_linked' : 'auth.coinpay_link_refused',
+        entityKind: 'user',
+        entityId: actor.userId,
+        detail: linked.ok ? {} : { reason: linked.reason },
+      });
+      return c.redirect(`/settings?coinpay=${linked.ok ? 'linked' : linked.reason}`, 302);
+    }
+
+    const { userId, created } = await userForCoinpay(options.db, who);
+    const session = await startSession(options.db, userId, c.req.header('user-agent'));
+    await repo.audit(options.db, {
+      workspaceId: session.actor.workspaceId,
+      actorKind: 'user',
+      actorId: userId,
+      eventType: created ? 'auth.coinpay_signup' : 'auth.coinpay_login',
+      entityKind: 'user',
+      entityId: userId,
+      detail: {},
+    });
+    c.header('set-cookie', sessionCookie(session.token, session.expiresAt, secure), {
+      append: true,
+    });
+    return c.redirect(pending.next, 302);
+  });
+
   // Everything else under /api/v1 is authenticated and workspace-scoped.
   api.use('*', async (c, next) => {
     const actor = await resolveActor(c.req.raw);
@@ -1466,6 +1577,40 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     c.set('actor', actor);
     c.set('requestId', newId('auditEvent'));
     await next();
+  });
+
+  // Connect / Disconnect CoinPay (Settings). A person's own sign-in methods,
+  // so only a browser session counts, never a workspace key.
+  api.get('/me/coinpay', async (c) => {
+    const actor = c.get('actor');
+    if (actor.credential !== 'session') throw ApiError.forbidden('sign-in settings');
+    return c.json({
+      enabled: Boolean(options.coinpaySignIn),
+      ...(await coinpayStatus(c.get('db'), actor.userId)),
+    });
+  });
+
+  api.delete('/me/coinpay', async (c) => {
+    const actor = c.get('actor');
+    if (actor.credential !== 'session') throw ApiError.forbidden('sign-in settings');
+    const result = await unlinkCoinpay(c.get('db'), actor.userId);
+    if (!result.ok) {
+      throw ApiError.badRequest(
+        result.reason === 'only_sign_in'
+          ? 'CoinPay is the only way into this account, so it stays connected.'
+          : 'CoinPay is not connected.',
+      );
+    }
+    await repo.audit(c.get('db'), {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'auth.coinpay_unlinked',
+      entityKind: 'user',
+      entityId: actor.userId,
+      detail: {},
+    });
+    return c.json({ ok: true });
   });
 
   // ------------------------------------------------------------- api keys

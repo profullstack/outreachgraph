@@ -14,12 +14,7 @@
  * exact post or profile, a few numbered steps, and "Mark done".
  */
 
-import {
-  INTERNAL_ACTION_KINDS,
-  newId,
-  type ActionKind,
-  type Network,
-} from '@outreachgraph/domain';
+import { INTERNAL_ACTION_KINDS, newId, type ActionKind, type Network } from '@outreachgraph/domain';
 import { now, queryAll, type Client } from '@outreachgraph/db';
 import { resolveContactAddress } from './repository';
 
