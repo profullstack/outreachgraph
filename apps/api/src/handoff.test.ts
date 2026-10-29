@@ -375,6 +375,61 @@ describe('the hand-off list', () => {
     const listed = (await (await send(app, 'GET', '/handoffs')).json()) as { handoffs: unknown[] };
     expect(listed.handoffs).toHaveLength(0);
   });
+
+  test('clear all skips every hand-off and open post, and leaves research queued', async () => {
+    const { app, seeded } = await harness('handoff-clear-all');
+    await queueHandoffs(seeded, [
+      { id: 'act_li_1', network: 'linkedin', minutesAgo: 60 },
+      { id: 'act_x_1', network: 'x', minutesAgo: 30 },
+      { id: 'act_li_done', network: 'linkedin', minutesAgo: 90, status: 'completed' },
+    ]);
+    const at = new Date().toISOString();
+    await seeded.db.batch([
+      {
+        sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
+              mode, status, created_at)
+              VALUES ('act_research', ?, ?, ?, 'refresh_research', 'website', 'manual', 'queued', ?)`,
+        args: [SEED.workspaceId, SEED.recommendationId, SEED.personId, at],
+      },
+      ...['lpo_open_1', 'lpo_open_2'].map((id) => ({
+        sql: `INSERT INTO link_posts (id, workspace_id, batch_id, url, network, body, status,
+              created_at, updated_at)
+              VALUES (?, ?, 'lpb_1', 'https://example.com/a', 'linkedin', 'text', 'open', ?, ?)`,
+        args: [id, SEED.workspaceId, at, at],
+      })),
+      {
+        sql: `INSERT INTO link_posts (id, workspace_id, batch_id, url, network, body, status,
+              created_at, updated_at, done_at)
+              VALUES ('lpo_done', ?, 'lpb_1', 'https://example.com/a', 'x', 'text', 'done', ?, ?, ?)`,
+        args: [SEED.workspaceId, at, at, at],
+      },
+    ]);
+
+    const cleared = await send(app, 'POST', '/manual-posts/clear');
+    expect(cleared.status).toBe(200);
+    expect(((await cleared.json()) as { cleared: unknown }).cleared).toEqual({
+      handoffs: 2,
+      linkPosts: 2,
+    });
+
+    const statuses = await seeded.db.execute(
+      `SELECT id, status FROM actions ORDER BY id`,
+    );
+    expect(Object.fromEntries(statuses.rows.map((r) => [r.id, r.status]))).toMatchObject({
+      act_li_1: 'cancelled',
+      act_x_1: 'cancelled',
+      act_li_done: 'completed',
+      act_research: 'queued',
+    });
+    const posts = await seeded.db.execute(`SELECT id, status FROM link_posts ORDER BY id`);
+    expect(Object.fromEntries(posts.rows.map((r) => [r.id, r.status]))).toEqual({
+      lpo_done: 'done',
+      lpo_open_1: 'skipped',
+      lpo_open_2: 'skipped',
+    });
+    const listed = (await (await send(app, 'GET', '/handoffs')).json()) as { handoffs: unknown[] };
+    expect(listed.handoffs).toHaveLength(0);
+  });
 });
 
 describe('approve-all', () => {

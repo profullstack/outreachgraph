@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ApprovalQueue as Queue } from '../../../components/approval-queue';
+import { ClearManualPosts } from '../../../components/clear-manual-posts';
 import { HandoffCards } from '../../../components/handoff-cards';
 import { LinkPostComposer } from '../../../components/link-post-composer';
 import { PageGuide } from '../../../components/page-guide';
@@ -102,6 +103,7 @@ export default async function ApprovalsPage({
           <Link href="/approvals" className="text-accent text-sm underline">
             Back to the queue ({queue.counts.buckets.all ?? 0})
           </Link>
+          <ClearManualPosts pending={handoffs.length + linkPosts.posts.length} />
         </header>
         <LinkPostComposer
           initialPosts={linkPosts.posts}
