@@ -10,6 +10,7 @@ import { WebhooksForm } from '../../../components/webhooks-form';
 import { CrmForm } from '../../../components/crm-form';
 import { PageGuide } from '../../../components/page-guide';
 import { ProfileForm } from '../../../components/profile-form';
+import { CoinpayConnect } from '../../../components/coinpay-sign-in';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
@@ -146,6 +147,7 @@ export default async function SettingsPage() {
               <ProfileForm
                 initial={{ ...profile, email: profile.email ?? me?.user.email ?? null }}
               />
+              <CoinpayConnect />
             </Section>
           ) : null}
 
