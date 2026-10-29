@@ -96,7 +96,9 @@ describe('targeting exclusions', () => {
     const ceo = await member(client, 'Rachel', 'CEO & Founder');
 
     expect(await targetingExclusion(client, SEED.campaignId, ceo)).toBeUndefined();
-    expect(await setAsideIfExcluded(client, SEED.workspaceId, SEED.campaignId, ceo)).toBeUndefined();
+    expect(
+      await setAsideIfExcluded(client, SEED.workspaceId, SEED.campaignId, ceo),
+    ).toBeUndefined();
     expect((await membership(client, ceo))?.status).toBe('awaiting_approval');
     expect(await liveCards(client, ceo)).toHaveLength(1);
   });
