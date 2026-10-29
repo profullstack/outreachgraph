@@ -42,6 +42,7 @@ import { screenHold } from './lead-screen';
 import { ownDomains, personOnOwnDomain } from './recipient-guard';
 import { queueSiteAudit } from './site-audits';
 import { excludedByCompanyCap } from './company-cap';
+import { setAsideIfExcluded } from './targeting-exclusion';
 
 export interface PipelineOptions {
   readonly db: Client;
@@ -916,6 +917,10 @@ async function createRecommendation(
 
   // Over the campaign's per-company cap: colleagues of the people kept get no card.
   if (await excludedByCompanyCap(db, campaignId, personId)) return undefined;
+
+  // The campaign's exclusions are a gate, not just a lower score: an excluded
+  // title or industry gets no card on any path (intake, address found, re-crawl).
+  if (await setAsideIfExcluded(db, workspaceId, campaignId, personId)) return undefined;
 
   const workspace = await queryOne<{ min_outreach_confidence: number }>(
     db,
