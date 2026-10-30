@@ -8,6 +8,7 @@ import type { MetadataRoute } from 'next';
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
+    id: '/',
     name: 'OutreachGraph',
     short_name: 'OutreachGraph',
     description: 'Turn public intent signals into warm conversations.',
@@ -32,6 +33,12 @@ export default function manifest(): MetadataRoute.Manifest {
         src: '/icons/icon.svg',
         sizes: 'any',
         type: 'image/svg+xml',
+        purpose: 'any',
+      },
+      {
+        src: '/icon-192.png',
+        sizes: '192x192',
+        type: 'image/png',
         purpose: 'any',
       },
       {
