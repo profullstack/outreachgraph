@@ -9,10 +9,12 @@ import {
   disconnectEmailAccount,
   emailAccountSummary,
   loadEmailCredentials,
+  loadImapCredentials,
   mailerForWorkspace,
   EmailAccountError,
   type EmailAccountInput,
 } from './email-account';
+import { readableMailboxes, workspacesWithReadableMailbox } from './receive-email';
 
 let seeded: SeededDatabase | undefined;
 
@@ -183,6 +185,63 @@ describe('connectEmailAccount', () => {
     const credentials = await loadEmailCredentials(db, SEED.workspaceId, KEY);
     expect(credentials?.password).toBe('a-new-app-password');
     expect(credentials?.fromEmail).toBe('sales@company.com');
+  });
+});
+
+describe('reading replies after sending stops', () => {
+  for (const status of ['paused', 'error'] as const) {
+    test(`keeps polling a ${status} mailbox`, async () => {
+      seeded = await seedDatabase(`email-imap-${status}`);
+      const { db } = seeded;
+      const connected = await connectEmailAccount(db, {
+        workspaceId: SEED.workspaceId,
+        account: { ...ACCOUNT, imapHost: 'imap.fastmail.com' },
+        encryptionKey: KEY,
+        mailerFor: accepting().mailerFor,
+        readerFor: () => ({ verify: async () => undefined }),
+      });
+      const accountId = connected.accountId;
+      if (!accountId) throw new Error('connected mailbox has no account id');
+      await db.execute({
+        sql: 'UPDATE integration_accounts SET status = ? WHERE id = ?',
+        args: [status, accountId],
+      });
+
+      const credentials = await loadImapCredentials(db, SEED.workspaceId, KEY, accountId);
+      expect(credentials).toMatchObject({
+        host: 'imap.fastmail.com',
+        username: ACCOUNT.username,
+      });
+      expect(await readableMailboxes(db)).toContainEqual({
+        workspaceId: SEED.workspaceId,
+        accountId,
+      });
+      expect(await workspacesWithReadableMailbox(db)).toContain(SEED.workspaceId);
+    });
+  }
+
+  test('does not read a mailbox after its credential is revoked', async () => {
+    seeded = await seedDatabase('email-imap-revoked');
+    const { db } = seeded;
+    const connected = await connectEmailAccount(db, {
+      workspaceId: SEED.workspaceId,
+      account: { ...ACCOUNT, imapHost: 'imap.fastmail.com' },
+      encryptionKey: KEY,
+      mailerFor: accepting().mailerFor,
+      readerFor: () => ({ verify: async () => undefined }),
+    });
+    const accountId = connected.accountId;
+    if (!accountId) throw new Error('connected mailbox has no account id');
+    await db.execute({
+      sql: "UPDATE integration_accounts SET status = 'revoked' WHERE id = ?",
+      args: [accountId],
+    });
+
+    expect(await loadImapCredentials(db, SEED.workspaceId, KEY, accountId)).toBeUndefined();
+    expect(await readableMailboxes(db)).not.toContainEqual({
+      workspaceId: SEED.workspaceId,
+      accountId,
+    });
   });
 });
 
