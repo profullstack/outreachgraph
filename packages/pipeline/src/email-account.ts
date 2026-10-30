@@ -345,7 +345,8 @@ export async function loadEmailCredentials(
  * mailbox connected, no IMAP host configured, or a password that no longer
  * decrypts. All three mean the same thing to the caller — this workspace's
  * replies cannot be read right now — and none of them is an error worth
- * failing a polling tick over.
+ * failing a polling tick over. A mailbox paused or stopped for outbound use is
+ * still readable; only revoked credentials are excluded.
  */
 export async function loadImapCredentials(
   db: Client,
@@ -357,7 +358,9 @@ export async function loadImapCredentials(
   if (!encryptionKey) return undefined;
 
   const row = await loadRow(db, workspaceId, accountId);
-  if (!row || row.status !== 'active' || !row.access_token_enc) return undefined;
+  if (!row || !['active', 'paused', 'error'].includes(row.status) || !row.access_token_enc) {
+    return undefined;
+  }
 
   const config = parseConfig(row.config_json);
   if (!config?.imapHost) return undefined;

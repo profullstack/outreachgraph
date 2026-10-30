@@ -533,13 +533,13 @@ async function recordReply(
   return interactionId;
 }
 
-/** Every workspace with a mailbox we can read. */
+/** Every workspace with a mailbox we can read, regardless of send status. */
 export async function workspacesWithReadableMailbox(db: Client): Promise<string[]> {
   const rows = await queryAll<{ workspace_id: string }>(
     db,
     `SELECT ia.workspace_id FROM integration_accounts ia
        JOIN integrations i ON i.id = ia.integration_id
-      WHERE ia.network = 'email' AND ia.status = 'active'
+      WHERE ia.network = 'email' AND ia.status IN ('active', 'paused', 'error')
         AND COALESCE(ia.config_json, i.config_json) LIKE '%"imapHost"%'`,
     [],
   );
@@ -553,6 +553,9 @@ export async function workspacesWithReadableMailbox(db: Client): Promise<string[
  * Per account rather than per workspace because a pool's replies and bounces
  * arrive in whichever mailbox sent the message, and reading only the first
  * would miss the rest — and would pin every bounce on the wrong account.
+ * Sending status does not disable inbox reading: a paused or bounce-stopped
+ * mailbox still needs to surface replies and bounces from messages already
+ * sent. Revoked accounts are excluded because their credentials were withdrawn.
  */
 export async function readableMailboxes(
   db: Client,
@@ -561,7 +564,7 @@ export async function readableMailboxes(
     db,
     `SELECT ia.workspace_id, ia.id FROM integration_accounts ia
        JOIN integrations i ON i.id = ia.integration_id
-      WHERE ia.network = 'email' AND ia.status = 'active'
+      WHERE ia.network = 'email' AND ia.status IN ('active', 'paused', 'error')
         AND COALESCE(ia.config_json, i.config_json) LIKE '%"imapHost"%'
       ORDER BY ia.workspace_id, ia.created_at`,
     [],
