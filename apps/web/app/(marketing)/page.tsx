@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = {
   title: 'OutreachGraph — you don’t need more contacts, you need a reason to talk',
   description:
-    'Find where your prospects are active, reach out with a real reason to talk, and create on-brand content in one place. Source-backed and human-approved.',
+    'Find high-intent prospects, write evidence-backed outreach, and manage sequences, mailboxes, and replies in one place. Human review by default.',
 };
 
 /**
@@ -97,9 +97,9 @@ function Hero() {
           </h1>
 
           <p className="text-ink-muted mt-5 max-w-[30em] text-[17px] leading-relaxed">
-            Apollo finds their email. OutreachGraph finds the thing they said forty minutes ago that
-            makes an email worth sending — and refuses to send anything the platform, the person, or
-            your own limits say it shouldn’t.
+            Start with a market or a company website. OutreachGraph finds relevant public signals,
+            then keeps research, sequenced drafts, sending accounts and replies together. Every send
+            waits for your approval unless you opt into autopilot.
           </p>
 
           <div className="mt-7 flex flex-col gap-3 sm:flex-row">
@@ -107,7 +107,7 @@ function Hero() {
               href="/login"
               className="bg-accent flex items-center justify-center rounded-xl px-6 py-3.5 text-sm font-medium text-white"
             >
-              Find my first 100 prospects
+              Find my first prospects
             </Link>
             <Link
               href="/login"

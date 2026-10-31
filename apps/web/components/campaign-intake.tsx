@@ -14,9 +14,8 @@ import type { ProductSummaryView } from '../lib/types';
  * server decides which it got — the user should not have to pick a mode
  * before they have said what they want.
  *
- * Autopilot is a checkbox rather than a separate flow, and it is on by
- * default, because a product that promises to run unattended and then makes
- * unattended the advanced option is not really offering it.
+ * Human review is the default. Autopilot is an explicit opt-in because it can
+ * send messages without a person approving each one.
  *
  * **Which product this run sells** is the second question, and it only exists
  * once there is a second answer. A workspace selling one thing never sees the
@@ -27,7 +26,7 @@ import type { ProductSummaryView } from '../lib/types';
 export function CampaignIntake({ products = [] }: { products?: ProductSummaryView[] }) {
   const router = useRouter();
   const [input, setInput] = useState('');
-  const [autopilot, setAutopilot] = useState(true);
+  const [autopilot, setAutopilot] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [note, setNote] = useState<string | undefined>();
@@ -151,8 +150,7 @@ export function CampaignIntake({ products = [] }: { products?: ProductSummaryVie
           <span className="font-medium">Run it on autopilot</span>
           <span className="text-ink-muted block text-[13px] leading-relaxed">
             Find people, write to them and keep going without asking. Replies come straight to your
-            inbox — that is the only part you handle. Leave this off to approve each message
-            yourself.
+            inbox. Leave this off to review and approve each message before it sends.
           </span>
         </span>
       </label>
