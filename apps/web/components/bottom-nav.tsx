@@ -20,7 +20,7 @@ import { useEffect, useState } from 'react';
  * is a tab of its own (PRD-ECO §14): standing instructions are a different
  * thing from any one product, and they were the feature people could not find.
  *
- * Eight tabs do not fit a 375px phone at a readable size, so below that the
+ * Nine tabs do not fit a 375px phone at a readable size, so below that the
  * bar scrolls sideways rather than shrinking every label.
  */
 const TABS = [
@@ -28,6 +28,7 @@ const TABS = [
   { href: '/approvals', label: 'Approve', icon: CheckIcon },
   { href: '/products', label: 'Products', icon: BoxIcon },
   { href: '/workflows', label: 'Workflows', icon: FlowIcon },
+  { href: '/content', label: 'Content', icon: WritingIcon },
   { href: '/ideas', label: 'Ideas', icon: BulbIcon },
   { href: '/funnel', label: 'Results', icon: FunnelIcon },
   { href: '/import', label: 'Import', icon: UploadIcon },
@@ -213,6 +214,15 @@ function BulbIcon() {
     <svg {...ICON_PROPS}>
       <path d="M9 18h6M10 22h4" />
       <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z" />
+    </svg>
+  );
+}
+
+function WritingIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
     </svg>
   );
 }

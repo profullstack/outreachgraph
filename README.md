@@ -19,6 +19,10 @@ The rest of the §20 agent suite is not built. See
 [`docs/prd-implementation-map.md`](docs/prd-implementation-map.md) for exactly
 what exists.
 
+The Content Studio adds editable LinkedIn, newsletter and article drafts in a
+product's saved voice. Drafts stay in the workspace until a person reviews and
+copies them out; the public AI-speak checker runs entirely in the browser.
+
 ## Install the CLI
 
 ```bash

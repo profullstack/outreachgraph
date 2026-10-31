@@ -109,6 +109,8 @@ export const ID_PREFIXES = {
   communityLead: 'cld',
   // A post about a link, drafted for one network and posted by a person.
   linkPost: 'lpo',
+  // A piece of founder content in the workspace content studio.
+  contentDraft: 'cod',
   // A custom workflow (PRD-ECO §14) and one execution of it.
   workflow: 'wfl',
   workflowRun: 'wfr',

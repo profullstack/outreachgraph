@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = {
   title: 'OutreachGraph — you don’t need more contacts, you need a reason to talk',
   description:
-    'Find where your prospects are actually active, understand what they care about right now, and get the right moment to engage. Policy-aware, source-backed, human-approved.',
+    'Find where your prospects are active, reach out with a real reason to talk, and create on-brand content in one place. Source-backed and human-approved.',
 };
 
 /**
@@ -37,6 +37,7 @@ export default async function LandingPage() {
       <Hero />
       <EvidenceSection />
       <CapabilitiesSection />
+      <ContentSection />
       <IdeasSection />
       <RefusalSection />
       <TerminalSection />
@@ -325,6 +326,56 @@ function IdeasSection() {
       >
         Open the Idea Generator
       </Link>
+    </Band>
+  );
+}
+
+function ContentSection() {
+  const formats = [
+    ['Social posts', 'Turn a topic or source notes into a LinkedIn draft in your product voice.'],
+    [
+      'Newsletters',
+      'Shape one useful idea into a subject line and a focused issue for your readers.',
+    ],
+    [
+      'Long-form articles',
+      'Build a practical article from your notes, with a clear structure and useful takeaways.',
+    ],
+  ];
+
+  return (
+    <Band id="content" className="bg-surface-raised border-border border-t py-16 sm:py-20">
+      <h2 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-balance sm:text-[34px]">
+        Keep showing up between conversations.
+      </h2>
+      <p className="text-ink-muted mt-4 max-w-[42em] text-[17px] leading-relaxed">
+        Give the Content Studio a topic and your notes. It writes in the voice saved for each
+        product, then keeps every post, newsletter, and article editable until you are ready to use
+        it.
+      </p>
+
+      <ul className="mt-8 grid gap-4 sm:grid-cols-3">
+        {formats.map(([title, detail]) => (
+          <li key={title} className="border-border bg-surface rounded-2xl border p-5">
+            <div className="text-[15px] font-semibold">{title}</div>
+            <p className="text-ink-muted mt-1.5 text-[13.5px] leading-relaxed">{detail}</p>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-7 flex flex-wrap gap-3">
+        <Link
+          href="/login"
+          className="bg-accent inline-flex items-center justify-center rounded-xl px-5 py-3 text-sm font-medium text-white"
+        >
+          Open Content Studio
+        </Link>
+        <Link
+          href="/tools/content-checker"
+          className="border-border inline-flex items-center justify-center rounded-xl border px-5 py-3 text-sm font-medium"
+        >
+          Try the free AI-speak checker
+        </Link>
+      </div>
     </Band>
   );
 }
