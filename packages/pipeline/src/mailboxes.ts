@@ -350,7 +350,10 @@ export async function mailboxDns(
   const [report, blacklist] = await Promise.all([
     checkSendingDomain(
       mailbox.domain,
-      mailbox.provider === 'custom' ? {} : { provider: mailbox.provider },
+      {
+        ...(mailbox.provider === 'custom' ? {} : { provider: mailbox.provider }),
+        ...(deps.forwardEmailApiToken ? { forwardEmailApiToken: deps.forwardEmailApiToken } : {}),
+      },
       deps,
     ),
     checkBlacklists(

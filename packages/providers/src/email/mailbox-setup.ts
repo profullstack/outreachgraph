@@ -20,6 +20,14 @@
  */
 
 import { resolveMx as nodeResolveMx, resolveTxt as nodeResolveTxt } from 'node:dns/promises';
+import { Buffer } from 'node:buffer';
+
+export interface ForwardEmailDkimStatus {
+  /** Fully qualified `<selector>._domainkey.<domain>` name from Forward Email. */
+  readonly selectorHost: string;
+  /** The Forward Email account's authenticated DNS check passed. */
+  readonly verified: boolean;
+}
 
 export interface MailboxDnsDeps {
   readonly resolveMx?: (
@@ -30,6 +38,13 @@ export interface MailboxDnsDeps {
   readonly resolve4?: (name: string) => Promise<string[]>;
   /** Fetches the ISPDB document. Return undefined for "none". */
   readonly fetchAutoconfig?: (domain: string) => Promise<string | undefined>;
+  /** Forward Email API token for domains whose DKIM selector is not guessable. */
+  readonly forwardEmailApiToken?: string;
+  /** Injected so Forward Email integration tests never touch the network. */
+  readonly fetchForwardEmailDkim?: (
+    domain: string,
+    apiToken: string,
+  ) => Promise<ForwardEmailDkimStatus | undefined>;
 }
 
 export interface ServerSettings {
@@ -150,10 +165,9 @@ const SPF_INCLUDES: Readonly<Record<string, string>> = {
 
 /**
  * DKIM selectors worth trying. DKIM lives at `<selector>._domainkey.<domain>`
- * and the selector is not discoverable from DNS, so the best a check can do is
- * try the ones providers use by default. A miss is therefore a warning, never
- * a failure: Forward Email, for one, issues a random `fe-…` selector per
- * domain that no list can contain.
+ * and the selector is not discoverable from DNS, so the check tries defaults.
+ * Providers with generated selectors need an authenticated provider lookup;
+ * until that succeeds, a miss is a warning rather than a failure.
  */
 const DKIM_SELECTORS: Readonly<Record<string, readonly string[]>> = {
   gmail: ['google'],
@@ -176,7 +190,7 @@ const COMMON_SELECTORS = [
 
 export async function checkSendingDomain(
   domain: string,
-  options: { readonly provider?: string } = {},
+  options: { readonly provider?: string; readonly forwardEmailApiToken?: string } = {},
   deps: MailboxDnsDeps = {},
 ): Promise<SendingDomainReport> {
   const resolveTxt = deps.resolveTxt ?? defaultResolveTxt;
@@ -251,11 +265,26 @@ export async function checkSendingDomain(
       break;
     }
   }
+  let dkimDetail = 'A signing key is published, so messages can be signed.';
+  if (!dkimFound && options.provider === 'forwardemail' && options.forwardEmailApiToken) {
+    const status = await (deps.fetchForwardEmailDkim ?? defaultFetchForwardEmailDkim)(
+      domain,
+      options.forwardEmailApiToken,
+    ).catch(() => undefined);
+    if (status?.verified) {
+      const record = (await txt(status.selectorHost)).find((r) => /v=DKIM1|k=rsa|p=/i.test(r));
+      if (record) {
+        const selector = status.selectorHost.split('._domainkey.')[0] ?? status.selectorHost;
+        dkimFound = { selector, record };
+        dkimDetail = 'Forward Email verifies its DKIM setup, and the signing key is published.';
+      }
+    }
+  }
   const dkim: DnsCheck = dkimFound
     ? {
         status: 'pass',
         value: `${dkimFound.selector}._domainkey`,
-        detail: 'A signing key is published, so messages can be signed.',
+        detail: dkimDetail,
       }
     : {
         status: 'warn',
@@ -275,6 +304,59 @@ export async function checkSendingDomain(
 }
 
 // ------------------------------------------------------------------ plumbing
+
+const FORWARD_EMAIL_API_TIMEOUT_MS = 4_000;
+
+/** Ask Forward Email for its domain-specific selector and authenticated DNS status. */
+async function defaultFetchForwardEmailDkim(
+  domain: string,
+  apiToken: string,
+): Promise<ForwardEmailDkimStatus | undefined> {
+  const endpoint = `https://api.forwardemail.net/v1/domains/${encodeURIComponent(domain)}`;
+  const headers = {
+    authorization: `Basic ${Buffer.from(`${apiToken}:`).toString('base64')}`,
+    accept: 'application/json',
+  };
+  const [domainResponse, verificationResponse] = await Promise.all([
+    fetch(endpoint, { headers, signal: AbortSignal.timeout(FORWARD_EMAIL_API_TIMEOUT_MS) }),
+    fetch(`${endpoint}/verify-records`, {
+      headers,
+      signal: AbortSignal.timeout(FORWARD_EMAIL_API_TIMEOUT_MS),
+    }),
+  ]);
+  if (!domainResponse.ok || !verificationResponse.ok) return undefined;
+
+  const domainInfo = (await domainResponse.json()) as {
+    readonly has_dkim_record?: boolean;
+    readonly zone_file?: unknown;
+  };
+  const verificationText = await verificationResponse.text();
+  if (
+    domainInfo.has_dkim_record !== true ||
+    !/verified/i.test(verificationText) ||
+    /not\s+verified|unverified|verification\s+(?:failed|incomplete)/i.test(verificationText)
+  ) {
+    return undefined;
+  }
+
+  const zoneFile = typeof domainInfo.zone_file === 'string' ? domainInfo.zone_file : '';
+  const selectorHost = forwardEmailSelectorHost(zoneFile, domain);
+  return selectorHost ? { selectorHost, verified: true } : undefined;
+}
+
+/** Extract the selector hostname from Forward Email's returned zone file. */
+function forwardEmailSelectorHost(zoneFile: string, domain: string): string | undefined {
+  const suffix = domain.toLowerCase().replace(/\.$/, '');
+  for (const line of zoneFile.split(/\r?\n/)) {
+    const name = line.trim().split(/\s+/, 1)[0]?.replace(/["';]/g, '').replace(/\.$/, '');
+    if (!name?.toLowerCase().includes('_domainkey')) continue;
+    const host = name.toLowerCase().endsWith(`.${suffix}`) ? name : `${name}.${suffix}`;
+    if (host.toLowerCase().endsWith(`.${suffix}`) && host.toLowerCase().includes('._domainkey.')) {
+      return host;
+    }
+  }
+  return undefined;
+}
 
 async function mxHosts(domain: string, deps: MailboxDnsDeps): Promise<string[]> {
   const resolveMx = deps.resolveMx ?? nodeResolveMx;
