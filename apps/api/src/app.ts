@@ -5748,7 +5748,9 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   /** SPF, DKIM, DMARC and MX for the domain one mailbox sends from. */
   api.get('/mailboxes/:id/dns', async (c) => {
     const actor = c.get('actor');
-    const report = await mailboxDns(c.get('db'), actor.workspaceId, c.req.param('id'));
+    const report = await mailboxDns(c.get('db'), actor.workspaceId, c.req.param('id'), {
+      forwardEmailApiToken: process.env.FORWARDEMAIL_API_TOKEN,
+    });
     if (!report) throw ApiError.notFound('mailbox');
     return c.json({ dns: report });
   });

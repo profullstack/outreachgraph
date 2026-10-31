@@ -115,4 +115,29 @@ describe('checkSendingDomain', () => {
     );
     expect(two.spf.status).toBe('fail');
   });
+
+  it('verifies Forward Email’s per-domain DKIM selector through its API and public DNS', async () => {
+    const selectorHost = 'fe-36190d4cf0._domainkey.profullstack.com';
+    const report = await checkSendingDomain(
+      'profullstack.com',
+      { provider: 'forwardemail', forwardEmailApiToken: 'test-token' },
+      {
+        resolveMx: async () => [{ exchange: 'mx1.forwardemail.net', priority: 10 }],
+        resolveTxt: txtTable({
+          'profullstack.com': ['v=spf1 include:spf.forwardemail.net -all'],
+          '_dmarc.profullstack.com': ['v=DMARC1; p=none'],
+          [selectorHost]: ['v=DKIM1; k=rsa; p=MIIB'],
+        }),
+        fetchForwardEmailDkim: async (domain, token) => {
+          expect(domain).toBe('profullstack.com');
+          expect(token).toBe('test-token');
+          return { selectorHost, verified: true };
+        },
+      },
+    );
+
+    expect(report.dkim.status).toBe('pass');
+    expect(report.dkim.value).toBe('fe-36190d4cf0._domainkey');
+    expect(report.dkim.detail).toContain('Forward Email verifies');
+  });
 });
