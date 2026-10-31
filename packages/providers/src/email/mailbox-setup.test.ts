@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { checkSendingDomain, lookupMailboxSettings, parseAutoconfig } from './mailbox-setup';
+import {
+  checkSendingDomain,
+  createSendingDomainCheckCache,
+  lookupMailboxSettings,
+  parseAutoconfig,
+} from './mailbox-setup';
 
 const AUTOCONFIG = `<?xml version="1.0"?>
 <clientConfig version="1.1"><emailProvider id="example.net">
@@ -139,5 +144,48 @@ describe('checkSendingDomain', () => {
     expect(report.dkim.status).toBe('pass');
     expect(report.dkim.value).toBe('fe-36190d4cf0._domainkey');
     expect(report.dkim.detail).toContain('Forward Email verifies');
+  });
+
+  it('shares one Forward Email domain check across mailboxes on the same domain', async () => {
+    const selectorHost = 'fe-36190d4cf0._domainkey.profullstack.com';
+    const cache = createSendingDomainCheckCache();
+    let mxLookups = 0;
+    let selectorLookups = 0;
+    let apiChecks = 0;
+    const deps = {
+      domainCheckCache: cache,
+      resolveMx: async () => {
+        mxLookups += 1;
+        return [{ exchange: 'mx1.forwardemail.net', priority: 10 }];
+      },
+      resolveTxt: async (name: string) => {
+        if (name === selectorHost) selectorLookups += 1;
+        const records: Record<string, string[]> = {
+          'profullstack.com': ['v=spf1 include:spf.forwardemail.net -all'],
+          '_dmarc.profullstack.com': ['v=DMARC1; p=none'],
+          [selectorHost]: ['v=DKIM1; k=rsa; p=MIIB'],
+        };
+        return records[name]?.map((record) => [record]) ?? [];
+      },
+      fetchForwardEmailDkim: async () => {
+        apiChecks += 1;
+        return { selectorHost, verified: true };
+      },
+    };
+    const options = {
+      provider: 'forwardemail',
+      forwardEmailApiToken: 'test-token',
+    };
+
+    const [firstMailbox, secondMailbox] = await Promise.all([
+      checkSendingDomain('profullstack.com', options, deps),
+      checkSendingDomain('PROFULLSTACK.com', options, deps),
+    ]);
+
+    expect(firstMailbox.dkim.status).toBe('pass');
+    expect(secondMailbox.dkim).toEqual(firstMailbox.dkim);
+    expect(mxLookups).toBe(1);
+    expect(selectorLookups).toBe(1);
+    expect(apiChecks).toBe(1);
   });
 });
