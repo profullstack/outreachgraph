@@ -45,7 +45,59 @@ export interface MailboxDnsDeps {
     domain: string,
     apiToken: string,
   ) => Promise<ForwardEmailDkimStatus | undefined>;
+  /** Injected cache for domain-check tests; production uses one shared cache. */
+  readonly domainCheckCache?: SendingDomainCheckCache;
 }
+
+export interface SendingDomainCheckCache {
+  getOrLoad(key: string, load: () => Promise<SendingDomainReport>): Promise<SendingDomainReport>;
+}
+
+/** A short-lived, in-process cache shared by every mailbox on a domain. */
+export function createSendingDomainCheckCache(
+  options: {
+    readonly verifiedTtlMs?: number;
+    readonly retryTtlMs?: number;
+  } = {},
+): SendingDomainCheckCache {
+  const verifiedTtlMs = options.verifiedTtlMs ?? 5 * 60_000;
+  const retryTtlMs = options.retryTtlMs ?? 15_000;
+  const reports = new Map<string, { expiresAt: number; report: SendingDomainReport }>();
+  const inFlight = new Map<string, Promise<SendingDomainReport>>();
+
+  return {
+    async getOrLoad(key, load) {
+      const now = Date.now();
+      const cached = reports.get(key);
+      if (cached && cached.expiresAt > now) return cached.report;
+      reports.delete(key);
+
+      const pending = inFlight.get(key);
+      if (pending) return pending;
+
+      const request = load()
+        .then((report) => {
+          const storedAt = Date.now();
+          for (const [cachedKey, value] of reports) {
+            if (value.expiresAt <= storedAt) reports.delete(cachedKey);
+          }
+          while (reports.size >= 500 && !reports.has(key)) {
+            const oldest = reports.keys().next().value;
+            if (oldest === undefined) break;
+            reports.delete(oldest);
+          }
+          const ttl = report.dkim.status === 'pass' ? verifiedTtlMs : retryTtlMs;
+          reports.set(key, { expiresAt: storedAt + ttl, report });
+          return report;
+        })
+        .finally(() => inFlight.delete(key));
+      inFlight.set(key, request);
+      return request;
+    },
+  };
+}
+
+const sharedSendingDomainCheckCache = createSendingDomainCheckCache();
 
 export interface ServerSettings {
   readonly host: string;
@@ -192,6 +244,28 @@ export async function checkSendingDomain(
   domain: string,
   options: { readonly provider?: string; readonly forwardEmailApiToken?: string } = {},
   deps: MailboxDnsDeps = {},
+): Promise<SendingDomainReport> {
+  const hasInjectedDomainLookup =
+    deps.resolveMx !== undefined ||
+    deps.resolveTxt !== undefined ||
+    deps.fetchForwardEmailDkim !== undefined;
+  const cache =
+    deps.domainCheckCache ?? (hasInjectedDomainLookup ? undefined : sharedSendingDomainCheckCache);
+  const cacheKey = [
+    domain.toLowerCase(),
+    options.provider ?? '',
+    options.forwardEmailApiToken ? 'token' : 'no-token',
+  ].join('\0');
+  if (cache) {
+    return cache.getOrLoad(cacheKey, () => checkSendingDomainUncached(domain, options, deps));
+  }
+  return checkSendingDomainUncached(domain, options, deps);
+}
+
+async function checkSendingDomainUncached(
+  domain: string,
+  options: { readonly provider?: string; readonly forwardEmailApiToken?: string },
+  deps: MailboxDnsDeps,
 ): Promise<SendingDomainReport> {
   const resolveTxt = deps.resolveTxt ?? defaultResolveTxt;
   const txt = async (name: string): Promise<string[]> =>
