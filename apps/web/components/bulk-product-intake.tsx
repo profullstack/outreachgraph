@@ -62,7 +62,7 @@ export function BulkProductIntake() {
   const router = useRouter();
 
   const [text, setText] = useState('');
-  const [autopilot, setAutopilot] = useState(true);
+  const [autopilot, setAutopilot] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [existing, setExisting] = useState<Existing[]>([]);
@@ -184,8 +184,8 @@ export function BulkProductIntake() {
         <span>
           <span className="font-medium">Run them on autopilot</span>
           <span className="text-ink-muted block text-[13px] leading-relaxed">
-            Every campaign finds people and writes to them without asking. Leave this off to approve
-            each message yourself.
+            Every campaign finds people and writes to them without asking. Leave this off to review
+            and approve each message before it sends.
           </span>
         </span>
       </label>
