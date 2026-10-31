@@ -1,8 +1,10 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
+import { campaignReviewSuggestion, type CampaignReviewSuggestion } from '@outreachgraph/domain';
 import { Avatar } from '../../../../components/avatar';
 import { AddLeads } from '../../../../components/add-leads';
 import { CampaignControls } from '../../../../components/campaign-controls';
+import { CampaignReviewCard } from '../../../../components/campaign-review-card';
 import { CampaignSource } from '../../../../components/campaign-source';
 import { LeadEnrichment } from '../../../../components/lead-enrichment';
 import { ProductDemo } from '../../../../components/product-demo';
@@ -10,10 +12,12 @@ import { ScreenedLeads } from '../../../../components/screened-leads';
 import {
   ApiUnavailableError,
   NotAuthenticatedError,
+  fetchCampaignReviewStats,
   fetchInbox,
   fetchProductOverview,
   relativeTime,
   type InboxConversationView,
+  type CampaignReviewStatsView,
   type ProductOverviewView,
 } from '../../../../lib/api';
 
@@ -35,6 +39,8 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
 
   let overview: ProductOverviewView;
   let replies: InboxConversationView[] = [];
+  let reviewStats: CampaignReviewStatsView | undefined;
+  let reviewSuggestion: CampaignReviewSuggestion | undefined;
 
   try {
     [overview, { conversations: replies }] = await Promise.all([
@@ -54,6 +60,23 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
   }
 
   const { product, profile, campaign, leads, messages } = overview;
+  if (campaign?.status === 'active') {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    try {
+      reviewStats = await fetchCampaignReviewStats(campaign.id, since);
+    } catch (error) {
+      if (error instanceof NotAuthenticatedError) redirect('/login');
+      if (!(error instanceof ApiUnavailableError)) throw error;
+    }
+    if (reviewStats) {
+      reviewSuggestion = campaignReviewSuggestion({
+        status: campaign.status,
+        emailsSent: reviewStats.emails_sent,
+        replies: reviewStats.replies,
+      });
+    }
+  }
+
   const offering = profile.offering;
   const icp = profile.icp;
   const host = product.url?.replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -95,12 +118,17 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
       </header>
 
       {campaign ? (
-        <section className="mb-6 grid grid-cols-4 gap-2">
-          <Stat label="Leads" value={campaign.people} />
-          <Stat label="Contacted" value={campaign.contacted} />
-          <Stat label="Replies" value={campaign.replied} />
-          <Stat label="Waiting" value={campaign.awaiting_approval} />
-        </section>
+        <>
+          <section className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Stat label="Leads" value={campaign.people} />
+            <Stat label="Contacted" value={campaign.contacted} />
+            <Stat label="Replies" value={campaign.replied} />
+            <Stat label="Waiting" value={campaign.awaiting_approval} />
+          </section>
+          {reviewSuggestion ? (
+            <CampaignReviewCard campaignId={campaign.id} suggestion={reviewSuggestion} />
+          ) : null}
+        </>
       ) : null}
 
       {campaign && campaign.jobs_pending > 0 ? (

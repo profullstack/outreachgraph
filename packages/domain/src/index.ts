@@ -14,6 +14,7 @@ export * from './person';
 export * from './person-name';
 export * from './signal';
 export * from './campaign';
+export * from './campaign-review';
 export * from './intake';
 export * from './funnel';
 export * from './share-links';
