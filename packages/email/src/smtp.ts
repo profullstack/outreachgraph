@@ -58,6 +58,15 @@ export function formatFrom(fromEmail: string, fromName?: string): string {
   return `"${name.replace(/["\\\r\n]/g, '')}" <${fromEmail}>`;
 }
 
+/** A process-wide emergency blocklist shared with @profullstack/email-queue. */
+export function isBlockedSender(fromEmail: string): boolean {
+  const blocked = (process.env.EMAIL_QUEUE_BLOCKED_SENDERS ?? '')
+    .split(',')
+    .map((address) => address.trim().toLowerCase())
+    .filter(Boolean);
+  return blocked.includes(fromEmail.trim().toLowerCase());
+}
+
 export class SmtpMailer implements Mailer {
   readonly #credentials: SmtpCredentials;
   readonly #transport: Transporter;
@@ -69,6 +78,9 @@ export class SmtpMailer implements Mailer {
 
   async send(message: Message): Promise<SendResult> {
     try {
+      if (isBlockedSender(this.#credentials.fromEmail)) {
+        throw new MailerError(403, 'Sending from this mailbox is administratively blocked.');
+      }
       const info = await this.#transport.sendMail({
         from: formatFrom(this.#credentials.fromEmail, this.#credentials.fromName),
         to: message.to,

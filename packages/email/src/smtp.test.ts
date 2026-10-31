@@ -91,6 +91,25 @@ describe('SmtpMailer', () => {
     expect(sent[0]).not.toHaveProperty('replyTo');
   });
 
+  test('does not send from an operationally blocked mailbox', async () => {
+    const previous = process.env.EMAIL_QUEUE_BLOCKED_SENDERS;
+    const { transport, sent } = fakeTransport({});
+    process.env.EMAIL_QUEUE_BLOCKED_SENDERS = ' other@gmail.com, USER@COMPANY.COM ';
+    try {
+      await expect(
+        new SmtpMailer(CREDENTIALS, transport).send({
+          to: 'jane@acme.com',
+          subject: 'Blocked sender',
+          text: 'Must not leave the process',
+        }),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(sent).toHaveLength(0);
+    } finally {
+      if (previous === undefined) delete process.env.EMAIL_QUEUE_BLOCKED_SENDERS;
+      else process.env.EMAIL_QUEUE_BLOCKED_SENDERS = previous;
+    }
+  });
+
   test("keeps the server's rejection text, which is the actionable part", async () => {
     const failure = Object.assign(new Error('535 Username and Password not accepted'), {
       responseCode: 535,
