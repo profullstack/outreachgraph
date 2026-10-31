@@ -48,6 +48,8 @@ export const DEFAULT_THROTTLES = {
   jobAdd: { max: 30, windowMs: HOUR },
   /** Per workspace: each draft or regenerate is one model call and one page fetch. */
   linkPost: { max: 40, windowMs: HOUR },
+  /** Per workspace: each content item generation is one model call. */
+  contentDraft: { max: 20, windowMs: HOUR },
 } as const satisfies Record<string, ThrottleLimit>;
 
 export type ThrottleName = keyof typeof DEFAULT_THROTTLES;

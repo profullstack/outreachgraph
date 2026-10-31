@@ -329,6 +329,7 @@ import {
   getCampaignHubs,
 } from '@outreachgraph/pipeline';
 import { linkPostRoutes } from './link-posts';
+import { contentDraftRoutes } from './content-drafts';
 import {
   campaignSourceStatus,
   checkCampaignSource,
@@ -1823,6 +1824,12 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       throttles,
     }),
   );
+
+  // ----------------------------------------------------------- content studio
+  //
+  // Social posts, newsletters and articles are saved for editing and review.
+  // The API never publishes them to a network.
+  api.route('/content-drafts', contentDraftRoutes({ model: options.model, throttles }));
 
   // ----------------------------------------------------------------- team
   //

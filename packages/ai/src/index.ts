@@ -127,3 +127,10 @@ export {
   type LinkPostResult,
   type LinkPostVoice,
 } from './link-post';
+
+export {
+  draftContent,
+  type ContentDraftInput,
+  type ContentDraftResult,
+  type ContentKind,
+} from './content';

@@ -287,6 +287,33 @@ export async function fetchLinkPosts(): Promise<LinkPostsView> {
   return request<LinkPostsView>('/link-posts?status=open&limit=200');
 }
 
+export type ContentDraftKind = 'social' | 'newsletter' | 'article';
+export type ContentDraftStatus = 'draft' | 'ready' | 'archived';
+
+export interface ContentDraftView {
+  readonly id: string;
+  readonly offeringId?: string;
+  readonly kind: ContentDraftKind;
+  readonly title: string;
+  readonly topic: string;
+  readonly audience?: string;
+  readonly notes?: string;
+  readonly body: string;
+  readonly model?: string;
+  readonly status: ContentDraftStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface ContentStudioView {
+  readonly drafts: ContentDraftView[];
+  readonly draftingEnabled: boolean;
+}
+
+export async function fetchContentDrafts(): Promise<ContentStudioView> {
+  return request<ContentStudioView>('/content-drafts');
+}
+
 export async function fetchSignals(): Promise<SignalRow[]> {
   return (await fetchSignalPage()).signals;
 }
