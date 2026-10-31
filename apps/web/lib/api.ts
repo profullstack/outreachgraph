@@ -734,6 +734,22 @@ export async function fetchCampaignSummaries(): Promise<CampaignSummaryView[]> {
   return body.campaigns;
 }
 
+export interface CampaignReviewStatsView {
+  readonly emails_sent: number;
+  readonly replies: number;
+  readonly reply_rate: number;
+}
+
+export async function fetchCampaignReviewStats(
+  campaignId: string,
+  since: string,
+): Promise<CampaignReviewStatsView> {
+  const query = `?since=${encodeURIComponent(since)}`;
+  return request<CampaignReviewStatsView>(
+    `/autogtm/campaigns/${encodeURIComponent(campaignId)}/analytics${query}`,
+  );
+}
+
 export interface WorkflowEventView {
   readonly seq: number;
   readonly id: string;
