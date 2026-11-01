@@ -59,6 +59,7 @@ export function ProfileForm({ initial }: { initial: Values }) {
         defaultValues={values}
         errors={errors}
         idPrefix="account-"
+              importOpenProfile
       />
 
       <div className="flex items-center gap-3">

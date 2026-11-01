@@ -142,7 +142,7 @@ export async function finishCoinpaySignIn(
   config: CoinpaySignInConfig,
   input: { code: string; verifier: string; nonce: string },
   doFetch?: typeof fetch,
-): Promise<{ sub: string; email: string | null; name: string | null }> {
+): Promise<{ sub: string; email: string | null; name: string | null; openprofile_url?: string }> {
   const base = config.issuer ?? 'https://coinpayportal.com';
   const done = await finishSignIn({
     code: input.code,
@@ -154,7 +154,7 @@ export async function finishCoinpaySignIn(
     base,
     ...(doFetch ? { fetch: doFetch } : {}),
   });
-  return { sub: done.sub, email: done.email, name: done.name };
+  return { sub: done.sub, email: done.email, name: done.name, ...(typeof done.userinfo.openprofile_url === 'string' ? { openprofile_url: done.userinfo.openprofile_url } : {}) };
 }
 
 /** The account bound to this sub, or a new one bound to it. Never by email. */
