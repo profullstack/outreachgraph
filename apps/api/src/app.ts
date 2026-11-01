@@ -1542,8 +1542,11 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       }
       const linked = await linkCoinpay(options.db, actor.userId, who);
       if (linked.ok && who.openprofile_url) {
-        try { await saveOpenProfileContact(profiles, actor.userId, who.openprofile_url); }
-        catch { console.warn('coinpay OpenProfile import skipped'); }
+        try {
+          await saveOpenProfileContact(profiles, actor.userId, who.openprofile_url);
+        } catch {
+          console.warn('coinpay OpenProfile import skipped');
+        }
       }
       await repo.audit(options.db, {
         workspaceId: actor.workspaceId,
