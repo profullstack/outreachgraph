@@ -13,7 +13,7 @@
     "@outreachgraph/contracts": "workspace:*",
     "@outreachgraph/domain": "workspace:*",
     "@profullstack/footer": "latest",
-    "@profullstack/profile": "0.1.7",
+    "@profullstack/profile": "0.1.8",
     "@profullstack/x402-gateway": "^0.13.1",
     "next": "16.4.3",
     "react": "19.3.1",

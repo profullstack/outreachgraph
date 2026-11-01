@@ -32,7 +32,7 @@
         "@profullstack/coinpay-onboard": "0.3.1",
         "@profullstack/form-guard": "^0.2.2",
         "@profullstack/openprofile": "^0.2.0",
-        "@profullstack/profile": "0.1.7",
+        "@profullstack/profile": "0.1.8",
         "@profullstack/redeem-credits": "^0.2.0",
         "@profullstack/webhooks": "0.2.0",
         "hono": "^4.13.14",
@@ -90,7 +90,7 @@
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
         "@profullstack/footer": "latest",
-        "@profullstack/profile": "0.1.7",
+        "@profullstack/profile": "0.1.8",
         "@profullstack/x402-gateway": "^0.13.1",
         "next": "16.4.3",
         "react": "19.3.1",
@@ -432,7 +432,7 @@
 
     "@profullstack/outreachgraph": ["@profullstack/outreachgraph@workspace:apps/cli"],
 
-    "@profullstack/profile": ["@profullstack/profile@0.1.7", "", { "dependencies": { "@profullstack/openprofile": "^0.2.0" }, "peerDependencies": { "@libsql/client": ">=0.6.0", "postgres": "^3.4.0", "react": ">=18" }, "optionalPeers": ["@libsql/client", "postgres", "react"], "bin": { "profile": "src/cli.js" } }, "sha512-N7UkypkkY2JkSBKzmdmyy6+DCoxI048qUZQksEjSRwSIyy4mjU9H1qW4yhZD+LJBhTEupgJv//Uxwhiy2FuGmA=="],
+    "@profullstack/profile": ["@profullstack/profile@0.1.8", "", { "dependencies": { "@profullstack/openprofile": "^0.2.0" }, "peerDependencies": { "@libsql/client": ">=0.6.0", "postgres": "^3.4.0", "react": ">=18" }, "optionalPeers": ["@libsql/client", "postgres", "react"], "bin": { "profile": "src/cli.js" } }, "sha512-MQ/AGGM++NZEbjMglRlEvjCrmsL46CXDz2GKb510eMBEKUik1cwix9ag20gakYrrVCaB5mNcNCMYon53vwDTfw=="],
 
     "@profullstack/redeem-credits": ["@profullstack/redeem-credits@0.2.0", "", { "bin": { "redeem-credits": "dist/cli.js" } }, "sha512-JLowb7mWYfouIK7O522tuPPhvLjQjhdEfm6g3xEYrlNLGzLhrIADDhrYldBlGHfiVBWUFX7wefLuCSLF9fnyog=="],
 
