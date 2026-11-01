@@ -45,6 +45,7 @@ import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
 import {
   createProfileStore,
   mountProfileRoutes,
+  saveOpenProfileContact,
   saveSignupProfile,
   validateProfile,
 } from '@profullstack/profile';
@@ -1522,7 +1523,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const code = c.req.query('code');
     if (!code) return c.text('CoinPay sign-in failed: no code.', 400);
 
-    let who: { sub: string; email: string | null; name: string | null };
+    let who: { sub: string; email: string | null; name: string | null; openprofile_url?: string };
     try {
       who = await finishCoinpaySignIn(config, {
         code,
@@ -1540,6 +1541,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         return c.redirect('/login?error=coinpay_signin_first', 302);
       }
       const linked = await linkCoinpay(options.db, actor.userId, who);
+      if (linked.ok && who.openprofile_url) {
+        try {
+          await saveOpenProfileContact(profiles, actor.userId, who.openprofile_url);
+        } catch {
+          console.warn('coinpay OpenProfile import skipped');
+        }
+      }
       await repo.audit(options.db, {
         workspaceId: actor.workspaceId,
         actorKind: 'user',
