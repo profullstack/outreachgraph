@@ -69,12 +69,15 @@ export {
   type FindEmailResult,
 } from './find-email';
 export {
+  archiveUnsendableEmailRecommendations,
   enqueueFindEmail,
   findEmailDedupeKey,
   sweepFindEmail,
+  workspacesWithUnsendableEmailRecommendations,
   workspacesAwaitingEmailSearch,
   FIND_EMAIL_RETRY_MS,
   type FindEmailSweepResult,
+  type UnsendableEmailArchiveResult,
 } from './find-email-queue';
 export {
   runListening,
@@ -545,7 +548,14 @@ export {
   type ResolveJobPostResult,
   type SearchJobPostsResult,
 } from './job-posts';
-export { isNonBuyerDesk, isWellFormed, ownDomains, refuseRecipient } from './recipient-guard';
+export {
+  CONTACT_EMAIL_SQL,
+  isNonBuyerDesk,
+  isWellFormed,
+  nonBuyerDeskSql,
+  ownDomains,
+  refuseRecipient,
+} from './recipient-guard';
 export {
   briefFor,
   cleanSubs,

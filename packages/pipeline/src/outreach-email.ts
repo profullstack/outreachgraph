@@ -31,7 +31,7 @@ import { issueOpenPixel, trackLinksInBody } from './engagement';
 import { issueUnsubscribeToken, unsubscribeUrl } from './unsubscribe';
 import { assignSender, noteSendFailure } from './sender-pool';
 import { emitWebhookEvent } from './webhooks';
-import { ownDomains, refuseRecipient } from './recipient-guard';
+import { nonBuyerDeskSql, ownDomains, refuseRecipient } from './recipient-guard';
 import { addressCounts } from './address-usage';
 import { evaluateAddressLimits } from '@outreachgraph/policy';
 
@@ -99,11 +99,13 @@ export const PERSON_EMAIL_SQL = `COALESCE(
               (SELECT si.handle FROM social_identities si
                 WHERE si.person_id = p.id AND si.network = 'email'
                   AND si.handle IS NOT NULL AND trim(si.handle) <> ''
+                  AND NOT ${nonBuyerDeskSql('si.handle')}
                   AND NOT EXISTS (SELECT 1 FROM email_verifications ev
                     WHERE ev.address = lower(trim(si.handle)) AND ev.status = 'invalid')
                 ORDER BY si.confidence DESC LIMIT 1),
               (SELECT pe.address FROM person_emails pe
                 WHERE pe.person_id = p.id AND pe.workspace_id = a.workspace_id
+                  AND NOT ${nonBuyerDeskSql('pe.address')}
                   AND NOT EXISTS (SELECT 1 FROM email_verifications ev
                     WHERE ev.address = lower(trim(pe.address)) AND ev.status = 'invalid')
                 ORDER BY pe.created_at LIMIT 1))`;

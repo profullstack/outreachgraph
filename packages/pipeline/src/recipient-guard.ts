@@ -24,6 +24,8 @@ import { isConsumerMailDomain } from '@outreachgraph/domain';
 
 const NON_BUYER_DESKS = new Set([
   'support',
+  'supportdesk',
+  'supportteam',
   'help',
   'helpdesk',
   'servicedesk',
@@ -62,6 +64,50 @@ const NON_BUYER_DESKS = new Set([
   'bounce',
   'bounces',
 ]);
+
+/** SQL equivalent of `isNonBuyerDesk`, for recipient selection in queries. */
+export function nonBuyerDeskSql(addressExpression: string): string {
+  const address = `lower(trim(${addressExpression}))`;
+  const local = `substr(${address}, 1, instr(${address}, '@') - 1)`;
+  const withoutPlusTag =
+    `CASE WHEN instr(${local}, '+') > 0 ` +
+    `THEN substr(${local}, 1, instr(${local}, '+') - 1) ELSE ${local} END`;
+  const normalised = `replace(replace(replace(${withoutPlusTag}, '.', ''), '_', ''), '-', '')`;
+  const exact = [...NON_BUYER_DESKS].map((name) => `'${name.replace(/[._-]/g, '')}'`).join(', ');
+
+  return (
+    `(${normalised} IN (${exact}) OR ${normalised} LIKE 'noreply%' ` +
+    `OR ${normalised} LIKE 'donotreply%')`
+  );
+}
+
+/**
+ * Address an email card would send to, in the same order used by delivery:
+ * a contactable published personal address, imported personal address, then
+ * contactable company inbox. The aliases `r`, `p`, and `co` are supplied by
+ * the caller.
+ */
+export const CONTACT_EMAIL_SQL = `COALESCE(
+  (SELECT si.handle FROM social_identities si
+    WHERE si.person_id = p.id AND si.network = 'email'
+      AND si.handle IS NOT NULL AND trim(si.handle) <> ''
+      AND NOT ${nonBuyerDeskSql('si.handle')}
+      AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+        WHERE lower(trim(ev.address)) = lower(trim(si.handle)) AND ev.status = 'invalid')
+    ORDER BY si.confidence DESC LIMIT 1),
+  (SELECT pe.address FROM person_emails pe
+    WHERE pe.person_id = p.id AND pe.workspace_id = r.workspace_id
+      AND pe.address IS NOT NULL AND trim(pe.address) <> ''
+      AND NOT ${nonBuyerDeskSql('pe.address')}
+      AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+        WHERE lower(trim(ev.address)) = lower(trim(pe.address)) AND ev.status = 'invalid')
+    ORDER BY pe.created_at LIMIT 1),
+  CASE WHEN co.contact_email IS NOT NULL AND trim(co.contact_email) <> ''
+        AND NOT ${nonBuyerDeskSql('co.contact_email')}
+        AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+          WHERE lower(trim(ev.address)) = lower(trim(co.contact_email)) AND ev.status = 'invalid')
+       THEN co.contact_email END
+)`;
 
 function localPart(address: string): string {
   const local = address.trim().toLowerCase().split('@')[0] ?? '';

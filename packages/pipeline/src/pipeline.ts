@@ -39,7 +39,12 @@ import { recordDiscovered, recordStatus } from './stages';
 import { storeDiscoveredPhoto } from './photos';
 import { enqueueFindEmail } from './find-email-queue';
 import { screenHold } from './lead-screen';
-import { ownDomains, personOnOwnDomain } from './recipient-guard';
+import {
+  CONTACT_EMAIL_SQL,
+  ownDomains,
+  personOnOwnDomain,
+  refuseRecipient,
+} from './recipient-guard';
 import { queueSiteAudit } from './site-audits';
 import { excludedByCompanyCap } from './company-cap';
 import { setAsideIfExcluded } from './targeting-exclusion';
@@ -904,7 +909,8 @@ async function createRecommendation(
   // Our own products are found by discovery like anyone else in the market,
   // and they are not prospects. Refused here, before any card, so every
   // intake path is covered and nothing waits in the queue to be dismissed.
-  if (await personOnOwnDomain(db, workspaceId, personId, await ownDomains(db, workspaceId))) {
+  const own = await ownDomains(db, workspaceId);
+  if (await personOnOwnDomain(db, workspaceId, personId, own)) {
     return undefined;
   }
 
@@ -1074,6 +1080,33 @@ async function createRecommendation(
   if (!result.ok) return undefined;
 
   const recommendation = result.recommendation;
+
+  // A cold email needs an actual recipient. No address means there is nothing
+  // for a reviewer to approve; a support/security desk is a ticket queue, not
+  // a buyer. Keep the prospect in research and let find_email check again on
+  // its normal 30-day cadence. Replies are exempt: answering the person who
+  // wrote to us is not cold outreach.
+  if (recommendation.action === 'send_email' && recommendation.network === 'email') {
+    const contact = await queryOne<{ address: string | null }>(
+      db,
+      `SELECT ${CONTACT_EMAIL_SQL} AS address
+         FROM people p
+         LEFT JOIN companies co ON co.id = p.current_company_id
+         JOIN campaigns r ON r.id = ?
+        WHERE p.id = ?`,
+      [campaignId, personId],
+    );
+    const address = contact?.address?.trim();
+    if (!address || refuseRecipient(address, own)) {
+      await enqueueFindEmail(db, {
+        workspaceId,
+        personId,
+        ...(options.now ? { now: options.now } : {}),
+      });
+      return undefined;
+    }
+  }
+
   const id = newId('recommendation');
 
   // Retire the research card this one replaces.
