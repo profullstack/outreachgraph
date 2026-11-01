@@ -56,8 +56,10 @@ import {
   autoApproveInternal,
   enrichContact,
   findEmail,
+  archiveUnsendableEmailRecommendations,
   sweepFindEmail,
   workspacesAwaitingEmailSearch,
+  workspacesWithUnsendableEmailRecommendations,
   sweepAudienceWatches,
   sweepContactEnrichment,
   workspacesAwaitingEnrichment,
@@ -1209,9 +1211,25 @@ async function tick(): Promise<void> {
     }
   }
 
-  // People held on a hand-carried card with nothing to email get a search for
-  // one. New cards queue their own; this catches everyone carded before that,
-  // a bounded handful per tick so the drain below still has room for crawls.
+  // Cold email cards without a deliverable buyer address are archived, and a
+  // personal-address search is queued. The campaign membership remains, so a
+  // later monthly search can make a fresh card if the company publishes one.
+  for (const workspaceId of await workspacesWithUnsendableEmailRecommendations(db)) {
+    try {
+      const archived = await archiveUnsendableEmailRecommendations(db, { workspaceId });
+      if (archived.archived > 0 || archived.searchesQueued > 0) {
+        console.log(
+          `email approvals: archived ${archived.archived} unsendable card(s), ` +
+            `queued ${archived.searchesQueued} address search(es) in ${workspaceId}`,
+        );
+      }
+    } catch (error) {
+      console.error(`email approval cleanup failed for ${workspaceId}`, error);
+    }
+  }
+
+  // Search active campaign members who have no personal address, not only
+  // people with a pending card. Misses become due again after 30 days.
   for (const workspaceId of await workspacesAwaitingEmailSearch(db)) {
     try {
       const swept = await sweepFindEmail(db, { workspaceId });

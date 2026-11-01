@@ -19,7 +19,12 @@ import {
   type Network,
 } from '@outreachgraph/domain';
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
-import { matchKeysForPerson } from '@outreachgraph/pipeline';
+import {
+  CONTACT_EMAIL_SQL,
+  isNonBuyerDesk,
+  isWellFormed,
+  matchKeysForPerson,
+} from '@outreachgraph/pipeline';
 
 export interface PersonRow {
   id: string;
@@ -157,6 +162,26 @@ export function isApprovalFilter(value: unknown): value is ApprovalFilter {
   return typeof value === 'string' && (APPROVAL_FILTERS as readonly string[]).includes(value);
 }
 
+interface ApprovalVisibilityRow {
+  action: string;
+  network: string;
+  expected_goal: string;
+  reply_to_interaction_id: string | null;
+  queue_email_address: string | null;
+}
+
+/** Hide cold email cards that have no usable buyer address. */
+function visibleApprovalRow(row: ApprovalVisibilityRow): boolean {
+  if (row.action !== 'send_email' || row.network !== 'email') return true;
+  if (row.expected_goal === 'continue_conversation' || row.reply_to_interaction_id) return true;
+
+  const address = row.queue_email_address?.trim();
+  return Boolean(address && isWellFormed(address) && !isNonBuyerDesk(address));
+}
+
+const QUEUE_RECIPIENT_JOIN = `LEFT JOIN companies co ON co.id = p.current_company_id`;
+const QUEUE_RECIPIENT_SELECT = `${CONTACT_EMAIL_SQL} AS queue_email_address`;
+
 export async function listPendingRecommendations(
   db: Client,
   workspaceId: string,
@@ -192,16 +217,24 @@ export async function listPendingRecommendations(
   // ahead of the WHERE clause the filter narrows.
   const clauseArgs: string[] = filter === 'all' ? [] : [...OUTBOUND_ACTION_KINDS];
 
-  return queryAll(
-    db,
-    `SELECT r.*, p.kind, p.display_name, p.current_title, p.avatar_url, p.identity_confidence,
+  const batchSize = Math.max(50, limit * 2);
+  const visible: Record<string, unknown>[] = [];
+  let rawOffset = 0;
+  let visibleOffset = 0;
+
+  while (visible.length < limit) {
+    const batch = await queryAll<Record<string, unknown> & ApprovalVisibilityRow>(
+      db,
+      `SELECT r.*, p.kind, p.display_name, p.current_title, p.avatar_url, p.identity_confidence,
             s.summary AS signal_summary, s.source_url AS signal_url,
             s.source_timestamp AS signal_at,
             d.body AS draft_body, d.subject AS draft_subject,
             sc.opportunity,
+            ${QUEUE_RECIPIENT_SELECT},
             ${bucketExpression}
        FROM recommendations r
        JOIN people p ON p.id = r.person_id
+  ${QUEUE_RECIPIENT_JOIN}
   LEFT JOIN signals s ON s.id = r.trigger_signal_id
   LEFT JOIN drafts d ON d.recommendation_id = r.id
   LEFT JOIN scores sc ON sc.person_id = r.person_id AND sc.campaign_id = r.campaign_id
@@ -210,8 +243,27 @@ export async function listPendingRecommendations(
         ${clause[filter]}
    ORDER BY r.priority DESC, r.created_at ASC, r.id ASC
       LIMIT ? OFFSET ?`,
-    [...OUTBOUND_ACTION_KINDS, workspaceId, now(), ...clauseArgs, limit, offset],
-  );
+      [...OUTBOUND_ACTION_KINDS, workspaceId, now(), ...clauseArgs, batchSize, rawOffset],
+    );
+    if (batch.length === 0) break;
+    rawOffset += batch.length;
+
+    for (const row of batch) {
+      if (!visibleApprovalRow(row)) continue;
+      if (visibleOffset < offset) {
+        visibleOffset += 1;
+        continue;
+      }
+
+      const { queue_email_address: _queueEmailAddress, ...recommendation } = row;
+      visible.push(recommendation);
+      if (visible.length >= limit) break;
+    }
+
+    if (batch.length < batchSize) break;
+  }
+
+  return visible;
 }
 
 /**
@@ -263,53 +315,41 @@ function foldChannels(
 }
 
 export async function approvalCounts(db: Client, workspaceId: string): Promise<ApprovalCounts> {
-  const outbound = OUTBOUND_ACTION_KINDS.map(() => '?').join(', ');
-
-  const row = await queryOne<{
-    total: number;
-    ready: number;
-    needs_draft: number;
-    research: number;
-  }>(
+  const rows = await queryAll<ApprovalVisibilityRow & { draft_id: string | null }>(
     db,
-    // Not `AS all` — `all` is a reserved word and SQLite rejects it outright.
-    `SELECT count(*) AS total,
-            sum(CASE WHEN r.action IN (${outbound}) AND d.id IS NOT NULL THEN 1 ELSE 0 END) AS ready,
-            sum(CASE WHEN r.action IN (${outbound}) AND d.id IS NULL THEN 1 ELSE 0 END) AS needs_draft,
-            sum(CASE WHEN r.action NOT IN (${outbound}) THEN 1 ELSE 0 END) AS research
+    `SELECT r.action, r.network, r.expected_goal, r.reply_to_interaction_id,
+            d.id AS draft_id, ${QUEUE_RECIPIENT_SELECT}
        FROM recommendations r
+       JOIN people p ON p.id = r.person_id
+  ${QUEUE_RECIPIENT_JOIN}
   LEFT JOIN drafts d ON d.recommendation_id = r.id
       WHERE r.workspace_id = ? AND r.status = 'pending'
         AND (r.expires_at IS NULL OR r.expires_at > ?)`,
-    [
-      ...OUTBOUND_ACTION_KINDS,
-      ...OUTBOUND_ACTION_KINDS,
-      ...OUTBOUND_ACTION_KINDS,
-      workspaceId,
-      now(),
-    ],
-  );
-
-  // The same pending set, grouped the other way. A second statement rather
-  // than more columns on the first: the bucket counts need the drafts join and
-  // these do not, and one query cannot group by network and stay a single row.
-  const byNetwork = await queryAll<{ network: string; n: number }>(
-    db,
-    `SELECT r.network AS network, count(*) AS n
-       FROM recommendations r
-      WHERE r.workspace_id = ? AND r.status = 'pending'
-        AND (r.expires_at IS NULL OR r.expires_at > ?)
-   GROUP BY r.network`,
     [workspaceId, now()],
   );
 
+  const buckets: Record<ApprovalFilter, number> = {
+    all: 0,
+    ready: 0,
+    needs_draft: 0,
+    research: 0,
+  };
+  const networkCounts = new Map<string, number>();
+
+  for (const row of rows) {
+    if (!visibleApprovalRow(row)) continue;
+    const outbound = (OUTBOUND_ACTION_KINDS as readonly string[]).includes(row.action);
+    buckets.all += 1;
+    if (!outbound) buckets.research += 1;
+    else if (row.draft_id !== null) buckets.ready += 1;
+    else buckets.needs_draft += 1;
+    networkCounts.set(row.network, (networkCounts.get(row.network) ?? 0) + 1);
+  }
+
+  const byNetwork = [...networkCounts].map(([network, n]) => ({ network, n }));
+
   return {
-    buckets: {
-      all: Number(row?.total ?? 0),
-      ready: Number(row?.ready ?? 0),
-      needs_draft: Number(row?.needs_draft ?? 0),
-      research: Number(row?.research ?? 0),
-    },
+    buckets,
     channels: foldChannels(byNetwork),
   };
 }
@@ -632,10 +672,13 @@ export async function pendingAddressUsage(
     this_week: number;
     last_at: string | null;
     has_draft: number;
+    expected_goal: string;
+    reply_to_interaction_id: string | null;
   }>(
     db,
     `WITH candidate AS (
         SELECT r.id AS recommendation_id, r.campaign_id AS campaign_id,
+               r.expected_goal, r.reply_to_interaction_id,
                EXISTS (SELECT 1 FROM drafts d WHERE d.recommendation_id = r.id) AS has_draft,
                COALESCE(
                  (SELECT lower(trim(si.handle)) FROM social_identities si
@@ -651,42 +694,48 @@ export async function pendingAddressUsage(
                  WHERE p.id = r.person_id AND co.contact_email IS NOT NULL
                    AND trim(co.contact_email) <> '') AS company
           FROM recommendations r
+          JOIN people p ON p.id = r.person_id
+     LEFT JOIN companies co ON co.id = p.current_company_id
          WHERE r.workspace_id = ? AND r.status = 'pending' AND r.network = 'email'
-      ),
-      resolved AS (
-        SELECT recommendation_id, campaign_id, has_draft,
-               COALESCE(personal, company) AS address,
-               CASE WHEN personal IS NULL THEN 1 ELSE 0 END AS shared
-          FROM candidate
-         WHERE COALESCE(personal, company) IS NOT NULL
       )
-      SELECT resolved.recommendation_id, resolved.campaign_id, resolved.address,
-             resolved.shared, resolved.has_draft,
+      SELECT candidate.recommendation_id, candidate.campaign_id,
+             COALESCE(candidate.personal, candidate.company) AS address,
+             CASE WHEN candidate.personal IS NULL THEN 1 ELSE 0 END AS shared,
+             candidate.has_draft, candidate.expected_goal, candidate.reply_to_interaction_id,
              (SELECT count(*) FROM interactions i
-               WHERE i.workspace_id = ? AND i.contact_address = resolved.address
+               WHERE i.workspace_id = ? AND i.contact_address = COALESCE(candidate.personal, candidate.company)
                  AND i.direction = 'outbound' AND i.occurred_at >= ?) AS this_week,
              (SELECT max(i.occurred_at) FROM interactions i
-               WHERE i.workspace_id = ? AND i.contact_address = resolved.address
+               WHERE i.workspace_id = ? AND i.contact_address = COALESCE(candidate.personal, candidate.company)
                  AND i.direction = 'outbound') AS last_at
-        FROM resolved`,
+        FROM candidate
+       WHERE COALESCE(candidate.personal, candidate.company) IS NOT NULL
+         AND trim(COALESCE(candidate.personal, candidate.company)) <> ''`,
     [workspaceId, workspaceId, weekAgo, workspaceId],
   );
 
-  return rows.map((row) => {
-    const hoursSinceLast = row.last_at
-      ? (Date.now() - Date.parse(row.last_at)) / 3_600_000
-      : undefined;
+  return rows
+    .filter(
+      (row) =>
+        row.expected_goal === 'continue_conversation' ||
+        row.reply_to_interaction_id !== null ||
+        (isWellFormed(row.address) && !isNonBuyerDesk(row.address)),
+    )
+    .map((row) => {
+      const hoursSinceLast = row.last_at
+        ? (Date.now() - Date.parse(row.last_at)) / 3_600_000
+        : undefined;
 
-    return {
-      recommendationId: row.recommendation_id,
-      campaignId: row.campaign_id,
-      address: row.address,
-      shared: Number(row.shared) === 1,
-      thisWeek: Number(row.this_week ?? 0),
-      hasDraft: Number(row.has_draft) === 1,
-      ...(hoursSinceLast === undefined ? {} : { hoursSinceLast }),
-    };
-  });
+      return {
+        recommendationId: row.recommendation_id,
+        campaignId: row.campaign_id,
+        address: row.address,
+        shared: Number(row.shared) === 1,
+        thisWeek: Number(row.this_week ?? 0),
+        hasDraft: Number(row.has_draft) === 1,
+        ...(hoursSinceLast === undefined ? {} : { hoursSinceLast }),
+      };
+    });
 }
 
 /**

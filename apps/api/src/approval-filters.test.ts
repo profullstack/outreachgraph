@@ -53,6 +53,7 @@ async function add(
   action: string,
   network: string,
   withDraft: boolean,
+  recipient?: string | null,
 ): Promise<void> {
   const stamp = now();
 
@@ -74,6 +75,21 @@ async function add(
     ],
   });
 
+  const address =
+    recipient === undefined
+      ? action === 'send_email' && network === 'email'
+        ? `${id}@acme.com`
+        : null
+      : recipient;
+  if (address) {
+    await db.execute({
+      sql: `INSERT INTO social_identities (id, person_id, network, handle, platform_user_id,
+            confidence, source_type, verified_by, first_seen_at)
+            VALUES (?, ?, 'email', ?, ?, 0.9, 'public_web', '[]', ?)`,
+      args: [`sid_${id}`, SEED.personId, address, address, stamp],
+    });
+  }
+
   if (withDraft) {
     await db.execute({
       sql: `INSERT INTO drafts (id, workspace_id, recommendation_id, body, grounded_signal_ids,
@@ -93,6 +109,18 @@ async function queue(app: Hono<AppEnv>, filter?: string, channel?: string): Prom
 }
 
 describe('filtering the approval queue', () => {
+  test('cold email cards without a usable buyer address never enter approvals', async () => {
+    const { app, db } = await harness('filter-unsendable-email');
+    await add(db, 'rec_support', 'send_email', 'email', true, 'support@loops.so');
+    await add(db, 'rec_no_address', 'send_email', 'email', true, null);
+
+    const { recommendations, counts } = await queue(app, 'all');
+
+    expect(recommendations.map((row) => row.id)).not.toContain('rec_support');
+    expect(recommendations.map((row) => row.id)).not.toContain('rec_no_address');
+    expect(counts.buckets.all).toBe(1);
+  });
+
   test('ready shows only outbound work that has a message written', async () => {
     const { app, db } = await harness('filter-ready');
     await add(db, 'rec_research_1', 'refresh_research', 'website', false);

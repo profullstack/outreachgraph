@@ -56,6 +56,7 @@ import {
 } from '@outreachgraph/providers';
 import { markEmailSearched } from './find-email-queue';
 import { regenerateFor } from './pipeline';
+import { nonBuyerDeskSql } from './recipient-guard';
 import { domainMatchKey, emailMatchKey, matchKeysForPerson } from './suppression-keys';
 
 /**
@@ -377,10 +378,18 @@ function looksLikeRoleMailbox(address: string): boolean {
 async function hasPersonalEmail(db: Client, personId: string): Promise<boolean> {
   const row = await queryOne<{ n: number }>(
     db,
-    `SELECT (SELECT count(*) FROM person_emails WHERE person_id = ?)
+    `SELECT (SELECT count(*) FROM person_emails
+              WHERE person_id = ? AND NOT ${nonBuyerDeskSql('address')}
+                AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+                  WHERE lower(trim(ev.address)) = lower(trim(person_emails.address))
+                    AND ev.status = 'invalid'))
           + (SELECT count(*) FROM social_identities
               WHERE person_id = ? AND network = 'email'
-                AND handle IS NOT NULL AND trim(handle) <> '') AS n`,
+                AND handle IS NOT NULL AND trim(handle) <> ''
+                AND NOT ${nonBuyerDeskSql('handle')}
+                AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+                  WHERE lower(trim(ev.address)) = lower(trim(social_identities.handle))
+                    AND ev.status = 'invalid')) AS n`,
     [personId, personId],
   );
   return Number(row?.n ?? 0) > 0;

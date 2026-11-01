@@ -15,12 +15,18 @@
  *     LinkedIn-only people in production — are found from a derived set and
  *     queued a bounded handful per tick.
  *
- * Both key the job on the person, so the two can race and still produce one
- * job, and both honour `email_searched_at` so a search that found nothing is
- * not repeated every minute.
+ * Jobs key on the person, so multiple campaigns still produce one search.
+ * `email_searched_at` leaves a month between misses rather than retrying every
+ * minute.
  */
 
 import { now, queryAll, queryOne, type Client } from '@outreachgraph/db';
+import {
+  CONTACT_EMAIL_SQL,
+  isNonBuyerDesk,
+  isWellFormed,
+  nonBuyerDeskSql,
+} from './recipient-guard';
 import { enqueue } from './queue';
 
 /**
@@ -77,32 +83,34 @@ export async function enqueueFindEmail(
 }
 
 /**
- * The people a sweep would queue: held on a hand-carried card, with nothing to
- * email, not searched recently, and not already queued.
- *
- * Held (`manual_only`) cards, and email cards with no personal address behind
- * them. The second group was left out on the theory that a company inbox is
- * an address; in production it was 490 named people whose only route was a
- * support@ or info@ desk, which the guard refuses or the shared-inbox limit
- * holds to two a week, and none of them had ever been searched. Someone with
- * no card at all was excluded for a reason the engine will reach again
- * without our help.
+ * Active campaign members without a contactable personal address, not
+ * searched recently, and not already queued. Company inboxes do not count as a
+ * personal address, so a support@ desk does not prevent a search for the person.
  */
 const AWAITING = `
-  FROM recommendations r
-  JOIN people p ON p.id = r.person_id
- WHERE r.status = 'pending'
-   AND (r.policy_status = 'manual_only' OR (r.network = 'email' AND r.action = 'send_email'))
+  FROM campaign_people cp
+  JOIN people p ON p.id = cp.person_id
+  JOIN campaigns c ON c.id = cp.campaign_id
+ WHERE cp.status NOT IN ('unqualified', 'suppressed', 'not_interested')
+   AND c.status != 'archived'
    AND p.status = 'active' AND p.kind = 'person' AND p.outreach_eligible = 1
    AND (p.email_searched_at IS NULL OR p.email_searched_at < ?)
-   AND NOT EXISTS (SELECT 1 FROM person_emails pe WHERE pe.person_id = p.id)
+   AND NOT EXISTS (SELECT 1 FROM person_emails pe WHERE pe.person_id = p.id
+                    AND NOT ${nonBuyerDeskSql('pe.address')}
+                    AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+                      WHERE lower(trim(ev.address)) = lower(trim(pe.address))
+                        AND ev.status = 'invalid'))
    AND NOT EXISTS (
          SELECT 1 FROM social_identities si
           WHERE si.person_id = p.id AND si.network = 'email'
-            AND si.handle IS NOT NULL AND trim(si.handle) <> '')
+            AND si.handle IS NOT NULL AND trim(si.handle) <> ''
+            AND NOT ${nonBuyerDeskSql('si.handle')}
+            AND NOT EXISTS (SELECT 1 FROM email_verifications ev
+              WHERE lower(trim(ev.address)) = lower(trim(si.handle))
+                AND ev.status = 'invalid'))
    AND NOT EXISTS (
          SELECT 1 FROM jobs j
-          WHERE j.workspace_id = r.workspace_id
+          WHERE j.workspace_id = cp.workspace_id
             AND j.dedupe_key = 'find_email:' || p.id
             AND j.status IN ('pending', 'running'))`;
 
@@ -124,7 +132,7 @@ export async function sweepFindEmail(
 ): Promise<FindEmailSweepResult> {
   const rows = await queryAll<{ person_id: string }>(
     db,
-    `SELECT DISTINCT p.id AS person_id ${AWAITING} AND r.workspace_id = ? LIMIT ?`,
+    `SELECT DISTINCT p.id AS person_id ${AWAITING} AND cp.workspace_id = ? LIMIT ?`,
     [retryCutoff(input.now), input.workspaceId, input.limit ?? SWEEP_SIZE],
   );
 
@@ -147,8 +155,102 @@ export async function sweepFindEmail(
 export async function workspacesAwaitingEmailSearch(db: Client, at?: Date): Promise<string[]> {
   const rows = await queryAll<{ workspace_id: string }>(
     db,
-    `SELECT DISTINCT r.workspace_id ${AWAITING}`,
+    `SELECT DISTINCT cp.workspace_id ${AWAITING}`,
     [retryCutoff(at)],
+  );
+  return rows.map((row) => row.workspace_id);
+}
+
+export interface UnsendableEmailArchiveResult {
+  readonly archived: number;
+  readonly searchesQueued: number;
+}
+
+/**
+ * Removes cold email cards that have no deliverable recipient from approvals.
+ * Their campaign membership stays active, so the monthly search sweep can
+ * create a fresh card if a personal address is published later.
+ */
+export async function archiveUnsendableEmailRecommendations(
+  db: Client,
+  input: { readonly workspaceId: string; readonly limit?: number; readonly now?: Date },
+): Promise<UnsendableEmailArchiveResult> {
+  const rows = await queryAll<{
+    id: string;
+    person_id: string;
+    person_status: string;
+    person_kind: string;
+    outreach_eligible: number;
+    address: string | null;
+  }>(
+    db,
+    `SELECT r.id, r.person_id, p.status AS person_status, p.kind AS person_kind,
+            p.outreach_eligible, ${CONTACT_EMAIL_SQL} AS address
+       FROM recommendations r
+       JOIN people p ON p.id = r.person_id
+  LEFT JOIN companies co ON co.id = p.current_company_id
+      WHERE r.workspace_id = ? AND r.status = 'pending'
+        AND r.action = 'send_email' AND r.network = 'email'
+        AND r.expected_goal != 'continue_conversation'
+        AND r.reply_to_interaction_id IS NULL
+        AND (
+          ${CONTACT_EMAIL_SQL} IS NULL
+          OR trim(${CONTACT_EMAIL_SQL}) = ''
+          OR instr(trim(${CONTACT_EMAIL_SQL}), '@') <= 1
+          OR length(trim(${CONTACT_EMAIL_SQL})) -
+             length(replace(trim(${CONTACT_EMAIL_SQL}), '@', '')) != 1
+          OR instr(trim(${CONTACT_EMAIL_SQL}), ' ') > 0
+          OR instr(
+               substr(trim(${CONTACT_EMAIL_SQL}), instr(trim(${CONTACT_EMAIL_SQL}), '@') + 1),
+               '.'
+             ) = 0
+        )
+   ORDER BY r.created_at ASC, r.id ASC
+      LIMIT ?`,
+    [input.workspaceId, input.limit ?? 200],
+  );
+
+  let archived = 0;
+  let searchesQueued = 0;
+
+  for (const row of rows) {
+    const address = row.address?.trim();
+    if (address && isWellFormed(address) && !isNonBuyerDesk(address)) continue;
+
+    if (
+      row.person_status === 'active' &&
+      row.person_kind === 'person' &&
+      row.outreach_eligible === 1
+    ) {
+      if (
+        await enqueueFindEmail(db, {
+          workspaceId: input.workspaceId,
+          personId: row.person_id,
+          ...(input.now ? { now: input.now } : {}),
+        })
+      ) {
+        searchesQueued += 1;
+      }
+    }
+
+    const result = await db.execute({
+      sql: `UPDATE recommendations SET status = 'skipped'
+             WHERE id = ? AND workspace_id = ? AND status = 'pending'`,
+      args: [row.id, input.workspaceId],
+    });
+    archived += result.rowsAffected;
+  }
+
+  return { archived, searchesQueued };
+}
+
+/** Workspaces with pending first-touch email cards to clean up. */
+export async function workspacesWithUnsendableEmailRecommendations(db: Client): Promise<string[]> {
+  const rows = await queryAll<{ workspace_id: string }>(
+    db,
+    `SELECT DISTINCT workspace_id FROM recommendations
+      WHERE status = 'pending' AND action = 'send_email' AND network = 'email'
+        AND expected_goal != 'continue_conversation' AND reply_to_interaction_id IS NULL`,
   );
   return rows.map((row) => row.workspace_id);
 }
