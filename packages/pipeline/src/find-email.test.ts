@@ -41,6 +41,12 @@ afterEach(() => {
 
 async function setup(label: string): Promise<Client> {
   seeded = await seedDatabase(label);
+  // The shared API fixture includes an unrelated prospect without an email.
+  // Keep it out of these campaign-sweep cases so their expected set is clear.
+  await seeded.db.execute({
+    sql: `UPDATE campaign_people SET status = 'unqualified' WHERE person_id = ?`,
+    args: [SEED.personId],
+  });
   return seeded.db;
 }
 
@@ -503,6 +509,18 @@ describe('queueing find_email', () => {
     expect(
       await enqueueFindEmail(db, { workspaceId: SEED.workspaceId, personId: PERSON, now: later }),
     ).toBe(true);
+  });
+
+  test('the scheduled sweep revisits an active prospect a month after a miss', async () => {
+    const db = await setup('find-email-monthly-recheck');
+    await linkedInOnly(db, { card: false });
+    await findEmail({ db, resolveMx: noMx }, { workspaceId: SEED.workspaceId, personId: PERSON });
+
+    const later = new Date(Date.now() + 31 * 86_400_000);
+    expect(await workspacesAwaitingEmailSearch(db, later)).toEqual([SEED.workspaceId]);
+    expect((await sweepFindEmail(db, { workspaceId: SEED.workspaceId, now: later })).queued).toBe(
+      1,
+    );
   });
 
   test('deciding a held card for an emailless person queues a search', async () => {
