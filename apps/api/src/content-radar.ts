@@ -553,6 +553,26 @@ export async function analyzeReferences(
   offeringId: string | null,
   limit = HOOKS_PER_SCAN,
 ): Promise<number> {
+  const at = now();
+  // The cheap guess first, for every row that has nothing yet. It costs no
+  // model call, so it is not held to the model's per-scan limit: limited to
+  // the highest raw engagement, a niche subreddit's posts (tens of points
+  // beside Bluesky's thousands) never got a hook, and drafts skip those.
+  const unlabelled = await queryAll<Pick<ReferenceRow, 'id' | 'title' | 'text'>>(
+    deps.db,
+    `SELECT id, title, text FROM content_references
+      WHERE workspace_id = ? AND hook_type IS NULL AND status <> 'dismissed'
+        ${offeringId ? 'AND offering_id = ?' : ''}`,
+    offeringId ? [workspaceId, offeringId] : [workspaceId],
+  );
+  for (const row of unlabelled) {
+    await deps.db.execute({
+      sql: 'UPDATE content_references SET hook_type = ?, updated_at = ? WHERE id = ?',
+      args: [heuristicHook(`${row.title ?? ''}\n${row.text}`), at, row.id],
+    });
+  }
+  if (!deps.model) return 0;
+
   const rows = await queryAll<ReferenceRow>(
     deps.db,
     `SELECT * FROM content_references
@@ -562,15 +582,6 @@ export async function analyzeReferences(
     offeringId ? [workspaceId, offeringId, limit] : [workspaceId, limit],
   );
   if (rows.length === 0) return 0;
-  const at = now();
-  // The cheap guess first, for rows that have nothing yet.
-  for (const row of rows.filter((r) => !r.hook_type)) {
-    await deps.db.execute({
-      sql: 'UPDATE content_references SET hook_type = ?, updated_at = ? WHERE id = ?',
-      args: [heuristicHook(`${row.title ?? ''}\n${row.text}`), at, row.id],
-    });
-  }
-  if (!deps.model) return 0;
 
   const product = offeringId ? await offering(deps.db, workspaceId, offeringId) : undefined;
   const brand: RadarBrand = product ? brandOf(product) : { name: 'our product' };
