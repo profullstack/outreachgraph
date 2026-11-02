@@ -305,7 +305,15 @@ for (const name of requestedOrder) {
   if (!(name in builders)) console.log(`MODEL_CHAIN: ignoring unknown provider "${name}"`);
 }
 
-const order = requestedOrder.length > 0 ? requestedOrder : [...DEFAULT_CHAIN_ORDER];
+// c0mpute leads whatever MODEL_CHAIN names (C0MPUTE=off is the only way out):
+// the chain is a repo secret synced on every deploy, and one written before
+// c0mpute existed would otherwise keep a keyless deployment with no model.
+const order = [
+  'c0mpute',
+  ...(requestedOrder.length > 0 ? requestedOrder : [...DEFAULT_CHAIN_ORDER]).filter(
+    (name) => name !== 'c0mpute',
+  ),
+];
 
 const chain: FallbackEntry[] = [];
 for (const name of order) {
