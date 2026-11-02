@@ -129,6 +129,42 @@ describe('studio', () => {
   });
 });
 
+describe('studio from a small model', () => {
+  // What qwen2.5 on c0mpute actually answered the JSON prompt with, 2026-11-02.
+  const MARKDOWN = [
+    '**Scene 1: Introduction**',
+    '- **Beat:** "Max 8 words"',
+    '- **Voiceover:** "Are you ready to turn your ideas into reality?"',
+    '- **Shot:** A computer screen showing the website.',
+    '- **Seconds:** 3',
+    '',
+    '**Scene 2: The Challenge**',
+    '- **Voiceover:** "You are not just an idea."',
+    '- **Shot:** A person at a desk, overwhelmed.',
+    '- **Seconds:** 6',
+    '',
+    '**Scene 3: The Impact**',
+    '- **Voiceover:** "Talk to us this week."',
+    '- **Shot:** Logo.',
+    '- **Seconds:** 40',
+  ].join('\n');
+
+  test('a markdown storyboard is read, and the image card comes from its hook', () => {
+    const out = parseStudio(MARKDOWN, 'Profullstack');
+    expect(out.storyboard!.scenes.map((s) => s.beat)).toEqual(['hook', 'story', 'invitation']);
+    expect(out.storyboard!.scenes[0]!.voiceover).toBe(
+      'Are you ready to turn your ideas into reality?',
+    );
+    expect(out.storyboard!.scenes[2]!.seconds).toBe(15);
+    expect(out.image!.eyebrow).toBe('PROFULLSTACK');
+    expect(out.image!.headline.length).toBeGreaterThan(5);
+  });
+
+  test('prose with no scenes yields nothing', () => {
+    expect(parseStudio('Sorry, I cannot help with that.', 'X')).toEqual({});
+  });
+});
+
 describe('image card', () => {
   test('wraps and truncates', () => {
     expect(wrapLines('one two three four five six', 9, 2)).toEqual(['one two', 'three…']);
