@@ -312,6 +312,7 @@ import { autogtmRoutes } from './autogtm';
 import { importReport, importReportCsv } from './import-report';
 import { inboxRoutes } from './inbox';
 import { crmRoutes, webhookRoutes } from './webhooks';
+import { coinpayRoutes, type CoinPayRouteDeps } from './coinpay-behind';
 import { keysRoutes } from './keys';
 import { audienceRoutes } from './audience';
 import {
@@ -427,6 +428,8 @@ export interface AppOptions {
   readonly webhookLookup?: HostLookup | undefined;
   /** The network a CRM token is verified over. Tests pass a fake. */
   readonly crmFetch?: ProviderFetchLike | undefined;
+  /** Test seam: the workspace's CoinPay client, so no request leaves the process. */
+  readonly coinpayMerchantFor?: CoinPayRouteDeps['merchantFor'];
   /** The network under webhook deliveries (test sends). Tests pass a fake. */
   readonly webhookFetch?: ProviderFetchLike | undefined;
   /**
@@ -1777,6 +1780,16 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     };
     api.route('/webhooks', webhookRoutes(webhookDeps));
     api.route('/integrations/crm', crmRoutes(webhookDeps));
+    // The workspace's own CoinPay account: who is behind on paying them (Today).
+    api.route(
+      '/integrations/coinpay',
+      coinpayRoutes({
+        secretVault: options.encryptionKey,
+        requireVerifiedEmail: (db: Client, actor: RequestActor) => requireVerifiedEmail(db, actor),
+        merchantFor: options.coinpayMerchantFor,
+        baseUrl: process.env.COINPAY_MERCHANT_API_URL,
+      }),
+    );
   }
 
   // ------------------------------------------------------------------ keys

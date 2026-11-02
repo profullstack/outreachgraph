@@ -1286,6 +1286,79 @@ export async function fetchCrmIntegration(): Promise<CrmIntegrationView> {
   return request<CrmIntegrationView>('/integrations/crm');
 }
 
+// ------------------------------------------- CoinPay: who is behind on paying
+
+export type BehindAction =
+  | 'do_not_chase'
+  | 'unreachable'
+  | 'retry'
+  | 'new_card'
+  | 'unfinished'
+  | 'call_bank'
+  | 'chase'
+  | 'remind';
+
+export interface BehindCustomerView {
+  readonly key: string;
+  readonly name: string;
+  readonly email: string | null;
+  readonly business_name: string | null;
+  readonly action: BehindAction;
+  readonly owed: ReadonlyArray<{ currency: string; amount: number }>;
+  readonly items: ReadonlyArray<{
+    kind: 'invoice' | 'card';
+    id: string;
+    amount: number;
+    currency: string;
+    date: string;
+    title: string;
+    detail: string;
+    href: string;
+  }>;
+  readonly history: { readonly line: string };
+}
+
+export interface BehindGroupView {
+  readonly action: BehindAction;
+  readonly title: string;
+  readonly todo: string;
+  readonly customers: readonly BehindCustomerView[];
+}
+
+/** Every state Today renders. A viewer (403) or an API outage is `undefined`. */
+export type CoinPayBehindView =
+  | { state: 'not_connected' }
+  | { state: 'locked'; message: string }
+  | { state: 'error'; message: string }
+  | {
+      state: 'ok';
+      portal_url: string;
+      summary: string;
+      counts: { customers: number; invoices: number; card_failures: number };
+      groups: readonly BehindGroupView[];
+    };
+
+export async function fetchCoinPayBehind(): Promise<CoinPayBehindView | undefined> {
+  try {
+    return await request<CoinPayBehindView>('/integrations/coinpay/behind');
+  } catch {
+    return undefined;
+  }
+}
+
+export interface CoinPayIntegrationView {
+  readonly connection: { connected: boolean; connectedAt?: string };
+  readonly canConnect: boolean;
+}
+
+export async function fetchCoinPayIntegration(): Promise<CoinPayIntegrationView | undefined> {
+  try {
+    return await request<CoinPayIntegrationView>('/integrations/coinpay');
+  } catch {
+    return undefined;
+  }
+}
+
 // ------------------------------------------------------ one product's page
 
 export interface ProductLeadView {

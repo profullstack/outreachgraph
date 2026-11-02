@@ -15,3 +15,13 @@ export {
   type WebhookEvent,
   type WebhookType,
 } from './coinpay';
+export {
+  CoinPayMerchant,
+  CoinPayMerchantError,
+  type BehindAction,
+  type BehindCustomer,
+  type BehindGroup,
+  type BehindItem,
+  type BehindReport,
+  type CoinPayMerchantConfig,
+} from './coinpay-behind';
