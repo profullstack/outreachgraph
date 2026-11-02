@@ -567,8 +567,10 @@ export function pitWorldSource(baseUrl = PIT_WORLD_URL): LeadSourceDefinition {
     async read({ max, fetch: doFetch }) {
       const headers = { 'user-agent': USER_AGENT };
       const pros: PitWorldPro[] = [];
+      // source=pit: claimed and pit.world-written listings only. pit.world also lists every company in
+      // nichedb's directory (which mirrors ours), so the full list would read our own companies back.
       for (let page = 1; page <= 50; page += 1) {
-        const response = await doFetch(`${baseUrl}/api/pros?n=100&page=${page}`, {
+        const response = await doFetch(`${baseUrl}/api/pros?source=pit&n=100&page=${page}`, {
           headers: { ...headers, accept: 'application/json' },
           signal: AbortSignal.timeout(30_000),
         });
