@@ -28,6 +28,11 @@ export interface C0mputeModelOptions {
   readonly model?: string;
   /** Refuse answers from Infernet's hosted fallback. Default true. */
   readonly p2pOnly?: boolean;
+  /**
+   * Infernet trusted-client key (`ifc_...`): its own hourly budget instead of
+   * the public playground's 20 requests an hour per IP.
+   */
+  readonly apiKey?: string;
   /** Whole job, submit to done. Small CPU and iGPU nodes are slow. */
   readonly timeoutMs?: number;
   readonly fetchImpl?: typeof fetch;
@@ -55,6 +60,7 @@ export class C0mputeModel implements TextModel {
   readonly #baseUrl: string;
   readonly #model: string | undefined;
   readonly #p2pOnly: boolean;
+  readonly #apiKey: string | undefined;
   readonly #timeoutMs: number;
   readonly #fetch: typeof fetch;
 
@@ -62,6 +68,7 @@ export class C0mputeModel implements TextModel {
     this.#baseUrl = (options.baseUrl ?? DEFAULT_C0MPUTE_URL).replace(/\/$/, '');
     this.#model = options.model?.trim() || undefined;
     this.#p2pOnly = options.p2pOnly ?? true;
+    this.#apiKey = options.apiKey?.trim() || undefined;
     this.#timeoutMs = options.timeoutMs ?? 180_000;
     this.#fetch = options.fetchImpl ?? fetch;
   }
@@ -71,20 +78,32 @@ export class C0mputeModel implements TextModel {
     const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
     try {
       const system = [input.cachedPrefix, input.system].filter(Boolean).join('\n\n');
-      const submitted = await this.#fetch(`${this.#baseUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify({
-          messages: [
-            ...(system ? [{ role: 'system', content: system }] : []),
-            { role: 'user', content: input.user },
-          ],
-          maxTokens: input.maxTokens ?? 1024,
-          temperature: 0.4,
-          ...(input.model || this.#model ? { modelName: input.model ?? this.#model } : {}),
-        }),
-        signal: controller.signal,
-      });
+      const submit = (modelName: string | undefined) =>
+        this.#fetch(`${this.#baseUrl}/api/chat`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json',
+            ...(this.#apiKey ? { authorization: `Bearer ${this.#apiKey}` } : {}),
+          },
+          body: JSON.stringify({
+            messages: [
+              ...(system ? [{ role: 'system', content: system }] : []),
+              { role: 'user', content: input.user },
+            ],
+            maxTokens: input.maxTokens ?? 1024,
+            temperature: 0.4,
+            // Infernet never starts its billed hosted fallback for this job.
+            ...(this.#p2pOnly ? { p2p_only: true } : {}),
+            ...(modelName ? { modelName } : {}),
+          }),
+          signal: controller.signal,
+        });
+      // The configured model, not `input.model`: callers name vendor models
+      // (claude-..., gpt-...) that no node serves.
+      let submitted = await submit(this.#model);
+      // No node serves the preferred model right now: take any free node.
+      if (submitted.status === 503 && this.#model) submitted = await submit(undefined);
       const job = (await submitted.json().catch(() => ({}))) as SubmitResponse;
       if (!submitted.ok || !job.jobId) {
         throw new C0mputeApiError(submitted.status, job.error ?? 'no job was created');

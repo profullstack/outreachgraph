@@ -57,6 +57,40 @@ describe('C0mputeModel', () => {
     expect(calls[1]!.url).toBe('https://infernet.test/api/chat/stream/j1');
   });
 
+  test('sends the trusted key and p2p_only, and falls back to any node on 503', async () => {
+    const calls: { url: string; auth: string | null; body?: Record<string, unknown> }[] = [];
+    let submits = 0;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: href,
+        auth: headers.get('authorization'),
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if (href.endsWith('/api/chat')) {
+        submits += 1;
+        return submits === 1
+          ? new Response(JSON.stringify({ error: 'No live node serves "qwen2.5:7b"' }), {
+              status: 503,
+            })
+          : new Response(JSON.stringify({ jobId: 'j2', source: 'p2p' }), { status: 200 });
+      }
+      return new Response(SSE.join(''), { status: 200 });
+    }) as typeof fetch;
+    const out = await new C0mputeModel({
+      fetchImpl,
+      apiKey: 'ifc_test',
+      model: 'qwen2.5:7b',
+    }).generate({ system: '', user: 'hi', model: 'claude-opus-5' });
+    expect(out.text).toBe('{"ok":true}');
+    expect(calls[0]!.auth).toBe('Bearer ifc_test');
+    expect(calls[0]!.body).toMatchObject({ p2p_only: true, modelName: 'qwen2.5:7b' });
+    // The retry drops the model; a vendor model name from the caller is never sent.
+    expect(calls[1]!.body!.modelName).toBeUndefined();
+    expect(calls[2]!.url).toEndWith('/api/chat/stream/j2');
+  });
+
   test('refuses a paid hosted fallback by default, as unavailable', async () => {
     const { fetchImpl, calls } = fake('nim');
     const model = new C0mputeModel({ fetchImpl });
