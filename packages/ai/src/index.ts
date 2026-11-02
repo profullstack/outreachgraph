@@ -134,3 +134,26 @@ export {
   type ContentDraftResult,
   type ContentKind,
 } from './content';
+
+export {
+  analyzeHooks,
+  draftStudio,
+  heuristicHook,
+  HOOK_LABELS,
+  HOOK_TYPES,
+  isHookType,
+  parseHookAnalyses,
+  parseStudio,
+  referenceDirection,
+  renderImageCardSvg,
+  wrapLines,
+  type HookAnalysis,
+  type HookInput,
+  type HookType,
+  type ImageCard,
+  type RadarBrand,
+  type Storyboard,
+  type StoryboardScene,
+  type StudioInput,
+  type StudioResult,
+} from './content-radar';

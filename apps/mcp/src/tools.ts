@@ -1709,6 +1709,288 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'content_radar_overview',
+    title: 'Content Radar: every product radar',
+    description:
+      "Each product's Content Radar: the terms, audience subreddits and tags it reads, its sources " +
+      '(Hacker News, Bluesky, dev.to, Mastodon, Reddit), whether it drafts on its own, the networks it ' +
+      'drafts for, the last scan and how many references it holds. The radar runs daily by itself: it ' +
+      'finds the best performing posts of the last 30 days, names each hook, and turns up to three a day ' +
+      'into posts (Bluesky, Mastodon and LinkedIn auto-post; X and Reddit wait for a person), a short-video ' +
+      'storyboard and an image card.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/content-radar'),
+  },
+  {
+    name: 'configure_content_radar',
+    title: "Change a product's Content Radar",
+    description:
+      'Sets what a product radar reads and does: terms (phrases searched on HN and Bluesky and turned ' +
+      'into dev.to/Mastodon tags), subreddits (its audience; their best posts count whatever they say), ' +
+      'tags, sources, the networks Create drafts for, enabled, and autoDraft (daily posts on its own).',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        offeringId: { type: 'string' },
+        terms: { type: 'array', items: { type: 'string' } },
+        subreddits: { type: 'array', items: { type: 'string' } },
+        tags: { type: 'array', items: { type: 'string' } },
+        sources: {
+          type: 'array',
+          items: { type: 'string', enum: ['hackernews', 'bluesky', 'devto', 'mastodon', 'reddit'] },
+        },
+        networks: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: [
+              'linkedin',
+              'x',
+              'reddit',
+              'hackernews',
+              'facebook',
+              'bluesky',
+              'mastodon',
+              'threads',
+            ],
+          },
+        },
+        enabled: { type: 'boolean' },
+        autoDraft: { type: 'boolean' },
+      },
+      required: ['offeringId'],
+    },
+    run: (client, args) => {
+      const offeringId = require(args, 'offeringId');
+      const body: Record<string, unknown> = {};
+      for (const key of ['terms', 'subreddits', 'tags', 'sources', 'networks'] as const) {
+        if (Array.isArray(args[key])) body[key] = args[key];
+      }
+      if (typeof args.enabled === 'boolean') body.enabled = args.enabled;
+      if (typeof args.autoDraft === 'boolean') body.autoDraft = args.autoDraft;
+      return client.put(`/content-radar/radars/${encodeURIComponent(offeringId)}`, body);
+    },
+  },
+  {
+    name: 'scan_content_radar',
+    title: "Run a product's Content Radar now",
+    description:
+      'Reads every source and followed account for one product now (it runs daily anyway), stores new ' +
+      'posts with their likes, reposts and comments, and names their hooks.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { offeringId: { type: 'string' } },
+      required: ['offeringId'],
+    },
+    run: (client, args) =>
+      client.post(
+        `/content-radar/radars/${encodeURIComponent(require(args, 'offeringId'))}/scan`,
+        {},
+      ),
+  },
+  {
+    name: 'list_content_references',
+    title: 'What got attention in the niche',
+    description:
+      'References the Content Radar found, most engaging first (or newest with sort: recent): the post, ' +
+      'its numbers, where it came from, and its hook (type, why it worked, an angle for the product; ' +
+      'judged false means the wording guessed it). Status feed (default: new and saved), new, saved, used ' +
+      'or dismissed; filter by product, source, hook type, origin (keyword, follow, manual) or collection.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        offeringId: { type: 'string' },
+        source: { type: 'string' },
+        hook: { type: 'string' },
+        origin: { type: 'string', enum: ['keyword', 'follow', 'manual'] },
+        status: { type: 'string', enum: ['feed', 'new', 'saved', 'used', 'dismissed'] },
+        collection: { type: 'string' },
+        sort: { type: 'string', enum: ['lift', 'engagement', 'recent'] },
+        limit: { type: 'number' },
+      },
+    },
+    run: (client, args) =>
+      client.get('/content-radar/references', {
+        offeringId: str(args, 'offeringId'),
+        source: str(args, 'source'),
+        hook: str(args, 'hook'),
+        origin: str(args, 'origin'),
+        status: str(args, 'status'),
+        collection: str(args, 'collection'),
+        sort: str(args, 'sort'),
+        ...(typeof args.limit === 'number' ? { limit: String(args.limit) } : {}),
+      }),
+  },
+  {
+    name: 'add_content_reference',
+    title: 'Save a post as a reference',
+    description:
+      'Saves a post found elsewhere (any URL, including TikTok, Instagram or X, which the radar cannot ' +
+      'read itself) as a reference: pass text when the page needs a login. Its hook is named at once.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        offeringId: { type: 'string' },
+        text: { type: 'string', description: 'The post text, when the page cannot be read' },
+        title: { type: 'string' },
+        collection: { type: 'string' },
+      },
+      required: ['url'],
+    },
+    run: (client, args) =>
+      client.post('/content-radar/references', {
+        url: require(args, 'url'),
+        ...(str(args, 'offeringId') ? { offeringId: str(args, 'offeringId') } : {}),
+        ...(str(args, 'text') ? { text: str(args, 'text') } : {}),
+        ...(str(args, 'title') ? { title: str(args, 'title') } : {}),
+        ...(str(args, 'collection') ? { collection: str(args, 'collection') } : {}),
+      }),
+  },
+  {
+    name: 'update_content_reference',
+    title: 'Save, file or dismiss a reference',
+    description:
+      'Sets a reference status (new, saved, used, dismissed), files it in a collection ' +
+      '("Hooks to try", "Launch ideas"; filing saves it), or moves it to another product. Saved ' +
+      'references are drafted from first.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        referenceId: { type: 'string' },
+        status: { type: 'string', enum: ['new', 'saved', 'used', 'dismissed'] },
+        collection: { type: 'string' },
+        offeringId: { type: 'string' },
+      },
+      required: ['referenceId'],
+    },
+    run: (client, args) => {
+      const referenceId = require(args, 'referenceId');
+      if (!client.patch) throw new Error('this client cannot edit references');
+      return client.patch(`/content-radar/references/${encodeURIComponent(referenceId)}`, {
+        ...(str(args, 'status') ? { status: str(args, 'status') } : {}),
+        ...(str(args, 'collection') ? { collection: str(args, 'collection') } : {}),
+        ...(str(args, 'offeringId') ? { offeringId: str(args, 'offeringId') } : {}),
+      });
+    },
+  },
+  {
+    name: 'create_from_reference',
+    title: 'Turn a reference into posts, a storyboard and an image card',
+    description:
+      "Borrows a reference's hook and structure (never its words) for the product: one post per network " +
+      '(hand-off cards in Manual posts; Bluesky, Mastodon and LinkedIn are auto-posted by the myna cron, ' +
+      'X and Reddit wait for a person), a 15-35 s storyboard (hook, story, invitation) and a 1080x1350 ' +
+      'image card served as SVG. formats picks any of posts, storyboard, image.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        referenceId: { type: 'string' },
+        offeringId: { type: 'string' },
+        networks: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: [
+              'linkedin',
+              'x',
+              'reddit',
+              'hackernews',
+              'facebook',
+              'bluesky',
+              'mastodon',
+              'threads',
+            ],
+          },
+        },
+        formats: {
+          type: 'array',
+          items: { type: 'string', enum: ['posts', 'storyboard', 'image'] },
+        },
+      },
+      required: ['referenceId'],
+    },
+    run: (client, args) =>
+      client.post(
+        `/content-radar/references/${encodeURIComponent(require(args, 'referenceId'))}/create`,
+        {
+          ...(str(args, 'offeringId') ? { offeringId: str(args, 'offeringId') } : {}),
+          ...(Array.isArray(args.networks) ? { networks: args.networks } : {}),
+          ...(Array.isArray(args.formats) ? { formats: args.formats } : {}),
+        },
+      ),
+  },
+  {
+    name: 'follow_content_account',
+    title: 'Follow a competitor or creator',
+    description:
+      'Adds an account whose posts every radar scan reads (Bluesky, Mastodon user@instance, Hacker News, ' +
+      'Reddit, dev.to; a profile URL works too). kind: competitor (default), creator or audience. Leave ' +
+      'offeringId out to read it for every product.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        network: { type: 'string', enum: ['bluesky', 'mastodon', 'hackernews', 'reddit', 'devto'] },
+        handle: { type: 'string' },
+        offeringId: { type: 'string' },
+        label: { type: 'string' },
+        kind: { type: 'string', enum: ['competitor', 'creator', 'audience'] },
+      },
+      required: ['network', 'handle'],
+    },
+    run: (client, args) =>
+      client.post('/content-radar/follows', {
+        network: require(args, 'network'),
+        handle: require(args, 'handle'),
+        ...(str(args, 'offeringId') ? { offeringId: str(args, 'offeringId') } : {}),
+        ...(str(args, 'label') ? { label: str(args, 'label') } : {}),
+        ...(str(args, 'kind') ? { kind: str(args, 'kind') } : {}),
+      }),
+  },
+  {
+    name: 'unfollow_content_account',
+    title: 'Stop following an account',
+    description: 'Removes a followed account (id from list_content_follows).',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { followId: { type: 'string' } },
+      required: ['followId'],
+    },
+    run: (client, args) => {
+      const followId = require(args, 'followId');
+      if (!client.delete) throw new Error('this client cannot delete');
+      return client.delete(`/content-radar/follows/${encodeURIComponent(followId)}`);
+    },
+  },
+  {
+    name: 'list_content_follows',
+    title: 'Accounts the Content Radar follows',
+    description: 'Followed competitors and creators, with when each was last read and any error.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/content-radar/follows'),
+  },
+  {
+    name: 'list_studio_assets',
+    title: 'Storyboards and image cards',
+    description:
+      'Short-video storyboards (scenes with on-screen text, voiceover, shot, seconds) and image cards ' +
+      '(headline, support line, caption; imagePath is the SVG under /api/v1) the radar made, newest first.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: { offeringId: { type: 'string' } } },
+    run: (client, args) =>
+      client.get('/content-radar/assets', { offeringId: str(args, 'offeringId') }),
+  },
+  {
     name: 'set_campaign_source',
     title: 'Set the URL a campaign posts from',
     description:

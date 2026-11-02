@@ -111,6 +111,10 @@ export const ID_PREFIXES = {
   linkPost: 'lpo',
   // A piece of founder content in the workspace content studio.
   contentDraft: 'cod',
+  // The Content Radar: a post worth learning from, an account followed, a Studio asset.
+  contentReference: 'crf',
+  contentFollow: 'cfl',
+  contentAsset: 'cas',
   // A custom workflow (PRD-ECO §14) and one execution of it.
   workflow: 'wfl',
   workflowRun: 'wfr',

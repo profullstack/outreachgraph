@@ -48,6 +48,20 @@ export {
 export { DevToSource, DEVTO_API, type DevToSourceOptions } from './devto';
 export { GitHubRepoSource, type GitHubRepoSourceOptions } from './github-repos';
 export {
+  engagementScore,
+  FOLLOW_NETWORKS,
+  isFollowNetwork,
+  isTopPostSource,
+  tagFor,
+  TOP_POST_SOURCES,
+  TopPostReader,
+  type FollowNetwork,
+  type TopPost,
+  type TopPostQuery,
+  type TopPostReaderOptions,
+  type TopPostSource,
+} from './top-posts';
+export {
   addressesIn,
   buildJobFeeds,
   employerDomain,
