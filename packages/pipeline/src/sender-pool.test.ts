@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { testVault } from '@outreachgraph/secrets/testing';
 import { queryAll, queryOne, type Client } from '@outreachgraph/db';
-import type { IncomingMessage, Mailer, SendResult } from '@outreachgraph/email';
+import {
+  MailerError,
+  ResendMailer,
+  type IncomingMessage,
+  type Mailer,
+  type SendResult,
+} from '@outreachgraph/email';
+import { handleSendFailure } from './outreach-email';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
 import { connectEmailAccount, mailerForSend } from './email-account';
 import { receiveReplies } from './receive-email';
@@ -621,5 +628,89 @@ describe('LinkedIn per-kind caps, per account', () => {
     const counts = [...days.values()];
     expect(Math.max(...counts)).toBeLessThanOrEqual(40);
     expect(Math.max(...counts)).toBeGreaterThan(20);
+  });
+});
+
+describe('email queue refusals (never fail over, never Resend for outreach)', () => {
+  test('SENDER_PAUSED stops the mailbox and the prospect waits on it, never moving to another', async () => {
+    seeded = await seedDatabase('pool-sender-paused');
+    const { db } = seeded;
+    await account(db, 'iac_a', { createdAt: '2026-01-01T00:00:00.000Z' });
+    await account(db, 'iac_b', { createdAt: '2026-01-02T00:00:00.000Z' });
+
+    // The first message to this person went to `a`, and the queue refused it
+    // because the provider blocked `a`.
+    const error = new MailerError(423, 'the provider stopped this mailbox (535)', 'SENDER_PAUSED');
+    const actionId = await send(db, 'iac_a', TODAY, { status: 'failed' });
+    await db.execute({
+      sql: 'UPDATE actions SET error = ? WHERE id = ?',
+      args: [error.message, actionId],
+    });
+
+    expect(
+      await handleSendFailure(db, {
+        workspaceId: SEED.workspaceId,
+        personId: SEED.personId,
+        accountId: 'iac_a',
+        address: 'prospect@example.com',
+        error,
+      }),
+    ).toBe('paused');
+
+    expect((await status(db, 'iac_a'))?.status).toBe('error');
+    expect((await status(db, 'iac_a'))?.status_reason).toContain(
+      'nothing is moved to another mailbox',
+    );
+
+    const choice = await chooseSender(db, {
+      workspaceId: SEED.workspaceId,
+      network: 'email',
+      personId: SEED.personId,
+      at: AT,
+    });
+    expect(choice.choice).toEqual({ kind: 'deferred', reason: 'continuity_blocked', id: 'iac_a' });
+    expect(choice.account).toBeUndefined();
+
+    // Surfaced as a blocker in the activity feed (UI and `og events`).
+    const events = await queryAll<{ level: string; detail_json: string }>(
+      db,
+      `SELECT level, detail_json FROM workflow_events WHERE person_id = ? AND phase = 'send'`,
+      [SEED.personId],
+    );
+    expect(events.some((e) => e.level === 'error' && JSON.parse(e.detail_json).blocker)).toBe(true);
+  });
+
+  test('a queue suppression suppresses the person, stopping their sequence', async () => {
+    seeded = await seedDatabase('pool-queue-suppressed');
+    const { db } = seeded;
+    await account(db, 'iac_a');
+    expect(
+      await handleSendFailure(db, {
+        workspaceId: SEED.workspaceId,
+        personId: SEED.personId,
+        accountId: 'iac_a',
+        address: 'gone@example.com',
+        error: new MailerError(409, 'Recipient is suppressed', 'RECIPIENT_SUPPRESSED'),
+      }),
+    ).toBe('suppressed');
+    const key = await queryOne<{ n: number }>(
+      db,
+      'SELECT count(*) AS n FROM suppression_keys WHERE match_key = ?',
+      [`person:${SEED.personId}`],
+    );
+    expect(Number(key?.n)).toBeGreaterThan(0);
+    // The mailbox did nothing wrong.
+    expect((await status(db, 'iac_a'))?.status).toBe('active');
+  });
+
+  test('outreach never falls back to the Resend platform sender', async () => {
+    seeded = await seedDatabase('pool-no-resend');
+    const sender = await mailerForSend(seeded.db, SEED.workspaceId, {
+      encryptionKey: KEY,
+      fallback: new ResendMailer({ apiKey: 're_test', from: 'hi@outreachgraph.com' }),
+      personId: SEED.personId,
+      at: AT,
+    });
+    expect(sender.kind).toBe('none');
   });
 });

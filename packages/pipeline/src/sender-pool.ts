@@ -230,7 +230,10 @@ async function lastUsed(db: Client, accountIds: readonly string[]): Promise<Map<
  *
  * Failed sends are skipped: a message that never arrived started no
  * conversation, and pinning the person to the account that could not reach
- * them would only repeat the failure.
+ * them would only repeat the failure. The exception is a send refused because
+ * the provider stopped the mailbox (`SENDER_PAUSED`): that person stays with
+ * the stopped mailbox and waits, because re-picking would fail them over to
+ * another one.
  */
 export async function lastSenderFor(
   db: Client,
@@ -242,7 +245,8 @@ export async function lastSenderFor(
     db,
     `SELECT sender_account_id FROM actions
       WHERE workspace_id = ? AND person_id = ? AND network = ?
-        AND sender_account_id IS NOT NULL AND status != 'failed'
+        AND sender_account_id IS NOT NULL
+        AND (status != 'failed' OR error LIKE '%SENDER_PAUSED%')
       ORDER BY COALESCE(executed_at, created_at) DESC LIMIT 1`,
     [workspaceId, personId, network],
   );
@@ -355,6 +359,9 @@ export async function pickSender(
 /** A human-readable reason for a deferral, for holds and job logs. */
 export function describeDeferral(choice: PoolChoice): string {
   if (choice.kind !== 'deferred') return '';
+  if (choice.reason === 'continuity_blocked') {
+    return 'the mailbox already talking to this person is stopped (provider block or bounce rule); it must be fixed and resumed by hand, and the conversation never moves to another mailbox';
+  }
   if (choice.reason === 'continuity_capped') {
     return "the account already talking to this person has reached today's cap";
   }

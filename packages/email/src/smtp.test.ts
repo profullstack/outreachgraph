@@ -1,145 +1,130 @@
+import { outreachTransport } from './queue';
 import { describe, expect, test } from 'bun:test';
-import type { Transporter } from 'nodemailer';
 import { MailerError } from './mailer';
-import { formatFrom, SmtpMailer, SMTP_PRESETS } from './smtp';
+import { SmtpMailer, SMTP_PRESETS, withPostalAddress } from './smtp';
 
 const CREDENTIALS = {
-  host: 'smtp.company.com',
+  host: 'smtp.forwardemail.net',
   port: 465,
   secure: true,
-  username: 'user@company.com',
+  username: 'knox@profullstack.com',
   password: 'app-password',
-  fromEmail: 'user@company.com',
-  fromName: 'Jane Smith',
+  fromEmail: 'knox@profullstack.com',
+  fromName: 'Knox',
 } as const;
 
-/** A transport that records instead of connecting. */
-function fakeTransport(behaviour: {
-  sendMail?: (options: Record<string, unknown>) => Promise<unknown>;
-  verify?: () => Promise<boolean>;
-}): { transport: Transporter; sent: Record<string, unknown>[] } {
+/** A nodemailer stand-in that records instead of connecting. */
+function fakeNodemailer(verify?: () => Promise<unknown>) {
   const sent: Record<string, unknown>[] = [];
-
-  const transport = {
-    sendMail: async (options: Record<string, unknown>) => {
-      sent.push(options);
-      return behaviour.sendMail ? behaviour.sendMail(options) : { messageId: '<abc@company.com>' };
-    },
-    verify: behaviour.verify ?? (async () => true),
-    close: () => {},
-  } as unknown as Transporter;
-
-  return { transport, sent };
+  return {
+    sent,
+    createTransport: () => ({
+      sendMail: async (mail: Record<string, unknown>) => {
+        sent.push(mail);
+        return { messageId: '<abc@profullstack.com>' };
+      },
+      verify: verify ?? (async () => true),
+      close: () => {},
+    }),
+  };
 }
 
-describe('formatFrom', () => {
-  test('uses the bare address when there is no display name', () => {
-    expect(formatFrom('user@company.com')).toBe('user@company.com');
-    expect(formatFrom('user@company.com', '   ')).toBe('user@company.com');
-  });
+async function refusal(promise: Promise<unknown>): Promise<MailerError> {
+  const thrown = await promise.then(() => undefined).catch((error: unknown) => error);
+  expect(thrown).toBeInstanceOf(MailerError);
+  return thrown as MailerError;
+}
 
-  test('quotes the display name', () => {
-    expect(formatFrom('user@company.com', 'Jane Smith')).toBe('"Jane Smith" <user@company.com>');
-  });
-
-  test('strips characters that would end the header early', () => {
-    // A display name is customer input. Left alone, a quote or a newline in it
-    // terminates the field and lets the rest be read as more headers — a
-    // header injection with a friendly face.
-    //
-    // `<` and `>` inside a quoted string are ordinary characters, so the fix
-    // is to make sure the string cannot be closed early: strip the quotes and
-    // the address that is actually used stays ours.
-    const from = formatFrom('user@company.com', 'Jane" <evil@attacker.com>, "X');
-    expect(from).toBe('"Jane <evil@attacker.com>, X" <user@company.com>');
-    expect(from.endsWith('<user@company.com>')).toBe(true);
-    // Exactly the two quotes this function added, and no more.
-    expect(from.split('"')).toHaveLength(3);
-
-    expect(formatFrom('user@company.com', 'Jane\r\nBcc: evil@attacker.com')).toBe(
-      '"JaneBcc: evil@attacker.com" <user@company.com>',
+describe('SmtpMailer', () => {
+  test("a customer's own mailbox is allowed (sends only as its login), not refused", () => {
+    const t = outreachTransport(
+      { ...CREDENTIALS, username: 'user@company.com', fromEmail: 'user@company.com' },
+      fakeNodemailer().createTransport,
     );
+    expect(t).toBeTruthy();
+    t.close();
+  });
+
+  test('a mailbox whose From is someone else is refused, before any network I/O', async () => {
+    const fake = fakeNodemailer();
+    const mailer = new SmtpMailer(
+      { ...CREDENTIALS, username: 'user@company.com', fromEmail: 'ceo@company.com' },
+      { createTransport: fake.createTransport, queue: null },
+    );
+    expect((await refusal(mailer.verify())).code).toBe('SENDER_UNAUTHORIZED');
+    expect((await refusal(mailer.send({ to: 'a@b.com', subject: 's', text: 't' }))).code).toBe(
+      'SENDER_UNAUTHORIZED',
+    );
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  test('refuses a From that is not the authenticated mailbox', async () => {
+    const mailer = new SmtpMailer(
+      { ...CREDENTIALS, fromEmail: 'cha0spunk@profullstack.com' },
+      { createTransport: fakeNodemailer().createTransport, queue: null },
+    );
+    expect((await refusal(mailer.verify())).code).toBe('SENDER_UNAUTHORIZED');
+  });
+
+  test('never sends directly: no queue means every send is refused (fail closed)', async () => {
+    const fake = fakeNodemailer();
+    const mailer = new SmtpMailer(CREDENTIALS, {
+      createTransport: fake.createTransport,
+      queue: null,
+    });
+    const error = await refusal(
+      mailer.send({
+        to: 'jane@acme.com',
+        subject: 'Hi',
+        text: 'Hello',
+        idempotencyKey: 'outreach:ws:p:r',
+        tenantId: 'ws',
+      }),
+    );
+    expect(error.code).toBe('CONFIG_INVALID');
+    expect(fake.sent).toHaveLength(0);
+  });
+
+  test('verify surfaces a login failure with the server text', async () => {
+    const mailer = new SmtpMailer(CREDENTIALS, {
+      queue: null,
+      createTransport: fakeNodemailer(async () => {
+        throw Object.assign(new Error('535 Username and Password not accepted'), {
+          responseCode: 535,
+          code: 'EAUTH',
+        });
+      }).createTransport,
+    });
+    const error = await refusal(mailer.verify());
+    expect(error.status).toBe(535);
+    expect(error.message).toContain('Username and Password not accepted');
+  });
+
+  test('verify passes for a good credential', async () => {
+    const mailer = new SmtpMailer(CREDENTIALS, {
+      queue: null,
+      createTransport: fakeNodemailer().createTransport,
+    });
+    await expect(mailer.verify()).resolves.toBeUndefined();
   });
 });
 
-describe('SmtpMailer', () => {
-  test('sends from the configured mailbox, with the reply-to it was given', async () => {
-    const { transport, sent } = fakeTransport({});
-    const mailer = new SmtpMailer(CREDENTIALS, transport);
+describe('withPostalAddress', () => {
+  const ADDRESS = 'Profullstack, Inc., 123 Main St, San Jose, CA 95113';
 
-    const result = await mailer.send({
-      to: 'jane@acme.com',
-      subject: 'Quick question',
-      text: 'Hello',
-      replyTo: 'inbox@company.com',
-    });
-
-    expect(sent[0]?.from).toBe('"Jane Smith" <user@company.com>');
-    expect(sent[0]?.to).toBe('jane@acme.com');
-    expect(sent[0]?.replyTo).toBe('inbox@company.com');
-    expect(result.id).toBe('<abc@company.com>');
+  test('appends the address to text and html when a template left it out', () => {
+    const out = withPostalAddress(
+      { text: 'Hi', html: '<html><body><p>Hi</p></body></html>' },
+      ADDRESS,
+    );
+    expect(out.text.endsWith(ADDRESS)).toBe(true);
+    expect(out.html).toContain('123 Main St');
+    expect(out.html!.indexOf('123 Main St')).toBeLessThan(out.html!.indexOf('</body>'));
   });
 
-  test('omits reply-to entirely when there is none', async () => {
-    const { transport, sent } = fakeTransport({});
-    await new SmtpMailer(CREDENTIALS, transport).send({
-      to: 'jane@acme.com',
-      subject: 'Hi',
-      text: 'Hello',
-    });
-
-    expect(sent[0]).not.toHaveProperty('replyTo');
-  });
-
-  test('does not send from an operationally blocked mailbox', async () => {
-    const previous = process.env.EMAIL_QUEUE_BLOCKED_SENDERS;
-    const { transport, sent } = fakeTransport({});
-    process.env.EMAIL_QUEUE_BLOCKED_SENDERS = ' other@gmail.com, USER@COMPANY.COM ';
-    try {
-      await expect(
-        new SmtpMailer(CREDENTIALS, transport).send({
-          to: 'jane@acme.com',
-          subject: 'Blocked sender',
-          text: 'Must not leave the process',
-        }),
-      ).rejects.toMatchObject({ status: 403 });
-      expect(sent).toHaveLength(0);
-    } finally {
-      if (previous === undefined) delete process.env.EMAIL_QUEUE_BLOCKED_SENDERS;
-      else process.env.EMAIL_QUEUE_BLOCKED_SENDERS = previous;
-    }
-  });
-
-  test("keeps the server's rejection text, which is the actionable part", async () => {
-    const failure = Object.assign(new Error('535 Username and Password not accepted'), {
-      responseCode: 535,
-    });
-
-    const { transport } = fakeTransport({
-      sendMail: async () => {
-        throw failure;
-      },
-    });
-
-    const thrown = await new SmtpMailer(CREDENTIALS, transport)
-      .send({ to: 'jane@acme.com', subject: 'Hi', text: 'Hello' })
-      .then(() => undefined)
-      .catch((e: unknown) => e);
-
-    expect(thrown).toBeInstanceOf(MailerError);
-    const error = thrown as MailerError;
-    expect(error.status).toBe(535);
-    expect(error.message).toContain('535 Username and Password not accepted');
-  });
-
-  test('verify surfaces a login failure rather than reporting success', async () => {
-    const { transport } = fakeTransport({
-      verify: async () => {
-        throw new Error('535 Authentication failed');
-      },
-    });
-
-    await expect(new SmtpMailer(CREDENTIALS, transport).verify()).rejects.toThrow(MailerError);
+  test('leaves bodies that already carry it alone', () => {
+    const text = `Hi\n\n${ADDRESS}`;
+    expect(withPostalAddress({ text }, ADDRESS)).toEqual({ text });
   });
 });
 

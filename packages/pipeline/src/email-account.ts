@@ -389,8 +389,9 @@ export async function loadImapCredentials(
 /**
  * The mailer outreach for this workspace should go through.
  *
- * The customer's own mailbox when they have connected one, and the platform
- * sender otherwise. Both are real answers: a connected mailbox is what the
+ * The workspace's own mailbox when it has connected one. The platform sender
+ * is no longer a fallback when it is Resend (`platformOnly`): see
+ * `outreachFallback`. Both are real answers: a connected mailbox is what the
  * capability matrix means by `customer_managed`, and the platform sender is
  * what a workspace that has not connected anything falls back to so that
  * autopilot keeps working exactly as it did.
@@ -413,8 +414,20 @@ export async function mailerForWorkspace(
     };
   }
 
-  if (options.fallback) return { mailer: options.fallback, ownMailbox: false };
+  if (outreachFallback(options.fallback)) return { mailer: options.fallback!, ownMailbox: false };
   return undefined;
+}
+
+/**
+ * Whether a platform mailer may carry outreach.
+ *
+ * Never Resend (or any mailer marked `platformOnly`): outreach goes out only
+ * over the workspace's own SMTP mailboxes, through the queue. A workspace with no
+ * usable mailbox sends nothing rather than spilling onto the platform sender.
+ * Test doubles, which are not platform mailers, still stand in here.
+ */
+function outreachFallback(fallback: Mailer | undefined): boolean {
+  return Boolean(fallback) && !(fallback as { platformOnly?: boolean }).platformOnly;
 }
 
 /** What `mailerForSend` hands back. */
@@ -439,6 +452,7 @@ export type SendingMailbox =
         | 'all_capped'
         | 'continuity_capped'
         | 'continuity_paused'
+        | 'continuity_blocked'
         | 'workspace_ceiling'
         | 'keys_locked';
       readonly retryAt: string;
@@ -491,8 +505,8 @@ export async function mailerForSend(
   },
 ): Promise<SendingMailbox> {
   const platform = (): SendingMailbox =>
-    options.fallback
-      ? { kind: 'ready', mailer: options.fallback, ownMailbox: false }
+    outreachFallback(options.fallback)
+      ? { kind: 'ready', mailer: options.fallback!, ownMailbox: false }
       : { kind: 'none' };
 
   const at = options.at ?? new Date();

@@ -108,11 +108,35 @@ they publish.
 
 ### Sending outreach
 
-Outreach leaves through the workspace's **own** SMTP server, connected on
-Settings. The password is authenticated against the real server before anything
-is stored, so a saved mailbox is by construction a working one. Workspaces with
-no mailbox connected fall back to the platform mailer, and which of the two
-carried a message is recorded on every send and shown in the live status panel.
+Outreach leaves over SMTP as **`cha0spunk@profullstack.com` or
+`knox@profullstack.com` only**, connected on Settings and verified against the
+real server before anything is stored. Every send goes through
+[`@profullstack/email-queue`](https://www.npmjs.com/package/@profullstack/email-queue):
+BullMQ on Redis schedules it, Postgres audits it, and its gates run first:
+
+- **Never Resend, never another account.** Resend is for platform account mail
+  only (verification, digests, alerts). A workspace with no usable mailbox
+  sends nothing; a mailbox outside the two above cannot be used at all.
+- **Stop, never fail over.** A provider block (SMTP auth failure, any 5.7.x
+  policy refusal, persistent throttling) pauses that mailbox's queue. The
+  message is refused with `SENDER_PAUSED`, the mailbox is stopped on the
+  Mailboxes page, the prospect's sequence stops and is surfaced as a blocker in
+  the activity feed, and nothing moves to the other mailbox. Resuming is a
+  manual step after the provider issue is fixed (`resumeEmailQueue()` plus
+  resuming the mailbox).
+- **One key, one send.** Each step is keyed
+  `outreach:<workspace>:<prospect>:<recommendation>`; a replay returns the
+  earlier receipt, and an uncertain outcome is never resent.
+- **Compliance.** Cold outreach is `marketing`: one-click `List-Unsubscribe`
+  (https, RFC 8058, `POST /u/:token` with `List-Unsubscribe=One-Click`, no login)
+  and `OUTREACH_POSTAL_ADDRESS` in the text and HTML bodies, appended when the
+  draft lacks it. Unsubscribes, IMAP stop-requests and IMAP bounces are written
+  to the queue's suppression, which blocks every mailbox.
+- **Budgets.** At most `OUTREACH_MAX_PER_RECIPIENT_DOMAIN_PER_DAY` (default 3)
+  cold messages per recipient domain per mailbox per 24 hours.
+- **Fail closed.** Without `EMAIL_QUEUE_REDIS_URL`, `EMAIL_QUEUE_ENCRYPTION_KEY`
+  and a Postgres database, startup logs the problem and outreach email is off;
+  nothing is ever sent directly.
 
 Storing a customer's mail password needs a key to encrypt it with —
 `SECRET_ENCRYPTION_KEY`, documented in `.env.example`. Without it, connecting a

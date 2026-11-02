@@ -25,11 +25,17 @@
 
 import { newId, replySubject, type ProspectStatus } from '@outreachgraph/domain';
 import { now, queryOne, type Client } from '@outreachgraph/db';
-import type { Mailer } from '@outreachgraph/email';
+import {
+  listUnsubscribeHeaders,
+  mailerErrorCode,
+  SmtpMailer,
+  type Mailer,
+} from '@outreachgraph/email';
 import { recordStatus } from './stages';
 import { issueOpenPixel, trackLinksInBody } from './engagement';
-import { issueUnsubscribeToken, unsubscribeUrl } from './unsubscribe';
-import { assignSender, noteSendFailure } from './sender-pool';
+import { issueUnsubscribeToken, suppressAddress, unsubscribeUrl } from './unsubscribe';
+import { assignSender, markSenderError, noteSendFailure } from './sender-pool';
+import { emitEvent } from './events';
 import { emitWebhookEvent } from './webhooks';
 import { nonBuyerDeskSql, ownDomains, refuseRecipient } from './recipient-guard';
 import { addressCounts } from './address-usage';
@@ -213,6 +219,11 @@ export interface OutgoingEmailInput {
   readonly settings: OutreachSettings;
   /** The service's own origin, used when the workspace has not set one. */
   readonly appUrl?: string | undefined;
+  /**
+   * The sending mailbox, offered as the `mailto:` half of List-Unsubscribe.
+   * An unsubscribe mailed there is read back over IMAP and suppressed.
+   */
+  readonly unsubscribeMailto?: string | undefined;
 }
 
 export interface OutgoingEmail {
@@ -280,11 +291,16 @@ export async function prepareOutgoingEmail(
     ? `${outgoing.body}\n\n--\nDon't want these? Unsubscribe: ${optOutUrl}`
     : outgoing.body;
 
+  // RFC 8058 one-click needs an https URL; the email queue refuses marketing
+  // mail without one. A plain-http origin (local development) keeps the old
+  // header so the message shape is the same, and the queue refuses the send.
   const headers = optOutUrl
-    ? {
-        'List-Unsubscribe': `<${optOutUrl}>`,
-        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-      }
+    ? /^https:\/\//i.test(optOutUrl)
+      ? listUnsubscribeHeaders(optOutUrl, input.unsubscribeMailto)
+      : {
+          'List-Unsubscribe': `<${optOutUrl}>`,
+          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        }
     : undefined;
 
   const pixel =
@@ -522,6 +538,110 @@ export async function auditAction(
       now(),
     ],
   });
+}
+
+/**
+ * The stable identity of one outreach step: the same prospect, the same
+ * recommendation (cold message, follow-up or answer), the same workspace.
+ *
+ * The email queue sends a key at most once and replays its receipt after
+ * that, so a retried tick, a crash between send and bookkeeping, or a second
+ * approval of the same card can never mail the person twice.
+ */
+export function outreachIdempotencyKey(
+  workspaceId: string,
+  personId: string,
+  recommendationId: string,
+): string {
+  return `outreach:${workspaceId}:${personId}:${recommendationId}`;
+}
+
+/** The mailbox a mailer sends as, for the List-Unsubscribe mailto. */
+export function mailboxOf(mailer: Mailer): string | undefined {
+  return mailer instanceof SmtpMailer ? mailer.fromEmail : undefined;
+}
+
+export type SendFailureKind = 'paused' | 'suppressed' | 'deferred' | 'auth' | 'bounce' | 'other';
+
+/**
+ * What a refused send means for the prospect and the mailbox.
+ *
+ *   - `SENDER_PAUSED`: the provider blocked the mailbox. It is stopped
+ *     (`error`, with the reason shown on the Mailboxes page) and this
+ *     prospect's sequence stops with it: their next step waits on that
+ *     mailbox and never moves to the other one (`continuity_blocked`).
+ *   - `RECIPIENT_SUPPRESSED`: an unsubscribe, bounce or complaint is on file
+ *     in the queue. The person is suppressed here too, which skips their
+ *     pending and approved steps.
+ *   - `QUOTA_EXHAUSTED`: a budget (mailbox, tenant, recipient domain) is spent
+ *     for today. Not the mailbox's fault; nothing is marked.
+ *
+ * Anything else is read the old way: a refused login stops the mailbox, a
+ * refused recipient counts as a bounce against it.
+ */
+export async function handleSendFailure(
+  db: Client,
+  input: {
+    readonly workspaceId: string;
+    readonly personId: string;
+    readonly campaignId?: string | undefined;
+    readonly accountId?: string | undefined;
+    readonly address: string;
+    readonly error: unknown;
+  },
+): Promise<SendFailureKind> {
+  const message = input.error instanceof Error ? input.error.message : String(input.error);
+  const code = mailerErrorCode(input.error);
+
+  if (code === 'SENDER_PAUSED') {
+    if (input.accountId) {
+      await markSenderError(
+        db,
+        input.accountId,
+        `paused by the email queue after a provider block: ${message}. Fix the mailbox with the provider, then resume it; nothing is moved to another mailbox meanwhile.`,
+      );
+    }
+    await emitEvent(db, {
+      workspaceId: input.workspaceId,
+      ...(input.campaignId ? { campaignId: input.campaignId } : {}),
+      personId: input.personId,
+      phase: 'send',
+      level: 'error',
+      message: `Blocked: the provider stopped the sending mailbox, so this sequence is stopped (it will not switch mailboxes)`,
+      detail: { code, blocker: true, error: message.slice(0, 500) },
+    });
+    return 'paused';
+  }
+
+  if (code === 'RECIPIENT_SUPPRESSED') {
+    await suppressAddress(db, {
+      workspaceId: input.workspaceId,
+      personId: input.personId,
+      address: input.address,
+      source: 'queue_suppressed',
+    });
+    await emitEvent(db, {
+      workspaceId: input.workspaceId,
+      ...(input.campaignId ? { campaignId: input.campaignId } : {}),
+      personId: input.personId,
+      phase: 'send',
+      level: 'warn',
+      message: `Stopped: ${input.address} is suppressed (unsubscribed, bounced or complained)`,
+      detail: { code, blocker: true },
+    });
+    return 'suppressed';
+  }
+
+  if (code === 'QUOTA_EXHAUSTED' || code === 'PENDING') return 'deferred';
+
+  if (input.accountId) {
+    return noteSendFailure(db, {
+      workspaceId: input.workspaceId,
+      accountId: input.accountId,
+      message,
+    });
+  }
+  return 'other';
 }
 
 export interface DeliverEmailDeps {
@@ -793,6 +913,7 @@ export async function deliverEmailAction(
     recipient: recipient.address,
     settings,
     appUrl: deps.appUrl,
+    unsubscribeMailto: mailboxOf(deps.mailer),
   });
 
   // Threading headers for a reply sit beside the opt-out headers, never
@@ -810,6 +931,13 @@ export async function deliverEmailAction(
       ...(outgoing.html ? { html: outgoing.html } : {}),
       ...(replyTo ? { replyTo } : {}),
       ...(headers ? { headers } : {}),
+      idempotencyKey: outreachIdempotencyKey(
+        input.workspaceId,
+        row.person_id,
+        row.recommendation_id,
+      ),
+      kind: 'marketing',
+      tenantId: input.workspaceId,
     });
 
     await recordEmailSent(db, {
@@ -849,14 +977,21 @@ export async function deliverEmailAction(
       actor: input.actor,
     });
 
-    if (deps.senderAccountId) {
-      await noteSendFailure(db, {
-        workspaceId: input.workspaceId,
-        accountId: deps.senderAccountId,
-        message,
-      });
-    }
+    const kind = await handleSendFailure(db, {
+      workspaceId: input.workspaceId,
+      personId: row.person_id,
+      campaignId: row.campaign_id,
+      accountId: deps.senderAccountId,
+      address: recipient.address,
+      error,
+    });
 
-    return { sent: false, reason: message.slice(0, 500) };
+    return {
+      sent: false,
+      reason: message.slice(0, 500),
+      // A spent budget or a still-pending queue job is worth another look
+      // later; the same key replays the receipt if it did go out.
+      ...(kind === 'deferred' ? { retryAt: new Date(Date.now() + 60 * 60_000).toISOString() } : {}),
+    };
   }
 }

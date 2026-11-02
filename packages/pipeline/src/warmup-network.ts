@@ -248,6 +248,11 @@ async function deliver(
           ? { 'In-Reply-To': message.inReplyTo, References: message.inReplyTo }
           : {}),
       },
+      // Not commercial mail, and keyed by its own token so a retried tick
+      // never sends the same warm-up message twice.
+      idempotencyKey: `warmup:${from.workspaceId}:${message.token}`,
+      kind: 'transactional',
+      tenantId: from.workspaceId,
     });
     await db.execute({
       sql: `INSERT INTO warmup_messages (id, sender_account_id, recipient_account_id, kind, token,

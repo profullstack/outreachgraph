@@ -29,6 +29,23 @@ export interface Message {
    * when deciding whether commercial mail is worth delivering.
    */
   readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * The send's stable identity: the same key never sends twice.
+   *
+   * Required by the SMTP mailer, which goes through @profullstack/email-queue.
+   * Outreach uses `outreach:<workspace>:<prospect>:<step>`, so a retry after a
+   * crash or a timeout replays the earlier receipt instead of mailing again.
+   * The platform mailers (Resend, console) ignore it.
+   */
+  readonly idempotencyKey?: string;
+  /**
+   * `marketing` for outreach (the default on the SMTP path): it must carry a
+   * one-click List-Unsubscribe and the postal address, or the queue refuses
+   * it. `transactional` is for mail that is not commercial (warm-up threads).
+   */
+  readonly kind?: 'transactional' | 'marketing';
+  /** The workspace the send belongs to: the queue's tenant scope and audit tenant. */
+  readonly tenantId?: string;
 }
 
 export interface SendResult {
@@ -49,15 +66,36 @@ export interface ResendOptions {
 
 export class MailerError extends Error {
   readonly status: number;
+  /**
+   * The email queue's machine-readable refusal (`SENDER_PAUSED`,
+   * `RECIPIENT_SUPPRESSED`, `QUOTA_EXHAUSTED`, `BULK_*`, ...) when the queue
+   * rather than the provider decided. It is also written into the message, so
+   * the `actions.error` column a failure is stored in still carries it.
+   */
+  readonly code?: string;
 
-  constructor(status: number, detail: string) {
-    super(`email send failed (${status}): ${detail}`);
+  constructor(status: number, detail: string, code?: string) {
+    super(`email send failed (${status}${code ? ` ${code}` : ''}): ${detail}`);
     this.name = 'MailerError';
     this.status = status;
+    if (code) this.code = code;
   }
 }
 
+/** The queue code a failed send carries, read from the error or its stored text. */
+export function mailerErrorCode(error: unknown): string | undefined {
+  if (error instanceof MailerError) return error.code;
+  const text = error instanceof Error ? error.message : String(error ?? '');
+  return /^email send failed \(\d+ ([A-Z_]+)\)/.exec(text)?.[1];
+}
+
 export class ResendMailer implements Mailer {
+  /**
+   * Platform account mail only (verification, digests, alerts). Outreach never
+   * goes through Resend: the sender pool refuses a platform-only mailer as an
+   * outreach fallback, so a workspace with no usable mailbox sends nothing.
+   */
+  readonly platformOnly = true;
   readonly #apiKey: string;
   readonly #from: string;
   readonly #fetch: typeof fetch;

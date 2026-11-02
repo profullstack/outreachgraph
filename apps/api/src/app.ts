@@ -275,6 +275,8 @@ import {
   SMTP_PRESETS,
   verificationEmail,
   type Mailer,
+  outreachEmailQueue,
+  type OutreachEmailQueue,
 } from '@outreachgraph/email';
 import {
   DIRECTORY_CACHE_SECONDS,
@@ -389,6 +391,11 @@ export interface AppOptions {
    * is what local development and the test suite do.
    */
   readonly mailer?: Mailer;
+  /**
+   * The outreach email queue, for writing unsubscribes into its suppression.
+   * Defaults to the process-wide one installed at startup; tests pass a fake.
+   */
+  readonly emailQueue?: Pick<OutreachEmailQueue, 'unsubscribeOneClick' | 'suppress'> | undefined;
   /**
    * Unlocks credentials a workspace has stored for its own mailbox. Without
    * it, connecting one is refused rather than stored in the clear, and any
@@ -622,16 +629,46 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     `<body style="font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">` +
     `<p>${message}</p></body>`;
 
-  // RFC 8058 one-click. A mail client POSTs this without a human seeing it, so
-  // it must act and return 200 rather than render anything.
+  // The same opt-out, written into the email queue's suppression too, which
+  // every mailbox's worker checks right before it sends. A queue that is off
+  // or unreachable never turns an opt-out into an error: the workspace
+  // suppression above already stops every later send at the policy gate.
+  const queueFor = () => options.emailQueue ?? outreachEmailQueue();
+  const suppressInQueue = async (work: () => Promise<unknown>) => {
+    try {
+      await work();
+    } catch (error) {
+      console.error(
+        `email-queue: unsubscribe not recorded in the queue: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
+  // RFC 8058 one-click. A mail client POSTs this without a human seeing it,
+  // with the body `List-Unsubscribe=One-Click`, so it must act and return 200
+  // rather than render anything: no login, no confirmation page. 200 also for
+  // an unknown token, so the endpoint cannot be used to probe addresses.
   app.post('/u/:token', async (c) => {
-    const result = await applyUnsubscribe(options.db, c.req.param('token'));
-    if (!result) return c.text('unknown token', 404);
-    return c.text('unsubscribed', 200);
+    const token = c.req.param('token');
+    const body = await c.req.text().catch(() => '');
+    const result = await applyUnsubscribe(options.db, token);
+    const queue = queueFor();
+    if (result && queue) {
+      await suppressInQueue(async () => {
+        const oneClick = await queue.unsubscribeOneClick(token, body, async () => result.address);
+        // A POST without the one-click body is still somebody asking to stop.
+        if (!oneClick.ok) await queue.suppress(result.address, 'unsubscribe', 'link');
+      });
+    }
+    return c.text(result ? 'unsubscribed' : 'ok', 200);
   });
 
   app.get('/u/:token', async (c) => {
     const result = await applyUnsubscribe(options.db, c.req.param('token'));
+    const queue = queueFor();
+    if (result && queue) {
+      await suppressInQueue(() => queue.suppress(result.address, 'unsubscribe', 'link'));
+    }
 
     if (!result) {
       return c.html(
