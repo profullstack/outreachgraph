@@ -26,6 +26,7 @@ import {
   runContentRadar,
   RADAR_DRAFTS_PER_DAY,
   withLift,
+  analyzeReferences,
 } from './content-radar';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
 
@@ -311,6 +312,25 @@ describe('content radar sweep', () => {
       });
     }
     expect(await draftPicks(db, SEED.workspaceId, at)).toEqual([]);
+  });
+});
+
+describe('hooks without a model', () => {
+  test('every unlabelled reference gets the wording guess, not only the top 30', async () => {
+    const { db } = await harness('radar-heuristic-all');
+    for (let i = 0; i < 40; i += 1) {
+      await db.execute({
+        sql: `INSERT INTO content_references (id, workspace_id, offering_id, source, external_id,
+                url, text, posted_at, engagement, created_at, updated_at)
+              VALUES (?, ?, ?, 'reddit', ?, 'https://x.test', 'How I got my first 10 users', ?, ?, ?, ?)`,
+        args: [`crf_${i}`, SEED.workspaceId, SEED.offeringId, `e${i}`, day(3), i, day(0), day(0)],
+      });
+    }
+    expect(await analyzeReferences({ db }, SEED.workspaceId, SEED.offeringId)).toBe(0);
+    const left = await db.execute(
+      'SELECT COUNT(*) AS n FROM content_references WHERE hook_type IS NULL',
+    );
+    expect(Number((left.rows[0] as any).n)).toBe(0);
   });
 });
 
