@@ -361,7 +361,7 @@ describe('pit.world source', () => {
       max: 100,
       fetch: doFetch,
     });
-    expect(urls[0]).toBe('https://pit.test/api/pros?n=100&page=1');
+    expect(urls[0]).toBe('https://pit.test/api/pros?source=pit&n=100&page=1');
     expect(batch).toMatchObject({ seen: 4, done: true, cursor: null });
     expect(batch.candidates[0]).toEqual({
       domain: 'acme-builders.com',
