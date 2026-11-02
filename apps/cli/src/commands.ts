@@ -115,10 +115,48 @@ async function readSecret(prompt: string): Promise<string> {
   }
 }
 
-const CONNECTABLE = ['x', 'x-session', 'linkedin', 'hubspot', 'pipedrive'] as const;
+const CONNECTABLE = ['x', 'x-session', 'linkedin', 'hubspot', 'pipedrive', 'coinpay'] as const;
 
 /** The CRMs `og connect` accepts a token for. */
 const CRMS = ['hubspot', 'pipedrive'] as const;
+
+function money(o: { currency: string; amount: number }): string {
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: o.currency }).format(
+      o.amount,
+    );
+  } catch {
+    return `${o.amount.toFixed(2)} ${o.currency}`;
+  }
+}
+
+/**
+ * `og behind` as text: the summary, then each group's people with the reason
+ * and the history line. Same states as Today: not connected, locked, error.
+ */
+export function formatBehind(result: Record<string, unknown>): string {
+  const state = String(result.state ?? '');
+  if (state === 'not_connected') {
+    return 'CoinPay is not connected. Connect it with: og connect coinpay';
+  }
+  if (state === 'locked' || state === 'error') return String(result.message ?? state);
+  const lines = [String(result.summary ?? '')];
+  for (const group of (result.groups as Record<string, unknown>[] | undefined) ?? []) {
+    lines.push('', `${String(group.title)}: ${String(group.todo)}`);
+    for (const c of (group.customers as Record<string, unknown>[] | undefined) ?? []) {
+      const owed = ((c.owed as { currency: string; amount: number }[] | undefined) ?? [])
+        .map(money)
+        .join(' + ');
+      const first = ((c.items as Record<string, unknown>[] | undefined) ?? [])[0];
+      const history = (c.history as { line?: string } | undefined)?.line ?? '';
+      lines.push(
+        `  ${pad(String(c.name), 28)} ${pad(owed, 14)} ${first ? String(first.detail) : ''}`.trimEnd(),
+        `  ${' '.repeat(28)} ${[c.email, history].filter(Boolean).join(' · ')}`,
+      );
+    }
+  }
+  return lines.join('\n');
+}
 
 const CRM_TOKEN_HELP: Readonly<Record<(typeof CRMS)[number], string>> = {
   hubspot:
@@ -2231,11 +2269,22 @@ export const COMMANDS: readonly Command[] = [
   {
     name: 'connect',
     usage:
-      'og connect x-session --accept-x-risk | og connect linkedin --accept-linkedin-risk | og connect x | og connect hubspot|pipedrive [--token <token>]',
+      'og connect x-session --accept-x-risk | og connect linkedin --accept-linkedin-risk | og connect x | og connect hubspot|pipedrive [--token <token>] | og connect coinpay [--key <api key>]',
     summary:
-      'Connect X or LinkedIn (session or OAuth 2.1), or a CRM (HubSpot, Pipedrive) that replies and approvals sync to.',
+      'Connect X or LinkedIn (session or OAuth 2.1), a CRM (HubSpot, Pipedrive) that replies and approvals sync to, or your CoinPay account (og behind).',
     async run({ client, args, flags }) {
       const network = args[0];
+      if (network === 'coinpay') {
+        const apiKey =
+          flagString(flags, 'key') ??
+          (process.stderr.write(
+            'A CoinPay business API key: CoinPay > Businesses > your business > API keys.\n',
+          ),
+          await readSecret('CoinPay API key (input hidden): '));
+        if (!apiKey) throw new Error('no key entered');
+        await client.put('/integrations/coinpay', { apiKey });
+        return 'Connected CoinPay. `og behind` (and Today) now show customers behind on paying you.';
+      }
       if (network === 'hubspot' || network === 'pipedrive') {
         const token =
           flagString(flags, 'token') ??
@@ -2318,7 +2367,7 @@ export const COMMANDS: readonly Command[] = [
   },
   {
     name: 'disconnect',
-    usage: 'og disconnect x | linkedin | hubspot | pipedrive',
+    usage: 'og disconnect x | linkedin | hubspot | pipedrive | coinpay',
     summary: 'Remove every connected X account or LinkedIn session (one: og senders), or a CRM.',
     async run({ client, args }) {
       const network = args[0];
@@ -2682,6 +2731,20 @@ export const COMMANDS: readonly Command[] = [
     usage: 'og invites [list | create [--note x]]',
     summary: 'Your three invites (both sides get credits) and your open ?ref= link.',
     run: runInvites,
+  },
+  {
+    name: 'behind',
+    usage: 'og behind [--refresh] [--json]',
+    summary:
+      'Customers behind on paying you, from your connected CoinPay account, grouped by what to do.',
+    async run({ client, flags }) {
+      const result = (await client.get(
+        '/integrations/coinpay/behind',
+        flags.refresh === true ? { refresh: '1' } : {},
+      )) as Record<string, unknown>;
+      if (flags.json === true) return JSON.stringify(result, null, 2);
+      return formatBehind(result);
+    },
   },
   {
     name: 'status',

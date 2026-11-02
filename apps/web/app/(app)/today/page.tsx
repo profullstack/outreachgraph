@@ -10,9 +10,12 @@ import {
   fetchMe,
   fetchSignals,
   fetchStatus,
+  fetchCoinPayBehind,
   relativeTime,
   type ApprovalQueue,
+  type CoinPayBehindView,
 } from '../../../lib/api';
+import { CustomersBehind } from '../../../components/customers-behind';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,17 +34,20 @@ export default async function TodayPage() {
   let signals: Awaited<ReturnType<typeof fetchSignals>> = [];
   let me: Awaited<ReturnType<typeof fetchMe>> | undefined;
   let live: Awaited<ReturnType<typeof fetchStatus>> | undefined;
+  let behind: CoinPayBehindView | undefined;
   let offline = false;
 
   try {
     let queue: Awaited<ReturnType<typeof fetchApprovals>>;
     // The profile is no longer read here: the guide asks for it, and `request`
     // is memoized per render, so asking twice would have cost two calls.
-    [queue, signals, me, live] = await Promise.all([
+    [queue, signals, me, live, behind] = await Promise.all([
       fetchApprovals('ready'),
       fetchSignals(),
       fetchMe(),
       fetchStatus(),
+      // Never throws: a viewer (403) or a CoinPay outage just hides the section.
+      fetchCoinPayBehind(),
     ]);
     approvals = queue.recommendations;
   } catch (error) {
@@ -102,6 +108,13 @@ export default async function TodayPage() {
           />
         </div>
       ) : null}
+
+      {/*
+        Customers who owe this workspace money, from its own CoinPay account.
+        Above prospects on purpose: money already earned and not yet collected
+        is the most urgent thing on the page when there is any.
+      */}
+      {behind ? <CustomersBehind view={behind} /> : null}
 
       {top ? (
         <section>

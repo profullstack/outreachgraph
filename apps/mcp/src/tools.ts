@@ -69,6 +69,24 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'customers_behind',
+    title: 'Customers behind on payments',
+    description:
+      'Customers who owe this workspace money or whose card was declined, from its connected ' +
+      'CoinPay account, grouped by what to do (remind, chase, retry, new card, ...), each with ' +
+      'the reason and payment history. Existing customers, not prospects: never add them to ' +
+      'outreach. state is not_connected, locked, error or ok.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        refresh: { type: 'boolean', description: 'Skip the 5-minute cache.' },
+      },
+    },
+    run: (client, args) =>
+      client.get('/integrations/coinpay/behind', args.refresh === true ? { refresh: '1' } : {}),
+  },
+  {
     name: 'get_signals',
     title: 'Get signals',
     description:

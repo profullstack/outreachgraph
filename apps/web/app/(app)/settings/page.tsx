@@ -8,6 +8,7 @@ import { ApiKeysForm } from '../../../components/api-keys-form';
 import { SendersPanel } from '../../../components/senders-panel';
 import { WebhooksForm } from '../../../components/webhooks-form';
 import { CrmForm } from '../../../components/crm-form';
+import { CoinPayForm } from '../../../components/coinpay-form';
 import { PageGuide } from '../../../components/page-guide';
 import { ProfileForm } from '../../../components/profile-form';
 import { CoinpayConnect } from '../../../components/coinpay-sign-in';
@@ -19,6 +20,7 @@ import {
   fetchMyProfile,
   fetchBlueskyIntegration,
   fetchCrmIntegration,
+  fetchCoinPayIntegration,
   fetchSenders,
   fetchSettings,
   fetchWebhooks,
@@ -27,6 +29,7 @@ import {
   type MyProfileView,
   type SenderView,
   type CrmIntegrationView,
+  type CoinPayIntegrationView,
   type SettingsView,
   type WebhooksView,
 } from '../../../lib/api';
@@ -93,12 +96,13 @@ export default async function SettingsPage() {
   let crm: CrmIntegrationView | undefined;
   let me: Awaited<ReturnType<typeof fetchMe>> | undefined;
   let profile: MyProfileView | undefined;
+  let coinpay: CoinPayIntegrationView | undefined;
   let offline = false;
 
   try {
     // Webhooks and CRM are approver-only, and a viewer's 403 must hide the
     // two sections rather than bounce the whole page to the login screen.
-    [settings, bluesky, apiKeys, senders, webhooks, crm, me, profile] = await Promise.all([
+    [settings, bluesky, apiKeys, senders, webhooks, crm, me, profile, coinpay] = await Promise.all([
       fetchSettings(),
       fetchBlueskyIntegration(),
       fetchApiKeys(),
@@ -108,6 +112,8 @@ export default async function SettingsPage() {
       fetchMe(),
       // Session-only; an API-key caller gets a 401 here, which must not bounce the page.
       fetchMyProfile().catch(() => undefined),
+      // Approver-only too; a viewer's 403 hides the section (the fetcher returns undefined).
+      fetchCoinPayIntegration(),
     ]);
   } catch (error) {
     if (error instanceof NotAuthenticatedError) redirect('/login');
@@ -201,6 +207,8 @@ export default async function SettingsPage() {
               ))}
             </ul>
           </Section>
+
+          {coinpay ? <CoinPayForm initial={coinpay} /> : null}
 
           {/* Folded: webhooks, CRM sync and API keys are for the agents and
               integrations that drive the product, not for daily use. */}
