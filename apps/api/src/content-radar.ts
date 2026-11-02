@@ -878,7 +878,7 @@ export async function runContentRadar(deps: RadarDeps): Promise<SweepResult> {
     deps.db,
     `SELECT DISTINCT c.workspace_id, c.offering_id FROM campaigns c
        JOIN offerings o ON o.id = c.offering_id
-      WHERE c.status = 'running' AND c.offering_id IS NOT NULL`,
+      WHERE c.status IN ('active', 'running') AND c.offering_id IS NOT NULL`,
   );
   const scans: ScanResult[] = [];
   const dueBefore = new Date(clock().getTime() - RADAR_SCAN_HOURS * 3_600_000).toISOString();
