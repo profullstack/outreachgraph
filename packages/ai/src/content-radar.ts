@@ -272,7 +272,83 @@ function clip(value: unknown, max: number): string {
     .slice(0, max);
 }
 
+/**
+ * A storyboard written as markdown instead of JSON. Small open models on
+ * c0mpute (qwen2.5 0.5b/7b, 2026-11-02) answer the JSON prompt with
+ * "**Scene 1: Hook** - **Voiceover:** ... - **Shot:** ... - **Seconds:** 3".
+ */
+export function storyboardFromMarkdown(raw: string, fallbackName: string): Storyboard | undefined {
+  const blocks = raw
+    .split(/\n(?=\s*(?:#+\s*|\*\*)?\s*scene\s*\d+)/i)
+    .filter((block) => /^\s*(?:#+\s*|\*\*)?\s*scene\s*\d+/i.test(block));
+  const field = (block: string, name: string) =>
+    new RegExp(`(?:${name})\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?\\s*(.+)`, 'i')
+      .exec(block)?.[1]
+      ?.replace(/^["“]|["”]$/g, '')
+      .trim() ?? '';
+  const scenes = blocks.slice(0, 6).map((block, index, all): StoryboardScene => {
+    const label = /scene\s*\d+\s*[:\-–]?\s*([^*\n]*)/i.exec(block)?.[1]?.trim() ?? '';
+    const named = `${field(block, 'beat')} ${label}`.toLowerCase();
+    const voiceover = field(block, 'voice\\s*-?over|narration|vo');
+    return {
+      beat: /hook/.test(named)
+        ? 'hook'
+        : /invit|call to action|cta|outro/.test(named)
+          ? 'invitation'
+          : index === 0
+            ? 'hook'
+            : index === all.length - 1
+              ? 'invitation'
+              : 'story',
+      onScreen: clip(field(block, 'on[\\s-]*screen(?:\\s*text)?|text') || label, 80),
+      voiceover: clip(voiceover, 300),
+      shot: clip(field(block, 'shot|visual|scene'), 200),
+      seconds: Math.max(
+        1,
+        Math.min(
+          15,
+          Math.round(Number(/(\d+)/.exec(field(block, 'seconds|duration|time'))?.[1]) || 4),
+        ),
+      ),
+    };
+  });
+  const kept = scenes.filter((scene) => scene.voiceover || scene.onScreen);
+  if (kept.length < 2) return undefined;
+  const title = /^\s*(?:#+\s*|\*\*)?\s*(?:title\s*:\s*)?([^\n*]{3,100})/i.exec(raw)?.[1]?.trim();
+  return {
+    title: clip(title && !/^scene/i.test(title) ? title : `${fallbackName} short`, 120),
+    caption: clip(field(raw, 'caption'), 600),
+    scenes: kept,
+  };
+}
+
+/** An image card from the storyboard's hook, when the model wrote no card. */
+export function imageFromStoryboard(board: Storyboard, fallbackName: string): ImageCard {
+  const hook = board.scenes.find((s) => s.beat === 'hook') ?? board.scenes[0]!;
+  const end = board.scenes.find((s) => s.beat === 'invitation') ?? board.scenes.at(-1)!;
+  return {
+    eyebrow: fallbackName.toUpperCase().slice(0, 40),
+    headline: clip(hook.onScreen || hook.voiceover, 90),
+    support: clip(hook.onScreen ? hook.voiceover : end.voiceover, 140),
+    footer: clip(end.onScreen, 60),
+    caption: clip(board.caption || board.scenes.map((s) => s.voiceover).join(' '), 900),
+  };
+}
+
 export function parseStudio(raw: string, fallbackName: string): Omit<StudioResult, 'model'> {
+  const out = parseStudioJson(raw, fallbackName);
+  const storyboard = out.storyboard ?? storyboardFromMarkdown(raw, fallbackName);
+  return {
+    ...(storyboard ? { storyboard } : {}),
+    ...(out.image
+      ? { image: out.image }
+      : storyboard
+        ? { image: imageFromStoryboard(storyboard, fallbackName) }
+        : {}),
+  };
+}
+
+function parseStudioJson(raw: string, fallbackName: string): Omit<StudioResult, 'model'> {
   const parsed = jsonObjectIn(raw);
   if (!parsed) return {};
   const out: { storyboard?: Storyboard; image?: ImageCard } = {};
@@ -331,6 +407,10 @@ export async function draftStudio(model: TextModel, input: StudioInput): Promise
     input.reference.hookType ? `HOOK TYPE: ${input.reference.hookType}` : '',
     input.reference.why ? `WHY IT WORKED: ${input.reference.why}` : '',
     input.reference.angle ? `SUGGESTED ANGLE: ${input.reference.angle}` : '',
+    // Small open models follow a skeleton to fill in far better than a
+    // described shape in the system prompt.
+    'Answer with this JSON filled in, and nothing else:',
+    '{"storyboard":{"title":"","caption":"","scenes":[{"beat":"hook","onScreen":"","voiceover":"","shot":"","seconds":3},{"beat":"story","onScreen":"","voiceover":"","shot":"","seconds":8},{"beat":"invitation","onScreen":"","voiceover":"","shot":"","seconds":4}]},"image":{"eyebrow":"","headline":"","support":"","footer":"","caption":""}}',
   ]
     .filter(Boolean)
     .join('\n\n');

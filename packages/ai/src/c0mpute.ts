@@ -69,7 +69,7 @@ export class C0mputeModel implements TextModel {
     this.#model = options.model?.trim() || undefined;
     this.#p2pOnly = options.p2pOnly ?? true;
     this.#apiKey = options.apiKey?.trim() || undefined;
-    this.#timeoutMs = options.timeoutMs ?? 180_000;
+    this.#timeoutMs = options.timeoutMs ?? 300_000;
     this.#fetch = options.fetchImpl ?? fetch;
   }
 
@@ -186,6 +186,10 @@ export async function readStream(
     }
     if (done) break;
   }
-  if (!text) throw new C0mputeApiError(502, 'the stream ended without an answer');
-  return { text, ...(model ? { model } : {}) };
+  // No done event: the node or the connection died mid-answer. A partial answer
+  // (`{"`) parses as nothing and would be stored as a failed draft.
+  throw new C0mputeApiError(
+    502,
+    text ? 'the stream ended before the answer finished' : 'the stream ended without an answer',
+  );
 }
