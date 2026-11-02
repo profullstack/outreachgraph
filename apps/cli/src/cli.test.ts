@@ -694,6 +694,48 @@ describe('og linkpost', () => {
   });
 });
 
+describe('og radar', () => {
+  test('refs render the hook and filter by product', async () => {
+    const { client: api, calls } = client({
+      references: [
+        {
+          id: 'crf_1',
+          source: 'bluesky',
+          engagement: 52,
+          text: "I stopped tracking streaks. Here's what changed.",
+          url: 'https://bsky.app/profile/a/post/1',
+          hook: { label: 'Contrarian hook', judged: true, why: 'It breaks a rule.' },
+        },
+      ],
+    });
+    const out = await commandByName('radar')!.run({
+      client: api,
+      args: ['refs'],
+      flags: { product: 'off_1', hook: 'contrarian' },
+    });
+    expect(calls[0]!.url).toContain('/api/v1/content-radar/references?');
+    expect(calls[0]!.url).toContain('offeringId=off_1');
+    expect(calls[0]!.url).toContain('hook=contrarian');
+    expect(out).toContain('crf_1  bluesky  52  [Contrarian hook]');
+    expect(out).toContain('why: It breaks a rule.');
+  });
+
+  test('create sends networks and formats', async () => {
+    const { client: api, calls } = client({ batchId: 'lpo_b', posts: 2, assets: [], skipped: [] });
+    const out = await commandByName('radar')!.run({
+      client: api,
+      args: ['create', 'crf_1'],
+      flags: { to: 'bluesky,linkedin', formats: 'posts,image' },
+    });
+    expect(calls[0]).toMatchObject({
+      method: 'POST',
+      body: { networks: ['bluesky', 'linkedin'], formats: ['posts', 'image'] },
+    });
+    expect(calls[0]!.url).toEndWith('/api/v1/content-radar/references/crf_1/create');
+    expect(out).toContain('2 posts drafted (batch lpo_b)');
+  });
+});
+
 describe('og brain', () => {
   test('backups count up and never reuse a name', () => {
     const taken = new Set(['k/voice.bak-001.md']);

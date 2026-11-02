@@ -50,6 +50,10 @@ export const DEFAULT_THROTTLES = {
   linkPost: { max: 40, windowMs: HOUR },
   /** Per workspace: each content item generation is one model call. */
   contentDraft: { max: 20, windowMs: HOUR },
+  /** Per workspace: a scan reads five public sources and may call the model. */
+  contentRadarScan: { max: 12, windowMs: HOUR },
+  /** Per workspace: posts, a storyboard and an image card from one reference. */
+  contentRadarCreate: { max: 30, windowMs: HOUR },
 } as const satisfies Record<string, ThrottleLimit>;
 
 export type ThrottleName = keyof typeof DEFAULT_THROTTLES;

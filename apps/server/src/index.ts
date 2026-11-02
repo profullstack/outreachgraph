@@ -45,6 +45,7 @@ import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import { runBootstrapProductJob } from '../../api/src/bulk-products';
 import { runCampaignSources } from '../../api/src/campaign-source';
+import { runContentRadar } from '../../api/src/content-radar';
 import { runDueWorkflows } from '../../api/src/workflows';
 import { routesToApi } from './routing';
 import {
@@ -429,6 +430,13 @@ const leadImportDailyTotal = Number(process.env.LEAD_IMPORT_DAILY_TOTAL ?? LEAD_
 let leadImportRunning = false;
 /** Buyer-lead monitors scan beside the tick, one at a time, like idea scans. */
 let leadScanRunning = false;
+/**
+ * The Content Radar: each product's niche read daily for what got attention,
+ * hooks named, the best turned into posts (auto-posted by myna where allowed),
+ * storyboards and image cards. CONTENT_RADAR=off stops it.
+ */
+let contentRadarRunning = false;
+const contentRadarOn = process.env.CONTENT_RADAR !== 'off';
 /**
  * Custom workflows run beside the tick too. A run's job-board searches take
  * 60-120 s each, and the first deploy ran them inside the tick, which held the
@@ -1508,6 +1516,31 @@ async function tick(): Promise<void> {
         ideaScanRunning = false;
       });
     }
+  }
+
+  // Content Radar: a few due product scans a sweep (five public sources plus
+  // followed accounts, paced inside the reader), then each workspace's daily
+  // drafts from the best references. Beside the tick, one sweep at a time.
+  if (contentRadarOn && !contentRadarRunning) {
+    contentRadarRunning = true;
+    void (async () => {
+      try {
+        const r = await runContentRadar({ db, ...(model ? { model } : {}) });
+        for (const scan of r.scans) {
+          console.log(
+            `content radar: ${scan.offeringId} read ${scan.read}, stored ${scan.stored}, judged ${scan.judged}` +
+              `${scan.failures.length ? `; failed: ${scan.failures.map((f) => f.source).join(', ')}` : ''}`,
+          );
+        }
+        for (const d of r.drafted) {
+          console.log(`content radar: drafted ${d.referenceId} for ${d.offeringId}`);
+        }
+      } catch (error) {
+        console.error('content radar sweep failed', error);
+      }
+    })().finally(() => {
+      contentRadarRunning = false;
+    });
   }
 
   // Buyer leads: each due monitor searches Reddit (archive), Hacker News and

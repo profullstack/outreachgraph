@@ -175,6 +175,9 @@ describe('tools', () => {
           prompt: 'Find SaaS startups hiring engineers.',
           code: 'OG-AAAA-BBBB-CCCC-DDDD',
           webhookId: 'whk_1',
+          referenceId: 'crf_1',
+          followId: 'cfl_1',
+          handle: 'rival.bsky.social',
         })
         .catch(() => undefined);
 
@@ -419,6 +422,31 @@ describe('lead tools', () => {
       'GET https://api.test/api/v1/autogtm/campaigns/cmp_1/enrichment',
     ]);
     expect(calls[0]?.body).toEqual({ max_searches: 20 });
+  });
+});
+
+describe('content radar', () => {
+  test('configure_content_radar puts only the settings it was given', async () => {
+    const { fetchImpl, calls } = recorder(ok({ radar: {} }));
+    const client = createClient(CONFIG, fetchImpl);
+    await runTool(toolByName('configure_content_radar')!, client, {
+      offeringId: 'off_1',
+      terms: ['habit tracker'],
+      autoDraft: false,
+    });
+    expect(calls[0]!.url).toBe('https://api.test/api/v1/content-radar/radars/off_1');
+    expect(calls[0]!.body).toEqual({ terms: ['habit tracker'], autoDraft: false });
+  });
+
+  test('create_from_reference posts formats to the reference', async () => {
+    const { fetchImpl, calls } = recorder(ok({ posts: 0, assets: [] }));
+    const client = createClient(CONFIG, fetchImpl);
+    await runTool(toolByName('create_from_reference')!, client, {
+      referenceId: 'crf_1',
+      formats: ['storyboard'],
+    });
+    expect(calls[0]!.url).toBe('https://api.test/api/v1/content-radar/references/crf_1/create');
+    expect(calls[0]!.body).toEqual({ formats: ['storyboard'] });
   });
 });
 

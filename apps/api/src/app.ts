@@ -333,6 +333,7 @@ import {
 } from '@outreachgraph/pipeline';
 import { linkPostRoutes } from './link-posts';
 import { contentDraftRoutes } from './content-drafts';
+import { contentRadarRoutes } from './content-radar';
 import {
   campaignSourceStatus,
   checkCampaignSource,
@@ -340,7 +341,7 @@ import {
   parsePostNetworks,
 } from './campaign-source';
 import type { LeadMonitor } from '@outreachgraph/pipeline';
-import type { FeedSource } from '@outreachgraph/providers';
+import type { FeedSource, TopPostReader } from '@outreachgraph/providers';
 import type { ChovyConfig, Fetcher as RedditFetcher } from '@outreachgraph/ideas';
 import { clientIp, createThrottles, isQuotedUserAgent, type ThrottleConfig } from './throttle';
 import { llmsText, openApiDocument } from './autogtm-docs';
@@ -474,6 +475,8 @@ export interface AppOptions {
   /** Test seams for posts from a link: the network a page is read over, and its DNS. */
   readonly linkFetch?: ProviderFetchLike | undefined;
   readonly linkLookup?: HostLookup | undefined;
+  /** Test seam for the Content Radar: the reader of public top posts. */
+  readonly radarReader?: TopPostReader | undefined;
   /** Overrides for the abuse throttles (`./throttle`); tests shrink them. */
   readonly throttles?: ThrottleConfig | undefined;
   /**
@@ -1875,6 +1878,22 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // Social posts, newsletters and articles are saved for editing and review.
   // The API never publishes them to a network.
   api.route('/content-drafts', contentDraftRoutes({ model: options.model, throttles }));
+
+  // ----------------------------------------------------------- content radar
+  //
+  // Discover what gets attention in each product's niche, why (the hook), and
+  // turn the best of it into posts, a storyboard and an image card. The sweep
+  // in the server runs it daily on its own; these routes are the same by hand.
+  api.route(
+    '/content-radar',
+    contentRadarRoutes({
+      model: options.model,
+      throttles,
+      reader: options.radarReader,
+      fetchImpl: options.linkFetch,
+      lookup: options.linkLookup,
+    }),
+  );
 
   // ----------------------------------------------------------------- team
   //

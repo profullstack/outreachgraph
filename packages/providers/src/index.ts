@@ -274,6 +274,18 @@ export {
   type RssSourceOptions,
   type SubredditSuggestion,
   type SuggestSubredditsOptions,
+  engagementScore,
+  FOLLOW_NETWORKS,
+  isFollowNetwork,
+  isTopPostSource,
+  tagFor,
+  TOP_POST_SOURCES,
+  TopPostReader,
+  type FollowNetwork,
+  type TopPost,
+  type TopPostQuery,
+  type TopPostReaderOptions,
+  type TopPostSource,
 } from './feeds';
 export {
   GRAVATAR_NETWORKS,

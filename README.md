@@ -23,6 +23,12 @@ The Content Studio adds editable LinkedIn, newsletter and article drafts in a
 product's saved voice. Drafts stay in the workspace until a person reviews and
 copies them out; the public AI-speak checker runs entirely in the browser.
 
+The Content Radar (`/content`, `og radar`, `/api/v1/content-radar`) reads each
+product's niche daily for the posts that got the most attention (Hacker News,
+Bluesky, dev.to, Mastodon, Reddit, and followed competitors), names each hook
+and why it worked, and turns the best into posts per network, a short-video
+storyboard and a branded image card. See `docs/content-radar.md`.
+
 ## Install the CLI
 
 ```bash
