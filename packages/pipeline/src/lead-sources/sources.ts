@@ -23,6 +23,9 @@
  * - **pit.world** (ours): the /pros business directory, each listing read as
  *   its OpenProfile.md (Kind organization), so a business carries its
  *   category and place, not only a domain.
+ * - **rssamplifier.com** (ours): the newsrooms its crawler files as `news`
+ *   (several articles a day, bylines, a masthead), each a publisher with its
+ *   own site. Blogs stay out: most are one person, not a business.
  */
 
 import { identityValue, kindOf, parseOpenProfile, web } from '@profullstack/openprofile';
@@ -594,7 +597,91 @@ export function pitWorldSource(baseUrl = PIT_WORLD_URL): LeadSourceDefinition {
   };
 }
 
+// ---------------------------------------------------------- rssamplifier.com
+
+export const RSSAMPLIFIER_URL = 'https://rssamplifier.com';
+
+interface RssamplifierFeed {
+  readonly slug?: string;
+  readonly title?: string;
+  readonly siteUrl?: string | null;
+  readonly status?: string;
+  readonly freshness?: string;
+}
+
+/** A newsroom that still publishes or was read lately; failing and never-read feeds are not a business we can open. */
+const RSSAMPLIFIER_FRESH = new Set(['live', 'overdue']);
+
+/**
+ * rssamplifier.com newsrooms (`/api/feeds?kind=news`), a publisher per feed keyed
+ * by its site's domain. Paged by offset; a whole pass is ~23k feeds, re-read weekly
+ * so new newsrooms come in. Platform roots (substack.com, medium.com) are dropped.
+ */
+export function rssamplifierNewsSource(baseUrl = RSSAMPLIFIER_URL): LeadSourceDefinition {
+  const pageSize = 200;
+  return {
+    id: 'rssamplifier-news',
+    label: 'rssamplifier.com newsrooms',
+    homepage: `${baseUrl}/news`,
+    license: 'rssamplifier.com open directory (ours)',
+    dailyCap: 2000,
+    batchSize: 1000,
+    everyMinutes: 30,
+    restartAfterDays: 7,
+    async read({ cursor, max, fetch: doFetch }) {
+      let offset = Math.max(0, Number.parseInt(cursor ?? '0', 10) || 0);
+      const candidates: LeadCandidate[] = [];
+      let seen = 0;
+      let done = false;
+      for (let page = 0; page < 10 && candidates.length < max; page += 1) {
+        const params = new URLSearchParams({
+          kind: 'news',
+          limit: String(pageSize),
+          offset: String(offset),
+        });
+        const response = await doFetch(`${baseUrl}/api/feeds?${params}`, {
+          headers: { accept: 'application/json', 'user-agent': USER_AGENT },
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!response.ok) throw new Error(`rssamplifier answered ${response.status}`);
+        const body = (await response.json()) as {
+          total?: number;
+          feeds?: RssamplifierFeed[];
+        } | null;
+        const feeds = Array.isArray(body?.feeds) ? body.feeds : [];
+        seen += feeds.length;
+        offset += feeds.length;
+        for (const feed of feeds) {
+          if (feed.status && feed.status !== 'active') continue;
+          if (feed.freshness && !RSSAMPLIFIER_FRESH.has(feed.freshness)) continue;
+          const domain = leadDomain(feed.siteUrl, { dropPlatformRoots: true });
+          if (!domain || domain === 'rssamplifier.com') continue;
+          candidates.push({
+            domain,
+            name: (str(feed.title) ?? domain).slice(0, 200),
+            industry: 'news & media',
+            country: countryFromDomain(domain),
+            ref: feed.slug ? `rssamplifier:${feed.slug}`.slice(0, 120) : null,
+          });
+        }
+        if (feeds.length < pageSize || offset >= Number(body?.total ?? Infinity)) {
+          done = true;
+          break;
+        }
+      }
+      // Done starts the next pass from the top after restartAfterDays.
+      return { candidates, cursor: done ? null : String(offset), seen, done };
+    },
+  };
+}
+
 /** Every source, in the order they are run. Business-y first. */
 export function defaultLeadSources(): LeadSourceDefinition[] {
-  return [pitWorldSource(), wikidataSource(), ...nichedbSources(), majesticSource()];
+  return [
+    pitWorldSource(),
+    wikidataSource(),
+    ...nichedbSources(),
+    rssamplifierNewsSource(),
+    majesticSource(),
+  ];
 }
