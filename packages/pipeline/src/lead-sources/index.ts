@@ -13,6 +13,7 @@ export {
   nichedbSources,
   pitWorldCandidate,
   pitWorldSource,
+  rssamplifierNewsSource,
   wikidataQuery,
   wikidataSource,
   type LeadBatch,
