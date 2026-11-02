@@ -84,4 +84,11 @@ external id; numbers refresh on every sighting), `content_assets`.
 
 Every source is keyless. Model calls per product per day: at most 3 hook
 batches, plus 2 per draft (posts and studio), so at most about 9 a day for a
-workspace that drafts its 3. The model chain is the deployment's usual one.
+workspace that drafts its 3. The model chain is the deployment's usual one,
+which since 0.26.2 starts with **c0mpute** (`packages/ai/src/c0mpute.ts`):
+Infernet's free public chat API (`POST /api/chat`, then the SSE stream),
+answered by peer nodes only. A job Infernet hands to its hosted fallback is
+refused as unavailable, so nothing paid runs unless a paid key is set.
+`C0MPUTE=off` drops it, `C0MPUTE_MODEL` picks a model a node serves,
+`C0MPUTE_URL` points elsewhere. The public API allows 20 requests an hour per
+IP; past that the queue holds work until the next hour.

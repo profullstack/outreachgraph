@@ -71,6 +71,14 @@ export {
 } from './openai';
 
 export {
+  C0mputeModel,
+  C0mputeApiError,
+  DEFAULT_C0MPUTE_URL,
+  readStream as readC0mputeStream,
+  type C0mputeModelOptions,
+} from './c0mpute';
+
+export {
   GeminiModel,
   GeminiApiError,
   MissingGeminiKeyError,

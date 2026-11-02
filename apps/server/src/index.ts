@@ -28,6 +28,7 @@ import {
   queryAll,
 } from '@outreachgraph/db';
 import {
+  C0mputeModel,
   ClaudeModel,
   FallbackModel,
   GeminiModel,
@@ -226,9 +227,26 @@ if (process.env.RUN_MIGRATIONS !== 'false') {
  * was paying a failed round trip to OpenAI first. OpenAI and Anthropic stay as
  * fallbacks. `GEMINI_MODEL` picks the Gemini model (default Flash-Lite, below).
  */
-const DEFAULT_CHAIN_ORDER = ['gemini', 'openai', 'anthropic', 'workersai'] as const;
+//
+// c0mpute leads (2026-11-02): OutreachGraph prefers c0mpute for inference and
+// may not fall back to a paid provider without approval, so it needs no key
+// and is built unless C0MPUTE=off. It answers only from peer nodes (a hosted
+// fallback is refused), so the paid links after it are reached only when a
+// key for them is set.
+const DEFAULT_CHAIN_ORDER = ['c0mpute', 'gemini', 'openai', 'anthropic', 'workersai'] as const;
 
 const builders: Record<string, () => FallbackEntry | undefined> = {
+  c0mpute: () =>
+    process.env.C0MPUTE === 'off'
+      ? undefined
+      : {
+          name: 'c0mpute',
+          model: new C0mputeModel({
+            ...(process.env.C0MPUTE_URL ? { baseUrl: process.env.C0MPUTE_URL } : {}),
+            ...(process.env.C0MPUTE_MODEL ? { model: process.env.C0MPUTE_MODEL } : {}),
+            p2pOnly: process.env.C0MPUTE_P2P_ONLY !== 'false',
+          }),
+        },
   anthropic: () =>
     process.env.ANTHROPIC_API_KEY
       ? {
