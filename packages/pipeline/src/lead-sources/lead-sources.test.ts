@@ -23,6 +23,7 @@ import {
   majesticSource,
   nichedbSource,
   pitWorldSource,
+  rssamplifierNewsSource,
   wikidataQuery,
   wikidataSource,
   type LeadSourceDefinition,
@@ -464,6 +465,102 @@ function fakeSource(
     ...overrides,
   };
 }
+
+describe('rssamplifier news source', () => {
+  function feeds(offset: number, count: number) {
+    return Array.from({ length: count }, (_, i) => {
+      const n = offset + i;
+      return {
+        slug: `paper-${n}`,
+        title: `Paper ${n}`,
+        siteUrl: `https://www.paper${n}.co.uk/`,
+        status: 'active',
+        freshness: 'live',
+      };
+    });
+  }
+
+  test('pages newsrooms by offset; skips failing feeds, platform roots and itself', async () => {
+    const urls: string[] = [];
+    const doFetch = (async (url: string) => {
+      urls.push(url);
+      const offset = Number(new URL(url).searchParams.get('offset'));
+      if (offset === 0) {
+        return json({
+          total: 205,
+          feeds: [
+            ...feeds(0, 196),
+            {
+              slug: 'dead',
+              title: 'Dead',
+              siteUrl: 'https://dead.example',
+              status: 'active',
+              freshness: 'failing',
+            },
+            {
+              slug: 'sub',
+              title: 'A Substack',
+              siteUrl: 'https://substack.com',
+              status: 'active',
+              freshness: 'live',
+            },
+            {
+              slug: 'self',
+              title: 'New in RSS Amplifier',
+              siteUrl: 'https://rssamplifier.com',
+              status: 'active',
+              freshness: 'live',
+            },
+            {
+              slug: 'paused',
+              title: 'Paused',
+              siteUrl: 'https://paused.example',
+              status: 'paused',
+              freshness: 'live',
+            },
+          ],
+        });
+      }
+      return json({ total: 205, feeds: feeds(200, 5) });
+    }) as typeof fetch;
+    const batch = await rssamplifierNewsSource('https://rsa.test').read({
+      cursor: null,
+      max: 1000,
+      fetch: doFetch,
+    });
+    expect(urls[0]).toBe('https://rsa.test/api/feeds?kind=news&limit=200&offset=0');
+    expect(urls[1]).toBe('https://rsa.test/api/feeds?kind=news&limit=200&offset=200');
+    expect(batch).toMatchObject({ seen: 205, done: true, cursor: null });
+    expect(batch.candidates).toHaveLength(201);
+    expect(batch.candidates[0]).toEqual({
+      domain: 'paper0.co.uk',
+      name: 'Paper 0',
+      industry: 'news & media',
+      country: 'GB',
+      ref: 'rssamplifier:paper-0',
+    });
+    const domains = batch.candidates.map((c) => c.domain);
+    expect(domains).not.toContain('dead.example');
+    expect(domains).not.toContain('substack.com');
+    expect(domains).not.toContain('rssamplifier.com');
+    expect(domains).not.toContain('paused.example');
+  });
+
+  test('stops at max and resumes from the saved offset', async () => {
+    const urls: string[] = [];
+    const doFetch = (async (url: string) => {
+      urls.push(url);
+      const offset = Number(new URL(url).searchParams.get('offset'));
+      return json({ total: 10_000, feeds: feeds(offset, 200) });
+    }) as typeof fetch;
+    const source = rssamplifierNewsSource('https://rsa.test');
+    const first = await source.read({ cursor: null, max: 300, fetch: doFetch });
+    expect(first).toMatchObject({ seen: 400, done: false, cursor: '400' });
+    const second = await source.read({ cursor: first.cursor, max: 100, fetch: doFetch });
+    expect(urls.at(-1)).toBe('https://rsa.test/api/feeds?kind=news&limit=200&offset=400');
+    expect(second.candidates[0]?.domain).toBe('paper400.co.uk');
+  });
+});
 
 describe('sweepLeadSources', () => {
   test('stores new domains once, books the cursor, and skips a source until it is due', async () => {
