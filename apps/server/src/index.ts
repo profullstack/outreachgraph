@@ -244,6 +244,7 @@ const builders: Record<string, () => FallbackEntry | undefined> = {
           model: new C0mputeModel({
             ...(process.env.C0MPUTE_URL ? { baseUrl: process.env.C0MPUTE_URL } : {}),
             ...(process.env.C0MPUTE_MODEL ? { model: process.env.C0MPUTE_MODEL } : {}),
+            ...(process.env.C0MPUTE_API_KEY ? { apiKey: process.env.C0MPUTE_API_KEY } : {}),
             p2pOnly: process.env.C0MPUTE_P2P_ONLY !== 'false',
           }),
         },
