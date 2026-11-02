@@ -20,6 +20,7 @@
 export {
   ConsoleMailer,
   MailerError,
+  mailerErrorCode,
   ResendMailer,
   type Mailer,
   type Message,
@@ -28,10 +29,25 @@ export {
 export {
   SmtpMailer,
   SMTP_PRESETS,
-  formatFrom,
+  withPostalAddress,
   type SmtpCredentials,
+  type SmtpMailerOptions,
   type SmtpPreset,
 } from './smtp';
+export {
+  configureOutreachEmailQueue,
+  DEFAULT_RECIPIENT_DOMAIN_CAP,
+  EMAIL_QUEUE_APPLICATION_ID,
+  OUTREACH_MAILBOXES,
+  OutreachEmailQueue,
+  outreachEmailQueue,
+  outreachTransport,
+  queueFailure,
+  startOutreachEmailQueue,
+  type OutreachEmailQueueConfig,
+  type QueueMailbox,
+} from './queue';
+export { listUnsubscribeHeaders } from '@profullstack/email-queue';
 export {
   classifyAutomated,
   ImapReader,

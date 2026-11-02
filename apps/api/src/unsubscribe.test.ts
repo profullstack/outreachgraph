@@ -87,6 +87,71 @@ describe('unsubscribe', () => {
     expect(await isSuppressed(seeded, SEED.personId)).toBe(true);
   });
 
+  test('one-click POST writes the email queue suppression (RFC 8058 body)', async () => {
+    const seeded = await seedDatabase('unsub-queue');
+    active = seeded;
+    const calls: string[] = [];
+    const app = createApp({
+      db: seeded.db,
+      authenticate: async () => undefined,
+      emailQueue: {
+        unsubscribeOneClick: async (token, body, resolve) => {
+          const address = await resolve(token);
+          calls.push(`one-click:${body}:${address}`);
+          return { ok: body === 'List-Unsubscribe=One-Click' };
+        },
+        suppress: async (address, reason, source) => {
+          calls.push(`suppress:${address}:${reason}:${source}`);
+        },
+      },
+    });
+    const token = await tokenFor(seeded, 'Queue@Example.com');
+
+    const response = await app.request(`/u/${token}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'List-Unsubscribe=One-Click',
+    });
+
+    expect(response.status).toBe(200);
+    expect(await isSuppressed(seeded, SEED.personId)).toBe(true);
+    expect(calls).toEqual(['one-click:List-Unsubscribe=One-Click:queue@example.com']);
+
+    // A plain POST (no one-click body) still stops the mail, everywhere.
+    const plain = await tokenFor(seeded, 'plain@example.com');
+    expect((await app.request(`/u/${plain}`, { method: 'POST' })).status).toBe(200);
+    expect(calls).toContain('suppress:plain@example.com:unsubscribe:link');
+  });
+
+  test('a one-click POST for an unknown token is still 200 (no address probing)', async () => {
+    const { app } = await harness('unsub-unknown-post');
+    expect((await app.request('/u/uns_nope', { method: 'POST' })).status).toBe(200);
+  });
+
+  test('a queue that is down never turns an opt-out into an error', async () => {
+    const seeded = await seedDatabase('unsub-queue-down');
+    active = seeded;
+    const app = createApp({
+      db: seeded.db,
+      authenticate: async () => undefined,
+      emailQueue: {
+        unsubscribeOneClick: async () => {
+          throw new Error('redis down');
+        },
+        suppress: async () => {
+          throw new Error('redis down');
+        },
+      },
+    });
+    const token = await tokenFor(seeded, 'down@example.com');
+    const response = await app.request(`/u/${token}`, {
+      method: 'POST',
+      body: 'List-Unsubscribe=One-Click',
+    });
+    expect(response.status).toBe(200);
+    expect(await isSuppressed(seeded, SEED.personId)).toBe(true);
+  });
+
   test('clicking twice confirms rather than failing', async () => {
     // Scanners fetch every link in a message, so a second call is normal.
     const { app, seeded } = await harness('unsub-twice');

@@ -108,16 +108,18 @@ describe('choosing a sender', () => {
     });
   });
 
-  test('waits for a paused account, but reassigns one that is gone for good', () => {
+  test('waits for a paused or stopped account, but reassigns one that is gone for good', () => {
     expect(choosePoolSender([candidate('a', { status: 'paused' }), candidate('b')], 'a')).toEqual({
       kind: 'deferred',
       reason: 'continuity_paused',
       id: 'a',
     });
+    // A provider block (or the bounce rule) stopped `a`: its prospects wait for
+    // a human, and never fail over to `b`.
     expect(choosePoolSender([candidate('a', { status: 'error' }), candidate('b')], 'a')).toEqual({
-      kind: 'picked',
-      id: 'b',
-      reason: 'capacity',
+      kind: 'deferred',
+      reason: 'continuity_blocked',
+      id: 'a',
     });
     expect(choosePoolSender([candidate('b')], 'removed')).toEqual({
       kind: 'picked',

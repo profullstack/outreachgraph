@@ -11,10 +11,12 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@profullstack/email-queue": "^0.2.0",
     "imapflow": "^2.9.1",
     "nodemailer": "^10.2.1"
   },
   "devDependencies": {
-    "@types/nodemailer": "^8.0.2"
+    "@types/nodemailer": "^8.0.2",
+    "ioredis": "^5.4.0"
   }
 }

@@ -127,7 +127,7 @@ export interface SuppressAddressInput {
   /** The mailbox that asked. Everyone reachable only there is suppressed with them. */
   readonly address: string;
   /** Where the request came from, for the audit trail: a link, or a reply. */
-  readonly source: 'unsubscribe' | 'reply_unsubscribe';
+  readonly source: 'unsubscribe' | 'reply_unsubscribe' | 'queue_suppressed';
 }
 
 /**

@@ -67,6 +67,7 @@ import { budgetStatus } from './metering';
 import { deliverEmailAction, type AuditActor } from './outreach-email';
 import { matchKeysForPerson } from './suppression-keys';
 import { suppressAddress } from './unsubscribe';
+import { outreachEmailQueue } from '@outreachgraph/email';
 
 export interface TriageDeps {
   readonly db: Client;
@@ -245,6 +246,17 @@ async function honourStop(
     address: address ?? '',
     source: 'reply_unsubscribe',
   });
+
+  // The same request into the email queue's own suppression (the RFC 8058
+  // mailto variant), which every mailbox's worker checks before sending.
+  const queue = outreachEmailQueue();
+  if (queue && address) {
+    await queue.unsubscribeMailto(address, row.subject ?? undefined).catch((error: unknown) => {
+      console.error(
+        `email-queue: could not record the unsubscribe from a reply: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
 
   await emitEvent(db, {
     workspaceId,

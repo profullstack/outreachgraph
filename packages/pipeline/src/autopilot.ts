@@ -38,7 +38,6 @@ import { draftForRecommendation, type TextModel } from '@outreachgraph/ai';
 import { mailerForSend, mailerForWorkspace } from './email-account';
 import { workspaceLocked } from './workspace-keys';
 import { SmtpMailer, type SmtpCredentials } from '@outreachgraph/email';
-import { noteSendFailure } from './sender-pool';
 import { emitEvent } from './events';
 import {
   defaultEmailSubject,
@@ -48,6 +47,9 @@ import {
   sharedInboxRefused,
   prepareOutgoingEmail,
   recordEmailFailure,
+  handleSendFailure,
+  mailboxOf,
+  outreachIdempotencyKey,
   recordEmailSent,
   AUTOPILOT_ACTOR,
 } from './outreach-email';
@@ -991,6 +993,7 @@ export async function runAutopilot(
       recipient: recipient.address,
       settings,
       appUrl: deps.appUrl,
+      unsubscribeMailto: mailboxOf(mailbox.mailer),
     });
 
     try {
@@ -1001,6 +1004,11 @@ export async function runAutopilot(
         ...(outgoing.html ? { html: outgoing.html } : {}),
         ...(replyTo ? { replyTo } : {}),
         ...(outgoing.headers ? { headers: outgoing.headers } : {}),
+        // Same key as the approval path: the step is the recommendation, so
+        // a card sent by autopilot and then approved by hand goes out once.
+        idempotencyKey: outreachIdempotencyKey(workspaceId, row.person_id, row.recommendation_id),
+        kind: 'marketing',
+        tenantId: workspaceId,
       });
 
       await recordEmailSent(db, {
@@ -1084,11 +1092,19 @@ export async function runAutopilot(
         actor: AUTOPILOT_ACTOR,
       });
 
-      // What the rejection says about the mailbox itself: a refused login
-      // stops it, a refused recipient counts as a bounce against it.
-      if (mailbox.accountId) {
-        await noteSendFailure(db, { workspaceId, accountId: mailbox.accountId, message });
-      }
+      // What the rejection says about the mailbox and the prospect: a
+      // provider block stops the mailbox and this prospect's sequence (never
+      // a switch to another mailbox), a queue suppression suppresses the
+      // person, a refused login stops the mailbox, a refused recipient counts
+      // as a bounce against it.
+      const refusal = await handleSendFailure(db, {
+        workspaceId,
+        personId: row.person_id,
+        campaignId: row.campaign_id,
+        accountId: mailbox.accountId,
+        address: recipient.address,
+        error,
+      });
 
       // The most important line this whole system produces. A send that fails
       // silently is indistinguishable from one that never had a reason to
@@ -1105,6 +1121,8 @@ export async function runAutopilot(
           error: message.slice(0, 500),
           attempt: row.failed_attempts + 1,
           via: mailbox.ownMailbox ? 'workspace' : 'platform',
+          refusal,
+          ...(refusal === 'paused' || refusal === 'suppressed' ? { blocker: true } : {}),
         },
       });
     }

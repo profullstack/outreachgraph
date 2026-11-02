@@ -35,7 +35,7 @@ import {
   isBudgetExhausted,
   type FallbackEntry,
 } from '@outreachgraph/ai';
-import { ImapReader, ResendMailer } from '@outreachgraph/email';
+import { ImapReader, ResendMailer, startOutreachEmailQueue } from '@outreachgraph/email';
 import { chovyConfig } from '@outreachgraph/ideas';
 import { CoinPayClient } from '@outreachgraph/payments';
 import { SecretVault, secretKeyFromEnv } from '@outreachgraph/secrets';
@@ -321,6 +321,25 @@ const mailer =
     : undefined;
 
 if (!mailer) console.log('no RESEND_API_KEY/EMAIL_FROM: verification links are logged, not sent');
+
+/**
+ * Outreach email: @profullstack/email-queue (BullMQ on Redis, audit in
+ * Postgres). Every SMTP send goes through it, as cha0spunk@ or knox@ only.
+ *
+ * Problems (no EMAIL_QUEUE_REDIS_URL, no EMAIL_QUEUE_ENCRYPTION_KEY, no
+ * Postgres) are logged here and leave outreach email OFF: every send is
+ * refused with CONFIG_INVALID and nothing falls back to direct SMTP or to
+ * Resend. The rest of the product still boots. Workers start per mailbox on
+ * first use (passwords are sealed until the workspace unlocks) and are closed
+ * on SIGTERM below.
+ */
+const emailQueueHandle = openRawHandle();
+const emailQueue = (
+  await startOutreachEmailQueue({
+    env: process.env,
+    sql: emailQueueHandle.kind === 'postgres' ? emailQueueHandle.pool : undefined,
+  })
+).queue;
 
 /**
  * Unlocks mailbox credentials a workspace has stored.
@@ -2057,6 +2076,9 @@ async function shutdown(signal: string): Promise<void> {
 
   await server.stop(false);
   web?.kill();
+  // Waiting jobs stay in Redis; the next process's workers pick them up.
+  await emailQueue?.close().catch(() => undefined);
+  await emailQueueHandle.close().catch(() => undefined);
   await closeDatabase();
   process.exit(0);
 }

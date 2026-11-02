@@ -231,7 +231,8 @@ export type PoolChoice =
   /** Accounts exist but none may send this one today. Try again later. */
   | {
       readonly kind: 'deferred';
-      readonly reason: 'all_capped' | 'continuity_capped' | 'continuity_paused';
+      readonly reason:
+        'all_capped' | 'continuity_capped' | 'continuity_paused' | 'continuity_blocked';
       /** The account the conversation belongs to, when that is the reason. */
       readonly id?: string;
     };
@@ -267,7 +268,14 @@ export function choosePoolSender(
     if (sticky?.status === 'paused') {
       return { kind: 'deferred', reason: 'continuity_paused', id: sticky.id };
     }
-    // In error, revoked or deleted: fall through and reassign.
+    // Stopped by a provider block, a refused login or the bounce rule. The
+    // conversation waits for a human to fix and resume that mailbox; moving it
+    // to another mailbox would be routing around the very stop that protects
+    // the sender (never fail over, never rotate to evade a limit).
+    if (sticky?.status === 'error') {
+      return { kind: 'deferred', reason: 'continuity_blocked', id: sticky.id };
+    }
+    // Revoked or deleted by a human: fall through and reassign.
   }
 
   const active = candidates.filter((candidate) => candidate.status === 'active');

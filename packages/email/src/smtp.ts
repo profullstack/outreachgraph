@@ -23,11 +23,21 @@
  *     clear and upgrades. `secure: false`, and `requireTLS` makes the upgrade
  *     mandatory rather than opportunistic — without it a downgrade leaves the
  *     password on the wire in plaintext.
+ *
+ * Since 0.2.0 of @profullstack/email-queue nothing here talks to the server
+ * on a send: `SmtpMailer.send()` enqueues through `./queue` and a long-lived
+ * worker delivers. Only `verify()` connects directly, and it sends nothing.
  */
 
-import nodemailer, { type Transporter } from 'nodemailer';
+import { containsPostalAddress, type SmtpTransportOptions } from '@profullstack/email-queue';
 import type { Mailer, Message, SendResult } from './mailer';
 import { MailerError } from './mailer';
+import {
+  outreachEmailQueue,
+  outreachTransport,
+  queueFailure,
+  type OutreachEmailQueue,
+} from './queue';
 
 export interface SmtpCredentials {
   readonly host: string;
@@ -36,67 +46,124 @@ export interface SmtpCredentials {
   readonly secure: boolean;
   readonly username: string;
   readonly password: string;
-  /** The address mail is sent from. Usually the same as `username`. */
+  /** The address mail is sent from. Must be the same mailbox as `username`. */
   readonly fromEmail: string;
   /** Display name shown to the recipient. Optional. */
   readonly fromName?: string | undefined;
 }
 
-/** How long a connection or send may take before it is treated as failed. */
-const TIMEOUT_MS = 20_000;
+export interface SmtpMailerOptions {
+  /**
+   * The queue to send through. Defaults to the process-wide one installed at
+   * startup (`configureOutreachEmailQueue`). Null, or none installed, and
+   * every send is refused: SMTP never goes out directly.
+   */
+  readonly queue?: OutreachEmailQueue | null;
+  /** Tests inject a nodemailer stand-in for `verify()`; production loads nodemailer. */
+  readonly createTransport?: SmtpTransportOptions['createTransport'];
+}
 
 /**
- * Formats the From header.
- *
- * The display name is quoted and its own quotes stripped, because a name
- * containing a `"` would otherwise terminate the header field early and let
- * the rest be read as address parts — a header injection with a friendly face.
+ * The postal address in both bodies (CAN-SPAM), appended when a template did
+ * not already include it. The queue refuses marketing mail without it.
  */
-export function formatFrom(fromEmail: string, fromName?: string): string {
-  const name = fromName?.trim();
-  if (!name) return fromEmail;
-  return `"${name.replace(/["\\\r\n]/g, '')}" <${fromEmail}>`;
+export function withPostalAddress(
+  body: { readonly text: string; readonly html?: string | undefined },
+  address: string,
+): { text: string; html?: string } {
+  const text = containsPostalAddress(body.text, address) ? body.text : `${body.text}\n${address}`;
+  if (!body.html) return { text };
+  if (containsPostalAddress(body.html, address, true)) return { text, html: body.html };
+  const line = `<p style="color:#666;font-size:12px">${address
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')}</p>`;
+  const html = /<\/body>/i.test(body.html)
+    ? body.html.replace(/<\/body>/i, `${line}\n</body>`)
+    : `${body.html}\n${line}`;
+  return { text, html };
 }
 
-/** A process-wide emergency blocklist shared with @profullstack/email-queue. */
-export function isBlockedSender(fromEmail: string): boolean {
-  const blocked = (process.env.EMAIL_QUEUE_BLOCKED_SENDERS ?? '')
-    .split(',')
-    .map((address) => address.trim().toLowerCase())
-    .filter(Boolean);
-  return blocked.includes(fromEmail.trim().toLowerCase());
-}
-
+/**
+ * One outreach mailbox, sending through @profullstack/email-queue.
+ *
+ * The transport is the package's (`createSmtpTransport`): From and the
+ * envelope sender are pinned to the login, header injection is stripped, and
+ * the mailbox must be one of `OUTREACH_MAILBOXES`. A mailbox outside that list
+ * is not refused here — the constructor never throws, so a bad row cannot take
+ * a whole autopilot run down — but every `verify()` and `send()` is.
+ */
 export class SmtpMailer implements Mailer {
   readonly #credentials: SmtpCredentials;
-  readonly #transport: Transporter;
+  readonly #options: SmtpMailerOptions;
+  readonly #transport?: ReturnType<typeof outreachTransport>;
+  readonly #refused?: MailerError;
 
-  constructor(credentials: SmtpCredentials, transport?: Transporter) {
+  constructor(credentials: SmtpCredentials, options: SmtpMailerOptions = {}) {
     this.#credentials = credentials;
-    this.#transport = transport ?? createTransport(credentials);
+    this.#options = options;
+    try {
+      this.#transport = outreachTransport(credentials, options.createTransport);
+    } catch (error) {
+      this.#refused = queueFailure(error);
+    }
+  }
+
+  /** The mailbox this sends as. */
+  get fromEmail(): string {
+    return this.#credentials.fromEmail.trim().toLowerCase();
   }
 
   async send(message: Message): Promise<SendResult> {
-    try {
-      if (isBlockedSender(this.#credentials.fromEmail)) {
-        throw new MailerError(403, 'Sending from this mailbox is administratively blocked.');
-      }
-      const info = await this.#transport.sendMail({
-        from: formatFrom(this.#credentials.fromEmail, this.#credentials.fromName),
+    if (this.#refused) throw this.#refused;
+
+    const queue =
+      this.#options.queue === null ? undefined : (this.#options.queue ?? outreachEmailQueue());
+    if (!queue) {
+      throw new MailerError(
+        503,
+        'the outreach email queue is not configured (EMAIL_QUEUE_REDIS_URL, EMAIL_QUEUE_ENCRYPTION_KEY, PostgreSQL); refusing to send directly',
+        'CONFIG_INVALID',
+      );
+    }
+    const idempotencyKey = message.idempotencyKey?.trim();
+    if (!idempotencyKey) {
+      throw new MailerError(
+        400,
+        'a stable idempotency key is required',
+        'IDEMPOTENCY_KEY_REQUIRED',
+      );
+    }
+    const tenantId = message.tenantId?.trim();
+    if (!tenantId) {
+      throw new MailerError(
+        400,
+        'the workspace (tenant) of the send is required',
+        'CONFIG_INVALID',
+      );
+    }
+    const kind = message.kind ?? 'marketing';
+
+    // Marketing mail carries the postal address in both bodies. Without one
+    // configured the body is left alone and the queue refuses the message
+    // (BULK_POSTAL_ADDRESS_NOT_CONFIGURED): fail closed, never send without it.
+    const address = queue.postalAddress;
+    const bodies =
+      kind === 'marketing' && address
+        ? withPostalAddress({ text: message.text, html: message.html }, address)
+        : { text: message.text, ...(message.html ? { html: message.html } : {}) };
+
+    return queue.deliver(
+      this.#credentials,
+      {
         to: message.to,
         subject: message.subject,
-        text: message.text,
-        ...(message.html ? { html: message.html } : {}),
+        ...bodies,
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
-        ...(message.headers ? { headers: message.headers } : {}),
-      });
-
-      // Nodemailer always synthesises a Message-ID, so this is never empty —
-      // but it is the server's id only when the server returned one.
-      return { id: typeof info.messageId === 'string' ? info.messageId : undefined };
-    } catch (error) {
-      throw asMailerError(error);
-    }
+        ...(message.headers ? { headers: { ...message.headers } } : {}),
+      },
+      { kind, idempotencyKey, tenantId },
+    );
   }
 
   /**
@@ -108,48 +175,21 @@ export class SmtpMailer implements Mailer {
    * which is the worst possible moment to discover a typo.
    */
   async verify(): Promise<void> {
+    if (this.#refused) throw this.#refused;
     try {
-      await this.#transport.verify();
+      await this.#transport!.verify();
     } catch (error) {
-      throw asMailerError(error);
+      // The provider's own text is kept: "535 Username and Password not
+      // accepted" tells the customer to check their app password.
+      const detail = error instanceof Error ? error.message : String(error);
+      const status = Number(/SMTP (\d{3})/.exec(detail)?.[1] ?? 0);
+      throw new MailerError(status, detail.slice(0, 500));
     }
   }
 
   close(): void {
-    this.#transport.close();
+    this.#transport?.close();
   }
-}
-
-function createTransport(credentials: SmtpCredentials): Transporter {
-  return nodemailer.createTransport({
-    host: credentials.host,
-    port: credentials.port,
-    secure: credentials.secure,
-    // Only meaningful on the STARTTLS path, where it turns an optional upgrade
-    // into a required one.
-    ...(credentials.secure ? {} : { requireTLS: true }),
-    auth: { user: credentials.username, pass: credentials.password },
-    connectionTimeout: TIMEOUT_MS,
-    greetingTimeout: TIMEOUT_MS,
-    socketTimeout: TIMEOUT_MS,
-  });
-}
-
-/**
- * Turns a transport failure into the error the rest of the product handles.
- *
- * The provider's own text is kept: "535 Username and Password not accepted"
- * tells the customer to check their app password, and flattening it to
- * "send failed" tells them nothing they can act on.
- */
-function asMailerError(error: unknown): MailerError {
-  if (error instanceof MailerError) return error;
-
-  const detail = error instanceof Error ? error.message : String(error);
-  const code = (error as { responseCode?: unknown })?.responseCode;
-  const status = typeof code === 'number' ? code : 0;
-
-  return new MailerError(status, detail.slice(0, 500));
 }
 
 /**

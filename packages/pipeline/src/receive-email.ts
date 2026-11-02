@@ -39,6 +39,7 @@ import type { MailReader, IncomingMessage } from '@outreachgraph/email';
 import { enqueue } from './queue';
 import { recordStatus } from './stages';
 import { recordSenderBounce } from './sender-pool';
+import { outreachEmailQueue } from '@outreachgraph/email';
 import { markAddressBounced } from './list-quality';
 import { emitWebhookEvent } from './webhooks';
 
@@ -189,6 +190,16 @@ export async function receiveReplies(input: ReceiveRepliesInput): Promise<Receiv
             personId: person.personId,
             detail: message.subject,
           });
+          // And into the email queue's suppression, so no mailbox's worker
+          // ever sends to the dead address again (the From of a bounce is the
+          // mailer daemon, so the failed recipient is what gets suppressed).
+          await outreachEmailQueue()
+            ?.suppress(address, 'hard_bounce', 'imap')
+            .catch((error: unknown) => {
+              console.error(
+                `email-queue: could not suppress a bounced address: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
         }
       }
       continue;

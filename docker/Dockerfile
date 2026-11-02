@@ -18,6 +18,9 @@ WORKDIR /app
 # layer broke every time a package was added, and copying only the root
 # node_modules loses the per-package trees bun creates.
 COPY package.json bun.lock ./
+# bun patch: @profullstack/email-queue@0.2.0 maps the "bun" export condition to
+# src/, which it does not publish. Remove once a fixed release is pinned.
+COPY patches ./patches
 COPY packages ./packages
 COPY apps ./apps
 
