@@ -30,8 +30,5 @@
     "@types/bun": "^1.4.4",
     "prettier": "^3.9.10",
     "typescript": "^7.0.2"
-  },
-  "patchedDependencies": {
-    "@profullstack/email-queue@0.2.0": "patches/@profullstack%2Femail-queue@0.2.0.patch"
   }
 }

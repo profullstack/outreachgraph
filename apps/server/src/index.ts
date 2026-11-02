@@ -324,7 +324,7 @@ if (!mailer) console.log('no RESEND_API_KEY/EMAIL_FROM: verification links are l
 
 /**
  * Outreach email: @profullstack/email-queue (BullMQ on Redis, audit in
- * Postgres). Every SMTP send goes through it, as cha0spunk@ or knox@ only.
+ * Postgres). Every SMTP send goes through it, each mailbox only as its own login.
  *
  * Problems (no EMAIL_QUEUE_REDIS_URL, no EMAIL_QUEUE_ENCRYPTION_KEY, no
  * Postgres) are logged here and leave outreach email OFF: every send is

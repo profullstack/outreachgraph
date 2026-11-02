@@ -5,9 +5,11 @@
  * scheduling, PostgreSQL for the audit, and the package's gates in front of
  * the provider. What that buys, and why each part is not optional:
  *
- *   - **Only the two outreach mailboxes.** `authorizedSenders` is
- *     `cha0spunk@profullstack.com` and `knox@profullstack.com`; a transport for
- *     any other mailbox cannot even be constructed.
+ *   - **A mailbox sends only as itself.** `authorizedSenders` is the
+ *     mailbox's own SMTP login, and From plus the envelope sender are pinned
+ *     to it: a workspace's connected mailbox can never send as anyone else.
+ *     (Profullstack's own workspace connects only cha0spunk@ and knox@; that
+ *     is a configuration of our workspace, not a limit on customers.)
  *   - **Stop, never reroute.** A provider block (auth failure, 5.7.x policy
  *     refusal, persistent throttling) pauses that mailbox's queue and every
  *     later submission is refused with `SENDER_PAUSED`. Nothing here, and
@@ -51,7 +53,13 @@ import {
 import { MailerError, type SendResult } from './mailer';
 
 /** The only mailboxes OutreachGraph may send as. Never Resend, never another account. */
+/** The mailboxes Profullstack's own workspace sends from (documentation; not enforced per workspace). */
 export const OUTREACH_MAILBOXES = ['cha0spunk@profullstack.com', 'knox@profullstack.com'] as const;
+
+/** The only address a mailbox may send as: its own SMTP login. */
+export function mailboxSender(mailbox: Pick<QueueMailbox, 'username'>): string {
+  return mailbox.username.trim().toLowerCase();
+}
 
 export const EMAIL_QUEUE_APPLICATION_ID = 'outreachgraph';
 
@@ -115,7 +123,7 @@ export function mailboxTransportId(mailbox: Pick<QueueMailbox, 'username'>): str
 /**
  * The package's SMTP transport for one mailbox.
  *
- * Throws for a mailbox outside `OUTREACH_MAILBOXES`, and for one whose From
+ * Throws for a mailbox whose From
  * is not the authenticated login: the transport pins From to the login, so a
  * different `fromEmail` would silently send as somebody else.
  */
@@ -140,13 +148,13 @@ export function outreachTransport(
       user: mailbox.username,
       pass: mailbox.password,
       ...(mailbox.fromName?.trim() ? { fromName: mailbox.fromName.trim() } : {}),
-      authorizedSenders: [...OUTREACH_MAILBOXES],
+      authorizedSenders: [user],
       ...(createTransport ? { createTransport } : {}),
     });
   } catch (error) {
     throw new MailerError(
       403,
-      `${error instanceof Error ? error.message : String(error)} OutreachGraph sends only as ${OUTREACH_MAILBOXES.join(' or ')}.`,
+      `${error instanceof Error ? error.message : String(error)} A mailbox sends only as its own login (${mailbox.username}).`,
       'SENDER_UNAUTHORIZED',
     );
   }
@@ -216,7 +224,7 @@ export class OutreachEmailQueue {
   }
 
   /** The options every call into the package shares, for one tenant. */
-  options(tenantId?: string): EmailQueueOptions {
+  options(tenantId?: string, sender?: string): EmailQueueOptions {
     const blocked = this.#config.blockedSenders ?? [];
     return {
       redisUrl: this.#config.redisUrl,
@@ -225,7 +233,8 @@ export class OutreachEmailQueue {
       applicationId: EMAIL_QUEUE_APPLICATION_ID,
       ...(tenantId ? { tenantId } : {}),
       auditStore: this.#config.auditStore,
-      authorizedSenders: [...OUTREACH_MAILBOXES],
+      // Only the sending mailbox's own login; never a shared list.
+      ...(sender ? { authorizedSenders: [sender] } : {}),
       ...(blocked.length ? { blockedSenders: [...blocked] } : {}),
       ...(this.postalAddress ? { postalAddress: this.postalAddress } : {}),
       maxRecipientDomainPer24Hours:
@@ -270,7 +279,7 @@ export class OutreachEmailQueue {
     }
 
     const transport = outreachTransport(mailbox, this.#config.createTransport);
-    const handle = startEmailWorker(transport, this.options());
+    const handle = startEmailWorker(transport, this.options(undefined, mailboxSender(mailbox)));
     const entry: WorkerEntry = { fingerprint, transport, handle };
     this.#workers.set(id, entry);
     try {
@@ -350,7 +359,7 @@ export class OutreachEmailQueue {
     let job: EmailJobStatus;
     try {
       job = await queueEmail(transport, message, options.kind, {
-        ...this.options(options.tenantId),
+        ...this.options(options.tenantId, mailboxSender(mailbox)),
         auditStore: audit,
         applicationId: EMAIL_QUEUE_APPLICATION_ID,
         tenantId: options.tenantId,
@@ -362,7 +371,7 @@ export class OutreachEmailQueue {
 
     const result = job.result ?? (await this.#waitFor(job.id));
     if (result.ok) return result.providerMessageId ? { id: result.providerMessageId } : {};
-    throw await this.#refusal(transport, options.tenantId, result);
+    throw await this.#refusal(transport, options.tenantId, result, mailboxSender(mailbox));
   }
 
   /** Polls the audit row until the worker records a final state. */
@@ -403,9 +412,10 @@ export class OutreachEmailQueue {
     transport: DeliveryTransport,
     tenantId: string,
     result: DeliveryResult,
+    sender?: string,
   ): Promise<MailerError> {
     const detail = result.error ?? `the message ended ${result.state ?? 'FAILED'}`;
-    const health = await getProviderHealth(transport, this.options(tenantId)).catch(
+    const health = await getProviderHealth(transport, this.options(tenantId, sender)).catch(
       () => undefined,
     );
     if (health && !health.available) {
@@ -544,7 +554,7 @@ export async function startOutreachEmailQueue(input: {
   });
   for (const warning of warnings) log(`email-queue: ${warning}`);
   log(
-    `email-queue: on (mailboxes ${OUTREACH_MAILBOXES.join(', ')}; ` +
+    `email-queue: on (each mailbox sends only as its own login; ` +
       `${queue.options().maxRecipientDomainPer24Hours}/recipient domain/day)`,
   );
   configureOutreachEmailQueue(queue);

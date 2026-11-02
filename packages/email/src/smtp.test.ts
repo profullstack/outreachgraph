@@ -1,3 +1,4 @@
+import { outreachTransport } from './queue';
 import { describe, expect, test } from 'bun:test';
 import { MailerError } from './mailer';
 import { SmtpMailer, SMTP_PRESETS, withPostalAddress } from './smtp';
@@ -35,14 +36,22 @@ async function refusal(promise: Promise<unknown>): Promise<MailerError> {
 }
 
 describe('SmtpMailer', () => {
-  test('refuses a mailbox that is not one of the outreach mailboxes, before any network I/O', async () => {
+  test("a customer's own mailbox is allowed (sends only as its login), not refused", () => {
+    const t = outreachTransport(
+      { ...CREDENTIALS, username: 'user@company.com', fromEmail: 'user@company.com' },
+      fakeNodemailer().createTransport,
+    );
+    expect(t).toBeTruthy();
+    t.close();
+  });
+
+  test('a mailbox whose From is someone else is refused, before any network I/O', async () => {
     const fake = fakeNodemailer();
     const mailer = new SmtpMailer(
-      { ...CREDENTIALS, username: 'user@company.com', fromEmail: 'user@company.com' },
+      { ...CREDENTIALS, username: 'user@company.com', fromEmail: 'ceo@company.com' },
       { createTransport: fake.createTransport, queue: null },
     );
-    const error = await refusal(mailer.verify());
-    expect(error.code).toBe('SENDER_UNAUTHORIZED');
+    expect((await refusal(mailer.verify())).code).toBe('SENDER_UNAUTHORIZED');
     expect((await refusal(mailer.send({ to: 'a@b.com', subject: 's', text: 't' }))).code).toBe(
       'SENDER_UNAUTHORIZED',
     );

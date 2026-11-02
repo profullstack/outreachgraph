@@ -422,7 +422,7 @@ export async function mailerForWorkspace(
  * Whether a platform mailer may carry outreach.
  *
  * Never Resend (or any mailer marked `platformOnly`): outreach goes out only
- * as cha0spunk@ or knox@ over SMTP, through the queue. A workspace with no
+ * over the workspace's own SMTP mailboxes, through the queue. A workspace with no
  * usable mailbox sends nothing rather than spilling onto the platform sender.
  * Test doubles, which are not platform mailers, still stand in here.
  */

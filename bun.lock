@@ -145,7 +145,7 @@
       "name": "@outreachgraph/email",
       "version": "0.4.0",
       "dependencies": {
-        "@profullstack/email-queue": "^0.2.0",
+        "@profullstack/email-queue": "^0.2.1",
         "imapflow": "^2.9.1",
         "nodemailer": "^10.2.1",
       },
@@ -246,9 +246,6 @@
         "@outreachgraph/domain": "workspace:*",
       },
     },
-  },
-  "patchedDependencies": {
-    "@profullstack/email-queue@0.2.0": "patches/@profullstack%2Femail-queue@0.2.0.patch",
   },
   "packages": {
     "@alloc/quick-lru": ["@alloc/quick-lru@5.3.0", "", {}, "sha512-U4+70Pc5ZS9osnCBCE5Jha/ciHM+Yp+CNMNC/7HvYbNRk1Ldd+f7qO65W5qfhu/TCv+/ozljlXXe9Nj8419DMA=="],
@@ -439,7 +436,7 @@
 
     "@profullstack/coinpay-onboard": ["@profullstack/coinpay-onboard@0.3.1", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.32.2", "zod": "^4.6.7" }, "bin": { "coinpay-onboard": "bin/coinpay-onboard" } }, "sha512-+K7D6uaX10y+0V5sg7To1jKwNG8iCNbN9SSW6q5ACzoiDNswMox3G7gzY/Swxd128klq7ecN2Ni4JVNr50nRIQ=="],
 
-    "@profullstack/email-queue": ["@profullstack/email-queue@0.2.0", "", { "dependencies": { "bullmq": "^5.58.0", "ioredis": "^5.4.0", "nodemailer": "^10.3.1" } }, "sha512-cwNY2LVr+znLqgbkgZ/kZBMkwSf3URIsWQS2RhfCCUzTt0atizUgTerfzPCehP89zYGOUQ4wgwKuEr1dmaN8pg=="],
+    "@profullstack/email-queue": ["@profullstack/email-queue@0.2.1", "", { "dependencies": { "bullmq": "^5.58.0", "ioredis": "^5.4.0", "nodemailer": "^10.3.1" } }, "sha512-2rb95Tlhoa2RTzqTYmgV5+OHJxtevxeMVKsUZS5vmYmeuCyClVin0r3Gwgydfh4mPK7Zg6pYvYSm18xHhObBKQ=="],
 
     "@profullstack/footer": ["@profullstack/footer@0.4.0", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"], "bin": { "profullstack-footer": "bin/profullstack-footer.js" } }, "sha512-EJZnMUQmWDi9Gzx6BAjogloeaPFFSSCHtHJuC9dsXiOz8M87hfn6Z+Zx9AMYWk8s6xemPrPlkXKGB3PZugkcEA=="],
 

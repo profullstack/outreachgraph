@@ -88,10 +88,10 @@ export function withPostalAddress(
  * One outreach mailbox, sending through @profullstack/email-queue.
  *
  * The transport is the package's (`createSmtpTransport`): From and the
- * envelope sender are pinned to the login, header injection is stripped, and
- * the mailbox must be one of `OUTREACH_MAILBOXES`. A mailbox outside that list
- * is not refused here — the constructor never throws, so a bad row cannot take
- * a whole autopilot run down — but every `verify()` and `send()` is.
+ * envelope sender are pinned to the login, and header injection is stripped.
+ * A mailbox whose From is not its login is not refused here — the constructor
+ * never throws, so a bad row cannot take a whole autopilot run down — but
+ * every `verify()` and `send()` is.
  */
 export class SmtpMailer implements Mailer {
   readonly #credentials: SmtpCredentials;
