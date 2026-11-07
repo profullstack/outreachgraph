@@ -21,6 +21,7 @@ import {
   sameState,
   SIGN_IN_SCOPES,
 } from '@profullstack/coinpay-onboard/oauth';
+import type { CoinpayPass } from '@profullstack/coinpay-onboard/pass';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import { COINPAY_PLACEHOLDER_DOMAIN, provisionAccount } from './auth';
 
@@ -142,7 +143,13 @@ export async function finishCoinpaySignIn(
   config: CoinpaySignInConfig,
   input: { code: string; verifier: string; nonce: string },
   doFetch?: typeof fetch,
-): Promise<{ sub: string; email: string | null; name: string | null; openprofile_url?: string }> {
+): Promise<{
+  sub: string;
+  email: string | null;
+  name: string | null;
+  openprofile_url?: string;
+  pass?: CoinpayPass;
+}> {
   const base = config.issuer ?? 'https://coinpayportal.com';
   const done = await finishSignIn({
     code: input.code,
@@ -158,6 +165,7 @@ export async function finishCoinpaySignIn(
     sub: done.sub,
     email: done.email,
     name: done.name,
+    ...(done.pass?.active ? { pass: done.pass } : {}),
     ...(typeof done.userinfo.openprofile_url === 'string'
       ? { openprofile_url: done.userinfo.openprofile_url }
       : {}),

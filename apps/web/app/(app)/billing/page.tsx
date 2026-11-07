@@ -39,6 +39,12 @@ export default async function BillingPage() {
         <p className="text-ink-muted text-sm">
           What your plan covers, and what to do when it runs out.
         </p>
+        <p className="text-ink-muted text-sm">
+          Deposit $99 in your CoinPay wallet and get a free month:{' '}
+          <a className="underline" href="https://coinpayportal.com/pass">
+            CoinPay Pass
+          </a>
+        </p>
       </header>
 
       {offline || !billing ? (
