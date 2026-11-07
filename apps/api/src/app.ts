@@ -81,6 +81,7 @@ import {
   userForCoinpay,
   type CoinpaySignInConfig,
 } from './coinpay-signin';
+import { applyCoinpayPass } from './coinpay-pass';
 import {
   INVITE_COOKIE,
   REF_COOKIE,
@@ -1566,7 +1567,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     const code = c.req.query('code');
     if (!code) return c.text('CoinPay sign-in failed: no code.', 400);
 
-    let who: { sub: string; email: string | null; name: string | null; openprofile_url?: string };
+    let who: Awaited<ReturnType<typeof finishCoinpaySignIn>>;
     try {
       who = await finishCoinpaySignIn(config, {
         code,
@@ -1584,6 +1585,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         return c.redirect('/login?error=coinpay_signin_first', 302);
       }
       const linked = await linkCoinpay(options.db, actor.userId, who);
+      if (linked.ok) await applyCoinpayPass(options.db, actor.userId, who);
       if (linked.ok && who.openprofile_url) {
         try {
           await saveOpenProfileContact(profiles, actor.userId, who.openprofile_url);
@@ -1604,6 +1606,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     }
 
     const { userId, created } = await userForCoinpay(options.db, who);
+    await applyCoinpayPass(options.db, userId, who);
     const session = await startSession(options.db, userId, c.req.header('user-agent'));
     await repo.audit(options.db, {
       workspaceId: session.actor.workspaceId,

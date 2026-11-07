@@ -390,7 +390,7 @@ export type BonusStatus =
   | 'no_organization';
 
 /** The organization a person's credit goes to: the one they own, oldest first. */
-async function homeOrganization(db: Client, userId: string): Promise<string | undefined> {
+export async function homeOrganization(db: Client, userId: string): Promise<string | undefined> {
   const row = await queryOne<{ organization_id: string }>(
     db,
     `SELECT organization_id FROM organization_members WHERE user_id = ?
