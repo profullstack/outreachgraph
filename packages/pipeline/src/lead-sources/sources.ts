@@ -406,7 +406,7 @@ export function nichedbSource(
 }
 
 const DIRECTORY_HOSTS =
-  /(^|\.)(nichedb\.dev|saasrow\.com|slickdeals\.net|c0upons\.com|github\.com)$/;
+  /(^|\.)(nichedb\.dev|saasrow\.com|slickdeals\.net|c0upons\.com|saasrow\.pwa\.pit\.world|c0upons\.pwa\.pit\.world|github\.com)$/;
 
 function ownUrl(item: NichedbLeadItem): string | null {
   const url = str(item.url);
