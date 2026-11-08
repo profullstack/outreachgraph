@@ -22,7 +22,7 @@ describe('toHostname', () => {
   });
 
   test('knows the newer gTLDs real products use', () => {
-    for (const host of ['aiornot.pwa.pit.world', 'qrypt.chat', 'phonenumbers.bot', 'mediaanalyzer.pro']) {
+    for (const host of ['aiornot.vote', 'qrypt.chat', 'phonenumbers.bot', 'mediaanalyzer.pro']) {
       expect(toHostname(host)).toBe(host);
     }
   });
