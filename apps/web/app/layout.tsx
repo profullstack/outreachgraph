@@ -116,6 +116,24 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable}`}>
+      <head>
+        {/* WebMCP (@profullstack/webmcp): site_info and open_page for an AI
+            agent in the member's browser. Read-only; nothing here sends. */}
+        <script
+          type="module"
+          data-webmcp=""
+          src="https://cdn.jsdelivr.net/npm/@profullstack/webmcp@0/src/embed.js"
+          data-pages={JSON.stringify({
+            today: '/today',
+            prospects: '/prospects',
+            approvals: '/approvals',
+            inbox: '/inbox',
+            outreach: '/outreach',
+            signals: '/signals',
+            tools: '/tools',
+          })}
+        />
+      </head>
       <body className="bg-surface text-ink min-h-dvh antialiased">
         <ServiceWorkerRegistrar />
         {children}
