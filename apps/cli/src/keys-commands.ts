@@ -73,18 +73,24 @@ async function runKeys({ client, args, flags }: CommandContext): Promise<string>
       if (error instanceof WrongPassphraseError) throw new Error('wrong passphrase');
       throw error;
     }
-    const body = { dek: bytesToBase64(dek), ttl_seconds: ttl };
+    const body = {
+      dek: bytesToBase64(dek),
+      ttl_seconds: ttl,
+      ...(flags.unattended === true ? { unattended: true } : {}),
+    };
     wipe(dek);
     const r = (await client.post('/keys/unlock', body)) as { expires_at: string };
-    return `unlocked until ${r.expires_at}`;
+    return flags.unattended === true
+      ? 'unlocked; it now unlocks itself after every deploy and restart (og keys lock turns that off)'
+      : `unlocked until ${r.expires_at}`;
   }
-  throw new Error('og keys status | unlock [--ttl 8h|7d] | lock');
+  throw new Error('og keys status | unlock [--ttl 8h|7d] [--unattended] | lock');
 }
 
 export const KEYS_COMMANDS: readonly Command[] = [
   {
     name: 'keys',
-    usage: 'og keys status | unlock [--ttl 8h|7d] | lock',
+    usage: 'og keys status | unlock [--ttl 8h|7d] [--unattended] | lock',
     summary:
       'Workspace key passphrase: autopilot uses your mailboxes and accounts only while unlocked.',
     run: runKeys,

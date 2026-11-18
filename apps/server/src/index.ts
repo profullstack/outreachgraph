@@ -46,6 +46,7 @@ import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { sendDueCrmMail } from '../../api/src/crm';
 import { syncCrmFromOutreach, workspacesNeedingCrmSync } from '../../api/src/crm-sync';
 import { draftIntroCards, sendIntroDigests } from '../../api/src/intro-drafts';
+import { rearmUnattendedKeys } from '../../api/src/unattended-keys';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import { runBootstrapProductJob } from '../../api/src/bulk-products';
 import { runCampaignSources } from '../../api/src/campaign-source';
@@ -736,6 +737,9 @@ const apiUrl = process.env.API_URL ?? appUrl;
 /** Whose connected mailbox sends member notifications (intro matches and requests). */
 const systemMailWorkspaceId = process.env.SYSTEM_MAIL_WORKSPACE_ID?.trim() || undefined;
 
+/** Lets an owner opt into workspace keys that unlock themselves (migration 0090). */
+const unattendedKey = process.env.OG_UNATTENDED_KEY?.trim() || undefined;
+
 // The X app accounts are connected through, over OAuth 2.1. The callback is
 // registered on the X app as exactly this URL, so it is derived from the one
 // origin the API is served on rather than configured separately.
@@ -771,6 +775,7 @@ const codes = codeServicesFor(openRawHandle(), codeOptionsFromEnv(process.env));
 const api = createApp({
   codes,
   ...(systemMailWorkspaceId ? { systemMailWorkspaceId } : {}),
+  ...(unattendedKey ? { unattendedKey } : {}),
   ...(xOAuth ? { xOAuth } : {}),
   ...(coinpaySignIn ? { coinpaySignIn } : {}),
   db,
@@ -1205,6 +1210,17 @@ async function runJob(job: QueuedJob): Promise<void> {
 }
 
 async function tick(): Promise<void> {
+  // Opted-in workspaces unlock themselves after a deploy, restart or TTL
+  // expiry, before anything below needs their credentials.
+  try {
+    const rearmed = await rearmUnattendedKeys(db, encryptionKey, unattendedKey);
+    if (rearmed.unlocked.length > 0) {
+      console.log(`keys: unattended unlock of ${rearmed.unlocked.join(', ')}`);
+    }
+  } catch (error) {
+    console.error('unattended unlock failed', error);
+  }
+
   const workspaces = await queryAll<{ id: string }>(
     db,
     `SELECT id FROM workspaces WHERE status = 'active'`,

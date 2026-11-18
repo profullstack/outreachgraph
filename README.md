@@ -174,6 +174,17 @@ MCP: `crm_summary`, `list_deals`, `get_deal`, `save_deal`, `log_activity`,
 `list_reminders`, `add_reminder`, `complete_reminder`, `get_booking_page`,
 `set_booking_page`, `list_bookings`, `cancel_booking`.
 
+### Workspace keys that unlock themselves
+
+Credentials (mailboxes, social sessions) are sealed under the owner's
+passphrase and opened in memory for at most 7 days; a deploy re-locks them.
+An owner can opt into unattended operation instead: tick **Keep unlocked
+across deploys and restarts** on the Keys page (or `og keys unlock
+--unattended`). The data key is then stored wrapped under the server key
+`OG_UNATTENDED_KEY` and the worker re-unlocks after every deploy, restart and
+expiry. **Lock** turns it off. This is weaker than unlock-on-use: anyone with
+the database and the server key can open those credentials.
+
 ### Sending outreach
 
 Outreach leaves over SMTP as **`cha0spunk@profullstack.com` or
