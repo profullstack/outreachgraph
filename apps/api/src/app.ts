@@ -496,6 +496,11 @@ export interface AppOptions {
   /** Public origin, used to build links that land in someone's inbox. */
   readonly appUrl?: string;
   /**
+   * The workspace whose connected mailbox sends member notifications (intro
+   * matches, requests, acceptances). Unset: they go to the log.
+   */
+  readonly systemMailWorkspaceId?: string;
+  /**
    * Credit codes and invites (@profullstack/redeem-credits, @profullstack/affiliates).
    * Unset, the routes answer 503 and signup/verification skip invites.
    */
@@ -1917,7 +1922,17 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // Introductions between two members who both asked (PRD §38). The one
   // surface that crosses workspaces, and it carries only what each person
   // wrote on their own card. See `intros.ts` for what each side learns, when.
-  api.route('/intros', introRoutes());
+  api.route(
+    '/intros',
+    introRoutes({
+      ...(options.mailer ? { mailer: options.mailer } : {}),
+      ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+      ...(options.encryptionKey ? { encryptionKey: options.encryptionKey } : {}),
+      ...(options.systemMailWorkspaceId
+        ? { systemWorkspaceId: options.systemMailWorkspaceId }
+        : {}),
+    }),
+  );
 
   // -------------------------------------------------------------------- crm
   //

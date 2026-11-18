@@ -50,6 +50,12 @@ import {
 } from '@outreachgraph/domain';
 import { ApiError, type AppEnv } from './context';
 import * as repo from './repository';
+import {
+  mailIntroAccepted,
+  mailIntroRequested,
+  previewMatchCount,
+  type IntroMailOptions,
+} from './intro-drafts';
 
 const DAY_MS = 86_400_000;
 
@@ -330,7 +336,7 @@ async function expireStale(db: Client, userId: string, stamp: string): Promise<v
 }
 
 /** Users the caller may not be matched with or ask: a decline in either direction. */
-async function blockedWith(db: Client, userId: string): Promise<Set<string>> {
+export async function blockedWith(db: Client, userId: string): Promise<Set<string>> {
   const rows = await queryAll<{ blocker_user_id: string; blocked_user_id: string }>(
     db,
     `SELECT blocker_user_id, blocked_user_id FROM intro_blocks
@@ -343,7 +349,7 @@ async function blockedWith(db: Client, userId: string): Promise<Set<string>> {
 }
 
 /** Users the caller already has a live or completed introduction with. */
-async function linkedWith(db: Client, userId: string): Promise<Set<string>> {
+export async function linkedWith(db: Client, userId: string): Promise<Set<string>> {
   const rows = await queryAll<{ requester_user_id: string; target_user_id: string }>(
     db,
     `SELECT requester_user_id, target_user_id FROM intro_requests
@@ -672,12 +678,45 @@ const RESPONSES: Record<string, IntroResponse> = {
   withdraw: 'withdraw',
 };
 
-export function introRoutes(): Hono<AppEnv> {
+/** Whether the card is still OutreachGraph's draft, and the member's mail choice. */
+async function cardExtras(
+  db: Client,
+  userId: string,
+): Promise<{ drafted: boolean; mailOff: boolean; previewMatches: number }> {
+  const row = await queryOne<{ auto_drafted: number | bigint; mail_off: number | bigint }>(
+    db,
+    'SELECT auto_drafted, mail_off FROM intro_cards WHERE user_id = ?',
+    [userId],
+  );
+  return {
+    drafted: Number(row?.auto_drafted ?? 0) === 1,
+    mailOff: Number(row?.mail_off ?? 0) === 1,
+    previewMatches: row ? await previewMatchCount(db, userId) : 0,
+  };
+}
+
+export function introRoutes(mail: IntroMailOptions = {}): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
 
   router.get('/card', async (c) => {
     const actor = c.get('actor');
-    return c.json({ card: await getOwnIntroCard(c.get('db'), actor.userId) });
+    const db = c.get('db');
+    return c.json({
+      card: await getOwnIntroCard(db, actor.userId),
+      ...(await cardExtras(db, actor.userId)),
+    });
+  });
+
+  // The weekly match email: on (default) or off.
+  router.put('/mail', async (c) => {
+    const actor = c.get('actor');
+    const body = safeJson(await c.req.raw.text()) as { on?: unknown };
+    if (typeof body?.on !== 'boolean') throw ApiError.badRequest('on must be true or false');
+    await c.get('db').execute({
+      sql: 'UPDATE intro_cards SET mail_off = ? WHERE user_id = ?',
+      args: [body.on ? 0 : 1, actor.userId],
+    });
+    return c.json({ mailOff: !body.on });
   });
 
   router.put('/card', async (c) => {
@@ -692,6 +731,21 @@ export function introRoutes(): Hono<AppEnv> {
     const before = await getOwnIntroCard(db, actor.userId);
     const card = await saveOwnIntroCard(db, actor.userId, parsed.data).catch(toApiError);
 
+    // Any text the member writes makes the card theirs: the draft sweep stops.
+    const d = parsed.data;
+    if (
+      d.displayName !== undefined ||
+      d.headline !== undefined ||
+      d.lookingFor !== undefined ||
+      d.canOffer !== undefined ||
+      d.topics !== undefined
+    ) {
+      await db.execute({
+        sql: 'UPDATE intro_cards SET auto_drafted = 0 WHERE user_id = ?',
+        args: [actor.userId],
+      });
+    }
+
     if (before.open !== card.open) {
       await repo.audit(db, {
         workspaceId: actor.workspaceId,
@@ -704,7 +758,7 @@ export function introRoutes(): Hono<AppEnv> {
       });
     }
 
-    return c.json({ card });
+    return c.json({ card, ...(await cardExtras(db, actor.userId)) });
   });
 
   router.get('/matches', async (c) => {
@@ -768,6 +822,28 @@ export function introRoutes(): Hono<AppEnv> {
       detail: { via: actor.credential ?? 'session' },
     });
 
+    const target = await queryOne<{ target_user_id: string }>(
+      db,
+      'SELECT target_user_id FROM intro_requests WHERE id = ?',
+      [request.id],
+    );
+    if (target) {
+      const mine = await getOwnIntroCard(db, actor.userId);
+      await mailIntroRequested(db, mail, {
+        id: request.id,
+        note: request.note,
+        card: {
+          id: mine.id ?? '',
+          displayName: mine.displayName,
+          headline: mine.headline,
+          lookingFor: mine.lookingFor,
+          canOffer: mine.canOffer,
+          topics: mine.topics,
+        },
+        targetUserId: target.target_user_id,
+      }).catch(() => undefined);
+    }
+
     return c.json({ request }, 201);
   });
 
@@ -794,6 +870,21 @@ export function introRoutes(): Hono<AppEnv> {
       entityId: request.id,
       detail: { via: actor.credential ?? 'session' },
     });
+
+    if (request.status === 'accepted') {
+      const parties = await queryOne<{ requester_user_id: string; target_user_id: string }>(
+        db,
+        'SELECT requester_user_id, target_user_id FROM intro_requests WHERE id = ?',
+        [request.id],
+      );
+      if (parties) {
+        await mailIntroAccepted(db, mail, {
+          id: request.id,
+          requesterUserId: parties.requester_user_id,
+          targetUserId: parties.target_user_id,
+        }).catch(() => undefined);
+      }
+    }
 
     return c.json({ request });
   });

@@ -45,6 +45,7 @@ import { codeOptionsFromEnv, codeServicesFor } from '../../api/src/credit-codes'
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { sendDueCrmMail } from '../../api/src/crm';
 import { syncCrmFromOutreach, workspacesNeedingCrmSync } from '../../api/src/crm-sync';
+import { draftIntroCards, sendIntroDigests } from '../../api/src/intro-drafts';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import { runBootstrapProductJob } from '../../api/src/bulk-products';
 import { runCampaignSources } from '../../api/src/campaign-source';
@@ -732,6 +733,9 @@ if (!coinpay) {
 // hostname in production, so this is the same origin the browser uses.
 const apiUrl = process.env.API_URL ?? appUrl;
 
+/** Whose connected mailbox sends member notifications (intro matches and requests). */
+const systemMailWorkspaceId = process.env.SYSTEM_MAIL_WORKSPACE_ID?.trim() || undefined;
+
 // The X app accounts are connected through, over OAuth 2.1. The callback is
 // registered on the X app as exactly this URL, so it is derived from the one
 // origin the API is served on rather than configured separately.
@@ -766,6 +770,7 @@ const codes = codeServicesFor(openRawHandle(), codeOptionsFromEnv(process.env));
 
 const api = createApp({
   codes,
+  ...(systemMailWorkspaceId ? { systemMailWorkspaceId } : {}),
   ...(xOAuth ? { xOAuth } : {}),
   ...(coinpaySignIn ? { coinpaySignIn } : {}),
   db,
@@ -1245,6 +1250,22 @@ async function tick(): Promise<void> {
     }
   } catch (error) {
     console.error('crm sync failed', error);
+  }
+
+  // Boardy-style intros run themselves: every member gets a drafted card (kept
+  // off until they click), and a weekly match email when there is a fit.
+  try {
+    const drafted = await draftIntroCards(db);
+    if (drafted > 0) console.log(`intros: drafted ${drafted} card(s)`);
+    const digests = await sendIntroDigests(db, {
+      ...(mailer ? { mailer } : {}),
+      ...(appUrl ? { appUrl } : {}),
+      encryptionKey,
+      ...(systemMailWorkspaceId ? { systemWorkspaceId: systemMailWorkspaceId } : {}),
+    });
+    if (digests > 0) console.log(`intros: mailed ${digests} match digest(s)`);
+  } catch (error) {
+    console.error('intro drafts/digests failed', error);
   }
 
   // CRM reminders that fell due, and booked PairUX calls starting within the
