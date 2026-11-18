@@ -338,6 +338,7 @@ import { contentDraftRoutes } from './content-drafts';
 import { contentRadarRoutes } from './content-radar';
 import { introRoutes } from './intros';
 import { calendarRoutes, crmDealRoutes, publicCalendarRoutes } from './crm';
+import { syncCrmFromOutreach } from './crm-sync';
 import {
   campaignSourceStatus,
   checkCampaignSource,
@@ -1922,6 +1923,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   //
   // Deals, call notes and reminders (PRD §39), plus the member's own booking
   // page and the PairUX calls booked on it.
+  // Copy what outreach did (sent, replied, bounced, suppressed) into the CRM
+  // now rather than on the next worker tick. Idempotent.
+  api.post('/crm/sync', async (c) => {
+    const actor = c.get('actor');
+    if (actor.role === 'viewer')
+      throw ApiError.forbidden('viewers can read the CRM, not change it');
+    return c.json(await syncCrmFromOutreach(c.get('db'), actor.workspaceId));
+  });
   api.route('/crm', crmDealRoutes());
   api.route(
     '/calendar',

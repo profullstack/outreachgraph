@@ -44,6 +44,7 @@ import { createApp } from '../../api/src/app';
 import { codeOptionsFromEnv, codeServicesFor } from '../../api/src/credit-codes';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
 import { sendDueCrmMail } from '../../api/src/crm';
+import { syncCrmFromOutreach, workspacesNeedingCrmSync } from '../../api/src/crm-sync';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import { runBootstrapProductJob } from '../../api/src/bulk-products';
 import { runCampaignSources } from '../../api/src/campaign-source';
@@ -1227,6 +1228,24 @@ async function tick(): Promise<void> {
   // a row tying an address to a moment someone lost their password.
   const prunedResets = await prunePasswordResetTokens(db);
   if (prunedResets > 0) console.log(`pruned ${prunedResets} password reset tokens`);
+
+  // The CRM learns from outreach: sends, replies, bounces and suppressions
+  // become deals and timeline entries (PRD §39). Idempotent; a backlog drains
+  // 2,000 interactions per workspace per tick.
+  try {
+    for (const workspaceId of await workspacesNeedingCrmSync(db)) {
+      const synced = await syncCrmFromOutreach(db, workspaceId);
+      if (synced.interactions > 0 || synced.suppressions > 0 || synced.linked > 0) {
+        console.log(
+          `crm sync ${workspaceId}: ${synced.interactions} interaction(s), ` +
+            `${synced.dealsCreated} new deal(s), ${synced.suppressions} suppression(s), ` +
+            `${synced.linked} linked`,
+        );
+      }
+    }
+  } catch (error) {
+    console.error('crm sync failed', error);
+  }
 
   // CRM reminders that fell due, and booked PairUX calls starting within the
   // hour: each mailed once (PRD §39). A failure here must not stop the tick.
