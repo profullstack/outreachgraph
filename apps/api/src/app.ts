@@ -500,6 +500,8 @@ export interface AppOptions {
    * matches, requests, acceptances). Unset: they go to the log.
    */
   readonly systemMailWorkspaceId?: string;
+  /** OG_UNATTENDED_KEY (32 bytes, base64): enables keys that unlock themselves. */
+  readonly unattendedKey?: string | undefined;
   /**
    * Credit codes and invites (@profullstack/redeem-credits, @profullstack/affiliates).
    * Unset, the routes answer 503 and signup/verification skip invites.
@@ -1819,7 +1821,10 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // ------------------------------------------------------------------ keys
   //
   // Seal v2: the workspace passphrase that opens its stored credentials.
-  api.route('/keys', keysRoutes({ vault: options.encryptionKey }));
+  api.route(
+    '/keys',
+    keysRoutes({ vault: options.encryptionKey, unattendedKey: options.unattendedKey }),
+  );
 
   // ------------------------------------------------------------- audience
   //

@@ -26,6 +26,8 @@ interface KeysStatus {
   expires_at: string | null;
   state: 'setup_required' | 'locked' | 'unlocked';
   autopilot_paused: boolean;
+  unattended?: boolean;
+  unattended_available?: boolean;
 }
 
 const TTLS: [string, number][] = [
@@ -59,6 +61,7 @@ export function KeysPanel() {
   const [useRecovery, setUseRecovery] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [ttl, setTtl] = useState(8 * 3600);
+  const [unattended, setUnattended] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [shownRecovery, setShownRecovery] = useState<string | null>(null);
@@ -100,6 +103,7 @@ export function KeysPanel() {
         dek,
         ttl_seconds: ttl,
         reset: status.has_seal,
+        ...(status.unattended_available ? { unattended } : {}),
       });
       setShownRecovery(created.recoveryKey);
       const migrated = (res.migration as { migrated?: number } | null)?.migrated ?? 0;
@@ -118,8 +122,16 @@ export function KeysPanel() {
         : await unlockSeal(status.seal, pass, status.workspace_id);
       const dek = bytesToBase64(d);
       wipe(d);
-      await post('/api/v1/keys/unlock', { dek, ttl_seconds: ttl });
-      setMsg('Unlocked. Autopilot resumes on its next tick.');
+      await post('/api/v1/keys/unlock', {
+        dek,
+        ttl_seconds: ttl,
+        ...(status.unattended_available ? { unattended } : {}),
+      });
+      setMsg(
+        status.unattended_available && unattended
+          ? 'Unlocked, and it will stay unlocked across deploys and restarts.'
+          : 'Unlocked. Autopilot resumes on its next tick.',
+      );
       setPass('');
       setRecovery('');
     });
@@ -149,6 +161,25 @@ export function KeysPanel() {
 
   const input = 'border-border w-full rounded-xl border bg-transparent px-3 py-2 text-sm';
   const button = 'border-border rounded-xl border px-3 py-2 text-sm disabled:opacity-50';
+  const unattendedBox = status.unattended_available ? (
+    <label className="flex items-start gap-2 text-sm">
+      <input
+        type="checkbox"
+        className="mt-1"
+        checked={unattended}
+        onChange={(e) => setUnattended(e.target.checked)}
+      />
+      <span>
+        Keep unlocked across deploys and restarts (fully automatic).{' '}
+        <span className="text-ink-muted">
+          The server keeps your unlocked key so outreach, booking mail and reminders never stop.
+          Anyone with the server and its database could use your connected accounts. Lock turns this
+          off.
+        </span>
+      </span>
+    </label>
+  ) : null;
+
   const ttlPicker = (
     <label className="block text-sm">
       Stay unlocked for{' '}
@@ -174,7 +205,9 @@ export function KeysPanel() {
           {status.state === 'setup_required'
             ? 'no passphrase yet'
             : status.state === 'unlocked'
-              ? `unlocked until ${new Date(status.expires_at!).toLocaleString()}`
+              ? status.unattended
+                ? 'unlocked, stays unlocked automatically'
+                : `unlocked until ${new Date(status.expires_at!).toLocaleString()}`
               : 'locked'}
         </strong>
         {status.autopilot_paused && (
@@ -222,6 +255,7 @@ export function KeysPanel() {
             onChange={(e) => setPass2(e.target.value)}
           />
           {ttlPicker}
+          {unattendedBox}
           <button className={button} disabled={busy} onClick={setup}>
             Set passphrase and unlock
           </button>
@@ -249,6 +283,7 @@ export function KeysPanel() {
             />
           )}
           {ttlPicker}
+          {unattendedBox}
           <div className="flex gap-2">
             <button className={button} disabled={busy} onClick={unlock}>
               Unlock

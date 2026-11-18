@@ -23,9 +23,17 @@ import {
   type SecretVault,
 } from '@outreachgraph/secrets';
 import { ApiError, type AppEnv, type RequestActor } from './context';
+import {
+  deleteUnattendedKey,
+  hasUnattendedKey,
+  saveUnattendedKey,
+  wrapDataKey,
+} from './unattended-keys';
 
 export interface KeysRouteDeps {
   readonly vault: SecretVault | undefined;
+  /** OG_UNATTENDED_KEY: lets an owner opt into keys that unlock themselves. */
+  readonly unattendedKey?: string | undefined;
 }
 
 function requireOwner(actor: RequestActor, doing: string): void {
@@ -43,6 +51,26 @@ async function json(req: Request): Promise<Record<string, unknown>> {
 
 export function keysRoutes(deps: KeysRouteDeps): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
+
+  /** Honours `unattended` on setup/unlock: true stores the wrapped key, false deletes it. */
+  const applyUnattended = async (
+    db: Parameters<typeof deleteUnattendedKey>[0],
+    actor: RequestActor,
+    flag: unknown,
+    dekB64: string,
+  ): Promise<void> => {
+    if (flag === false) await deleteUnattendedKey(db, actor.workspaceId);
+    if (flag !== true) return;
+    if (!deps.unattendedKey) {
+      throw ApiError.conflict('unattended unlock is not configured on this server');
+    }
+    await saveUnattendedKey(
+      db,
+      actor.workspaceId,
+      wrapDataKey(deps.unattendedKey, actor.workspaceId, dekB64),
+      actor.userId,
+    );
+  };
 
   const vault = (): SecretVault => {
     if (!deps.vault) throw ApiError.notFound('route');
@@ -64,6 +92,8 @@ export function keysRoutes(deps: KeysRouteDeps): Hono<AppEnv> {
       expires_at: status.expiresAt,
       state: !seal ? 'setup_required' : status.unlocked ? 'unlocked' : 'locked',
       autopilot_paused: locked,
+      unattended: await hasUnattendedKey(db, actor.workspaceId),
+      unattended_available: Boolean(deps.unattendedKey),
       legacy_migration: v.legacyMigrationEnabled ? 'on' : 'off',
     });
   });
@@ -89,6 +119,7 @@ export function keysRoutes(deps: KeysRouteDeps): Hono<AppEnv> {
     await saveWorkspaceSeal(db, actor.workspaceId, body.seal, actor.userId);
     v.forgetSeal(actor.workspaceId);
     const { expiresAt } = await v.unlock(actor.workspaceId, body.dek, body.ttl_seconds);
+    await applyUnattended(db, actor, body.unattended, body.dek);
     const migration = await migrateWorkspaceSecrets(db, v, actor.workspaceId, body.seal.public_key);
     return c.json({ ok: true, expires_at: expiresAt, migration });
   });
@@ -105,6 +136,7 @@ export function keysRoutes(deps: KeysRouteDeps): Hono<AppEnv> {
         String(body.dek ?? ''),
         body.ttl_seconds,
       );
+      await applyUnattended(db, actor, body.unattended, String(body.dek ?? ''));
       const seal = await loadWorkspaceSeal(db, actor.workspaceId);
       const migration = seal
         ? await migrateWorkspaceSecrets(db, v, actor.workspaceId, seal.public_key)
@@ -117,11 +149,22 @@ export function keysRoutes(deps: KeysRouteDeps): Hono<AppEnv> {
     }
   });
 
-  router.post('/lock', (c) => {
+  // Lock means stop: it also turns unattended unlock off, or the next worker
+  // tick would simply unlock again.
+  router.post('/lock', async (c) => {
     const actor = c.get('actor');
     requireOwner(actor, 'locking workspace keys');
     vault().lock(actor.workspaceId);
+    await deleteUnattendedKey(c.get('db'), actor.workspaceId);
     return c.json({ ok: true });
+  });
+
+  // Turn unattended unlock off without locking now.
+  router.post('/unattended/off', async (c) => {
+    const actor = c.get('actor');
+    requireOwner(actor, 'changing unattended unlock');
+    await deleteUnattendedKey(c.get('db'), actor.workspaceId);
+    return c.json({ ok: true, unattended: false });
   });
 
   router.post('/passphrase', async (c) => {
