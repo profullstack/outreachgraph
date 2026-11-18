@@ -76,9 +76,9 @@ describe('autoApproveInternal', () => {
       'SELECT decided_by, decision FROM approvals WHERE recommendation_id = ?',
       [id],
     );
-    const action = await queryOne<{ kind: string }>(
+    const action = await queryOne<{ kind: string; status: string; executed_at: string | null }>(
       seeded.db,
-      'SELECT kind FROM actions WHERE recommendation_id = ?',
+      'SELECT kind, status, executed_at FROM actions WHERE recommendation_id = ?',
       [id],
     );
     const audit = await queryOne<{ actor_kind: string }>(
@@ -92,6 +92,10 @@ describe('autoApproveInternal', () => {
     // Credited to the system, not to whoever last signed in.
     expect(approval?.decided_by).toBe('usr_auto_approve');
     expect(action?.kind).toBe('refresh_research');
+    // Done, not queued: nothing executes a queued internal action, so a
+    // 'queued' row here would read as a backlog forever.
+    expect(action?.status).toBe('completed');
+    expect(action?.executed_at).toBeTruthy();
     expect(audit?.actor_kind).toBe('system');
   });
 

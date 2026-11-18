@@ -1327,6 +1327,7 @@ async function tick(): Promise<void> {
           ...(workflowSearcher ? { searcher: workflowSearcher } : {}),
           emailSendingEnabled: mailer !== undefined,
           launches: { githubToken: process.env.GITHUB_TOKEN },
+          vault: encryptionKey,
         })) {
           console.log(
             `workflow ${result.workflowId}: ${result.trigger} run ${result.runId} ${result.status}`,
