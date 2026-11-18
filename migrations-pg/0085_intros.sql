@@ -1,4 +1,7 @@
 -- 0085_intros (Postgres). See migrations/0085_intros.sql for the reasoning.
+-- `intro_requests.status` is pending | accepted | declined | withdrawn | expired. That note
+-- sits up here, not beside the column: a `--` line inside a CREATE TABLE is dropped together
+-- with the column after it when this file runs through @profullstack/libsql-pg.
 
 CREATE TABLE IF NOT EXISTS intro_cards (
   id            TEXT PRIMARY KEY,
@@ -20,7 +23,6 @@ CREATE TABLE IF NOT EXISTS intro_requests (
   requester_user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   target_user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   note               TEXT NOT NULL,
-  -- pending | accepted | declined | withdrawn | expired
   status             TEXT NOT NULL DEFAULT 'pending',
   created_at         TEXT NOT NULL,
   expires_at         TEXT NOT NULL,

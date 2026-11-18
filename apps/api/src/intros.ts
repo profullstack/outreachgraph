@@ -121,8 +121,22 @@ interface CardRow {
   updated_at: string;
 }
 
-const CARD_COLUMNS = `id, user_id, is_open, display_name, headline, looking_for, can_offer,
-  topics, opened_at, updated_at`;
+// Each query is written out whole. Sharing a column list by interpolation
+// would be shorter, and would also be the one shape of SQL in this file that a
+// reader (or a scanner) has to stop and prove safe.
+const CARD_BY_USER = `SELECT id, user_id, is_open, display_name, headline, looking_for,
+    can_offer, topics, opened_at, updated_at
+  FROM intro_cards WHERE user_id = ?`;
+
+const CARD_BY_ID = `SELECT id, user_id, is_open, display_name, headline, looking_for,
+    can_offer, topics, opened_at, updated_at
+  FROM intro_cards WHERE id = ?`;
+
+const OPEN_CARDS_EXCEPT = `SELECT id, user_id, is_open, display_name, headline, looking_for,
+    can_offer, topics, opened_at, updated_at
+  FROM intro_cards
+  WHERE is_open = 1 AND user_id <> ?
+  ORDER BY updated_at DESC LIMIT ?`;
 
 function parseTopics(value: unknown): string[] {
   if (typeof value !== 'string') return [];
@@ -149,9 +163,7 @@ function isOpen(row: CardRow | undefined): boolean {
 }
 
 async function cardRowForUser(db: Client, userId: string): Promise<CardRow | undefined> {
-  return queryOne<CardRow>(db, `SELECT ${CARD_COLUMNS} FROM intro_cards WHERE user_id = ?`, [
-    userId,
-  ]);
+  return queryOne<CardRow>(db, CARD_BY_USER, [userId]);
 }
 
 /**
@@ -369,13 +381,7 @@ export async function findIntroMatches(
   await expireStale(db, userId, now());
   const [blocked, linked] = await Promise.all([blockedWith(db, userId), linkedWith(db, userId)]);
 
-  const rows = await queryAll<CardRow>(
-    db,
-    `SELECT ${CARD_COLUMNS} FROM intro_cards
-      WHERE is_open = 1 AND user_id <> ?
-      ORDER BY updated_at DESC LIMIT ${MATCH_POOL_LIMIT}`,
-    [userId],
-  );
+  const rows = await queryAll<CardRow>(db, OPEN_CARDS_EXCEPT, [userId, MATCH_POOL_LIMIT]);
   const candidates = rows
     .filter((row) => !blocked.has(row.user_id) && !linked.has(row.user_id))
     .map(toCard);
@@ -394,8 +400,25 @@ interface RequestRow {
   decided_at: string | null;
 }
 
-const REQUEST_COLUMNS = `id, requester_user_id, target_user_id, note, status, created_at,
-  expires_at, decided_at`;
+const REQUEST_FOR_PARTY = `SELECT id, requester_user_id, target_user_id, note, status,
+    created_at, expires_at, decided_at
+  FROM intro_requests
+  WHERE id = ? AND (requester_user_id = ? OR target_user_id = ?)`;
+
+const REQUESTS_INCOMING = `SELECT id, requester_user_id, target_user_id, note, status,
+    created_at, expires_at, decided_at
+  FROM intro_requests WHERE target_user_id = ?
+  ORDER BY created_at DESC LIMIT 200`;
+
+const REQUESTS_OUTGOING = `SELECT id, requester_user_id, target_user_id, note, status,
+    created_at, expires_at, decided_at
+  FROM intro_requests WHERE requester_user_id = ?
+  ORDER BY created_at DESC LIMIT 200`;
+
+const REQUESTS_EITHER = `SELECT id, requester_user_id, target_user_id, note, status,
+    created_at, expires_at, decided_at
+  FROM intro_requests WHERE requester_user_id = ? OR target_user_id = ?
+  ORDER BY created_at DESC LIMIT 200`;
 
 async function viewRequest(
   db: Client,
@@ -463,11 +486,7 @@ export async function requestIntro(
 
   const note = cleanIntroText(input.note, INTRO_LIMITS.note);
   const own = await cardRowForUser(db, userId);
-  const target = await queryOne<CardRow>(
-    db,
-    `SELECT ${CARD_COLUMNS} FROM intro_cards WHERE id = ?`,
-    [input.cardId],
-  );
+  const target = await queryOne<CardRow>(db, CARD_BY_ID, [input.cardId]);
 
   const [blocked, linked, recent] = await Promise.all([
     blockedWith(db, userId),
@@ -526,18 +545,12 @@ export async function listIntroRequests(
   const stamp = now();
   await expireStale(db, userId, stamp);
 
-  const where =
+  const rows =
     box === 'incoming'
-      ? 'target_user_id = ?'
+      ? await queryAll<RequestRow>(db, REQUESTS_INCOMING, [userId])
       : box === 'outgoing'
-        ? 'requester_user_id = ?'
-        : '(requester_user_id = ? OR target_user_id = ?)';
-  const rows = await queryAll<RequestRow>(
-    db,
-    `SELECT ${REQUEST_COLUMNS} FROM intro_requests WHERE ${where}
-      ORDER BY created_at DESC LIMIT 200`,
-    box ? [userId] : [userId, userId],
-  );
+        ? await queryAll<RequestRow>(db, REQUESTS_OUTGOING, [userId])
+        : await queryAll<RequestRow>(db, REQUESTS_EITHER, [userId, userId]);
 
   const views: IntroRequestView[] = [];
   for (const row of rows) {
@@ -578,12 +591,7 @@ export async function respondToIntroRequest(
   const stamp = now();
   await expireStale(db, userId, stamp);
 
-  const row = await queryOne<RequestRow>(
-    db,
-    `SELECT ${REQUEST_COLUMNS} FROM intro_requests
-      WHERE id = ? AND (requester_user_id = ? OR target_user_id = ?)`,
-    [requestId, userId, userId],
-  );
+  const row = await queryOne<RequestRow>(db, REQUEST_FOR_PARTY, [requestId, userId, userId]);
   // Somebody else's request is not found, not forbidden: its existence is not ours to confirm.
   if (!row) throw new IntroError('not_found', 'introduction request not found');
 
