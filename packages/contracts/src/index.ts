@@ -491,3 +491,33 @@ export const workflowValidateSchema = z.object({ definition: z.unknown() }).stri
 
 export type WorkflowCreateInput = z.infer<typeof workflowCreateSchema>;
 export type WorkflowPatchInput = z.infer<typeof workflowPatchSchema>;
+
+// --------------------------------------------------------------- intros (§38)
+
+/**
+ * A person's own intro card. Every field is optional so a client can switch
+ * the card on or off without resending the text; lengths are cut server-side
+ * to `INTRO_LIMITS`, so these bounds only stop a body that is plainly not a card.
+ */
+export const introCardInputSchema = z
+  .object({
+    open: z.boolean().optional(),
+    displayName: z.string().max(400).optional(),
+    headline: z.string().max(1_000).optional(),
+    lookingFor: z.string().max(4_000).optional(),
+    canOffer: z.string().max(4_000).optional(),
+    topics: z.array(z.string().max(200)).max(50).optional(),
+  })
+  .strict();
+
+export const introRequestInputSchema = z
+  .object({
+    /** The other person's card id (`itp_`), from a match. */
+    cardId: z.string().min(1).max(64),
+    /** Why you are asking. Shown to them with your card; required. */
+    note: z.string().max(4_000),
+  })
+  .strict();
+
+export type IntroCardInput = z.infer<typeof introCardInputSchema>;
+export type IntroRequestInput = z.infer<typeof introRequestInputSchema>;

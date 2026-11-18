@@ -118,6 +118,11 @@ export const ID_PREFIXES = {
   // A custom workflow (PRD-ECO §14) and one execution of it.
   workflow: 'wfl',
   workflowRun: 'wfr',
+  // Introductions between members (PRD §38): the card a person shows the pool,
+  // and one request from one member to another. The card has its own id so a
+  // match never has to carry a user id.
+  introCard: 'itp',
+  introRequest: 'itr',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

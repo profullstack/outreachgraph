@@ -112,6 +112,27 @@ bearer with the `openprofile:edit` scope is honoured when its principal is
 provably them, by an email this deployment verified or by the OpenProfile.md
 they publish.
 
+### Introductions between members
+
+Two account holders can be introduced when both ask (PRD §38). Each writes an
+intro card (who they want to meet, what they can offer), switches it on, and
+sees other open cards ranked by a deterministic overlap, with the words that
+produced each match. Asking shows the other member your card and a note;
+neither side gets an address unless they accept. A decline is final for the
+pair and is not announced. Nothing here reads a prospect record or sends mail.
+
+```
+GET  /api/v1/intros/card                      your card
+PUT  /api/v1/intros/card                      {open, displayName, headline, lookingFor, canOffer, topics}
+GET  /api/v1/intros/matches?limit=            needs your card open
+POST /api/v1/intros/requests                  {cardId, note}
+GET  /api/v1/intros/requests?box=incoming|outgoing
+POST /api/v1/intros/requests/{id}/accept|decline|withdraw
+```
+
+MCP: `get_intro_card`, `set_intro_card`, `find_intro_matches`, `request_intro`,
+`list_intros`, `respond_to_intro`.
+
 ### Sending outreach
 
 Outreach leaves over SMTP as **`cha0spunk@profullstack.com` or

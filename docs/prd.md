@@ -153,11 +153,46 @@ provider changes are outside the product slice defined here.
 
 Every person, campaign, recommendation, credential, and integration query is
 scoped to the authenticated workspace. Cross-workspace access fails closed.
+The one exception is a member's own intro card (§38), which carries only what
+that member wrote and switched on.
 
 ## 36. Administration and 37. Feature flags
 
 Administrative capabilities require explicit roles. Feature flags may disable
 capabilities, but cannot widen the Policy Engine's allowed action set.
+
+## 38. Introductions
+
+Two account holders may be introduced to each other when both ask. This is the
+opposite of outreach and shares none of its data: no prospect, signal, score,
+provider record, or campaign is read to make or rank an introduction.
+
+- **Opt-in card.** A member writes an intro card: a display name, a headline,
+  who they want to meet, what they can offer, and topics. The card is closed
+  until the member opens it, and opening requires a verified account email and
+  a name, an ask, and an offer. Closing removes the member from the pool.
+- **Matching is deterministic.** A member with an open card sees other open
+  cards ranked by word overlap between each side's ask and the other's offer
+  and topics. No model takes part, and each match carries the words that
+  produced it. Only text the two members wrote on their cards is an input, so
+  sensitive categories (§17) cannot enter through a derived signal.
+- **Double opt-in.** Asking is the first consent; the other member accepting is
+  the second. A match or a pending request shows a card and never an address
+  or a user id. Only an accepted request shows each member the other's account
+  email. Acceptance re-reads current state: a requester who has since closed
+  their card cannot be accepted.
+- **Refusal is final and quiet.** A decline blocks the pair in both directions.
+  The requester is not told: the request reads as unanswered until it expires
+  after 14 days, and the card reads as unavailable. The audit log keeps the
+  real reason.
+- **Limits.** One live request per pair, five requests per member per rolling
+  day (withdrawn requests count), and a note is required with every request.
+- **Nothing is sent.** This slice creates no email and no message on any
+  network. Members read requests through the API and the MCP tools.
+- **Prospects are never in the pool.** A person found by the pipeline, a public
+  OpenProfile, or a directory record is not a member and cannot be matched,
+  requested, or invited through this feature. Inviting people to join is
+  outreach and stays under §15–§18.
 
 ## Explicit non-goals
 
