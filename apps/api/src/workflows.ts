@@ -78,12 +78,14 @@ import {
   loadOutreachSettings,
   recoverInterruptedWorkflowRuns,
   startWorkflowRun,
+  workspaceLocked,
   type WorkflowHandlers,
   type WorkflowRunContext,
   type WorkflowRunOutcome,
   type WorkflowStepOutcome,
 } from '@outreachgraph/pipeline';
 import { evaluatePolicy } from '@outreachgraph/policy';
+import type { SecretVault } from '@outreachgraph/secrets';
 import {
   buildJobFeeds,
   GitHubClient,
@@ -124,6 +126,13 @@ export interface WorkflowDeps {
         readonly sources?: readonly FeedSource[] | undefined;
       }
     | undefined;
+  /**
+   * The workspace key vault (seal v2). Only read to say so when the send step
+   * cannot send: a locked workspace pauses autopilot, and before this the
+   * step still reported "cap 200/day, 0 sent today" every run while nothing
+   * had gone out for weeks (2026-11-18).
+   */
+  readonly vault?: SecretVault | undefined;
   readonly now?: () => Date;
 }
 
@@ -777,6 +786,21 @@ function stepHandlers(
         context.at,
       );
       const policy = policyProbe(definition, estimate);
+      if (await workspaceLocked(context.db, deps.vault, context.workspaceId)) {
+        const locked: WorkflowStepOutcome = {
+          status: 'skipped',
+          detail:
+            `paused: the workspace keys are locked, so no mailbox can send. Unlock them in ` +
+            `Settings > Keys to resume (${estimate.awaitingApproval} waiting, cap ${estimate.effectiveDailyCap}/day).`,
+          counts: {
+            effectiveDailyCap: estimate.effectiveDailyCap,
+            sentToday: estimate.sentToday,
+            awaitingApproval: estimate.awaitingApproval,
+            locked: 1,
+          },
+        };
+        return locked;
+      }
       return {
         status: policy.decision === 'deny' ? 'skipped' : 'ok',
         detail:

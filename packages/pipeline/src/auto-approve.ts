@@ -190,10 +190,24 @@ export async function autoApproveInternal(
         args: [row.id],
       },
       {
+        // Recorded as done, not queued. An internal action has no executor
+        // that would ever pick a queued row up: approving research *is*
+        // carrying it out (the crawl is enqueued just below), and observe/wait
+        // do nothing at all. Written as 'queued' these piled up forever and
+        // read as a stuck queue: 1,857 of them on one campaign (2026-11-18).
         sql: `INSERT INTO actions (id, workspace_id, recommendation_id, person_id, kind, network,
-              mode, status, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, 'manual', 'queued', ?)`,
-        args: [actionId, input.workspaceId, row.id, row.person_id, row.action, row.network, stamp],
+              mode, status, created_at, executed_at)
+              VALUES (?, ?, ?, ?, ?, ?, 'manual', 'completed', ?, ?)`,
+        args: [
+          actionId,
+          input.workspaceId,
+          row.id,
+          row.person_id,
+          row.action,
+          row.network,
+          stamp,
+          stamp,
+        ],
       },
       {
         sql: `INSERT INTO audit_events (id, workspace_id, actor_kind, actor_id, event_type,

@@ -18,6 +18,7 @@ import type { Client } from '@outreachgraph/db';
 import { queryAll, queryOne } from '@outreachgraph/db';
 import { ENGINEERING_CONTRACT_TEMPLATE } from '@outreachgraph/domain';
 import type { JobFeed, WebResult, WebSearcher } from '@outreachgraph/providers';
+import { TestVault } from '@outreachgraph/secrets/testing';
 import { createApp } from './app';
 import type { AppEnv, RequestActor } from './context';
 import { seedDatabase, SEED, type SeededDatabase } from './test-seed';
@@ -84,7 +85,12 @@ function feedsFor(source: WebSearcher | null | undefined): readonly JobFeed[] {
 
 async function harness(
   label: string,
-  options: { actor?: RequestActor; searcher?: WebSearcher | null; model?: TextModel } = {},
+  options: {
+    actor?: RequestActor;
+    searcher?: WebSearcher | null;
+    model?: TextModel;
+    encryptionKey?: TestVault;
+  } = {},
 ) {
   const seeded = await seedDatabase(label);
   active = seeded;
@@ -94,6 +100,7 @@ async function harness(
     ...(options.searcher === null ? {} : { jobSearcher: options.searcher ?? searcher }),
     jobFeeds: feedsFor(options.searcher === null ? null : (options.searcher ?? searcher)),
     ...(options.model ? { model: options.model } : {}),
+    ...(options.encryptionKey ? { encryptionKey: options.encryptionKey } : {}),
   });
   return { app, db: seeded.db };
 }
@@ -890,5 +897,34 @@ describe('lifecycle', () => {
     ).toEqual([]);
     const list = await json<{ workflows: WorkflowView[] }>(send(app, 'GET', '/workflows'));
     expect(list.workflows.map((w) => w.name)).toEqual(['Imported']);
+  });
+});
+
+describe('locked workspace keys', () => {
+  test('the send step says sending is paused instead of reporting a quiet cap', async () => {
+    // Production 2026-11-18: the workspace had been locked since a restart on
+    // 2026-11-02 and every hourly run still read "cap 200/day; 0 sent today".
+    const vault = new TestVault({ autoUnlock: false });
+    const { app, db } = await harness('workflows-locked', { encryptionKey: vault });
+    vault.provision(SEED.workspaceId);
+    const stamp = new Date().toISOString();
+    await db.execute({
+      sql: `INSERT OR IGNORE INTO integrations (id, workspace_id, kind, network, status, created_at,
+            updated_at) VALUES ('int_email_locked', ?, 'smtp', 'email', 'connected', ?, ?)`,
+      args: [SEED.workspaceId, stamp, stamp],
+    });
+    await db.execute({
+      sql: `INSERT INTO integration_accounts (id, integration_id, workspace_id, network,
+            external_account_id, handle, access_token_enc, scopes, status, created_at, updated_at)
+            VALUES ('iac_mail_locked', 'int_email_locked', ?, 'email', 'box', 'box@example.com',
+            'v2:sealed', '[]', 'active', ?, ?)`,
+      args: [SEED.workspaceId, stamp, stamp],
+    });
+
+    const workflow = await published(app);
+    const run = await runNow(app, workflow.id);
+    const sendStep = run.steps.find((step) => step.id === 'send');
+    expect(sendStep?.status).toBe('skipped');
+    expect(sendStep?.detail).toContain('workspace keys are locked');
   });
 });

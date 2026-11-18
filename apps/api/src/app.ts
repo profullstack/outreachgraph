@@ -1845,6 +1845,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       jobFeeds: options.jobFeeds,
       emailSendingEnabled: options.mailer !== undefined,
       launches: { githubToken: options.githubToken },
+      vault: options.encryptionKey,
       requireVerifiedEmail: (db, actor, action) => requireVerifiedEmail(db, actor, action),
     }),
   );
@@ -7098,6 +7099,13 @@ async function approveRecommendation(
     } else {
       research = { queued: false, reason: 'no company domain on file' };
     }
+
+    // The approval is the whole of the work: nothing else ever picks a queued
+    // research action up, so leaving it 'queued' made it read as a stuck queue.
+    await db.execute({
+      sql: `UPDATE actions SET status = 'completed', executed_at = ? WHERE id = ? AND status = 'queued'`,
+      args: [new Date().toISOString(), actionId],
+    });
   }
 
   return {
