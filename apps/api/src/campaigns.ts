@@ -615,7 +615,7 @@ export async function saveWorkspaceSettings(
       input.dailyDigest === false ? 0 : 1,
       clampInt(input.digestHourUtc, 0, 23, 13),
       clampInt(input.alertMinOpportunity, 0, 100, 60),
-      clampInt(input.autopilotDailyCap, 0, 500, 25),
+      clampInt(input.autopilotDailyCap, 0, 1000, 25),
       input.replyToEmail ?? null,
       // Opt-in, and it stays opt-in: a caller that omits the field is saying
       // nothing about tracking, and "nothing" must not turn it on.

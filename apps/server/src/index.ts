@@ -1233,6 +1233,7 @@ async function tick(): Promise<void> {
   try {
     const crmMail = await sendDueCrmMail(db, {
       ...(mailer ? { mailer } : {}),
+      encryptionKey,
       ...(appUrl ? { appUrl } : {}),
     });
     if (crmMail.reminders > 0 || crmMail.bookings > 0) {

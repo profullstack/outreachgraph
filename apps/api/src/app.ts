@@ -1515,6 +1515,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
       db: options.db,
       ...(options.mailer ? { mailer: options.mailer } : {}),
       ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+      ...(options.encryptionKey ? { encryptionKey: options.encryptionKey } : {}),
     }),
   );
 
@@ -1927,6 +1928,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     calendarRoutes({
       ...(options.mailer ? { mailer: options.mailer } : {}),
       ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+      ...(options.encryptionKey ? { encryptionKey: options.encryptionKey } : {}),
     }),
   );
 
