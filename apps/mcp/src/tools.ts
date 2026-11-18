@@ -2509,6 +2509,18 @@ export const TOOLS: readonly ToolDefinition[] = [
     run: (client) => client.get('/crm/summary'),
   },
   {
+    name: 'crm_sync',
+    title: 'Pull outreach into the CRM now',
+    description:
+      'Copies what outreach did into the CRM: every person messaged becomes a deal at contacted, ' +
+      'replies move it to replied (or lost when they said no), bounces and opt-outs close it, and ' +
+      'each message is logged on the timeline. Also links hand-made and booked deals to known ' +
+      'people by email. Runs on its own every worker tick; call it to see results immediately.',
+    readOnly: false,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.post('/crm/sync', {}),
+  },
+  {
     name: 'list_deals',
     title: 'List CRM deals',
     description:

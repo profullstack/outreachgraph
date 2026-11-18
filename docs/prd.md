@@ -222,6 +222,15 @@ that replaces Calendly. Every booked call is a PairUX video call.
   a manage link and the cross-promo block), an hour-before reminder to both,
   cancellation notices. Nothing else: the booking page is not outreach, and a
   guest is never enrolled in a campaign by booking.
+- **Learns from outreach.** Every person outreach has messaged is a deal:
+  sent → `contacted`, a human reply → `replied` (a "no" or unsubscribe →
+  `lost`), a bounce or a suppression closes a deal that never got a reply.
+  Clicks and auto-replies are logged without moving the stage. Stages only
+  move forward and closed deals stay closed. Prospects never contacted are not
+  deals. Each copied entry has a unique `source_ref`, so the worker re-runs it
+  every tick; `POST /crm/sync` runs it now. Deals made by hand or by booking
+  are linked to the workspace's known person by email and filled from the
+  person and company rows.
 - **Guest access.** The manage link carries a random token; only its SHA-256
   is stored. Public reads are throttled per address, bookings at 10 an hour.
 

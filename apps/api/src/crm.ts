@@ -331,7 +331,12 @@ async function loadDeal(db: Client, workspaceId: string, id: string): Promise<De
   return row;
 }
 
-async function writeActivity(
+/**
+ * Adds one timeline entry. With a `sourceRef` (e.g. `int:<interaction id>`)
+ * the entry is written at most once per workspace: a second write is skipped
+ * and returns null, which is what makes the outreach sync safe to re-run.
+ */
+export async function writeActivity(
   db: Client,
   input: {
     workspaceId: string;
@@ -342,15 +347,17 @@ async function writeActivity(
     durationMinutes?: number | null;
     authorUserId?: string | null;
     bookingId?: string | null;
+    sourceRef?: string | null;
   },
-): Promise<string> {
+): Promise<string | null> {
   const id = newId('crmActivity');
   const stamp = now();
   const occurredAt = input.occurredAt ?? stamp;
-  await db.execute({
+  const written = await db.execute({
     sql: `INSERT INTO crm_activities (id, workspace_id, deal_id, kind, body, occurred_at,
-            duration_minutes, author_user_id, booking_id, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            duration_minutes, author_user_id, booking_id, source_ref, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT DO NOTHING`,
     args: [
       id,
       input.workspaceId,
@@ -361,9 +368,11 @@ async function writeActivity(
       input.durationMinutes ?? null,
       input.authorUserId ?? null,
       input.bookingId ?? null,
+      input.sourceRef ?? null,
       stamp,
     ],
   });
+  if (written.rowsAffected === 0) return null;
   await db.execute({
     sql: `UPDATE crm_deals SET last_activity_at = ?, updated_at = ?
           WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at < ?)`,
@@ -775,7 +784,7 @@ export function crmDealRoutes(): Hono<AppEnv> {
       db,
       `SELECT id, deal_id, kind, body, occurred_at, duration_minutes, author_user_id, booking_id,
          created_at FROM crm_activities WHERE id = ?`,
-      [id],
+      [id ?? ''],
     );
     return c.json({ activity: row ? activityView(row) : null }, 201);
   });

@@ -87,6 +87,7 @@ function dealBody(flags: CommandContext['flags']): Rec {
 
 export const CRM_USAGE = [
   'og crm                                     what needs doing: pipeline, due reminders, calls, quiet deals',
+  'og crm sync                                pull sends, replies, bounces and opt-outs from outreach now',
   'og crm deals [--stage s] [--email e] [--q text]',
   'og crm deal <dealId>                       one deal with its timeline, reminders and calls',
   'og crm add [--title t] [--name n] [--email e] [--company c] [--stage s] [--value 1200] [--next "..."] [--note "..."]',
@@ -136,6 +137,16 @@ async function runCrm({ client, args, flags }: CommandContext): Promise<string> 
         ...(stale.length ? stale.map(dealLine) : ['  none']),
       ].join('\n');
     });
+  }
+
+  if (sub === 'sync') {
+    const result = (await client.post('/crm/sync', {})) as Rec;
+    return out(
+      result,
+      () =>
+        `Synced ${text(result, 'interactions')} outreach event(s): ${text(result, 'dealsCreated')} new deal(s), ` +
+        `${text(result, 'suppressions')} suppression(s), ${text(result, 'linked')} linked by email.`,
+    );
   }
 
   if (sub === 'deals') {

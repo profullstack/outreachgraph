@@ -143,6 +143,7 @@ call, lands in the CRM as a deal at `meeting`, and sets a reminder to write
 call notes. The web tab is **CRM**.
 
 ```
+POST   /api/v1/crm/sync                       pull sends, replies, bounces, opt-outs from outreach now
 GET    /api/v1/crm/summary                    pipeline, due reminders, upcoming calls, quiet deals
 GET    /api/v1/crm/deals?stage=&email=&q=
 POST   /api/v1/crm/deals                      {title|contactName|contactEmail|company, stage, value, nextStep, note}
