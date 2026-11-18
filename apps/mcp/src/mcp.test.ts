@@ -178,6 +178,10 @@ describe('tools', () => {
           referenceId: 'crf_1',
           followId: 'cfl_1',
           handle: 'rival.bsky.social',
+          cardId: 'itp_1',
+          note: 'We both work on agent payments.',
+          requestId: 'itr_1',
+          response: 'accept',
         })
         .catch(() => undefined);
 

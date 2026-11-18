@@ -2361,6 +2361,141 @@ export const TOOLS: readonly ToolDefinition[] = [
     },
     run: (client, args) => client.post('/invites', { note: str(args, 'note') ?? '' }),
   },
+  {
+    name: 'get_intro_card',
+    title: 'Get your intro card',
+    description:
+      'Your own card for member introductions: display name, headline, who you want to meet, ' +
+      'what you can offer, topics, and whether it is open. Closed by default; other members ' +
+      'see it only while it is open.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/intros/card'),
+  },
+  {
+    name: 'set_intro_card',
+    title: 'Edit, open or close your intro card',
+    description:
+      'Write your intro card and switch it on or off. Fields left out keep their value. Opening ' +
+      '(`open: true`) needs a verified account email plus displayName, lookingFor and canOffer, ' +
+      'and puts the card in front of other members; an accepted introduction then shares your ' +
+      'account email with that one person. Show the person the card text before opening it. ' +
+      'Closing takes you out of the pool and makes your pending requests unacceptable.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        open: { type: 'boolean', description: 'true joins the pool, false leaves it.' },
+        displayName: { type: 'string', description: 'The name other members see.' },
+        headline: { type: 'string', description: 'One line: role and what you are building.' },
+        lookingFor: {
+          type: 'string',
+          description: 'Who you want to meet and why, in plain words. Matching reads this.',
+        },
+        canOffer: {
+          type: 'string',
+          description: 'What you can do for the people you meet. Matching reads this too.',
+        },
+        topics: { type: 'array', items: { type: 'string' }, description: 'Up to 12 topics.' },
+      },
+    },
+    run: (client, args) => {
+      const body: Record<string, unknown> = {};
+      if (typeof args.open === 'boolean') body.open = args.open;
+      for (const key of ['displayName', 'headline', 'lookingFor', 'canOffer'] as const) {
+        if (typeof args[key] === 'string') body[key] = args[key];
+      }
+      if (Array.isArray(args.topics)) {
+        body.topics = args.topics.filter((t): t is string => typeof t === 'string');
+      }
+      return client.put('/intros/card', body);
+    },
+  },
+  {
+    name: 'find_intro_matches',
+    title: 'Find people to be introduced to',
+    description:
+      'Other members worth meeting, best first, ranked by a deterministic overlap between what ' +
+      'you asked for and what they offer (and the reverse). Each match carries the words that ' +
+      'produced it, so you can say why. Shows their card only: never an email. Requires your ' +
+      'own card to be open. Only members who opened a card appear; prospects never do.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'Maximum to return (default 10).' } },
+    },
+    run: (client, args) =>
+      client.get('/intros/matches', {
+        limit: String(typeof args.limit === 'number' ? Math.min(args.limit, 50) : 10),
+      }),
+  },
+  {
+    name: 'request_intro',
+    title: 'Ask for an introduction',
+    description:
+      'Ask one member, by card id from find_intro_matches, to be introduced. They see your card ' +
+      'and your note and decide; neither side gets an address unless they accept. Show the ' +
+      'person the note and who it goes to before calling this. Five requests a day; a person ' +
+      'who has declined is not askable again.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cardId: { type: 'string', description: 'The other card, `itp_...`.' },
+        note: { type: 'string', description: 'Why you are asking. They decide on this.' },
+      },
+      required: ['cardId', 'note'],
+    },
+    run: (client, args) =>
+      client.post('/intros/requests', {
+        cardId: require(args, 'cardId'),
+        note: require(args, 'note'),
+      }),
+  },
+  {
+    name: 'list_intros',
+    title: 'List introduction requests',
+    description:
+      'Introduction requests you sent and received, newest first, with status (pending, ' +
+      'accepted, declined, withdrawn, expired). An accepted one includes `contact.email` for ' +
+      'the other person; nothing else does.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        box: { type: 'string', enum: ['incoming', 'outgoing'], description: 'One direction.' },
+      },
+    },
+    run: (client, args) =>
+      client.get('/intros/requests', str(args, 'box') ? { box: str(args, 'box') } : {}),
+  },
+  {
+    name: 'respond_to_intro',
+    title: 'Accept, decline or withdraw an introduction',
+    description:
+      'Answer a request you received (`accept` or `decline`) or take back one you sent ' +
+      '(`withdraw`). Accepting shares your account email with the requester and theirs with ' +
+      'you, and cannot be undone: ask the person before accepting. Declining is final for the ' +
+      'pair and is not announced to the requester.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string', description: '`itr_...` from list_intros.' },
+        response: { type: 'string', enum: ['accept', 'decline', 'withdraw'] },
+      },
+      required: ['requestId', 'response'],
+    },
+    run: (client, args) => {
+      const response = require(args, 'response');
+      if (!['accept', 'decline', 'withdraw'].includes(response)) {
+        throw new Error('response is accept, decline or withdraw');
+      }
+      return client.post(
+        `/intros/requests/${encodeURIComponent(require(args, 'requestId'))}/${response}`,
+      );
+    },
+  },
 ];
 
 export function toolByName(name: string): ToolDefinition | undefined {

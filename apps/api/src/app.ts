@@ -336,6 +336,7 @@ import {
 import { linkPostRoutes } from './link-posts';
 import { contentDraftRoutes } from './content-drafts';
 import { contentRadarRoutes } from './content-radar';
+import { introRoutes } from './intros';
 import {
   campaignSourceStatus,
   checkCampaignSource,
@@ -1894,6 +1895,13 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // Social posts, newsletters and articles are saved for editing and review.
   // The API never publishes them to a network.
   api.route('/content-drafts', contentDraftRoutes({ model: options.model, throttles }));
+
+  // ------------------------------------------------------------------ intros
+  //
+  // Introductions between two members who both asked (PRD §38). The one
+  // surface that crosses workspaces, and it carries only what each person
+  // wrote on their own card. See `intros.ts` for what each side learns, when.
+  api.route('/intros', introRoutes());
 
   // ----------------------------------------------------------- content radar
   //
