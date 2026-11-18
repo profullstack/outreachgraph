@@ -123,6 +123,12 @@ export const ID_PREFIXES = {
   // match never has to carry a user id.
   introCard: 'itp',
   introRequest: 'itr',
+  // CRM + scheduling (PRD §39).
+  crmDeal: 'dea',
+  crmActivity: 'cac',
+  crmReminder: 'rem',
+  bookingPage: 'bkp',
+  booking: 'bkg',
 } as const;
 
 export type EntityKind = keyof typeof ID_PREFIXES;

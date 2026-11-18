@@ -9,7 +9,7 @@
  */
 
 import { cache } from 'react';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import type { Channel, LinkPostNetwork } from '@outreachgraph/domain';
 import type {
   ApprovalCard,
@@ -1582,4 +1582,150 @@ export interface InvitesView {
 
 export async function fetchInvites(): Promise<InvitesView> {
   return request<InvitesView>('/invites');
+}
+
+// ---------------------------------------------------------------- crm (§39)
+
+export type CrmStageView =
+  'lead' | 'contacted' | 'replied' | 'meeting' | 'proposal' | 'won' | 'lost';
+
+export interface DealView {
+  readonly id: string;
+  readonly title: string;
+  readonly contactName: string | null;
+  readonly contactEmail: string | null;
+  readonly company: string | null;
+  readonly personId: string | null;
+  readonly stage: CrmStageView;
+  readonly valueCents: number | null;
+  readonly nextStep: string | null;
+  readonly source: string;
+  readonly lastActivityAt: string | null;
+  readonly closedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface CrmReminderView {
+  readonly id: string;
+  readonly dealId: string | null;
+  readonly dealTitle: string | null;
+  readonly title: string;
+  readonly dueAt: string;
+  readonly doneAt: string | null;
+}
+
+export interface CrmBookingView {
+  readonly id: string;
+  readonly dealId: string | null;
+  readonly startsAt: string;
+  readonly endsAt: string;
+  readonly guestName: string;
+  readonly guestEmail: string;
+  readonly guestNote: string | null;
+  readonly meetingUrl: string;
+  readonly status: string;
+}
+
+export interface CrmSummaryView {
+  readonly stages: readonly { stage: CrmStageView; deals: number; valueCents: number }[];
+  readonly dueReminders: readonly CrmReminderView[];
+  readonly upcomingBookings: readonly CrmBookingView[];
+  readonly staleDeals: readonly DealView[];
+}
+
+export interface BookingPageView {
+  readonly handle: string;
+  readonly title: string;
+  readonly description: string;
+  readonly hostName: string;
+  readonly durationMinutes: number;
+  readonly timezone: string;
+  readonly availability: Record<string, { start: string; end: string }[]>;
+  readonly bufferMinutes: number;
+  readonly minNoticeMinutes: number;
+  readonly maxDaysAhead: number;
+  readonly active: boolean;
+}
+
+export interface OwnBookingPageView {
+  readonly page: BookingPageView | null;
+  readonly url: string | null;
+}
+
+export async function fetchCrmSummary(): Promise<CrmSummaryView> {
+  return request<CrmSummaryView>('/crm/summary');
+}
+
+export async function fetchDeals(): Promise<{ deals: DealView[] }> {
+  return request('/crm/deals?limit=500');
+}
+
+export async function fetchOwnBookingPage(): Promise<OwnBookingPageView> {
+  return request('/calendar/page');
+}
+
+/** What a guest sees of a booking page. */
+export interface PublicBookingPageView {
+  readonly handle: string;
+  readonly title: string;
+  readonly description: string;
+  readonly hostName: string;
+  readonly durationMinutes: number;
+  readonly timezone: string;
+  readonly maxDaysAhead: number;
+}
+
+export interface PublicBookingView {
+  readonly page: PublicBookingPageView;
+  readonly booking: {
+    readonly id: string;
+    readonly startsAt: string;
+    readonly endsAt: string;
+    readonly guestName: string;
+    readonly meetingUrl: string;
+    readonly status: string;
+  };
+}
+
+/**
+ * A keyless read for the public booking pages. No cookie: the guest is not a
+ * member. The visitor's address is passed on so the API's per-address
+ * throttle sees them rather than this loopback.
+ */
+async function publicRead<T>(path: string): Promise<T | undefined> {
+  const incoming = await headers();
+  const forwarded: Record<string, string> = {};
+  const realIp = incoming.get('x-real-ip');
+  if (realIp) forwarded['x-real-ip'] = realIp;
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl()}/api/v1/public${path}`, {
+      cache: 'no-store',
+      headers: forwarded,
+    });
+  } catch (error) {
+    throw new ApiUnavailableError(error);
+  }
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new Error(`API ${response.status} for ${path}`);
+  return (await response.json()) as T;
+}
+
+export async function fetchPublicBookingPage(
+  handle: string,
+): Promise<PublicBookingPageView | undefined> {
+  const body = await publicRead<{ page: PublicBookingPageView }>(
+    `/calendar/${encodeURIComponent(handle)}`,
+  );
+  return body?.page;
+}
+
+export async function fetchPublicBooking(
+  id: string,
+  token: string,
+): Promise<PublicBookingView | undefined> {
+  return publicRead<PublicBookingView>(
+    `/calendar/bookings/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`,
+  );
 }

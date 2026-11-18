@@ -133,6 +133,39 @@ POST /api/v1/intros/requests/{id}/accept|decline|withdraw
 MCP: `get_intro_card`, `set_intro_card`, `find_intro_matches`, `request_intro`,
 `list_intros`, `respond_to_intro`.
 
+### CRM and booking page
+
+A small CRM for tracking where each relationship stands (PRD §39): deals by
+stage, notes and call notes, reminders mailed when due, and a "what needs
+doing" summary. The public booking page at `/calendar/<handle>` (and
+`/schedule/<handle>`) replaces Calendly: every booking is a private PairUX
+call, lands in the CRM as a deal at `meeting`, and sets a reminder to write
+call notes. The web tab is **CRM**.
+
+```
+GET    /api/v1/crm/summary                    pipeline, due reminders, upcoming calls, quiet deals
+GET    /api/v1/crm/deals?stage=&email=&q=
+POST   /api/v1/crm/deals                      {title|contactName|contactEmail|company, stage, value, nextStep, note}
+GET    /api/v1/crm/deals/{id}                 deal + timeline + reminders + calls
+PATCH  /api/v1/crm/deals/{id}                 any deal field; a stage change is logged
+POST   /api/v1/crm/deals/{id}/activities      {kind: note|call|meeting|email, body, durationMinutes}
+GET    /api/v1/crm/reminders?status=open|done|all
+POST   /api/v1/crm/reminders                  {title, dueAt, dealId}
+PATCH  /api/v1/crm/reminders/{id}             {done}
+GET    /api/v1/calendar/page                  your booking page
+PUT    /api/v1/calendar/page                  {handle, title, hostName, durationMinutes, timezone, availability, ...}
+GET    /api/v1/calendar/bookings?scope=upcoming|past|all
+POST   /api/v1/calendar/bookings/{id}/cancel
+GET    /api/v1/public/calendar/{handle}[/slots?from=YYYY-MM-DD&days=7]   keyless
+POST   /api/v1/public/calendar/{handle}/book  {start, name, email, note, timezone}
+```
+
+CLI: `og crm`, `og crm deals|deal|add|set|note|remind|reminders|done`, `og cal`,
+`og cal set --handle chovy --hours mon-fri=09:00-17:00 --tz America/Los_Angeles`.
+MCP: `crm_summary`, `list_deals`, `get_deal`, `save_deal`, `log_activity`,
+`list_reminders`, `add_reminder`, `complete_reminder`, `get_booking_page`,
+`set_booking_page`, `list_bookings`, `cancel_booking`.
+
 ### Sending outreach
 
 Outreach leaves over SMTP as **`cha0spunk@profullstack.com` or

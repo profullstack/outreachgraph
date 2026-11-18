@@ -194,6 +194,37 @@ provider record, or campaign is read to make or rank an introduction.
   requested, or invited through this feature. Inviting people to join is
   outreach and stays under §15–§18.
 
+## 39. CRM and booking page
+
+A small CRM that people and agents can both drive, and a public booking page
+that replaces Calendly. Every booked call is a PairUX video call.
+
+- **Deals, not people.** A deal is one relationship the workspace is working:
+  title, contact name/email/company, stage (`lead`, `contacted`, `replied`,
+  `meeting`, `proposal`, `won`, `lost`), value, next step. It may link a
+  `people` row but does not need one: a guest who booked a call has not cleared
+  the identity bar of §8, so no people row is ever created from a booking.
+- **Timeline.** Notes, call notes (with duration), meetings and emails are
+  logged against a deal; a stage change writes its own entry. Reminders are
+  dated to-dos, mailed once to their assignee when due.
+- **Booking page.** One public page per member at `/calendar/<handle>`
+  (`/schedule/<handle>` redirects to it): length, weekly hours in the page's
+  zone, minimum notice, how far ahead, buffer. Slot math is Intl-only and the
+  slot is re-checked at booking time; a partial unique index stops two guests
+  taking one slot.
+- **PairUX.** Each booking gets its own anonymous end-to-end-encrypted room
+  link, `pairux.com/r/<room>#k=<key>`, made locally. Nothing is registered
+  with PairUX and the key never reaches a server.
+- **Into the CRM.** A booking finds the guest's deal by email (or makes one at
+  `meeting`), logs the meeting, and sets a "write call notes" reminder for when
+  the call ends. Cancelling removes that reminder.
+- **Mail.** Confirmation to both sides (the guest's with a calendar file link,
+  a manage link and the cross-promo block), an hour-before reminder to both,
+  cancellation notices. Nothing else: the booking page is not outreach, and a
+  guest is never enrolled in a campaign by booking.
+- **Guest access.** The manage link carries a random token; only its SHA-256
+  is stored. Public reads are throttled per address, bookings at 10 an hour.
+
 ## Explicit non-goals
 
 - Sending a message to a prospect without approval as part of this task.
