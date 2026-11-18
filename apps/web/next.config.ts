@@ -3,6 +3,10 @@ import type { NextConfig } from 'next';
 const config: NextConfig = {
   reactStrictMode: true,
 
+  experimental: {
+    agentUpgrade: 'security',
+  },
+
   // Railway runs the built server from a Docker image; standalone output keeps
   // that image small by tracing only the files the server actually needs.
   output: 'standalone',

@@ -50,6 +50,15 @@
     font-size: 16px;
   }
 
+  select {
+    color-scheme: light dark;
+  }
+
+  option {
+    color: var(--color-ink);
+    background-color: var(--color-surface);
+  }
+
   /* Momentum scrolling without the rubber-band on the whole document. */
   html {
     overscroll-behavior-y: none;
