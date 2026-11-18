@@ -182,6 +182,12 @@ describe('tools', () => {
           note: 'We both work on agent payments.',
           requestId: 'itr_1',
           response: 'accept',
+          dealId: 'dea_1',
+          reminderId: 'rem_1',
+          bookingId: 'bkg_1',
+          title: 'Follow up',
+          body: 'Call notes',
+          dueAt: '2026-12-01T17:00:00.000Z',
         })
         .catch(() => undefined);
 

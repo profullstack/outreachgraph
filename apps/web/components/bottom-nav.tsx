@@ -26,6 +26,7 @@ import { useEffect, useState } from 'react';
 const TABS = [
   { href: '/inbox', label: 'Inbox', icon: InboxIcon, badge: true },
   { href: '/approvals', label: 'Approve', icon: CheckIcon },
+  { href: '/crm', label: 'CRM', icon: PeopleIcon },
   { href: '/products', label: 'Products', icon: BoxIcon },
   { href: '/workflows', label: 'Workflows', icon: FlowIcon },
   { href: '/content', label: 'Content', icon: WritingIcon },
@@ -162,6 +163,17 @@ const ICON_PROPS = {
   strokeLinejoin: 'round',
   'aria-hidden': true,
 } as const;
+
+function PeopleIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
 
 function FunnelIcon() {
   return (

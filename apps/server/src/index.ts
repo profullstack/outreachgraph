@@ -43,6 +43,7 @@ import { SecretVault, secretKeyFromEnv } from '@outreachgraph/secrets';
 import { createApp } from '../../api/src/app';
 import { codeOptionsFromEnv, codeServicesFor } from '../../api/src/credit-codes';
 import { prunePasswordResetTokens, pruneSessions } from '../../api/src/auth';
+import { sendDueCrmMail } from '../../api/src/crm';
 import { verifyOpenAccessBearer } from '../../api/src/openaccess';
 import { runBootstrapProductJob } from '../../api/src/bulk-products';
 import { runCampaignSources } from '../../api/src/campaign-source';
@@ -1226,6 +1227,22 @@ async function tick(): Promise<void> {
   // a row tying an address to a moment someone lost their password.
   const prunedResets = await prunePasswordResetTokens(db);
   if (prunedResets > 0) console.log(`pruned ${prunedResets} password reset tokens`);
+
+  // CRM reminders that fell due, and booked PairUX calls starting within the
+  // hour: each mailed once (PRD §39). A failure here must not stop the tick.
+  try {
+    const crmMail = await sendDueCrmMail(db, {
+      ...(mailer ? { mailer } : {}),
+      ...(appUrl ? { appUrl } : {}),
+    });
+    if (crmMail.reminders > 0 || crmMail.bookings > 0) {
+      console.log(
+        `crm: mailed ${crmMail.reminders} reminder(s), ${crmMail.bookings} call(s) starting soon`,
+      );
+    }
+  } catch (error) {
+    console.error('crm reminder mail failed', error);
+  }
 
   // Progress rows accumulate at roughly one per prospect per stage. Nothing
   // reads a fortnight-old one, and the audit log they would otherwise bloat is

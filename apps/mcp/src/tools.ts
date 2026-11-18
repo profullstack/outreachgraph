@@ -2496,6 +2496,267 @@ export const TOOLS: readonly ToolDefinition[] = [
       );
     },
   },
+  // ------------------------------------------------------------------ crm
+  {
+    name: 'crm_summary',
+    title: 'What needs doing in the CRM',
+    description:
+      'Start here. The pipeline by stage (deal count and value), reminders due within 24 hours, ' +
+      'booked PairUX calls in the next 14 days, and open deals with no activity for 14 days. ' +
+      'Use it to decide what to follow up on before reading individual deals.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/crm/summary'),
+  },
+  {
+    name: 'list_deals',
+    title: 'List CRM deals',
+    description:
+      'Deals in this workspace, most recently updated first. Filter by stage ' +
+      '(lead, contacted, replied, meeting, proposal, won, lost), exact contact email, or a ' +
+      'search over title, name, company and email. Check by email before creating a deal so ' +
+      'you do not make a duplicate.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        stage: { type: 'string' },
+        email: { type: 'string' },
+        q: { type: 'string', description: 'Free-text search.' },
+        limit: { type: 'number' },
+      },
+    },
+    run: (client, args) =>
+      client.get('/crm/deals', {
+        stage: str(args, 'stage'),
+        email: str(args, 'email'),
+        q: str(args, 'q'),
+        limit: typeof args.limit === 'number' ? String(args.limit) : undefined,
+      }),
+  },
+  {
+    name: 'get_deal',
+    title: 'Read one deal',
+    description:
+      'One deal with its whole timeline (notes, call notes, meetings, stage changes), its ' +
+      'reminders and its booked calls.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { dealId: { type: 'string' } },
+      required: ['dealId'],
+    },
+    run: (client, args) => client.get(`/crm/deals/${require(args, 'dealId')}`),
+  },
+  {
+    name: 'save_deal',
+    title: 'Create or update a deal',
+    description:
+      'Without dealId, creates a deal (needs a title, contactName, company or contactEmail; an ' +
+      'optional note becomes its first timeline entry). With dealId, updates only the fields ' +
+      'given; a stage change is recorded on the timeline. value is in dollars, valueCents in ' +
+      'cents. Stages: lead, contacted, replied, meeting, proposal, won, lost.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dealId: { type: 'string' },
+        title: { type: 'string' },
+        contactName: { type: 'string' },
+        contactEmail: { type: 'string' },
+        company: { type: 'string' },
+        personId: { type: 'string', description: 'Link to an OutreachGraph prospect.' },
+        stage: { type: 'string' },
+        value: { type: 'number' },
+        valueCents: { type: 'number' },
+        nextStep: { type: 'string' },
+        note: { type: 'string', description: 'Create only: a first note.' },
+      },
+    },
+    run: (client, args) => {
+      const body: Record<string, unknown> = {};
+      for (const key of [
+        'title',
+        'contactName',
+        'contactEmail',
+        'company',
+        'personId',
+        'stage',
+        'value',
+        'valueCents',
+        'nextStep',
+        'note',
+      ]) {
+        if (args[key] !== undefined) body[key] = args[key];
+      }
+      const dealId = str(args, 'dealId');
+      if (!dealId) return client.post('/crm/deals', body);
+      delete body.note;
+      if (!client.patch) throw new Error('this client cannot PATCH');
+      return client.patch(`/crm/deals/${dealId}`, body);
+    },
+  },
+  {
+    name: 'log_activity',
+    title: 'Log a note or call notes on a deal',
+    description:
+      'Adds a timeline entry to a deal: kind note (default), call, meeting or email. Use call ' +
+      'for call notes and pass durationMinutes; occurredAt defaults to now.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dealId: { type: 'string' },
+        kind: { type: 'string', enum: ['note', 'call', 'meeting', 'email'] },
+        body: { type: 'string' },
+        occurredAt: { type: 'string', description: 'ISO date-time.' },
+        durationMinutes: { type: 'number' },
+      },
+      required: ['dealId', 'body'],
+    },
+    run: (client, args) =>
+      client.post(`/crm/deals/${require(args, 'dealId')}/activities`, {
+        kind: str(args, 'kind') ?? 'note',
+        body: require(args, 'body'),
+        ...(str(args, 'occurredAt') ? { occurredAt: str(args, 'occurredAt') } : {}),
+        ...(typeof args.durationMinutes === 'number'
+          ? { durationMinutes: args.durationMinutes }
+          : {}),
+      }),
+  },
+  {
+    name: 'list_reminders',
+    title: 'List CRM reminders',
+    description: 'Reminders, soonest first. status: open (default), done or all.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { status: { type: 'string', enum: ['open', 'done', 'all'] } },
+    },
+    run: (client, args) => client.get('/crm/reminders', { status: str(args, 'status') }),
+  },
+  {
+    name: 'add_reminder',
+    title: 'Set a reminder',
+    description:
+      'A dated to-do, optionally on a deal. When it falls due, OutreachGraph emails it once to ' +
+      'the assignee (the caller by default).',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        dueAt: { type: 'string', description: 'ISO date-time.' },
+        dealId: { type: 'string' },
+      },
+      required: ['title', 'dueAt'],
+    },
+    run: (client, args) =>
+      client.post('/crm/reminders', {
+        title: require(args, 'title'),
+        dueAt: require(args, 'dueAt'),
+        ...(str(args, 'dealId') ? { dealId: str(args, 'dealId') } : {}),
+      }),
+  },
+  {
+    name: 'complete_reminder',
+    title: 'Mark a reminder done (or reopen it)',
+    description: 'done: true closes it and notes it on the deal; done: false reopens it.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { reminderId: { type: 'string' }, done: { type: 'boolean' } },
+      required: ['reminderId'],
+    },
+    run: (client, args) => {
+      if (!client.patch) throw new Error('this client cannot PATCH');
+      return client.patch(`/crm/reminders/${require(args, 'reminderId')}`, {
+        done: args.done !== false,
+      });
+    },
+  },
+  {
+    name: 'get_booking_page',
+    title: 'Your public booking page',
+    description:
+      'Your Calendly-style page at outreachgraph.com/calendar/<handle>: handle, title, length, ' +
+      'timezone, weekly availability. Every booking on it is a private PairUX call and lands ' +
+      'in the CRM as a deal at the meeting stage. page is null until you create one.',
+    readOnly: true,
+    inputSchema: { type: 'object', properties: {} },
+    run: (client) => client.get('/calendar/page'),
+  },
+  {
+    name: 'set_booking_page',
+    title: 'Create or edit your booking page',
+    description:
+      'Fields left out keep their value. availability is weekly windows in the page timezone, ' +
+      'e.g. {"mon":[{"start":"09:00","end":"17:00"}]}. durationMinutes: 15, 20, 30, 45, 60 or ' +
+      '90. Set active false to take the page down.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string' },
+        title: { type: 'string' },
+        description: { type: 'string' },
+        hostName: { type: 'string' },
+        durationMinutes: { type: 'number' },
+        timezone: { type: 'string', description: 'IANA zone, e.g. America/Los_Angeles.' },
+        availability: { type: 'object' },
+        bufferMinutes: { type: 'number' },
+        minNoticeMinutes: { type: 'number' },
+        maxDaysAhead: { type: 'number' },
+        active: { type: 'boolean' },
+      },
+    },
+    run: (client, args) => {
+      const body: Record<string, unknown> = {};
+      for (const key of [
+        'handle',
+        'title',
+        'description',
+        'hostName',
+        'durationMinutes',
+        'timezone',
+        'availability',
+        'bufferMinutes',
+        'minNoticeMinutes',
+        'maxDaysAhead',
+        'active',
+      ]) {
+        if (args[key] !== undefined) body[key] = args[key];
+      }
+      return client.put('/calendar/page', body);
+    },
+  },
+  {
+    name: 'list_bookings',
+    title: 'Calls booked on your page',
+    description:
+      'Booked PairUX calls: scope upcoming (default), past or all. Each has the guest, the ' +
+      'time, the meeting link and the deal it belongs to.',
+    readOnly: true,
+    inputSchema: {
+      type: 'object',
+      properties: { scope: { type: 'string', enum: ['upcoming', 'past', 'all'] } },
+    },
+    run: (client, args) => client.get('/calendar/bookings', { scope: str(args, 'scope') }),
+  },
+  {
+    name: 'cancel_booking',
+    title: 'Cancel a booked call',
+    description:
+      'Cancels a call booked on your page and emails the guest a link to pick another time. ' +
+      'Confirm with the person first.',
+    readOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: { bookingId: { type: 'string' } },
+      required: ['bookingId'],
+    },
+    run: (client, args) => client.post(`/calendar/bookings/${require(args, 'bookingId')}/cancel`),
+  },
 ];
 
 export function toolByName(name: string): ToolDefinition | undefined {

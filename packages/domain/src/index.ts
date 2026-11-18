@@ -51,3 +51,19 @@ export * from './workflow';
 export * from './workflow-graph';
 export * from './brain';
 export * from './intros';
+export * from './crm';
+export {
+  computeSlots,
+  DAY_KEYS,
+  DEFAULT_AVAILABILITY,
+  groupSlotsByDay,
+  isSlotAvailable,
+  localDate,
+  normalizeAvailability,
+  type AvailabilityWindow,
+  type BusyInterval,
+  type DayKey,
+  type Slot,
+  type SlotOptions,
+  type WeeklyAvailability,
+} from './booking-slots';

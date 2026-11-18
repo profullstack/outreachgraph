@@ -337,6 +337,7 @@ import { linkPostRoutes } from './link-posts';
 import { contentDraftRoutes } from './content-drafts';
 import { contentRadarRoutes } from './content-radar';
 import { introRoutes } from './intros';
+import { calendarRoutes, crmDealRoutes, publicCalendarRoutes } from './crm';
 import {
   campaignSourceStatus,
   checkCampaignSource,
@@ -1505,6 +1506,18 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     return c.json(page);
   });
 
+  // The public booking page (PRD §39): /calendar/<handle> reads these. Keyless
+  // and throttled per address; a booking needs only a name, an email and a
+  // slot the page still offers. See `crm.ts` for what a guest can see.
+  api.route(
+    '/public/calendar',
+    publicCalendarRoutes({
+      db: options.db,
+      ...(options.mailer ? { mailer: options.mailer } : {}),
+      ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+    }),
+  );
+
   // The API described for machines. Keyless: an agent reads these before it
   // has a key, and there is nothing in them that is not in this file.
   api.get('/public/openapi.json', (c) => {
@@ -1903,6 +1916,19 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
   // surface that crosses workspaces, and it carries only what each person
   // wrote on their own card. See `intros.ts` for what each side learns, when.
   api.route('/intros', introRoutes());
+
+  // -------------------------------------------------------------------- crm
+  //
+  // Deals, call notes and reminders (PRD §39), plus the member's own booking
+  // page and the PairUX calls booked on it.
+  api.route('/crm', crmDealRoutes());
+  api.route(
+    '/calendar',
+    calendarRoutes({
+      ...(options.mailer ? { mailer: options.mailer } : {}),
+      ...(options.appUrl ? { appUrl: options.appUrl } : {}),
+    }),
+  );
 
   // ----------------------------------------------------------- content radar
   //

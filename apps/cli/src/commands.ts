@@ -17,6 +17,7 @@ import type { ApiClient } from '@outreachgraph/mcp/src/client';
 import { WORKFLOW_COMMANDS } from './workflow-commands';
 import { KEYS_COMMANDS } from './keys-commands';
 import { RADAR_COMMANDS } from './radar-commands';
+import { CRM_COMMANDS } from './crm-commands';
 
 export interface CommandContext {
   readonly client: ApiClient;
@@ -2757,6 +2758,7 @@ export const COMMANDS: readonly Command[] = [
   },
   ...WORKFLOW_COMMANDS,
   ...RADAR_COMMANDS,
+  ...CRM_COMMANDS,
   ...KEYS_COMMANDS,
 ];
 
