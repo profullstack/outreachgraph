@@ -51,6 +51,8 @@ import {
   type WeeklyAvailability,
 } from '@outreachgraph/domain';
 import { ConsoleMailer, type Mailer, type Message } from '@outreachgraph/email';
+import { mailerForWorkspace } from '@outreachgraph/pipeline';
+import type { SecretVault } from '@outreachgraph/secrets';
 import { ApiError, type AppEnv, type RequestActor } from './context';
 import { clientKey, FixedWindowLimiter } from './public-directory';
 import * as repo from './repository';
@@ -900,8 +902,36 @@ export function crmDealRoutes(): Hono<AppEnv> {
 // --------------------------------------------------------- booking emails
 
 export interface CalendarOptions {
+  /** The platform mailer: used only when the workspace has no mailbox of its own. */
   readonly mailer?: Mailer;
   readonly appUrl?: string;
+  /** Unseals the workspace's connected SMTP mailbox, which booking mail is sent from. */
+  readonly encryptionKey?: SecretVault | undefined;
+}
+
+/** Who a message is sent for: the workspace whose mailbox carries it. */
+interface MailScope {
+  readonly db: Client;
+  readonly options: CalendarOptions;
+  readonly workspaceId: string;
+}
+
+/**
+ * The workspace's own connected mailbox (cha0spunk@/knox@ for ours), through
+ * the email queue like every other send; the platform mailer only when the
+ * workspace has none, and the console when there is neither.
+ */
+async function resolveMailer(scope: MailScope): Promise<Mailer> {
+  try {
+    const found = await mailerForWorkspace(scope.db, scope.workspaceId, {
+      encryptionKey: scope.options.encryptionKey,
+      fallback: scope.options.mailer,
+    });
+    if (found) return found.mailer;
+  } catch (error) {
+    console.warn(`crm mail: no usable mailbox for ${scope.workspaceId}: ${String(error)}`);
+  }
+  return scope.options.mailer ?? new ConsoleMailer();
 }
 
 function appBase(options: CalendarOptions): string {
@@ -960,17 +990,19 @@ function mailBody(lines: readonly (string | null)[], links: readonly [string, st
   return { text, html };
 }
 
-async function sendSafely(mailer: Mailer, message: Message): Promise<boolean> {
+async function sendSafely(scope: MailScope, message: Message): Promise<boolean> {
   try {
-    await mailer.send(message);
+    const mailer = await resolveMailer(scope);
+    await mailer.send({ ...message, tenantId: scope.workspaceId });
     return true;
-  } catch {
+  } catch (error) {
+    console.warn(`crm mail ${message.idempotencyKey ?? ''} failed: ${String(error)}`);
     return false;
   }
 }
 
-async function mailBookingConfirmed(options: CalendarOptions, ctx: BookingMailContext) {
-  const mailer = options.mailer ?? new ConsoleMailer();
+async function mailBookingConfirmed(db: Client, options: CalendarOptions, ctx: BookingMailContext) {
+  const mailer: MailScope = { db, options, workspaceId: ctx.booking.workspace_id };
   const { booking, page } = ctx;
   const guestWhen = whenText(booking.starts_at, booking.guest_timezone ?? page.timezone);
   const hostWhen = whenText(booking.starts_at, page.timezone);
@@ -1028,11 +1060,12 @@ async function mailBookingConfirmed(options: CalendarOptions, ctx: BookingMailCo
 }
 
 async function mailBookingCancelled(
+  db: Client,
   options: CalendarOptions,
   ctx: BookingMailContext,
   by: 'guest' | 'host',
 ) {
-  const mailer = options.mailer ?? new ConsoleMailer();
+  const mailer: MailScope = { db, options, workspaceId: ctx.booking.workspace_id };
   const { booking, page } = ctx;
   const rebook = `${appBase(options)}/calendar/${page.handle}`;
   const guest = mailBody(
@@ -1136,6 +1169,7 @@ async function cancelBooking(
   if (page) {
     const host = await hostOf(db, page);
     await mailBookingCancelled(
+      db,
       options,
       {
         booking,
@@ -1602,7 +1636,7 @@ export function publicCalendarRoutes(options: PublicCalendarOptions): Hono<AppEn
     const host = await hostOf(db, page);
     const links = manageLinks(options, page, id, token);
     if (host.email) {
-      await mailBookingConfirmed(options, {
+      await mailBookingConfirmed(db, options, {
         booking,
         page,
         hostEmail: host.email,
@@ -1648,16 +1682,17 @@ export async function sendDueCrmMail(
   db: Client,
   options: CalendarOptions & { readonly now?: Date; readonly limit?: number },
 ): Promise<{ reminders: number; bookings: number }> {
-  const mailer = options.mailer ?? new ConsoleMailer();
   const at = options.now ?? new Date();
   const stamp = at.toISOString();
   const limit = options.limit ?? 100;
   let reminders = 0;
   let bookings = 0;
 
-  const due = await queryAll<ReminderRow & { email: string | null; deal_title: string | null }>(
+  const due = await queryAll<
+    ReminderRow & { workspace_id: string; email: string | null; deal_title: string | null }
+  >(
     db,
-    `SELECT r.id, r.deal_id, r.title, r.due_at, r.done_at, r.assignee_user_id, r.notified_at,
+    `SELECT r.id, r.workspace_id, r.deal_id, r.title, r.due_at, r.done_at, r.assignee_user_id, r.notified_at,
        r.booking_id, r.created_at, d.title AS deal_title, u.email
      FROM crm_reminders r
        LEFT JOIN crm_deals d ON d.id = r.deal_id
@@ -1680,14 +1715,17 @@ export async function sendDueCrmMail(
       [['Open in OutreachGraph', link]],
     );
     if (
-      await sendSafely(mailer, {
-        to: row.email,
-        subject: `Reminder: ${row.title}`,
-        text: mail.text,
-        html: mail.html,
-        kind: 'transactional',
-        idempotencyKey: `crm-reminder:${row.id}`,
-      })
+      await sendSafely(
+        { db, options, workspaceId: row.workspace_id },
+        {
+          to: row.email,
+          subject: `Reminder: ${row.title}`,
+          text: mail.text,
+          html: mail.html,
+          kind: 'transactional',
+          idempotencyKey: `crm-reminder:${row.id}`,
+        },
+      )
     ) {
       reminders += 1;
     }
@@ -1712,6 +1750,7 @@ export async function sendDueCrmMail(
     const page = await queryOne<PageRow>(db, PAGE_BY_ID, [booking.page_id]);
     if (!page) continue;
     const host = await hostOf(db, page);
+    const mailer: MailScope = { db, options, workspaceId: booking.workspace_id };
     const guestMail = mailBody(
       [
         `Your call with ${host.name} starts ${whenText(booking.starts_at, booking.guest_timezone ?? page.timezone)}.`,

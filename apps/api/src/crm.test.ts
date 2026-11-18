@@ -248,6 +248,9 @@ describe('booking page', () => {
     const hostMail = mailer.sent.find((m) => m.to === 'test@example.com');
     expect(guestMail?.text).toContain(booked.body.booking.meetingUrl);
     expect(guestMail?.replyTo).toBe('test@example.com');
+    // The queue refuses a send without its tenant.
+    expect(guestMail?.tenantId).toBe(SEED.workspaceId);
+    expect(guestMail?.idempotencyKey).toMatch(/^booking:bkg_/);
     expect(hostMail?.replyTo).toBe('ada@example.org');
 
     // The token unlocks the booking and its calendar file; a wrong one does not.
