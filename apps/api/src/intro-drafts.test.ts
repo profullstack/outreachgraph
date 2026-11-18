@@ -201,4 +201,31 @@ describe('auto-drafted intros', () => {
     // A week has not passed: nothing again.
     expect(await sendIntroDigests(db, { mailer, now: at })).toBe(0);
   });
+
+  test('with no mailbox nothing is marked sent, so it goes out once one exists', async () => {
+    seeded = await seedDatabase('intro-digest-held');
+    const db = seeded.db;
+    await member(db, 'ada', {
+      name: 'CryptoPay',
+      category: 'payments',
+      value: 'Crypto payments checkout for online merchants.',
+      pain: 'Merchants losing payments to card processor bans.',
+    });
+    await member(db, 'bob', {
+      name: 'ShopKit',
+      category: 'payments',
+      value: 'Online merchants storefront with crypto payments checkout.',
+      pain: 'Merchants need crypto payments checkout for their store.',
+    });
+    await draftIntroCards(db);
+    const at = new Date('2026-11-20T12:00:00.000Z');
+    expect(await sendIntroDigests(db, { now: at })).toBe(0);
+    const mailed = await queryOne<{ n: number | bigint }>(
+      db,
+      'SELECT COUNT(*) AS n FROM intro_cards WHERE match_mailed_at IS NOT NULL',
+    );
+    expect(Number(mailed?.n)).toBe(0);
+    const mailer = new RecordingMailer();
+    expect(await sendIntroDigests(db, { mailer, now: at })).toBeGreaterThanOrEqual(1);
+  });
 });

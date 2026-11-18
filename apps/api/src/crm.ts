@@ -930,7 +930,7 @@ export interface MailScope {
  * the email queue like every other send; the platform mailer only when the
  * workspace has none, and the console when there is neither.
  */
-async function resolveMailer(scope: MailScope): Promise<Mailer> {
+async function resolveMailer(scope: MailScope): Promise<Mailer | undefined> {
   try {
     const found = await mailerForWorkspace(scope.db, scope.workspaceId, {
       encryptionKey: scope.options.encryptionKey,
@@ -940,7 +940,7 @@ async function resolveMailer(scope: MailScope): Promise<Mailer> {
   } catch (error) {
     console.warn(`crm mail: no usable mailbox for ${scope.workspaceId}: ${String(error)}`);
   }
-  return scope.options.mailer ?? new ConsoleMailer();
+  return scope.options.mailer;
 }
 
 function appBase(options: CalendarOptions): string {
@@ -999,9 +999,19 @@ export function mailBody(lines: readonly (string | null)[], links: readonly [str
   return { text, html };
 }
 
+/**
+ * Sends and says whether it was delivered to a real mailer. With no mailbox
+ * (or its keys locked) the message is only logged and this returns false, so
+ * callers that keep a "sent" mark can leave it unset and try again later.
+ */
 export async function sendSafely(scope: MailScope, message: Message): Promise<boolean> {
   try {
     const mailer = await resolveMailer(scope);
+    if (!mailer) {
+      await new ConsoleMailer().send({ ...message, tenantId: scope.workspaceId });
+      console.warn(`crm mail ${message.idempotencyKey ?? ''} held: no usable mailbox yet`);
+      return false;
+    }
     await mailer.send({ ...message, tenantId: scope.workspaceId });
     return true;
   } catch (error) {
@@ -1737,6 +1747,13 @@ export async function sendDueCrmMail(
       )
     ) {
       reminders += 1;
+    } else {
+      // Not delivered (no mailbox, or its keys are locked): release the claim
+      // so the next tick tries again.
+      await db.execute({
+        sql: 'UPDATE crm_reminders SET notified_at = NULL WHERE id = ?',
+        args: [row.id],
+      });
     }
   }
 
@@ -1767,7 +1784,7 @@ export async function sendDueCrmMail(
       ],
       [['Join the call', booking.meeting_url]],
     );
-    await sendSafely(mailer, {
+    const guestDelivered = await sendSafely(mailer, {
       to: booking.guest_email,
       subject: `Starting soon: ${page.title} with ${host.name}`,
       text: guestMail.text,
@@ -1796,6 +1813,15 @@ export async function sendDueCrmMail(
         kind: 'transactional',
         idempotencyKey: `booking:${booking.id}:host-soon`,
       });
+    }
+    if (!guestDelivered) {
+      // Try again next tick, until the call starts; the idempotency keys stop
+      // either side getting it twice once a mailbox can send.
+      await db.execute({
+        sql: 'UPDATE bookings SET reminded_at = NULL WHERE id = ?',
+        args: [booking.id],
+      });
+      continue;
     }
     bookings += 1;
   }
