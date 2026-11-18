@@ -919,7 +919,7 @@ export interface CalendarOptions {
 }
 
 /** Who a message is sent for: the workspace whose mailbox carries it. */
-interface MailScope {
+export interface MailScope {
   readonly db: Client;
   readonly options: CalendarOptions;
   readonly workspaceId: string;
@@ -961,7 +961,7 @@ function whenText(iso: string, zone: string | null): string {
   }).format(new Date(iso));
 }
 
-async function promoFor(seed: string): Promise<{ text: string; html: string }> {
+export async function promoFor(seed: string): Promise<{ text: string; html: string }> {
   try {
     const block = await promoBlock({
       site: 'outreachgraph.com',
@@ -984,7 +984,7 @@ interface BookingMailContext {
   readonly icsUrl: string;
 }
 
-function mailBody(lines: readonly (string | null)[], links: readonly [string, string][]) {
+export function mailBody(lines: readonly (string | null)[], links: readonly [string, string][]) {
   const text = [
     ...lines.filter((l): l is string => l !== null),
     '',
@@ -999,7 +999,7 @@ function mailBody(lines: readonly (string | null)[], links: readonly [string, st
   return { text, html };
 }
 
-async function sendSafely(scope: MailScope, message: Message): Promise<boolean> {
+export async function sendSafely(scope: MailScope, message: Message): Promise<boolean> {
   try {
     const mailer = await resolveMailer(scope);
     await mailer.send({ ...message, tenantId: scope.workspaceId });

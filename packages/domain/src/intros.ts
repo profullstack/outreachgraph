@@ -326,3 +326,100 @@ export function nextIntroStatus(
   if (role !== 'target') return undefined;
   return response === 'accept' ? 'accepted' : 'declined';
 }
+
+// ------------------------------------------------------------ auto-drafts
+
+/** What OutreachGraph knows about a member, to draft their card from. */
+export interface IntroDraftSource {
+  readonly name?: string | null;
+  readonly email?: string | null;
+  readonly firstName?: string | null;
+  readonly lastName?: string | null;
+  readonly jobTitle?: string | null;
+  readonly companyDomain?: string | null;
+  readonly offerings: readonly {
+    readonly name: string;
+    readonly category?: string | null;
+    readonly description?: string | null;
+    readonly valuePropositions?: readonly string[];
+    readonly likelyPains?: readonly string[];
+  }[];
+}
+
+export type IntroCardDraft = Omit<IntroCard, 'id'>;
+
+function firstSentence(text: string | null | undefined, max: number): string {
+  const t = cleanIntroText(text ?? '', 1_000);
+  if (!t) return '';
+  const first = t.split(/(?<=[.!?])\s/)[0] ?? t;
+  return first.length > max ? `${first.slice(0, max - 1).trimEnd()}…` : first;
+}
+
+function companyFromDomain(domain: string | null | undefined): string {
+  const d = cleanIntroText(domain ?? '', 120)
+    .toLowerCase()
+    .replace(/^www\./, '');
+  return d.includes('.') ? d : '';
+}
+
+/**
+ * A card written for the member from what they told OutreachGraph: their name
+ * and role, and the products they sell. Pure, so the same facts always give
+ * the same draft and an unchanged member is not rewritten.
+ *
+ * The draft is never opened by this: a member's card is shown to others only
+ * after their own click.
+ */
+export function draftIntroCard(source: IntroDraftSource): IntroCardDraft {
+  const fullName = [source.firstName, source.lastName]
+    .map((v) => cleanIntroText(v ?? '', 40))
+    .filter(Boolean)
+    .join(' ');
+  const displayName = cleanIntroText(
+    fullName || source.name || (source.email ?? '').split('@')[0] || '',
+    INTRO_LIMITS.displayName,
+  );
+
+  const offerings = source.offerings.filter((o) => cleanIntroText(o.name, 80)).slice(0, 4);
+  const names = offerings.map((o) => cleanIntroText(o.name, 60));
+  const company = companyFromDomain(source.companyDomain);
+  const role = cleanIntroText(source.jobTitle ?? '', 60);
+  const building = names.slice(0, 2).join(' and ');
+
+  let headline = '';
+  if (role && company) headline = `${role} at ${company}`;
+  else if (role) headline = building ? `${role}, building ${building}` : role;
+  else if (building) headline = `Building ${building}`;
+  else if (company) headline = `At ${company}`;
+
+  const canOffer = offerings
+    .map((o) => {
+      const what =
+        firstSentence(o.valuePropositions?.[0], 140) || firstSentence(o.description, 140);
+      const name = cleanIntroText(o.name, 60);
+      return what ? `${name}: ${what}` : name;
+    })
+    .join(' ');
+
+  const pains = offerings
+    .flatMap((o) => (o.likelyPains ?? []).slice(0, 1))
+    .map((p) => firstSentence(p, 120))
+    .filter(Boolean)
+    .slice(0, 3);
+  const lookingFor = names.length
+    ? `Customers and partners for ${names.slice(0, 3).join(', ')}.` +
+      (pains.length ? ` Especially people dealing with: ${pains.join(' ')}` : '')
+    : '';
+
+  return {
+    displayName,
+    headline: cleanIntroText(headline, INTRO_LIMITS.headline),
+    lookingFor: cleanIntroText(lookingFor, INTRO_LIMITS.lookingFor),
+    canOffer: cleanIntroText(canOffer, INTRO_LIMITS.canOffer),
+    topics: cleanIntroTopics(
+      offerings
+        .map((o) => o.category ?? '')
+        .filter((c) => c && c.length <= INTRO_LIMITS.topicLength),
+    ),
+  };
+}

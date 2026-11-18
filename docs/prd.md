@@ -187,8 +187,17 @@ provider record, or campaign is read to make or rank an introduction.
   real reason.
 - **Limits.** One live request per pair, five requests per member per rolling
   day (withdrawn requests count), and a note is required with every request.
-- **Nothing is sent.** This slice creates no email and no message on any
-  network. Members read requests through the API and the MCP tools.
+- **Runs itself (Boardy-style), consent intact.** Every member gets a card
+  drafted from their profile and products (`auto_drafted`), kept **off**: it
+  is shown to nobody until the member's own click. An untouched draft is
+  rewritten as their products change; their first edit makes it theirs. A
+  closed card sees only a count of members who look like a fit, never who.
+- **Email to members only.** A weekly match email (count while off, top three
+  open matches and pending requests while on; one-click opt-out), an email to
+  the asked member on a request, and to both sides on acceptance with each
+  other's address. Sent from the system workspace's own mailbox
+  (`SYSTEM_MAIL_WORKSPACE_ID`). Nothing goes to a prospect or a network.
+- **Surfaces.** The Intros tab in the web app, the API and the MCP tools.
 - **Prospects are never in the pool.** A person found by the pipeline, a public
   OpenProfile, or a directory record is not a member and cannot be matched,
   requested, or invited through this feature. Inviting people to join is

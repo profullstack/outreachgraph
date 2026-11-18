@@ -130,6 +130,13 @@ GET  /api/v1/intros/requests?box=incoming|outgoing
 POST /api/v1/intros/requests/{id}/accept|decline|withdraw
 ```
 
+It runs itself: every member gets a card drafted from their profile and
+products, kept off until they click **Turn on** in the Intros tab; while off
+they see only how many members look like a fit. A weekly match email, request
+and acceptance emails go out from the workspace named by
+`SYSTEM_MAIL_WORKSPACE_ID` (its connected mailbox). `PUT /api/v1/intros/mail
+{on}` turns the weekly email off.
+
 MCP: `get_intro_card`, `set_intro_card`, `find_intro_matches`, `request_intro`,
 `list_intros`, `respond_to_intro`.
 
