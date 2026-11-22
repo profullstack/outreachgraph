@@ -25,6 +25,11 @@ import type { CoinpayPass } from '@profullstack/coinpay-onboard/pass';
 import { now, queryOne, type Client } from '@outreachgraph/db';
 import { COINPAY_PLACEHOLDER_DOMAIN, provisionAccount } from './auth';
 
+// coinpay-onboard's oauth helpers name the app in their User-Agent from
+// COINPAY_APP_NAME or npm_package_name; the server runs as `bun <file>`, where
+// npm sets neither, so CoinPay would see only `coinpay-onboard/<v>`.
+process.env.COINPAY_APP_NAME ||= 'outreachgraph.com';
+
 export interface CoinpaySignInConfig {
   readonly clientId: string;
   readonly clientSecret: string;

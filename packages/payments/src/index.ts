@@ -25,3 +25,4 @@ export {
   type BehindReport,
   type CoinPayMerchantConfig,
 } from './coinpay-behind';
+export { COINPAY_UA } from './user-agent';

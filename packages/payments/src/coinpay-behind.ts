@@ -12,6 +12,8 @@
  * may grow the report without breaking this side.
  */
 
+import { COINPAY_UA } from './user-agent';
+
 const DEFAULT_BASE_URL = 'https://coinpayportal.com/api';
 
 export type BehindAction =
@@ -109,7 +111,11 @@ export class CoinPayMerchant {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}/payments/behind${qs ? `?${qs}` : ''}`, {
-        headers: { authorization: `Bearer ${this.apiKey}`, accept: 'application/json' },
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          accept: 'application/json',
+          'user-agent': COINPAY_UA,
+        },
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
