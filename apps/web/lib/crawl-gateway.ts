@@ -15,12 +15,26 @@ import { x402Proxy } from '@profullstack/x402-gateway/next';
  */
 const env = (name: string) => process.env[name];
 
+/**
+ * Names this site on the gateway's CoinPay calls (x402 verify/settle, checkout
+ * sessions). Every app shares one host, so the runtime default UA made them one
+ * caller in CoinPay's logs and throttle. 0.13 has no `userAgent` option; it
+ * takes a `fetch`.
+ */
+const COINPAY_UA = env('COINPAY_USER_AGENT') || 'outreachgraph.com (+https://outreachgraph.com)';
+const fetchWithUserAgent = ((input: RequestInfo | URL, init: RequestInit = {}) => {
+  const headers = new Headers(init.headers);
+  headers.set('user-agent', COINPAY_UA);
+  return fetch(input, { ...init, headers });
+}) as typeof fetch;
+
 export const gateway = createGateway({
   siteUrl: env('SITE_URL') || env('NEXT_PUBLIC_SITE_URL') || 'https://outreachgraph.com',
   siteName: 'OutreachGraph',
   coinpay: { apiKey: env('COINPAY_X402_KEY') },
   payTo: env('CRAWL_PAY_TO'),
   contact: 'mailto:support@outreachgraph.com',
+  fetch: fetchWithUserAgent,
 });
 
 /** Resolves to a Response for a refused crawler, or undefined to carry on. */

@@ -15,6 +15,8 @@
  * and wait to be told it confirmed.
  */
 
+import { COINPAY_UA } from './user-agent';
+
 /**
  * Chain identifiers, in the vocabulary CoinPayPortal actually speaks.
  *
@@ -248,6 +250,7 @@ export class CoinPayClient {
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${this.apiKey}`,
+        'user-agent': COINPAY_UA,
         ...init.headers,
       },
     });
