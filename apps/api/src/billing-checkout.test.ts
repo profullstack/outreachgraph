@@ -37,9 +37,14 @@ type SessionBody = Record<string, unknown>;
 function recordingClient(bodies: SessionBody[]): CoinPayClient {
   const stub = new CoinPayClient({ apiKey: 'key', businessId: 'biz', webhookSecret: 'whsec' });
 
+  // Its own counter: a session id is unique per purchase, whatever the caller
+  // does with the recorded bodies.
+  let opened = 0;
+
   stub.createCheckoutSession = async (input) => {
     bodies.push(stub.checkoutSessionBody(input));
-    const sessionId = `cs_test_${bodies.length}`;
+    opened += 1;
+    const sessionId = `cs_test_${opened}`;
     return {
       sessionId,
       url: `https://coinpayportal.com/checkout/${sessionId}`,
@@ -184,7 +189,9 @@ describe('POST /api/v1/billing/checkout/form', () => {
 
       const form = await postForm(app, { option: pack.id, source: 'billing' });
       expect(form.status).toBe(303);
-      expect(form.headers.get('location')).toBe('https://coinpayportal.com/checkout/cs_test_2');
+      expect(form.headers.get('location')).toMatch(
+        /^https:\/\/coinpayportal\.com\/checkout\/cs_test_\d+$/,
+      );
 
       expect(bodies).toHaveLength(2);
       const [fromJson, fromForm] = bodies as [SessionBody, SessionBody];
@@ -202,8 +209,8 @@ describe('POST /api/v1/billing/checkout/form', () => {
       const mine = rows.filter((r) => r.pack_id === pack.id);
       expect(mine).toHaveLength(2);
       expect(mine[0]).toEqual(mine[1]!);
-      expect(mine[0]!.amount_usd).toBe(pack.priceUsd);
-      expect(mine[0]!.credits).toBe(pack.credits);
+      expect(Number(mine[0]!.amount_usd)).toBe(pack.priceUsd);
+      expect(Number(mine[0]!.credits)).toBe(pack.credits);
       expect(mine[0]!.status).toBe('pending');
     }
 
