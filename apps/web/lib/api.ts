@@ -715,6 +715,18 @@ export async function fetchBilling(): Promise<BillingView> {
   return request<BillingView>('/billing');
 }
 
+/**
+ * The /checkout page's view (@profullstack/checkout): plain JSON built by the
+ * API, which owns the packs, the prices and the session. `search` is the
+ * page's own query string, already narrowed by `checkoutSearch`.
+ */
+export async function fetchCheckoutView(search: string): Promise<Record<string, unknown>> {
+  const { view } = await request<{ view: Record<string, unknown> }>(
+    `/billing/checkout/view${search}`,
+  );
+  return view;
+}
+
 export async function fetchListening(campaignId: string): Promise<ListeningView> {
   return request<ListeningView>(`/campaigns/${encodeURIComponent(campaignId)}/listening`);
 }

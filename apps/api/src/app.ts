@@ -221,6 +221,7 @@ import {
   startCreditPurchase,
   BillingError,
 } from './billing';
+import { createCreditCheckout, creditCheckoutView } from './billing-checkout';
 import {
   candidatesForPerson,
   confirmCandidate,
@@ -838,6 +839,35 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
     return undefined;
   };
+
+  /** The audit line for an opened credit purchase, from either checkout route. */
+  const auditCheckoutStarted = async (
+    actor: RequestActor,
+    result: Awaited<ReturnType<typeof startCreditPurchase>>,
+  ): Promise<void> => {
+    await repo.audit(options.db, {
+      workspaceId: actor.workspaceId,
+      actorKind: 'user',
+      actorId: actor.userId,
+      eventType: 'billing.checkout_started',
+      entityKind: 'credit_purchase',
+      entityId: result.purchaseId,
+      detail: { packId: result.pack.id, credits: result.pack.credits },
+    });
+  };
+
+  /**
+   * The /checkout page's form (@profullstack/checkout). It opens the payment
+   * through `startCreditPurchase`, like the JSON route below it.
+   */
+  const creditCheckout = createCreditCheckout({
+    db: options.db,
+    coinpay: options.coinpay,
+    appUrl: options.appUrl ?? 'https://outreachgraph.com',
+    ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
+    resolveActor,
+    started: auditCheckoutStarted,
+  });
 
   /**
    * Mints a token and mails the link.
@@ -1645,6 +1675,14 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
     });
     return c.redirect(pending.next, 302);
   });
+
+  /**
+   * The /checkout page posts its form here. Registered above the session gate
+   * on purpose: a signed-out browser posting a form wants a redirect to /login
+   * and back, not a 401 in JSON. The checkout resolves the actor itself, and
+   * refuses a form posted from another site.
+   */
+  api.post('/billing/checkout/form', (c) => creditCheckout.POST(c.req.raw));
 
   // Everything else under /api/v1 is authenticated and workspace-scoped.
   api.use('*', async (c, next) => {
@@ -6760,15 +6798,7 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
         ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
       });
 
-      await repo.audit(c.get('db'), {
-        workspaceId: actor.workspaceId,
-        actorKind: 'user',
-        actorId: actor.userId,
-        eventType: 'billing.checkout_started',
-        entityKind: 'credit_purchase',
-        entityId: result.purchaseId,
-        detail: { packId: result.pack.id, credits: result.pack.credits },
-      });
+      await auditCheckoutStarted(actor, result);
 
       return c.json(
         {
@@ -6785,6 +6815,17 @@ export function createApp(options: AppOptions): Hono<AppEnv> {
 
       throw error;
     }
+  });
+
+  /** What the /checkout page renders: the packs, the selection from the link, the balance. */
+  api.get('/billing/checkout/view', async (c) => {
+    const view = await creditCheckoutView(
+      creditCheckout,
+      { db: c.get('db'), coinpay: options.coinpay },
+      c.get('actor'),
+      c.req.query(),
+    );
+    return c.json({ view });
   });
 
   app.route(`/api/v1`, api);

@@ -29,6 +29,7 @@
         "@outreachgraph/secrets": "workspace:*",
         "@outreachgraph/signals": "workspace:*",
         "@profullstack/affiliates": "^0.3.0",
+        "@profullstack/checkout": "^0.1.3",
         "@profullstack/coinpay-onboard": "^0.5.1",
         "@profullstack/cross-promo": "^0.2.0",
         "@profullstack/form-guard": "^0.2.2",
@@ -90,6 +91,7 @@
       "dependencies": {
         "@outreachgraph/contracts": "workspace:*",
         "@outreachgraph/domain": "workspace:*",
+        "@profullstack/checkout": "^0.1.3",
         "@profullstack/footer": "latest",
         "@profullstack/profile": "0.1.8",
         "@profullstack/x402-gateway": "^0.18.4",
@@ -434,6 +436,8 @@
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
 
     "@profullstack/affiliates": ["@profullstack/affiliates@0.3.0", "", { "dependencies": { "@profullstack/referrals": "^0.1.0" }, "bin": { "affiliates": "dist/cli.js" } }, "sha512-bp0iREciWetDWrQYOsa6SJRTzviekKwgJQuATT7vql+4equu7pN76q8tb3SP1oBMczydsv6rYUMvPpS6+QT7yQ=="],
+
+    "@profullstack/checkout": ["@profullstack/checkout@0.1.3", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"] }, "sha512-JRRXOKUnN7UpbXI8tK+l+T+GPFQEU5g2WsNTmbdtyGsHs0SfYOafgUlSY//C/gnarD7Iv5tV1iXmM+wa//hvlQ=="],
 
     "@profullstack/coinpay-onboard": ["@profullstack/coinpay-onboard@0.5.1", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.32.2", "zod": "^4.6.7" }, "bin": { "coinpay-onboard": "bin/coinpay-onboard" } }, "sha512-vuM/1vYvkXP2E/tBcTBZ8JY4K49qtSPPY1N9XRQvIlcy0Sezr+spOf6vYBkRPhasKcFqda44MRLgxPseG9Kvdg=="],
 

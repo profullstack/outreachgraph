@@ -26,6 +26,7 @@
     "@outreachgraph/secrets": "workspace:*",
     "@outreachgraph/signals": "workspace:*",
     "@profullstack/affiliates": "^0.3.0",
+    "@profullstack/checkout": "^0.1.3",
     "@profullstack/coinpay-onboard": "^0.5.1",
     "@profullstack/cross-promo": "^0.2.0",
     "@profullstack/form-guard": "^0.2.2",
