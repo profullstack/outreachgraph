@@ -16,7 +16,11 @@ import { x402Proxy } from '@profullstack/x402-gateway/next';
 const env = (name: string) => process.env[name];
 
 /** The live origin, no trailing slash: robots.txt and sitemap.xml are built from it. */
-export const siteUrl = (env('SITE_URL') || env('NEXT_PUBLIC_SITE_URL') || 'https://outreachgraph.com').replace(/\/+$/, '');
+export const siteUrl = (
+  env('SITE_URL') ||
+  env('NEXT_PUBLIC_SITE_URL') ||
+  'https://outreachgraph.com'
+).replace(/\/+$/, '');
 
 /**
  * Names this site on the gateway's CoinPay calls (x402 verify/settle, checkout
