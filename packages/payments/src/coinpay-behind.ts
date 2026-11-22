@@ -111,7 +111,11 @@ export class CoinPayMerchant {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}/payments/behind${qs ? `?${qs}` : ''}`, {
-        headers: { authorization: `Bearer ${this.apiKey}`, accept: 'application/json', 'user-agent': COINPAY_UA },
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          accept: 'application/json',
+          'user-agent': COINPAY_UA,
+        },
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
