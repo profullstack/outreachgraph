@@ -92,7 +92,7 @@
         "@outreachgraph/domain": "workspace:*",
         "@profullstack/footer": "latest",
         "@profullstack/profile": "0.1.8",
-        "@profullstack/x402-gateway": "^0.13.1",
+        "@profullstack/x402-gateway": "^0.18.4",
         "next": "16.4.6",
         "react": "19.3.1",
         "react-dom": "19.3.1",
@@ -461,7 +461,7 @@
 
     "@profullstack/webhooks": ["@profullstack/webhooks@0.2.0", "", {}, "sha512-lfUoJwN5GmxHzCOphI7fNQAsZ9uiC2C6BZxoPA7MSxM2ryr7MKwOi2YYszwvN6aPaPTRHLhHdqoHQJbkaP9mUg=="],
 
-    "@profullstack/x402-gateway": ["@profullstack/x402-gateway@0.13.1", "", { "dependencies": { "@profullstack/keys": "^0.1.0" } }, "sha512-V7liSO0tShZRlp8dancuDuUSF/rqrr5YF3bzLoZy9wn6ixf1RIRPYTepe72s36JOdSVzi3wfuhaZFm9y0RpV4w=="],
+    "@profullstack/x402-gateway": ["@profullstack/x402-gateway@0.18.4", "", { "dependencies": { "@profullstack/keys": "^0.1.0" } }, "sha512-Glff1R6FvaYbiZK+zJv+vB11DOxUU7zQt9yIw/aLrVnta9OTqkULnGzqLy62egL6BZbxtVfW3kx/yHXiZOKVAw=="],
 
     "@stablelib/base64": ["@stablelib/base64@1.0.1", "", {}, "sha512-1bnPQqSxSuc3Ii6MhBysoWCg58j97aUjuCSZrGSmDxNqtytIi0k8utUenAwTZN4V5mXXYGsVUI9zeBqy+jBOSQ=="],
 
