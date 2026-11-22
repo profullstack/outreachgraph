@@ -14,7 +14,7 @@
     "@outreachgraph/domain": "workspace:*",
     "@profullstack/footer": "latest",
     "@profullstack/profile": "0.1.8",
-    "@profullstack/x402-gateway": "^0.13.1",
+    "@profullstack/x402-gateway": "^0.18.4",
     "next": "16.4.6",
     "react": "19.3.1",
     "react-dom": "19.3.1"
