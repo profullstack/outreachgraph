@@ -1,15 +1,14 @@
-'use client';
-
-import { useState } from 'react';
-import type { BillingView, CreditPackView } from '../lib/api';
+import type { BillingView } from '../lib/api';
+import { checkoutHref } from '../lib/checkout-link';
 
 /**
  * Buying prospect credits.
  *
- * The checkout itself is CoinPayPortal's hosted page, so this component's only
- * real job is to be honest before sending someone there: what a pack costs,
- * what it buys, and that the price is quoted in dollars. The coin (or PayPal)
- * is chosen on CoinPay's hosted checkout page, not here.
+ * Payment is CoinPayPortal's hosted page, so this component's only real job
+ * is to be honest before sending someone there: what a pack costs, what it
+ * buys, and that the price is quoted in dollars. Each pack links to the
+ * checkout page (`/checkout`) with that pack selected; the coin (or PayPal)
+ * is chosen on CoinPay's hosted page after it.
  *
  * There is no "confirming payment" spinner here on purpose. A chain payment
  * settles when it settles, and a page that pretends to wait for it either lies
@@ -19,44 +18,10 @@ import type { BillingView, CreditPackView } from '../lib/api';
  */
 
 export function CreditPacks({ initial }: { initial: BillingView }) {
-  const [busy, setBusy] = useState<string | undefined>();
-  const [error, setError] = useState<string | undefined>();
-
   const monthlyLeft = Math.max(
     0,
     initial.plan.prospectsPerMonth - initial.usage.prospectsContacted,
   );
-
-  async function buy(pack: CreditPackView): Promise<void> {
-    setBusy(pack.id);
-    setError(undefined);
-
-    try {
-      const response = await fetch('/api/v1/billing/checkout', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ packId: pack.id }),
-      });
-
-      const body = (await response.json()) as {
-        paymentUrl?: string;
-        error?: { message?: string };
-      };
-
-      if (!response.ok || !body.paymentUrl) {
-        setError(body.error?.message ?? 'Could not start the checkout.');
-        setBusy(undefined);
-        return;
-      }
-
-      // Leaves the app for CoinPayPortal's hosted page. Not a new tab: a
-      // payment page opened in the background is one people lose.
-      window.location.href = body.paymentUrl;
-    } catch {
-      setError('Could not reach the API.');
-      setBusy(undefined);
-    }
-  }
 
   return (
     <section className="border-border bg-surface-raised rounded-2xl border p-4">
@@ -116,21 +81,17 @@ export function CreditPacks({ initial }: { initial: BillingView }) {
                     ${pack.priceUsd} · ${(pack.priceUsd / pack.credits).toFixed(3)} a prospect
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void buy(pack)}
-                  disabled={busy !== undefined}
-                  className="border-border rounded-xl border px-3 py-2 text-sm font-medium disabled:opacity-50"
+                <a
+                  href={checkoutHref(pack.id, 'billing')}
+                  className="border-border inline-flex min-h-11 items-center rounded-xl border px-3 py-2 text-sm font-medium"
                 >
-                  {busy === pack.id ? 'Opening…' : `Buy $${pack.priceUsd}`}
-                </button>
+                  Buy ${pack.priceUsd}
+                </a>
               </li>
             ))}
           </ul>
         </>
       )}
-
-      {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
 
       {initial.purchases.length > 0 ? (
         <div className="mt-6">

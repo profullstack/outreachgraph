@@ -50,6 +50,7 @@ const OWNED_BY: Record<string, string> = {
   '/team': '/settings',
   '/sources': '/settings',
   '/billing': '/settings',
+  '/checkout': '/settings',
   '/invites': '/settings',
   '/cadences': '/settings',
   '/rules': '/settings',

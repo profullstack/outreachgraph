@@ -85,6 +85,22 @@
   align-items: stretch;
 }
 
+/* /checkout (@profullstack/checkout): its --pfc-* properties mapped onto the
+   tokens above, so it follows light and dark with the rest of the app. The
+   app column already has its own gutter, so the block keeps none. */
+.pfc {
+  --pfc-accent: var(--color-accent);
+  --pfc-accent-fg: var(--color-surface);
+  --pfc-fg: var(--color-ink);
+  --pfc-muted: var(--color-ink-muted);
+  --pfc-card: var(--color-surface-raised);
+  --pfc-border: var(--color-border);
+  --pfc-error: var(--color-hot);
+  --pfc-radius: 0.75rem;
+  --pfc-title-size: 1.25rem;
+  padding: 0;
+}
+
 /* The signup profile from @profullstack/profile (sign-up form, Settings):
    the same look as the email and password boxes in components/login-form.tsx. */
 .pfs-profile {
