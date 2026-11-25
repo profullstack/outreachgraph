@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { SearchOutOfCredits, type WebSearcher } from '../valueserp';
-import { quoteGroups, redditPostId, WebDiscussionSource } from './web-discussions';
+import {
+  DEFAULT_DISCUSSION_SITES,
+  isThread,
+  linkedinPostAuthor,
+  quoteGroups,
+  redditPostId,
+  WebDiscussionSource,
+} from './web-discussions';
 
 describe('WebDiscussionSource', () => {
   test('one query per site, quoted OR groups, threads only, Reddit filled in from the archive', async () => {
@@ -126,6 +133,44 @@ describe('WebDiscussionSource', () => {
     });
     await expect(broke.search({ terms: ['siem'] })).rejects.toThrow('out of credits');
     expect(searched).toBe(1);
+  });
+
+  test('LinkedIn public posts are leads with the author; the open web and profiles are not', async () => {
+    const source = new WebDiscussionSource({
+      searcher: {
+        search: async () => [
+          {
+            title: 'Jane Doe on LinkedIn: Any CRM for a 2-person agency?',
+            link: 'https://www.linkedin.com/posts/jane-doe_crm-smallbusiness-activity-7261-AbCd',
+            snippet: 'Looking for a simple CRM, what do you use?',
+          },
+          { title: 'Jane Doe', link: 'https://www.linkedin.com/in/jane-doe', snippet: 'CRM' },
+          // What a search that ignored site: answers with.
+          { title: 'Best CRM 2026', link: 'https://blog.example.com/crm', snippet: 'CRM list' },
+          { title: 'x', link: 'https://notlinkedin.com/posts/a_b', snippet: 'CRM' },
+        ],
+      },
+      sites: ['linkedin.com'],
+      archiveUrl: null,
+    });
+    const posts = await source.search({ terms: ['crm'] });
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      network: 'linkedin',
+      authorHandle: 'jane-doe',
+      container: 'LinkedIn',
+    });
+    expect(DEFAULT_DISCUSSION_SITES).toContain('linkedin.com');
+  });
+
+  test('a forum result on another host is dropped', () => {
+    expect(isThread('https://serverfault.com/questions/1/x', 'serverfault.com')).toBe(true);
+    expect(isThread('https://example.com/questions/1/x', 'serverfault.com')).toBe(false);
+    expect(isThread('https://www.quora.com/How-do-I-x', 'quora.com')).toBe(true);
+    expect(isThread('https://medium.com/How-do-I-x', 'quora.com')).toBe(false);
+    expect(
+      linkedinPostAuthor('https://www.linkedin.com/feed/update/urn:li:activity:1'),
+    ).toBeUndefined();
   });
 
   test('helpers', () => {

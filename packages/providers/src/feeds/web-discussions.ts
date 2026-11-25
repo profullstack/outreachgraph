@@ -11,6 +11,15 @@
  * in quoted groups, so a dozen keywords over five sites is about fifteen
  * searches. Google's snippet is a sentence, so a Reddit hit is filled in from
  * the Arctic Shift archive by post id: full text, author, posting time.
+ *
+ * LinkedIn is searched the same way, read-only: Google indexes public posts
+ * (`/posts/`, `/feed/update/`, `/pulse/`), and LinkedIn itself offers no
+ * search to a server. Nothing here acts on LinkedIn; a reply to one of these
+ * is a hand-off, like every LinkedIn action without the member's opt-in.
+ *
+ * A result counts only when its host is the site that was asked for: when the
+ * search engine ignores `site:` it answers with the open web, and a blog post
+ * about the topic is not a thread anyone can be helped in.
  */
 
 import type { FetchLike } from '../site/fetch';
@@ -30,6 +39,7 @@ export const DEFAULT_DISCUSSION_SITES = [
   'serverfault.com',
   'quora.com',
   'indiehackers.com',
+  'linkedin.com',
 ] as const;
 
 export interface WebDiscussionSourceOptions {
@@ -60,8 +70,26 @@ export function redditPostId(url: string): string | undefined {
   return /reddit\.com\/r\/[^/]+\/comments\/([a-z0-9]+)/i.exec(url)?.[1]?.toLowerCase();
 }
 
+/** Whether `url` lives on `site` (or a subdomain of it). */
+export function onSite(url: string, site: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === site || host.endsWith(`.${site}`);
+  } catch {
+    return false;
+  }
+}
+
+/** The author's vanity name in a LinkedIn post URL (`/posts/jane-doe_...`). */
+export function linkedinPostAuthor(url: string): string | undefined {
+  const name = /linkedin\.com\/posts\/([^/_?#]+)_/i.exec(url)?.[1];
+  return name ? decodeURIComponent(name) : undefined;
+}
+
 /** Thread pages only: a subreddit front page or a user profile is not a post. */
-function isThread(url: string, site: string): boolean {
+export function isThread(url: string, site: string): boolean {
+  if (!onSite(url, site)) return false;
+  if (site === 'linkedin.com') return /linkedin\.com\/(posts|feed\/update|pulse)\//i.test(url);
   if (site === 'reddit.com') return redditPostId(url) !== undefined;
   if (site === 'stackexchange.com' || site === 'serverfault.com')
     return /\/questions\/\d+/.test(url);
@@ -186,16 +214,17 @@ export class WebDiscussionSource implements FeedSource {
       }
       const text = [result.title, result.snippet].filter(Boolean).join('\n\n').trim();
       if (!text) continue;
+      const linkedin = site === 'linkedin.com';
       posts.push({
-        network: site === 'reddit.com' ? 'reddit' : 'website',
+        network: site === 'reddit.com' ? 'reddit' : linkedin ? 'linkedin' : 'website',
         externalId: key,
-        authorHandle: 'unknown',
+        authorHandle: (linkedin ? linkedinPostAuthor(link) : undefined) ?? 'unknown',
         url: link,
         ...(result.title ? { title: result.title } : {}),
         text: excerpt(text),
         // Google's age filter already bounded it; the exact time is unknown.
         postedAt: new Date().toISOString(),
-        container: site,
+        container: linkedin ? 'LinkedIn' : site,
       });
     }
     return posts;

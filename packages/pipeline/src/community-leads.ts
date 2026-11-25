@@ -16,6 +16,9 @@
  *   reply    drafted for a human to post. The product never posts to a
  *            community: the capability matrix forbids Reddit DMs and comment
  *            automation, and a brand found spamming threads loses the channel.
+ *   alert    the moment a scan scores a post above the floor, a `lead.found`
+ *            event goes out on the webhook bus (Slack, Zapier, any receiver),
+ *            once per lead. A thread is worth most in its first hours.
  *   digest   once a UTC day, after the workspace's digest hour, the new leads
  *            above each monitor's floor, to the workspace's notify address.
  *
@@ -52,6 +55,7 @@ import {
   type FeedSource,
 } from '@outreachgraph/providers';
 import { loadNotifySettings, notifyAddress } from './notify';
+import { emitWebhookEvent } from './webhooks';
 
 export const LEAD_SOURCES = ['reddit', 'hackernews', 'bluesky', 'web'] as const;
 export type LeadSource = (typeof LEAD_SOURCES)[number];
@@ -201,6 +205,8 @@ export interface LeadScanResult {
   readonly judged: number;
   /** Of those, how many are at or above the monitor's floor. */
   readonly leads: number;
+  /** Leads announced as `lead.found` by this scan. */
+  readonly alerted?: number | undefined;
   readonly bySource: Readonly<Record<string, number>>;
   readonly failures: readonly { readonly source: string; readonly reason: string }[];
   readonly at: string;
@@ -956,8 +962,11 @@ export async function scanLeadMonitor(
     }
   }
 
+  const alerted = await alertNewLeads(db, monitor, at, Boolean(deps.model));
+
   const result: LeadScanResult = {
     monitorId: monitor.id,
+    alerted,
     read,
     stored: fresh.length,
     judged,
@@ -984,6 +993,73 @@ export async function scanLeadMonitor(
     ],
   });
   return result;
+}
+
+/* ---------------------------------------------------------------- alert -- */
+
+/** At most this many `lead.found` events per scan; the rest wait for the next. */
+export const ALERT_LIMIT = 25;
+/** Older than this, a lead is digest material, not an alert. */
+const ALERT_MAX_AGE_DAYS = 3;
+
+/**
+ * Announces the monitor's new leads above its floor, once each, as
+ * `lead.found`. With a model, only judged leads count: an unjudged post's
+ * wording guess is not a verdict. Every announced lead is marked whether or
+ * not an endpoint is listening, so connecting Slack later starts from now
+ * instead of replaying the backlog.
+ */
+export async function alertNewLeads(
+  db: Client,
+  monitor: LeadMonitor,
+  at: Date,
+  judgedOnly: boolean,
+): Promise<number> {
+  const rows = await queryAll<LeadRow>(
+    db,
+    `SELECT l.*, ? AS monitor_name FROM community_leads l
+      WHERE l.monitor_id = ? AND l.alerted_at IS NULL AND l.status = 'new'
+        AND l.intent >= ? AND l.posted_at >= ? ${judgedOnly ? 'AND l.judged = 1' : ''}
+      ORDER BY l.intent DESC, l.posted_at DESC
+      LIMIT ?`,
+    [
+      monitor.name,
+      monitor.id,
+      monitor.minIntent,
+      new Date(at.getTime() - ALERT_MAX_AGE_DAYS * DAY_MS).toISOString(),
+      ALERT_LIMIT,
+    ],
+  );
+  const stamp = at.toISOString();
+  let sent = 0;
+  for (const lead of rows.map(toLead)) {
+    // The update is the lock: a lead is announced by exactly one scan.
+    const claimed = await db.execute({
+      sql: 'UPDATE community_leads SET alerted_at = ? WHERE id = ? AND alerted_at IS NULL',
+      args: [stamp, lead.id],
+    });
+    if (claimed.rowsAffected === 0) continue;
+    await emitWebhookEvent(db, monitor.workspaceId, 'lead.found', {
+      leadId: lead.id,
+      monitorId: monitor.id,
+      monitor: monitor.name,
+      ...(monitor.offeringId ? { offeringId: monitor.offeringId } : {}),
+      source: lead.source,
+      ...(lead.container ? { container: lead.container } : {}),
+      url: lead.url,
+      ...(lead.title ? { title: lead.title } : {}),
+      excerpt: lead.excerpt.slice(0, 500),
+      author: lead.author,
+      ...(lead.authorUrl ? { authorUrl: lead.authorUrl } : {}),
+      intent: lead.intent,
+      ...(lead.reason ? { reason: lead.reason } : {}),
+      ...(lead.matchedTerm ? { matchedTerm: lead.matchedTerm } : {}),
+      ...(lead.painPhrase ? { painPhrase: lead.painPhrase } : {}),
+      postedAt: lead.postedAt,
+    });
+    sent += 1;
+  }
+  return sent;
 }
 
 /* ---------------------------------------------------------------- leads -- */

@@ -72,6 +72,7 @@ describe('formatSlackMessage', () => {
       'action.sent',
       'cadence.completed',
       'person.suppressed',
+      'lead.found',
       'ping',
     ] as const) {
       const text = formatSlackMessage(event(type, { network: 'x', action: 'reply' })).text;
@@ -86,6 +87,22 @@ describe('formatSlackMessage', () => {
     ).text;
     expect(text).toContain('send email');
     expect(text).toContain('LinkedIn');
+  });
+
+  test('a buyer lead says where, how strong, what and links the post', () => {
+    const text = formatSlackMessage(
+      event('lead.found', {
+        monitor: 'Acme CRM',
+        source: 'reddit',
+        container: 'r/smallbusiness',
+        title: 'Any CRM <cheap> for a solo founder?',
+        url: 'https://www.reddit.com/r/smallbusiness/comments/abc/',
+        intent: 88,
+      }),
+    ).text;
+    expect(text).toContain('Acme CRM: buyer lead in r/smallbusiness (intent 88)');
+    expect(text).toContain('&lt;cheap&gt;');
+    expect(text).toContain('<https://www.reddit.com/r/smallbusiness/comments/abc/|open>');
   });
 
   test('survives an event about nobody', () => {
