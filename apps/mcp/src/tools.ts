@@ -1587,7 +1587,8 @@ export const TOOLS: readonly ToolDefinition[] = [
     title: 'Add a webhook endpoint',
     description:
       'Send workspace events (reply.received, link.clicked, prospect.created, ' +
-      'recommendation.approved, action.sent, cadence.completed, person.suppressed) to an https ' +
+      'recommendation.approved, action.sent, cadence.completed, person.suppressed, lead.found) ' +
+      'to an https ' +
       'URL: a Zapier, Make or n8n catch hook, your own server, or a Slack incoming webhook with ' +
       'kind "slack". Private and internal addresses are refused. The response carries the signing ' +
       'secret exactly once; deliveries carry Standard Webhooks headers and X-OutreachGraph-Signature: t=<unix>,v1=<hex> ' +

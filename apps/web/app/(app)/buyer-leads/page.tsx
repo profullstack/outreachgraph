@@ -47,8 +47,13 @@ export default async function BuyerLeadsPage({
       <header className="mb-4">
         <h1 className="text-xl font-semibold">Buyer leads</h1>
         <p className="text-ink-muted text-sm">
-          People on Reddit, Hacker News and Bluesky looking for what you sell. Draft a reply, then
-          post it yourself.
+          People on Reddit, Hacker News, Bluesky and LinkedIn looking for what you sell. Draft a
+          reply, then post it yourself. For an alert the moment one turns up, add a Slack or webhook
+          endpoint for <code>lead.found</code> in{' '}
+          <a href="/settings" className="underline">
+            Settings
+          </a>
+          .
         </p>
       </header>
 

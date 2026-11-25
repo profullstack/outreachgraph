@@ -28,6 +28,13 @@ export const WEBHOOK_EVENT_TYPES = [
   'cadence.completed',
   /** A person is never to be contacted again. */
   'person.suppressed',
+  /**
+   * A buyer-lead monitor found a public post above its floor: someone asking
+   * for, or complaining about, what the product does. Fired as soon as the scan
+   * scores it, so a Slack channel hears within the hour instead of the next
+   * day's digest.
+   */
+  'lead.found',
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];

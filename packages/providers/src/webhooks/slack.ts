@@ -88,6 +88,18 @@ export function formatSlackMessage(event: OutboundEvent): SlackMessage {
         text: `:no_entry: ${who(event)} will not be contacted again${reason ? ` (${escape(clip(reason, 80))})` : ''}`,
       };
     }
+    case 'lead.found': {
+      const url = str(data, 'url');
+      const where = str(data, 'container') ?? str(data, 'source') ?? 'the web';
+      const title = str(data, 'title') ?? str(data, 'excerpt');
+      const intent = typeof data.intent === 'number' ? ` (intent ${data.intent})` : '';
+      const brand = str(data, 'monitor');
+      return {
+        text:
+          `:mag: ${brand ? `${escape(brand)}: ` : ''}buyer lead in ${escape(where)}${intent}` +
+          `${title ? `: “${escape(clip(title, 140))}”` : ''}${url ? ` <${url}|open>` : ''}`,
+      };
+    }
     case 'ping':
       return { text: ':wave: Test from OutreachGraph. This channel is connected.' };
   }

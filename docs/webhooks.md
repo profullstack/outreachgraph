@@ -13,6 +13,7 @@ PRD §28. Where a workspace's events go once they leave the product.
 | `action.sent`             | `recordEmailSent`, `recordBlueskySent` (Bluesky, X, LinkedIn), manual execute route |
 | `cadence.completed`       | the cadence engine, when a plan runs out of steps (not when a reply stops it)       |
 | `person.suppressed`       | unsubscribe links, the `suppress` rule action, `POST /suppressions` (person keys)   |
+| `lead.found`              | `scanLeadMonitor` (buyer leads), once per lead over the monitor's floor             |
 | `ping`                    | `POST /webhooks/:id/test`, to that endpoint only                                    |
 
 Every emit goes through `emitWebhookEvent(db, workspaceId, type, data)` in

@@ -29,10 +29,14 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
    - The web (`web`): Google through ValueSERP, once a day per monitor (it is
      paid per query), past day or past week. One query per site, because
      ValueSERP ignores `site:a OR site:b`: reddit.com (all of it, not only the
-     listed subreddits), stackexchange.com, serverfault.com, quora.com and
-     indiehackers.com, keywords OR-ed five to a query, so a dozen keywords is
-     about fifteen searches a day. Reddit hits are filled in from Arctic Shift
-     by post id; forum hits keep Google's title and snippet. Off without
+     listed subreddits), stackexchange.com, serverfault.com, quora.com,
+     indiehackers.com and linkedin.com (public posts only: `/posts/`,
+     `/feed/update/`, `/pulse/`; read-only, a reply is a hand-off), keywords
+     OR-ed five to a query, so a dozen keywords is about eighteen searches a
+     day. A result counts only when its host is the site asked for, since a
+     search that ignores `site:` answers with the open web. Reddit hits are
+     filled in from Arctic Shift by post id; forum and LinkedIn hits keep
+     Google's title and snippet (LinkedIn leads carry the author's vanity name). Off without
      `VALUESERP_API_KEY`.
    - A post must contain a keyword as whole words; `exclude` words drop it.
 3. **Score.** The model classifies each post rather than picking a number
@@ -52,7 +56,16 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
 
 4. **Reply.** `Draft AI reply` writes 40-120 words: answer the question first,
    disclose the affiliation, name the product at most once.
-5. **Digest.** Once per UTC day after the workspace's digest hour
+5. **Alert.** At the end of every scan, each new lead at or over the floor
+   (judged, when a model is configured) from the last 3 days goes out once as a
+   `lead.found` webhook event: a Slack incoming webhook gets one line (brand,
+   where, intent, title, link), a generic endpoint (Zapier, Make, n8n) gets the
+   lead as JSON (`leadId`, `monitor`, `source`, `container`, `url`, `title`,
+   `excerpt`, `author`, `intent`, `reason`, `painPhrase`, `postedAt`). At most
+   25 per scan; `community_leads.alerted_at` (migration 0091) is the once, and
+   leads are marked whether or not anything is listening, so connecting Slack
+   later does not replay the backlog. Subscribe in Settings, Webhooks.
+6. **Digest.** Once per UTC day after the workspace's digest hour
    (`workspace_settings.digest_hour_utc`, default 13), to the notify address,
    only when there are new leads over the floor from the last 3 days. Each lead
    is sent once (`digested_at`). Claimed through `notifications`

@@ -14,7 +14,9 @@ import { StubModel } from '@outreachgraph/ai';
 import { queryAll, type Client } from '@outreachgraph/db';
 import type { Mailer, Message } from '@outreachgraph/email';
 import type { FeedPost, FeedSource } from '@outreachgraph/providers';
+import { generateSecretKey, parseSecretKey } from '@outreachgraph/secrets';
 import { seedDatabase, SEED, type SeededDatabase } from '../../../apps/api/src/test-seed';
+import { createWebhookEndpoint } from './webhooks';
 import {
   buildLeadSources,
   containsKeyword,
@@ -401,6 +403,93 @@ describe('scanning', () => {
     expect(await monitorsDueForScan(client, new Date(NOW.getTime() + 121 * 60_000))).toHaveLength(
       1,
     );
+  });
+});
+
+describe('instant alerts (lead.found)', () => {
+  test('each lead over the floor is announced once, the moment it is scored', async () => {
+    const client = await db('leads-alert');
+    await createWebhookEndpoint(client, {
+      workspaceId: SEED.workspaceId,
+      url: 'https://hooks.example.com/leads',
+      kind: 'generic',
+      events: ['lead.found'],
+      encryptionKey: parseSecretKey(generateSecretKey()),
+      lookup: async () => ['93.184.216.34'],
+    });
+    const monitor = await createLeadMonitor({ db: client }, SEED.workspaceId, {
+      name: 'ThreatCrush',
+      keywords: ['siem', 'threat intel', 'intrusion detection'],
+      subreddits: ['devsecops'],
+    });
+    const sources = () => [fake('reddit', POSTS), fake('hackernews', HN)];
+    const model = new StubModel(JUDGED);
+
+    const first = await scanLeadMonitor(
+      { db: client, model, sources, now: NOW },
+      SEED.workspaceId,
+      monitor.id,
+    );
+    expect(first.alerted).toBe(2);
+    const deliveries = await queryAll<{ event_type: string; payload_json: string }>(
+      client,
+      'SELECT event_type, payload_json FROM webhook_deliveries ORDER BY created_at, id',
+    );
+    expect(deliveries.map((d) => d.event_type)).toEqual(['lead.found', 'lead.found']);
+    const urls = deliveries.map(
+      (d) => (JSON.parse(d.payload_json) as { data: { url: string } }).data.url,
+    );
+    expect(urls.sort()).toEqual([
+      'https://news.ycombinator.com/item?id=42',
+      'https://www.reddit.com/r/devsecops/comments/r1/',
+    ]);
+    const top = JSON.parse(deliveries[0]!.payload_json) as { data: Record<string, unknown> };
+    expect(top.data).toMatchObject({ monitor: 'ThreatCrush', monitorId: monitor.id });
+
+    // The vendor post under the floor never alerts; nothing alerts twice.
+    const second = await scanLeadMonitor(
+      { db: client, model, sources, now: new Date(NOW.getTime() + 3_600_000) },
+      SEED.workspaceId,
+      monitor.id,
+    );
+    expect(second.alerted).toBe(0);
+    const after = await queryAll(client, 'SELECT id FROM webhook_deliveries');
+    expect(after).toHaveLength(2);
+  });
+
+  test('with a model, an unjudged post does not alert; with nobody listening leads are still marked', async () => {
+    const client = await db('leads-alert-pending');
+    const monitor = await createLeadMonitor({ db: client }, SEED.workspaceId, {
+      name: 'ThreatCrush',
+      keywords: ['siem', 'intrusion detection'],
+      minIntent: 40,
+    });
+    const sources = () => [fake('hackernews', HN)];
+    const broken = new StubModel('not json');
+    const pending = await scanLeadMonitor(
+      { db: client, model: broken, sources, now: NOW },
+      SEED.workspaceId,
+      monitor.id,
+    );
+    // Stored at 45 (over this floor of 40) but unjudged: not a verdict, no alert.
+    expect(pending.alerted).toBe(0);
+
+    const judged = await scanLeadMonitor(
+      {
+        db: client,
+        model: new StubModel(JSON.stringify({ results: [{ id: '0', intent: 70, reason: 'x' }] })),
+        sources,
+        now: new Date(NOW.getTime() + 3_600_000),
+      },
+      SEED.workspaceId,
+      monitor.id,
+    );
+    expect(judged.alerted).toBe(1);
+    const rows = await queryAll<{ alerted_at: string | null }>(
+      client,
+      'SELECT alerted_at FROM community_leads',
+    );
+    expect(rows.every((r) => r.alerted_at)).toBe(true);
   });
 });
 
