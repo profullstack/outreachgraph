@@ -640,6 +640,10 @@ export const TOOLS: readonly ToolDefinition[] = [
         everyMinutes: { type: 'number' },
         enabled: { type: 'boolean' },
         digest: { type: 'boolean' },
+        instantEmail: {
+          type: 'boolean',
+          description: 'Email new leads as soon as a scan finds them (on for new monitors).',
+        },
       },
       required: ['id'],
     },

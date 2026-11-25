@@ -541,6 +541,7 @@ export interface LeadMonitorView {
   readonly everyMinutes: number;
   readonly minIntent: number;
   readonly digest: boolean;
+  readonly instantEmail: boolean;
   readonly lastScannedAt?: string;
   readonly lastError?: string;
   readonly lastResult?: {

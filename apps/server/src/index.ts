@@ -19,6 +19,7 @@
  * the loop split back out behind a lock.
  */
 
+import { readFileSync } from 'node:fs';
 import {
   closeDatabase,
   getDatabase,
@@ -705,6 +706,18 @@ if (!appUrl && ENVIRONMENT === 'production') {
  */
 const commitHash = process.env.COMMIT_HASH ?? process.env.RAILWAY_GIT_COMMIT_SHA;
 
+/** This server's own package version, for /health; the image need not set APP_VERSION. */
+function packageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      version?: string;
+    };
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 /**
  * Selling credits, if this deployment has been given the means to.
  *
@@ -799,7 +812,7 @@ const api = createApp({
   // Cookies must not be Secure over plain HTTP, or local development can
   // never hold a session.
   secureCookies: ENVIRONMENT === 'production',
-  version: process.env.APP_VERSION ?? '0.25.0',
+  version: process.env.APP_VERSION ?? packageVersion(),
   ...(commitHash ? { commitHash } : {}),
 });
 
@@ -1663,6 +1676,8 @@ async function tick(): Promise<void> {
                 db,
                 ...(model ? { model } : {}),
                 ...(leadSearcher ? { searcher: leadSearcher } : {}),
+                ...(mailer ? { mailer } : {}),
+                ...(appUrl ? { appUrl } : {}),
               },
               workspaceId,
               monitorId,
