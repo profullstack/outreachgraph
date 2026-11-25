@@ -65,6 +65,11 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
    25 per scan; `community_leads.alerted_at` (migration 0091) is the once, and
    leads are marked whether or not anything is listening, so connecting Slack
    later does not replay the backlog. Subscribe in Settings, Webhooks.
+   With `instantEmail` on (the default for new monitors, migration 0092; off for
+   monitors that existed before), the same leads also go to the notify address
+   in one email per scan ("New buyer leads for X: reply while it is fresh"),
+   and are marked digested so the daily digest does not repeat them. A failed
+   send leaves them for the digest. Manual "Scan now" sends no email.
 6. **Digest.** Once per UTC day after the workspace's digest hour
    (`workspace_settings.digest_hour_utc`, default 13), to the notify address,
    only when there are new leads over the floor from the last 3 days. Each lead

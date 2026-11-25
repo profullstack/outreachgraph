@@ -60,6 +60,7 @@ const monitorFields = {
   everyMinutes: z.number().int().min(60).max(10_080).optional(),
   minIntent: z.number().int().min(0).max(100).optional(),
   digest: z.boolean().optional(),
+  instantEmail: z.boolean().optional(),
 };
 
 const createSchema = z.object({ ...monitorFields, offeringId: z.string().max(80).optional() });

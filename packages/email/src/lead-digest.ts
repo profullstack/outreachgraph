@@ -28,6 +28,8 @@ export interface CommunityLeadDigest {
   readonly date: string;
   /** Brand names the leads were found for, in order. */
   readonly brands: readonly string[];
+  /** Sent the moment a scan found them, not as the daily digest. */
+  readonly instant?: boolean | undefined;
   readonly leads: readonly CommunityLeadDigestItem[];
 }
 
@@ -60,7 +62,9 @@ export function communityLeadDigestEmail(
   const n = digest.leads.length;
   const brands = digest.brands.join(', ');
   const things = `${n} fresh buyer ${n === 1 ? 'discussion' : 'discussions'}`;
-  const subject = `${n} fresh buyer ${n === 1 ? 'lead' : 'leads'} for ${brands} · OutreachGraph`;
+  const subject = digest.instant
+    ? `New buyer ${n === 1 ? 'lead' : 'leads'} for ${brands}: reply while it is fresh · OutreachGraph`
+    : `${n} fresh buyer ${n === 1 ? 'lead' : 'leads'} for ${brands} · OutreachGraph`;
   const leadsUrl = `${base}/buyer-leads`;
   const draftUrl = (id: string) => `${base}/buyer-leads?lead=${encodeURIComponent(id)}`;
   const where = (lead: CommunityLeadDigestItem) =>
@@ -106,7 +110,11 @@ export function communityLeadDigestEmail(
   const html = [
     markHtml(base),
     `<p style="font-size:18px;margin:0 0 4px"><strong>${things} for ${escapeHtml(brands)}</strong></p>`,
-    `<p style="color:#666;margin:0 0 16px">High-intent posts in public communities, ${escapeHtml(digest.date)}</p>`,
+    `<p style="color:#666;margin:0 0 16px">${
+      digest.instant
+        ? 'Just found in public communities. The first useful reply gets the most attention.'
+        : `High-intent posts in public communities, ${escapeHtml(digest.date)}`
+    }</p>`,
     ...digest.leads.map(card),
     `<p><a href="${escapeHtml(leadsUrl)}">View all monitored leads</a></p>`,
     `<p style="color:#666;font-size:13px">${DRAFTS_ONLY}</p>`,

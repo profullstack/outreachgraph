@@ -146,7 +146,11 @@ export function BuyerLeadsBoard({
       minIntent: Number(get('minIntent') || 60),
       everyMinutes: Number(get('everyMinutes') || 360),
       ...(monitor
-        ? { enabled: Boolean(data.get('enabled')), digest: Boolean(data.get('digest')) }
+        ? {
+            enabled: Boolean(data.get('enabled')),
+            digest: Boolean(data.get('digest')),
+            instantEmail: Boolean(data.get('instantEmail')),
+          }
         : {}),
       ...(!monitor && get('offeringId') ? { offeringId: get('offeringId') } : {}),
     };
@@ -279,6 +283,10 @@ export function BuyerLeadsBoard({
           <label className="flex items-center gap-2">
             <input type="checkbox" name="digest" defaultChecked={monitor.digest} /> Daily digest
             email
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" name="instantEmail" defaultChecked={monitor.instantEmail} />{' '}
+            Email me the moment a lead turns up
           </label>
         </div>
       ) : null}

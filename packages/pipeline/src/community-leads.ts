@@ -161,6 +161,8 @@ export interface LeadMonitor {
   readonly everyMinutes: number;
   readonly minIntent: number;
   readonly digest: boolean;
+  /** Email each scan's new leads right away, instead of waiting for the digest. */
+  readonly instantEmail: boolean;
   readonly lastScannedAt?: string | undefined;
   readonly lastError?: string | undefined;
   readonly lastResult?: LeadScanResult | undefined;
@@ -230,6 +232,7 @@ interface MonitorRow {
   every_minutes: number;
   min_intent: number;
   digest: number;
+  instant_email?: number | null;
   last_scanned_at: string | null;
   last_error: string | null;
   last_result_json: string | null;
@@ -288,6 +291,7 @@ function toMonitor(row: MonitorRow): LeadMonitor {
     everyMinutes: Number(row.every_minutes),
     minIntent: Number(row.min_intent),
     digest: Number(row.digest) === 1,
+    instantEmail: Number(row.instant_email ?? 0) === 1,
     ...(row.last_scanned_at ? { lastScannedAt: row.last_scanned_at } : {}),
     ...(row.last_error ? { lastError: row.last_error } : {}),
     ...(row.last_result_json
@@ -374,6 +378,7 @@ export interface MonitorInput {
   readonly everyMinutes?: number | undefined;
   readonly minIntent?: number | undefined;
   readonly digest?: boolean | undefined;
+  readonly instantEmail?: boolean | undefined;
 }
 
 export class MonitorInputError extends Error {
@@ -480,8 +485,8 @@ export async function createLeadMonitor(
   await db.execute({
     sql: `INSERT INTO lead_monitors (id, workspace_id, offering_id, name, url, description, keywords_json,
             subreddits_json, exclude_json, sources_json, enabled, every_minutes, min_intent, digest,
-            created_at, updated_at, pain_phrases_json)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            created_at, updated_at, pain_phrases_json, instant_email)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       id,
       workspaceId,
@@ -500,6 +505,8 @@ export async function createLeadMonitor(
       at,
       at,
       JSON.stringify(painPhrases),
+      // New monitors email as soon as they find something: a thread is worth most in its first hours.
+      input.instantEmail === false ? 0 : 1,
     ],
   });
   return (await getLeadMonitor(db, workspaceId, id))!;
@@ -522,7 +529,7 @@ export async function updateLeadMonitor(
   await db.execute({
     sql: `UPDATE lead_monitors SET name = ?, url = ?, description = ?, keywords_json = ?, subreddits_json = ?,
             exclude_json = ?, sources_json = ?, enabled = ?, every_minutes = ?, min_intent = ?, digest = ?,
-            pain_phrases_json = ?, updated_at = ?
+            pain_phrases_json = ?, instant_email = ?, updated_at = ?
           WHERE workspace_id = ? AND id = ?`,
     args: [
       (patch.name?.trim() || cur.name).slice(0, 120),
@@ -541,6 +548,7 @@ export async function updateLeadMonitor(
       JSON.stringify(
         patch.painPhrases ? cleanPainPhrases(patch.painPhrases, cur.name) : cur.painPhrases,
       ),
+      (patch.instantEmail ?? cur.instantEmail) ? 1 : 0,
       now(),
       workspaceId,
       id,
@@ -666,6 +674,9 @@ export interface LeadScanDeps {
   readonly sources?: ((monitor: LeadMonitor) => readonly FeedSource[]) | undefined;
   /** Google search for the default `web` source. */
   readonly searcher?: WebSearcher | undefined;
+  /** With `appUrl`, emails new leads at once for monitors with `instantEmail`. */
+  readonly mailer?: Mailer | undefined;
+  readonly appUrl?: string | undefined;
   readonly now?: Date | undefined;
 }
 
@@ -962,7 +973,10 @@ export async function scanLeadMonitor(
     }
   }
 
-  const alerted = await alertNewLeads(db, monitor, at, Boolean(deps.model));
+  const alerted = await alertNewLeads(db, monitor, at, Boolean(deps.model), {
+    ...(deps.mailer ? { mailer: deps.mailer } : {}),
+    ...(deps.appUrl ? { appUrl: deps.appUrl } : {}),
+  });
 
   const result: LeadScanResult = {
     monitorId: monitor.id,
@@ -1014,6 +1028,7 @@ export async function alertNewLeads(
   monitor: LeadMonitor,
   at: Date,
   judgedOnly: boolean,
+  email: { readonly mailer?: Mailer; readonly appUrl?: string } = {},
 ): Promise<number> {
   const rows = await queryAll<LeadRow>(
     db,
@@ -1032,6 +1047,7 @@ export async function alertNewLeads(
   );
   const stamp = at.toISOString();
   let sent = 0;
+  const announced: CommunityLead[] = [];
   for (const lead of rows.map(toLead)) {
     // The update is the lock: a lead is announced by exactly one scan.
     const claimed = await db.execute({
@@ -1057,9 +1073,64 @@ export async function alertNewLeads(
       ...(lead.painPhrase ? { painPhrase: lead.painPhrase } : {}),
       postedAt: lead.postedAt,
     });
+    announced.push(lead);
     sent += 1;
   }
+  if (monitor.instantEmail && email.mailer && email.appUrl && announced.length > 0) {
+    await emailNewLeads(db, monitor, announced, at, email.mailer, email.appUrl);
+  }
   return sent;
+}
+
+/**
+ * One email per scan with the leads it just found. They are marked digested,
+ * so the daily digest carries only what was not already mailed. A failed send
+ * leaves them for the digest instead.
+ */
+async function emailNewLeads(
+  db: Client,
+  monitor: LeadMonitor,
+  leads: readonly CommunityLead[],
+  at: Date,
+  mailer: Mailer,
+  appUrl: string,
+): Promise<void> {
+  const settings = await loadNotifySettings(db, monitor.workspaceId);
+  const to = await notifyAddress(db, monitor.workspaceId, settings);
+  if (!to) return;
+  try {
+    await mailer.send(
+      communityLeadDigestEmail(
+        to,
+        {
+          date: at.toISOString().slice(0, 10),
+          brands: [monitor.name],
+          instant: true,
+          leads: leads.map((l) => ({
+            id: l.id,
+            source: l.source,
+            container: l.container,
+            title: l.title,
+            excerpt: l.excerpt,
+            url: l.url,
+            intent: l.intent,
+            reason: l.reason,
+          })),
+        },
+        appUrl,
+      ),
+    );
+  } catch (error) {
+    console.warn(`lead alert email failed for ${monitor.id}:`, (error as Error).message);
+    return;
+  }
+  const stamp = at.toISOString();
+  for (const lead of leads) {
+    await db.execute({
+      sql: 'UPDATE community_leads SET digested_at = ? WHERE id = ? AND digested_at IS NULL',
+      args: [stamp, lead.id],
+    });
+  }
 }
 
 /* ---------------------------------------------------------------- leads -- */

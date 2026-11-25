@@ -493,6 +493,78 @@ describe('instant alerts (lead.found)', () => {
   });
 });
 
+describe('instant email', () => {
+  test('a new monitor emails what a scan finds at once, and the digest does not repeat it', async () => {
+    const client = await db('leads-instant-email');
+    const monitor = await createLeadMonitor({ db: client }, SEED.workspaceId, {
+      name: 'ThreatCrush',
+      keywords: ['siem', 'threat intel', 'intrusion detection'],
+      subreddits: ['devsecops'],
+    });
+    expect(monitor.instantEmail).toBe(true);
+    const mailer = new CaptureMailer();
+    const deps = {
+      db: client,
+      model: new StubModel(JUDGED),
+      sources: () => [fake('reddit', POSTS), fake('hackernews', HN)],
+      mailer,
+      appUrl: 'https://outreachgraph.com',
+    };
+
+    await scanLeadMonitor({ ...deps, now: NOW }, SEED.workspaceId, monitor.id);
+    expect(mailer.sent).toHaveLength(1);
+    expect(mailer.sent[0]!.subject).toBe(
+      'New buyer leads for ThreatCrush: reply while it is fresh · OutreachGraph',
+    );
+    expect(mailer.sent[0]!.text).toContain('https://www.reddit.com/r/devsecops/comments/r1/');
+    expect(mailer.sent[0]!.text).not.toContain('vendor changelog');
+
+    // Nothing new: no mail. The digest has nothing left to carry.
+    await scanLeadMonitor(
+      { ...deps, now: new Date(NOW.getTime() + 3_600_000) },
+      SEED.workspaceId,
+      monitor.id,
+    );
+    expect(mailer.sent).toHaveLength(1);
+    expect(
+      await sendCommunityLeadDigest(
+        { db: client, mailer, appUrl: 'https://outreachgraph.com', now: NOW },
+        SEED.workspaceId,
+      ),
+    ).toBe(0);
+  });
+
+  test('turned off, a scan sends no mail and the digest still carries the leads', async () => {
+    const client = await db('leads-instant-off');
+    const monitor = await createLeadMonitor({ db: client }, SEED.workspaceId, {
+      name: 'ThreatCrush',
+      keywords: ['siem', 'threat intel', 'intrusion detection'],
+      subreddits: ['devsecops'],
+      instantEmail: false,
+    });
+    const mailer = new CaptureMailer();
+    await scanLeadMonitor(
+      {
+        db: client,
+        model: new StubModel(JUDGED),
+        sources: () => [fake('reddit', POSTS), fake('hackernews', HN)],
+        mailer,
+        appUrl: 'https://outreachgraph.com',
+        now: NOW,
+      },
+      SEED.workspaceId,
+      monitor.id,
+    );
+    expect(mailer.sent).toHaveLength(0);
+    expect(
+      await sendCommunityLeadDigest(
+        { db: client, mailer, appUrl: 'https://outreachgraph.com', now: NOW },
+        SEED.workspaceId,
+      ),
+    ).toBe(2);
+  });
+});
+
 describe('replies and the digest', () => {
   async function scanned(label: string) {
     const client = await db(label);
