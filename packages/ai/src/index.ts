@@ -109,6 +109,9 @@ export { judgeAsks, parseJudgements, type AskJudgeInput, type AskJudgement } fro
 export { judgeSignals, parseSignalJudgements, type SignalJudgement } from './judge-signals';
 export {
   draftLeadReply,
+  fitReply,
+  graphemeLength,
+  replyLimitFor,
   intentFromJudgement,
   judgeLeads,
   parseLeadJudgements,

@@ -132,7 +132,7 @@ describe('lead monitors', () => {
     expect(monitor.name.length).toBeGreaterThan(0);
     expect(monitor.keywords).toEqual(['siem', 'intrusion detection', 'splunk alternative']);
     expect(monitor.subreddits).toEqual(['devsecops', 'sysadmin']);
-    expect(monitor.sources).toEqual(['reddit', 'hackernews', 'bluesky', 'web']);
+    expect(monitor.sources).toEqual(['reddit', 'hackernews', 'bluesky', 'w3bs', 'web']);
     expect(monitor.everyMinutes).toBe(360);
   });
 

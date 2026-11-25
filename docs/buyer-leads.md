@@ -12,7 +12,7 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
 ## How it works
 
 1. **Monitor.** One per brand or product: keywords, subreddits, sources
-   (`reddit`, `hackernews`, `bluesky`, `web`), an intent floor (default 60) and a
+   (`reddit`, `hackernews`, `bluesky`, `w3bs`, `web`), an intent floor (default 60) and a
    schedule (default every 6 hours, never more often than hourly). A name, a
    URL or a product id is enough: the model suggests keywords (category,
    problems, competitors) and subreddits.
@@ -26,6 +26,10 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
      keyword, 1 s apart.
    - Bluesky through `api.bsky.app` (`public.api.bsky.app` answers
      `searchPosts` with 403 to anonymous callers).
+   - W3BS Social (`w3bs`): social.w3bs.org is a Bluesky PDS, so its posts are
+     searched in the same AppView and kept by handle (`*.social.w3bs.org`).
+     They are Bluesky posts (source `bluesky`, one lead per `at://` URI) linked
+     to the social.w3bs.org web client. Its own search needs a signed-in account.
    - The web (`web`): Google through ValueSERP, once a day per monitor (it is
      paid per query), past day or past week. One query per site, because
      ValueSERP ignores `site:a OR site:b`: reddit.com (all of it, not only the
@@ -55,7 +59,10 @@ replied. There is no route, CLI verb or MCP tool that posts to a community.
    twice.
 
 4. **Reply.** `Draft AI reply` writes 40-120 words: answer the question first,
-   disclose the affiliation, name the product at most once.
+   disclose the affiliation, name the product at most once. On Bluesky and
+   W3BS Social the reply must fit in 300 graphemes, link included: the model is
+   told so, an over-long draft gets one rewrite, and anything still over is cut
+   at a sentence with the link kept. The reply box shows `used/300`.
 5. **Alert.** At the end of every scan, each new lead at or over the floor
    (judged, when a model is configured) from the last 3 days goes out once as a
    `lead.found` webhook event: a Slack incoming webhook gets one line (brand,

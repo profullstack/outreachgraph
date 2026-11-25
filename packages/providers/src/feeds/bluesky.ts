@@ -31,6 +31,24 @@ export interface BlueskyFeedSourceOptions {
   readonly baseUrl?: string;
   readonly fetchImpl?: FetchLike;
   readonly timeoutMs?: number;
+  /**
+   * Keep only authors whose handle ends with this, e.g. `.social.w3bs.org`.
+   * A PDS such as social.w3bs.org federates into the Bluesky AppView, so its
+   * posts are searched there and picked out by handle; the PDS's own search
+   * proxies the AppView and needs a signed-in account.
+   */
+  readonly handleSuffix?: string;
+  readonly slug?: string;
+  readonly displayName?: string;
+}
+
+/** Bluesky-protocol hosts with their own web client, by handle suffix. */
+const WEB_CLIENTS: readonly { suffix: string; origin: string }[] = [
+  { suffix: '.social.w3bs.org', origin: 'https://social.w3bs.org' },
+];
+
+function webOrigin(handle: string): string {
+  return WEB_CLIENTS.find((c) => handle.endsWith(c.suffix))?.origin ?? 'https://bsky.app';
 }
 
 interface SearchResponse {
@@ -45,14 +63,18 @@ interface SearchResponse {
 
 export class BlueskyFeedSource implements FeedSource {
   readonly network = 'bluesky' as const;
-  readonly slug = 'bluesky';
-  readonly displayName = 'Bluesky';
+  readonly slug: string;
+  readonly displayName: string;
 
   readonly #baseUrl: string;
   readonly #fetch: FetchLike;
   readonly #timeoutMs: number;
+  readonly #handleSuffix: string | undefined;
 
   constructor(options: BlueskyFeedSourceOptions = {}) {
+    this.slug = options.slug ?? 'bluesky';
+    this.displayName = options.displayName ?? 'Bluesky';
+    this.#handleSuffix = options.handleSuffix?.toLowerCase();
     this.#baseUrl = options.baseUrl ?? BLUESKY_API;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? 10_000;
@@ -74,6 +96,7 @@ export class BlueskyFeedSource implements FeedSource {
         const text = post.record?.text?.trim();
         const handle = post.author?.handle;
         if (!text || !handle || !post.uri) continue;
+        if (this.#handleSuffix && !handle.toLowerCase().endsWith(this.#handleSuffix)) continue;
         if (!mentionsTerm(text, terms)) continue;
 
         const postedAt = post.record?.createdAt ?? post.indexedAt ?? new Date().toISOString();
@@ -86,7 +109,7 @@ export class BlueskyFeedSource implements FeedSource {
           externalId: post.uri,
           authorHandle: handle,
           ...(post.author?.displayName ? { authorDisplayName: post.author.displayName } : {}),
-          authorUrl: `https://bsky.app/profile/${handle}`,
+          authorUrl: `${webOrigin(handle)}/profile/${handle}`,
           url: webUrlFor(handle, post.uri),
           text: excerpt(text),
           postedAt,
@@ -127,7 +150,6 @@ export class BlueskyFeedSource implements FeedSource {
  */
 function webUrlFor(handle: string, uri: string): string {
   const rkey = uri.split('/').pop();
-  return rkey
-    ? `https://bsky.app/profile/${handle}/post/${rkey}`
-    : `https://bsky.app/profile/${handle}`;
+  const origin = webOrigin(handle);
+  return rkey ? `${origin}/profile/${handle}/post/${rkey}` : `${origin}/profile/${handle}`;
 }

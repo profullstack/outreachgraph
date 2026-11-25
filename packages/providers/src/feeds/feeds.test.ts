@@ -411,6 +411,32 @@ describe('BlueskyFeedSource', () => {
 
     expect(posts).toHaveLength(1);
   });
+
+  test('a handle suffix keeps only that PDS, linked to its own web client', async () => {
+    const w3bs = {
+      posts: [
+        ...response.posts,
+        {
+          uri: 'at://did:plc:w3/app.bsky.feed.post/w3post',
+          author: { did: 'did:plc:w3', handle: 'ana.social.w3bs.org' },
+          record: { text: 'need an invoicing tool', createdAt: '2026-08-06T11:00:00Z' },
+        },
+      ],
+    };
+    const { fetch } = stub(w3bs);
+    const source = new BlueskyFeedSource({
+      fetchImpl: fetch,
+      handleSuffix: '.social.w3bs.org',
+      slug: 'w3bs',
+    });
+    const posts = await source.search({ terms: ['invoicing'] });
+
+    expect(source.slug).toBe('w3bs');
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.network).toBe('bluesky');
+    expect(posts[0]?.url).toBe('https://social.w3bs.org/profile/ana.social.w3bs.org/post/w3post');
+    expect(posts[0]?.authorUrl).toBe('https://social.w3bs.org/profile/ana.social.w3bs.org');
+  });
 });
 
 describe('NostrSource', () => {

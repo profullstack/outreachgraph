@@ -10,9 +10,33 @@ const SOURCE_NAMES: Record<string, string> = {
   reddit: 'Reddit',
   hackernews: 'Hacker News',
   bluesky: 'Bluesky',
+  w3bs: 'W3BS Social',
   web: 'Web (Google)',
   website: 'Web',
 };
+
+const MONITOR_SOURCES = ['reddit', 'hackernews', 'bluesky', 'w3bs', 'web'] as const;
+
+/**
+ * A lead's source is the network the post lives on, so a social.w3bs.org post
+ * is a 'bluesky' lead; its link says which host it came from.
+ */
+function sourceLabel(lead: BuyerLeadView): string {
+  if (lead.source === 'bluesky' && /^https:\/\/social\.w3bs\.org\//.test(lead.url)) {
+    return SOURCE_NAMES.w3bs ?? 'W3BS Social';
+  }
+  return SOURCE_NAMES[lead.source] ?? lead.source;
+}
+
+/** Hard reply ceilings, in graphemes: Bluesky and its PDSes reject anything longer. */
+const REPLY_LIMITS: Record<string, number> = { bluesky: 300 };
+
+function graphemes(text: string): number {
+  if (typeof Intl === 'undefined' || !('Segmenter' in Intl)) return [...text].length;
+  let n = 0;
+  for (const _ of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) n++;
+  return n;
+}
 
 const list = (value: string) =>
   value
@@ -133,9 +157,7 @@ export function BuyerLeadsBoard({
   async function saveMonitor(form: HTMLFormElement, monitor?: LeadMonitorView) {
     const data = new FormData(form);
     const get = (k: string) => String(data.get(k) ?? '').trim();
-    const sources = ['reddit', 'hackernews', 'bluesky', 'web'].filter((s) =>
-      data.get(`source-${s}`),
-    );
+    const sources = MONITOR_SOURCES.filter((s) => data.get(`source-${s}`));
     const body: Record<string, unknown> = {
       ...(get('name') ? { name: get('name') } : {}),
       ...(get('url') ? { url: get('url') } : monitor ? { url: null } : {}),
@@ -241,7 +263,7 @@ export function BuyerLeadsBoard({
         />
       </label>
       <div className="flex flex-wrap gap-4">
-        {['reddit', 'hackernews', 'bluesky', 'web'].map((s) => (
+        {MONITOR_SOURCES.map((s) => (
           <label key={s} className="flex items-center gap-2">
             <input
               type="checkbox"
@@ -429,7 +451,7 @@ export function BuyerLeadsBoard({
                 className={`border-border bg-surface rounded-2xl border p-4 ${focus === lead.id ? 'ring-accent ring-2' : ''}`}
               >
                 <div className="text-ink-muted mb-1 flex flex-wrap items-center gap-2 text-xs tracking-wide uppercase">
-                  <span>{SOURCE_NAMES[lead.source] ?? lead.source}</span>
+                  <span>{sourceLabel(lead)}</span>
                   {lead.container ? <span>· {lead.container}</span> : null}
                   <span className={`rounded-full px-2 py-0.5 normal-case ${badge.className}`}>
                     {badge.label}
@@ -473,6 +495,20 @@ export function BuyerLeadsBoard({
                     className="border-border mt-3 w-full rounded-lg border p-2 text-sm"
                   />
                 ) : null}
+                {draftText !== undefined && REPLY_LIMITS[lead.source]
+                  ? (() => {
+                      const limit = REPLY_LIMITS[lead.source] ?? 0;
+                      const used = graphemes(draftText);
+                      return (
+                        <p
+                          className={`mt-1 text-right text-xs ${used > limit ? 'font-medium text-red-700' : 'text-ink-muted'}`}
+                        >
+                          {used}/{limit}
+                          {used > limit ? ` · ${used - limit} over, trim before posting` : ''}
+                        </p>
+                      );
+                    })()
+                  : null}
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
