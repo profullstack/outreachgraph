@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import { StubModel } from './model';
 import {
+  draftLeadReply,
+  fitReply,
+  graphemeLength,
+  replyLimitFor,
   intentFromJudgement,
   parseLeadJudgements,
   parseMonitorSuggestion,
@@ -36,5 +41,59 @@ describe('lead judgements', () => {
         '{"keywords": ["SIEM", "x", "SIEM"], "subreddits": ["r/sysadmin", "bad name!"]}',
       ),
     ).toEqual({ keywords: ['siem'], subreddits: ['sysadmin'] });
+  });
+});
+
+describe('reply length on Bluesky and W3BS Social', () => {
+  const brand = { name: 'Acme', url: 'https://acme.example' };
+  const long =
+    'Rotating logs by hand is how most of us start, and it stops scaling around the third box. ' +
+    'What worked for me was shipping everything to one place and alerting on the patterns, not the lines. ' +
+    'I work on Acme, which does that with a one-line agent and keeps a week free. ' +
+    'Happy to compare notes on retention and costs if that helps, since the tradeoffs are not obvious early on. ' +
+    'https://acme.example';
+
+  test('limits by network', () => {
+    expect(replyLimitFor('bluesky')).toBe(300);
+    expect(replyLimitFor('w3bs')).toBe(300);
+    expect(replyLimitFor('reddit')).toBeUndefined();
+  });
+
+  test('fitReply cuts at a sentence and keeps the link', () => {
+    const fitted = fitReply(long, 300);
+    expect(graphemeLength(fitted)).toBeLessThanOrEqual(300);
+    expect(fitted.endsWith('https://acme.example')).toBe(true);
+    expect(fitted).toContain('Rotating logs by hand');
+    expect(fitReply('short one', 300)).toBe('short one');
+  });
+
+  test('an over-long Bluesky draft is rewritten once, then fitted', async () => {
+    const model = new StubModel([long, long]);
+    const draft = await draftLeadReply(model, brand, {
+      source: 'bluesky',
+      text: 'how do I manage logs',
+    });
+    expect(model.calls).toHaveLength(2);
+    expect(model.calls[0]?.system).toContain('HARD LIMIT');
+    expect(graphemeLength(draft ?? '')).toBeLessThanOrEqual(300);
+  });
+
+  test('the shorter rewrite wins when it fits', async () => {
+    const model = new StubModel([
+      long,
+      'Ship logs to one place and alert on patterns. I work on Acme. https://acme.example',
+    ]);
+    const draft = await draftLeadReply(model, brand, { source: 'bluesky', text: 'logs?' });
+    expect(draft).toBe(
+      'Ship logs to one place and alert on patterns. I work on Acme. https://acme.example',
+    );
+  });
+
+  test('Reddit keeps the long form and makes one call', async () => {
+    const model = new StubModel(long);
+    const draft = await draftLeadReply(model, brand, { source: 'reddit', text: 'logs?' });
+    expect(model.calls).toHaveLength(1);
+    expect(model.calls[0]?.system).toContain('40-120 words');
+    expect(draft).toBe(long);
   });
 });

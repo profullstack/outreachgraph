@@ -1204,7 +1204,7 @@ async function runLinkPost({ client, args, flags }: CommandContext): Promise<str
 }
 
 const BUYERS_USAGE =
-  'og buyers list [--status new|replied|dismissed] [--monitor <id>] [--min-intent 60] | show <leadId> | draft <leadId> | replied|dismiss|reopen <leadId> | monitors | phrases <monitorId> [--generate] [--set a,b] [--add a,b] | add <name> [--url u] [--product <offeringId>] [--keywords a,b] [--phrases a,b] [--subreddits x,y] [--sources reddit,hackernews,bluesky,web] [--min-intent 60] [--every 360] | set <monitorId> [same flags] [--pause|--resume] | scan <monitorId> | rm <monitorId>';
+  'og buyers list [--status new|replied|dismissed] [--monitor <id>] [--min-intent 60] | show <leadId> | draft <leadId> | replied|dismiss|reopen <leadId> | monitors | phrases <monitorId> [--generate] [--set a,b] [--add a,b] | add <name> [--url u] [--product <offeringId>] [--keywords a,b] [--phrases a,b] [--subreddits x,y] [--sources reddit,hackernews,bluesky,w3bs,web] [--min-intent 60] [--every 360] | set <monitorId> [same flags] [--pause|--resume] | scan <monitorId> | rm <monitorId>';
 
 async function runAudience({ client, args, flags }: CommandContext): Promise<string> {
   const [verb = 'list', target] = args;

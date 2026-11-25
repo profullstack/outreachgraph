@@ -138,13 +138,14 @@ export function parseLeadJudgements(raw: string): LeadJudgement[] {
     });
 }
 
-const DRAFT_SYSTEM = `You write a reply to a public community post on behalf of someone who works on a product. A human will read your draft, edit it and post it themselves.
+const DRAFT_SYSTEM_HEAD = `You write a reply to a public community post on behalf of someone who works on a product. A human will read your draft, edit it and post it themselves.
 
 Rules:
 - Answer the person's actual question or problem first, with something genuinely useful even if they never use the product.
 - Mention the product at most once, only where it fits, and disclose the affiliation plainly ("I work on X" / "I built X").
 - Match the community's tone: plain, short, no marketing language, no emojis, no hashtags, no exclamation marks.
-- 40-120 words. No greeting line, no sign-off, and at most one link: the demo video when there is one (showing beats describing), otherwise the product URL.
+{{LENGTH}}
+- No greeting line, no sign-off, and at most one link: the demo video when there is one (showing beats describing), otherwise the product URL.
 - Never claim features you were not told about. Never invent numbers or customers.
 Return only the reply text.`;
 
@@ -155,22 +156,108 @@ export interface LeadReplyInput {
   readonly text: string;
 }
 
+/**
+ * Hard ceilings for a reply, in graphemes, by where the post lives. Bluesky
+ * rejects a post over 300, and social.w3bs.org is a Bluesky PDS with the same
+ * lexicon, so the same 300. Reddit and Hacker News have no practical limit.
+ */
+const REPLY_LIMITS: Readonly<Record<string, number>> = { bluesky: 300, w3bs: 300, x: 280 };
+
+export function replyLimitFor(source: string): number | undefined {
+  return REPLY_LIMITS[source];
+}
+
+const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/** What Bluesky counts: graphemes, not UTF-16 units. */
+export function graphemeLength(text: string): number {
+  let n = 0;
+  for (const _ of segmenter.segment(text)) n++;
+  return n;
+}
+
+function graphemeSlice(text: string, limit: number): string {
+  return [...segmenter.segment(text)]
+    .slice(0, Math.max(0, limit))
+    .map((s) => s.segment)
+    .join('');
+}
+
+/**
+ * Fits a reply under `limit` without dropping its link: the prose is cut at
+ * the last sentence (else word) that fits beside the link, never mid-word.
+ */
+export function fitReply(text: string, limit: number): string {
+  const trimmed = text.trim();
+  if (graphemeLength(trimmed) <= limit) return trimmed;
+  const url = /https?:\/\/\S+/.exec(trimmed)?.[0]?.replace(/[).,;:!?]+$/, '');
+  const prose = url
+    ? trimmed
+        .replace(url, ' ')
+        .replace(/\s+([.,;:!?])/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim()
+    : trimmed;
+  const room = url ? limit - graphemeLength(url) - 1 : limit;
+  let body = graphemeSlice(prose, room);
+  if (body.length < prose.length) {
+    const sentence = Math.max(
+      body.lastIndexOf('. '),
+      body.lastIndexOf('? '),
+      body.lastIndexOf('! '),
+    );
+    if (sentence > body.length * 0.4) body = body.slice(0, sentence + 1);
+    else {
+      const space = body.lastIndexOf(' ');
+      body = `${(space > body.length * 0.6 ? body.slice(0, space) : graphemeSlice(body, room - 1)).replace(/[\s,;:]+$/, '')}…`;
+    }
+  }
+  return url ? `${body.trim()} ${url}` : body.trim();
+}
+
+function draftSystem(limit: number | undefined): string {
+  const length = limit
+    ? `- HARD LIMIT: at most ${limit - 30} characters in total, the link included; the network rejects anything longer. One to three short sentences.`
+    : '- 40-120 words.';
+  return DRAFT_SYSTEM_HEAD.replace('{{LENGTH}}', length);
+}
+
+function cleanDraft(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .trim();
+}
+
 /** A reply draft, or undefined when the model refused or returned nothing. */
 export async function draftLeadReply(
   model: TextModel,
   brand: LeadBrand,
   post: LeadReplyInput,
 ): Promise<string | undefined> {
+  const limit = replyLimitFor(post.source);
+  const system = draftSystem(limit);
   const user =
     `${brandBlock(brand)}\n\nPost (${post.source}${post.container ? `, ${post.container}` : ''}):\n` +
     `${post.title ? `${post.title}\n\n` : ''}${post.text.slice(0, 3000)}`;
-  const generated = await model.generate({ system: DRAFT_SYSTEM, user, maxTokens: 600 });
+  const generated = await model.generate({ system, user, maxTokens: limit ? 250 : 600 });
   if (generated.refused) return undefined;
-  const text = generated.text
-    .trim()
-    .replace(/^["']|["']$/g, '')
-    .trim();
-  return text.length > 0 ? text.slice(0, 2000) : undefined;
+  let text = cleanDraft(generated.text);
+  if (text.length === 0) return undefined;
+  if (!limit) return text.slice(0, 2000);
+
+  // Models count characters badly. One rewrite asking for a shorter version
+  // beats a cut; the cut is the backstop so a draft never lands over the limit.
+  if (graphemeLength(text) > limit) {
+    const retry = await model.generate({
+      system,
+      user: `${user}\n\nYour draft was ${graphemeLength(text)} characters, over the ${limit}-character limit:\n${text}\n\nRewrite it in at most ${limit - 40} characters, link included. Return only the reply.`,
+      maxTokens: 250,
+    });
+    const shorter = retry.refused ? '' : cleanDraft(retry.text);
+    if (shorter && graphemeLength(shorter) < graphemeLength(text)) text = shorter;
+  }
+  return fitReply(text, limit);
 }
 
 export interface MonitorSuggestion {

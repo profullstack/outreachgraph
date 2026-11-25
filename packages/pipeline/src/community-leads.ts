@@ -57,7 +57,12 @@ import {
 import { loadNotifySettings, notifyAddress } from './notify';
 import { emitWebhookEvent } from './webhooks';
 
-export const LEAD_SOURCES = ['reddit', 'hackernews', 'bluesky', 'web'] as const;
+/**
+ * `w3bs` is social.w3bs.org, a Bluesky PDS: its posts are Bluesky posts (the
+ * lead's source stays 'bluesky', one at:// URI per post), picked out of the
+ * AppView by handle and linked to the social.w3bs.org web client.
+ */
+export const LEAD_SOURCES = ['reddit', 'hackernews', 'bluesky', 'w3bs', 'web'] as const;
 export type LeadSource = (typeof LEAD_SOURCES)[number];
 
 export const LEAD_STATUSES = ['new', 'replied', 'dismissed'] as const;
@@ -659,6 +664,17 @@ export function buildLeadSources(
       sources.push(
         new BlueskyFeedSource({
           baseUrl: 'https://api.bsky.app',
+          ...(fetchImpl ? { fetchImpl } : {}),
+        }),
+      );
+    }
+    if (source === 'w3bs') {
+      sources.push(
+        new BlueskyFeedSource({
+          baseUrl: 'https://api.bsky.app',
+          handleSuffix: '.social.w3bs.org',
+          slug: 'w3bs',
+          displayName: 'W3BS Social',
           ...(fetchImpl ? { fetchImpl } : {}),
         }),
       );
